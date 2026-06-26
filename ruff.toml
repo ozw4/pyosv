@@ -1,0 +1,30 @@
+# Python target
+target-version = "py310"
+respect-gitignore = true
+
+# Ruff will not auto-apply code fixes by default (formatは別サブコマンド)
+fix = false
+
+[lint]
+# 安定運用：まずは E/F のみ
+select = ["E", "F"]
+
+# 行長やスライス空白はフォーマッタと衝突しやすいので無視
+ignore = ["E203", "E501"]
+
+# テストを現実的に緩める
+[lint.per-file-ignores]
+"app/tests/**" = [
+    "INP001",
+    "S101", "SLF001",
+    "ARG001", "ARG002", "ARG005",
+    "PLR2004", "PT011", "PT018",
+]
+
+[format]
+# ★ Python space
+indent-style = "space"
+# 既存のクォートを尊重（差分最小）
+quote-style = "preserve"
+# Docstring 内コードはまず触らない（差分最小）
+docstring-code-format = false

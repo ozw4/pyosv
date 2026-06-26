@@ -1,0 +1,23 @@
+timm
+numpy<2
+pandas
+scipy
+tqdm
+segyio
+numba
+fastapi
+pydantic>=2,<3
+httpx
+uvicorn[standard]
+python-multipart
+omegaconf==2.3.0
+pytest>=8
+pytest-playwright>=0.5
+msgpack
+ruff
+seisai-utils @ git+https://github.com/ozw4/seisai.git@main#subdirectory=packages/seisai-utils
+seisai-pick @ git+https://github.com/ozw4/seisai.git@main#subdirectory=packages/seisai-pick
+seisai-transforms @ git+https://github.com/ozw4/seisai.git@main#subdirectory=packages/seisai-transforms
+seisai-dataset @ git+https://github.com/ozw4/seisai.git@main#subdirectory=packages/seisai-dataset
+seisai-models @ git+https://github.com/ozw4/seisai.git@main#subdirectory=packages/seisai-models
+seisai-engine @ git+https://github.com/ozw4/seisai.git@main#subdirectory=packages/seisai-engine

@@ -1,0 +1,117 @@
+# ----------------------------
+# Reference repository mount
+# ----------------------------
+# reference_osv is expected to be provided as a read-only bind mount.
+# Do not commit reference Java/Jython sources or fixture data here.
+/reference_osv/
+.env
+
+# ----------------------------
+# issue_forge / Codex local state
+# ----------------------------
+# issue_forge itself should be provided externally, usually as a symlink or bind mount.
+/vendor/issue_forge
+
+# Local working state produced by issue_forge/Codex flows.
+/.work/
+/.codex/
+.codex/
+/.codex-flow/
+codex-session.json
+codex-*.log
+
+# Keep .issue_forge/project.sh and .issue_forge/checks/*.sh tracked.
+# Ignore only generated/local artifacts under .issue_forge.
+/.issue_forge/tmp/
+/.issue_forge/logs/
+/.issue_forge/artifacts/
+/.issue_forge/state/
+/.issue_forge/cache/
+
+# ----------------------------
+# Python caches
+# ----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# ----------------------------
+# Virtual environments
+# ----------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ----------------------------
+# Build / packaging artifacts
+# ----------------------------
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+site/
+
+# ----------------------------
+# Jupyter / notebooks
+# ----------------------------
+.ipynb_checkpoints/
+
+# ----------------------------
+# Generated OSV outputs
+# ----------------------------
+# Keep source code and tests tracked, but do not commit generated seismic volumes,
+# intermediate voting maps, or example outputs unless explicitly promoted to fixtures.
+/outputs/
+/output/
+/results/
+/scratch/
+/tmp/
+
+*.dat
+*.bin
+*.npy
+*.npz
+*.segy
+*.sgy
+
+# Allow small committed test fixtures only if they are placed deliberately here.
+!tests/fixtures/**/*.dat
+!tests/fixtures/**/*.bin
+!tests/fixtures/**/*.npy
+!tests/fixtures/**/*.npz
+
+# ----------------------------
+# Logs
+# ----------------------------
+*.log
+logs/
+
+# ----------------------------
+# IDE / editor files
+# ----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ----------------------------
+# OS-specific files
+# ----------------------------
+Desktop.ini

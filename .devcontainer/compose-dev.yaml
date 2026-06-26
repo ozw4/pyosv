@@ -1,0 +1,66 @@
+services:
+  pyosv:
+    image: pyosv:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: develop
+      args:
+        HTTP_PROXY: ${HTTP_PROXY}
+        HTTPS_PROXY: ${HTTPS_PROXY}
+        NO_PROXY: ${NO_PROXY}
+        USERNAME: dcuser
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+      NO_PROXY: ${NO_PROXY}
+      NVIDIA_VISIBLE_DEVICES: all
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GH_TOKEN: ${GH_TOKEN}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_PAT_TOKEN: ${GITHUB_PAT_TOKEN}
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      PYTHONPATH: /workspace
+    logging:
+      driver: local
+      options:
+        max-size: 3m
+        max-file: "3"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    init: true
+    volumes:
+      - type: bind
+        source: /dev/shm
+        target: /dev/shm
+      - type: bind
+        source: ../
+        target: /workspace
+      - type: bind
+        source: ${HOME}/.gitconfig
+        target: /home/dcuser/.gitconfig
+        read_only: true
+      - type: bind
+        source: /home/aiuser4/Desktop/issue_forge
+        target: /workspace/vendor/issue_forge
+        read_only: true
+      - type: bind
+        source: /home/aiuser4/Desktop/osv-master
+        target: /workspace/reference_osv
+        read_only: true
+      - type: bind
+        source: /home/aiuser4/Desktop/.config/gh/
+        target: /home/dcuser/.config/gh/
+    working_dir: /workspace
+    ports:
+      - "8000:8000"
+    stdin_open: true
+    tty: true
