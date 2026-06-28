@@ -13,8 +13,7 @@ ARG NO_PROXY
 ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
     NO_PROXY=${NO_PROXY} \
-    DEBIAN_FRONTEND=noninteractive \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    DEBIAN_FRONTEND=noninteractive 
 
 RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections
 
@@ -40,8 +39,6 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     --mount=type=bind,source=.devcontainer/requirements-dev.txt,target=requirements-dev.txt \
     python -m pip install -r requirements-dev.txt
 
-RUN mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
-    && python -m playwright install --with-deps chromium
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -62,7 +59,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 RUN addgroup --gid $GID $USERNAME && \
     adduser --disabled-password --gecos "" --shell "/bin/bash" --uid $UID --gid $GID $USERNAME && \
     mkdir -p /home/$USERNAME/.codex && \
-    chown -R $USERNAME:$USERNAME /home/$USERNAME "$PLAYWRIGHT_BROWSERS_PATH"
 
 USER $USERNAME
 

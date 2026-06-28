@@ -115,3 +115,7 @@ Thumbs.db
 # OS-specific files
 # ----------------------------
 Desktop.ini
+.work
+.work/
+vendor/issue_forge
+vendor/issue_forge/
