@@ -1,32 +1,21 @@
 # Practical Equivalence Policy
 
-pyosv は reference_osv との bitwise equivalence を目標にしない。
+Bitwise equivalence with Java, Jython, or Mines JTK is not a goal for `pyosv`.
+Practical equivalence is the goal: Python outputs should preserve the geological
+signal and workflow behavior needed for fault interpretation.
 
-## 近似対象
+Mines JTK interpolation and recursive filtering are intentionally approximated
+with Pythonic tools. For example, JTK `SincInterpolator` behavior may be replaced
+with SciPy interpolation, and JTK recursive exponential filtering may be replaced
+with Gaussian-style or other separable smoothing. Floating-point accumulation
+order may differ from the reference implementation.
 
-- Mines JTK SincInterpolator
-- Mines JTK RecursiveExponentialFilter
-- JTK parallel execution behavior
-- floating point accumulation order
+Tests should prioritize:
 
-## 固定するもの
+- shape correctness
+- finite values
+- value range sanity
+- synthetic localization
+- correlation and ridge-overlap metrics for reference comparisons
 
-- input/output shape
-- value range normalization
-- angle convention
-- seed threshold semantics
-- no NaN/Inf
-- deterministic output under the same Python version and dependency set
-
-## 評価するもの
-
-- normalized correlation with reference maps
-- top percentile ridge overlap
-- synthetic fault localization
-- visual sanity check for examples
-
-## 評価しないもの
-
-- per-sample bit exactness
-- JTK boundary behavior exactness
-- Java parallel accumulation order exactness
+Tests should not require exact per-sample equality with Java outputs.
