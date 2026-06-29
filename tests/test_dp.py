@@ -104,6 +104,15 @@ def test_find_path_2d_horizontal_valley_returns_constant_lag() -> None:
     np.testing.assert_allclose(path, expected, atol=0.01)
 
 
+def test_find_path_2d_lower_boundary_valley_can_start_at_lag_zero() -> None:
+    expected = np.full(12, -3.0, dtype=np.float32)
+    cost = _valley_cost(expected, lmin=-3, nl=7)
+
+    path = find_path_2d(cost, lmin=-3, bstrain=1, attribute_smoothing=0)
+
+    np.testing.assert_allclose(path, expected, atol=0.01)
+
+
 def test_find_path_2d_linear_sloping_valley_within_strain_limit() -> None:
     expected = np.linspace(-2.0, 2.0, 21, dtype=np.float32)
     cost = _valley_cost(expected, lmin=-3, nl=7)

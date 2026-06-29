@@ -248,7 +248,7 @@ def _backtrack_2d(
     ii = start
     il = min(max(-lmin, 0), nl_last)
     best_cost = accumulated[ii, il]
-    for lag_index in range(1, nl):
+    for lag_index in range(nl):
         if accumulated[ii, lag_index] < best_cost:
             il = lag_index
             best_cost = accumulated[ii, lag_index]
