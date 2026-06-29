@@ -112,6 +112,44 @@ class OptimalPathVoter:
 
         return [FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1])]
 
+    def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
+        """Return displacement vectors for offsets ``[-radius, radius]``."""
+
+        radius_int = _validate_nonnegative_int(radius, "radius")
+        vector_array = _validate_vector2(vector, "vector")
+        offsets = np.arange(-radius_int, radius_int + 1, dtype=np.float32)
+        return vector_array[:, np.newaxis] * offsets[np.newaxis, :]
+
+    def samples_in_uv_box(
+        self,
+        c1: int,
+        c2: int,
+        normal: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> np.ndarray:
+        """Sample ``1 - fx`` in the seed-centered local ``(v, u)`` box."""
+
+        fx_array = _validate_array2(fx, "fx")
+        n2, n1 = fx_array.shape
+        i1 = _validate_int(c1, "c1")
+        i2 = _validate_int(c2, "c2")
+        if not 0 <= i1 < n1:
+            raise ValueError("c1 must be inside the image bounds")
+        if not 0 <= i2 < n2:
+            raise ValueError("c2 must be inside the image bounds")
+
+        normal_map = self.update_vector_map(self.ru, normal)
+        strike_map = self.update_vector_map(self.rv, strike)
+        x1 = i1 + strike_map[0, :, np.newaxis] + normal_map[0, np.newaxis, :]
+        x2 = i2 + strike_map[1, :, np.newaxis] + normal_map[1, np.newaxis, :]
+        j1 = np.floor(x1 + 0.5).astype(np.intp, copy=False)
+        j2 = np.floor(x2 + 0.5).astype(np.intp, copy=False)
+        np.clip(j1, 0, n1 - 1, out=j1)
+        np.clip(j2, 0, n2 - 1, out=j2)
+
+        return (np.float32(1.0) - fx_array[j2, j1]).astype(np.float32, copy=False)
+
     def seed_to_image(
         self,
         fmin: float,
@@ -199,6 +237,22 @@ def _validate_matching_2d_arrays(
         raise ValueError(f"{first_name} and {second_name} shapes must match")
 
     return first_array, second_array
+
+
+def _validate_array2(array: np.ndarray, name: str) -> np.ndarray:
+    array = np.asarray(array)
+    if array.ndim != 2:
+        raise ValueError(f"{name} must be a 2D array")
+
+    return array
+
+
+def _validate_vector2(vector: np.ndarray, name: str) -> np.ndarray:
+    vector_array = np.asarray(vector, dtype=np.float32)
+    if vector_array.shape != (2,):
+        raise ValueError(f"{name} must have shape (2,)")
+
+    return vector_array
 
 
 def _validate_shape2(shape: tuple[int, int], name: str) -> tuple[int, int]:
