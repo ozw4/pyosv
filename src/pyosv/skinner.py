@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 import math
 import numbers
@@ -10,12 +11,18 @@ import operator
 import numpy as np
 
 from pyosv.cells import FaultCell
+from pyosv.skin import FaultSkin
 
-__all__ = ["FaultSkinner"]
+__all__ = ["FaultSkinner", "find_skins"]
 
 
 class FaultSkinner:
-    """Configuration holder for extracting fault cells from voting volumes."""
+    """Configuration holder for extracting and grouping fault cells.
+
+    Connectivity modes map to voxel adjacency over rounded ``FaultCell``
+    indices: ``"face"`` is 6-connected, ``"edge"`` is 18-connected, and
+    ``"corner"`` is 26-connected.
+    """
 
     def __init__(
         self,
@@ -65,6 +72,89 @@ class FaultSkinner:
             )
 
         return cells
+
+    def find_skins(
+        self,
+        fv: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        min_likelihood: float | None = None,
+    ) -> list[FaultSkin]:
+        """Group thresholded fault cells into connected-component skins.
+
+        Input volumes use the project-wide ``(n3, n2, n1)`` shape convention.
+        Returned skins are sorted by descending size and then by the
+        lexicographic first ``(i1, i2, i3)`` cell index in each component.
+        """
+
+        cells = self.cells_from_votes(fv, vp, vt, min_likelihood=min_likelihood)
+        cells_by_index = {cell.index: cell for cell in cells}
+        unvisited = set(cells_by_index)
+        offsets = _connectivity_offsets(self.connectivity)
+
+        skins: list[FaultSkin] = []
+        while unvisited:
+            start = min(unvisited)
+            component_indices = _collect_component_indices(start, unvisited, offsets)
+            if self.min_skin_size is None or len(component_indices) >= self.min_skin_size:
+                component_cells = [cells_by_index[index] for index in component_indices]
+                skins.append(FaultSkin.from_cells(component_cells))
+
+        skins.sort(key=lambda skin: (-len(skin), skin.cells[0].index))
+        return skins
+
+
+def find_skins(
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    min_likelihood: float | None = None,
+) -> list[FaultSkin]:
+    """Group thresholded 3D voting outputs with default ``FaultSkinner`` settings."""
+
+    return FaultSkinner().find_skins(fv, vp, vt, min_likelihood=min_likelihood)
+
+
+def _collect_component_indices(
+    start: tuple[int, int, int],
+    unvisited: set[tuple[int, int, int]],
+    offsets: tuple[tuple[int, int, int], ...],
+) -> list[tuple[int, int, int]]:
+    queue: deque[tuple[int, int, int]] = deque([start])
+    unvisited.remove(start)
+    component: list[tuple[int, int, int]] = []
+
+    while queue:
+        index = queue.popleft()
+        component.append(index)
+        i1, i2, i3 = index
+        for d1, d2, d3 in offsets:
+            neighbor = (i1 + d1, i2 + d2, i3 + d3)
+            if neighbor in unvisited:
+                unvisited.remove(neighbor)
+                queue.append(neighbor)
+
+    component.sort()
+    return component
+
+
+def _connectivity_offsets(connectivity: str) -> tuple[tuple[int, int, int], ...]:
+    max_axis_steps = {
+        "face": 1,
+        "edge": 2,
+        "corner": 3,
+    }[connectivity]
+
+    offsets: list[tuple[int, int, int]] = []
+    for d1 in (-1, 0, 1):
+        for d2 in (-1, 0, 1):
+            for d3 in (-1, 0, 1):
+                if d1 == 0 and d2 == 0 and d3 == 0:
+                    continue
+                if abs(d1) + abs(d2) + abs(d3) <= max_axis_steps:
+                    offsets.append((d1, d2, d3))
+
+    return tuple(offsets)
 
 
 def _validate_finite_float(value: float, name: str) -> float:

@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from pyosv.cells import FaultCell
-from pyosv.skinner import FaultSkinner
+from pyosv.skin import FaultSkin
+from pyosv.skinner import FaultSkinner, find_skins
 
 
 def test_constructor_stores_configuration_for_later_grouping() -> None:
@@ -134,3 +135,67 @@ def test_cells_from_votes_rejects_invalid_threshold_override(min_likelihood: obj
             vt,
             min_likelihood=min_likelihood,  # type: ignore[arg-type]
         )
+
+
+def test_find_skins_returns_separated_planar_patches_as_two_skins() -> None:
+    fv = np.zeros((3, 5, 6), dtype=np.float32)
+    vp = np.full_like(fv, 30.0)
+    vt = np.full_like(fv, 60.0)
+    fv[0, 0:2, 0:2] = 0.8
+    fv[2, 3:5, 4:6] = 0.9
+
+    skins = find_skins(fv, vp, vt, min_likelihood=0.5)
+
+    assert [len(skin) for skin in skins] == [4, 4]
+    assert [skin.cells[0].index for skin in skins] == [(0, 0, 0), (4, 3, 2)]
+    assert all(isinstance(skin, FaultSkin) for skin in skins)
+    assert all(np.isfinite([cell.fl, cell.fp, cell.ft]).all() for skin in skins for cell in skin)
+
+
+def test_find_skins_groups_adjacent_voxels_with_configured_connectivity() -> None:
+    fv = np.zeros((2, 2, 2), dtype=np.float32)
+    vp = np.full_like(fv, 15.0)
+    vt = np.full_like(fv, 75.0)
+    fv[0, 0, 0] = 0.7
+    fv[1, 1, 1] = 0.8
+
+    face_skins = FaultSkinner(connectivity="face").find_skins(fv, vp, vt, min_likelihood=0.5)
+    corner_skins = FaultSkinner(connectivity="corner").find_skins(fv, vp, vt, min_likelihood=0.5)
+
+    assert [len(skin) for skin in face_skins] == [1, 1]
+    assert [skin.cells[0].index for skin in face_skins] == [(0, 0, 0), (1, 1, 1)]
+    assert [len(skin) for skin in corner_skins] == [2]
+    assert [cell.index for cell in corner_skins[0]] == [(0, 0, 0), (1, 1, 1)]
+
+
+def test_find_skins_uses_edge_connectivity_for_edge_adjacent_voxels() -> None:
+    fv = np.zeros((1, 2, 2), dtype=np.float32)
+    vp = np.full_like(fv, 20.0)
+    vt = np.full_like(fv, 50.0)
+    fv[0, 0, 0] = 0.7
+    fv[0, 1, 1] = 0.8
+
+    face_skins = FaultSkinner(connectivity="face").find_skins(fv, vp, vt, min_likelihood=0.5)
+    edge_skins = FaultSkinner(connectivity="edge").find_skins(fv, vp, vt, min_likelihood=0.5)
+
+    assert [len(skin) for skin in face_skins] == [1, 1]
+    assert [len(skin) for skin in edge_skins] == [2]
+
+
+def test_find_skins_filters_small_components_and_orders_remaining_skins() -> None:
+    fv = np.zeros((1, 4, 7), dtype=np.float32)
+    vp = np.full_like(fv, 35.0)
+    vt = np.full_like(fv, 65.0)
+    fv[0, 0, 6] = 0.9
+    fv[0, 1, 0:2] = 0.8
+    fv[0, 3, 4:7] = 0.7
+
+    skins = FaultSkinner(min_skin_size=2, connectivity="face").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
+
+    assert [len(skin) for skin in skins] == [3, 2]
+    assert [skin.cells[0].index for skin in skins] == [(4, 3, 0), (0, 1, 0)]
