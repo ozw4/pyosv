@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from pyosv.cells import FaultCell2
-from pyosv.voting2d import OptimalPathVoter
+from pyosv.voting2d import OptimalPathVoter, _normalize_and_power_2d
 
 
 def test_constructor_initializes_range_and_default_configuration() -> None:
@@ -368,3 +368,49 @@ def test_seed_to_points_returns_two_by_seed_count_array() -> None:
         points,
         np.array([[3.0, 5.0], [4.0, 6.0]], dtype=np.float32),
     )
+
+
+def test_normalize_and_power_2d_zero_array_returns_zero_scores() -> None:
+    image = np.zeros((3, 4), dtype=np.float32)
+
+    scores = _normalize_and_power_2d(image)
+
+    assert scores.shape == image.shape
+    assert scores.dtype == np.float32
+    assert np.isfinite(scores).all()
+    np.testing.assert_array_equal(scores, image)
+
+
+def test_normalize_and_power_2d_constant_nonzero_array_returns_zero_scores() -> None:
+    image = np.full((2, 3), 7.5, dtype=np.float32)
+
+    scores = _normalize_and_power_2d(image)
+
+    assert scores.shape == image.shape
+    assert scores.dtype == np.float32
+    assert np.isfinite(scores).all()
+    np.testing.assert_array_equal(scores, np.zeros_like(image))
+
+
+def test_normalize_and_power_2d_simple_ramp_uses_min_max_and_power() -> None:
+    image = np.array([[2.0, 3.0, 4.0]], dtype=np.float32)
+
+    scores = _normalize_and_power_2d(image, sigma=0.0, power=4)
+
+    expected = np.array([[0.0, 0.9375, 1.0]], dtype=np.float32)
+    assert scores.dtype == np.float32
+    np.testing.assert_allclose(scores, expected, rtol=0.0, atol=1e-7)
+
+
+def test_normalize_and_power_2d_clear_maximum_stays_finite_and_bounded() -> None:
+    image = np.zeros((5, 5), dtype=np.float32)
+    image[2, 2] = 10.0
+
+    scores = _normalize_and_power_2d(image, sigma=1.0)
+
+    assert scores.shape == image.shape
+    assert scores.dtype == np.float32
+    assert np.isfinite(scores).all()
+    assert scores.min() >= -1e-6
+    assert scores.max() <= 1.0 + 1e-6
+    assert scores[2, 2] == pytest.approx(1.0)

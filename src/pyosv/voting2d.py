@@ -11,6 +11,7 @@ import numpy as np
 
 from pyosv.cells import FaultCell2
 from pyosv.dp import shift_range, strain_to_bstrain, update_shift_ranges
+from pyosv.filters import smooth2d
 
 __all__ = ["OptimalPathVoter"]
 
@@ -191,6 +192,31 @@ class OptimalPathVoter:
         return xs
 
 
+def _normalize_and_power_2d(
+    x: np.ndarray,
+    *,
+    sigma: float = 1.0,
+    power: int = 4,
+) -> np.ndarray:
+    x_array = _validate_array2(x, "x").astype(np.float32, copy=True)
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+    power_int = _validate_positive_int(power, "power")
+
+    if x_array.size == 0:
+        return x_array
+
+    if sigma_float > 0.0:
+        x_array = smooth2d(x_array, sigma_float).astype(np.float32, copy=False)
+
+    x_array -= np.min(x_array)
+    max_value = np.max(x_array)
+    if max_value > 0.0:
+        x_array /= max_value
+
+    enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
+    return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 def _validate_int(value: int, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
@@ -209,6 +235,18 @@ def _validate_nonnegative_int(value: int, name: str) -> int:
 
     if value_int < 0:
         raise ValueError(f"{name} must be a nonnegative integer")
+
+    return value_int
+
+
+def _validate_positive_int(value: int, name: str) -> int:
+    try:
+        value_int = _validate_int(value, name)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+
+    if value_int <= 0:
+        raise ValueError(f"{name} must be a positive integer")
 
     return value_int
 
