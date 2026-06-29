@@ -38,3 +38,6 @@ indent-style = "space"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "slow_reference_voting: explicitly gated reference voting reports requiring PYOSV_REFERENCE_OSV and PYOSV_RUN_SLOW_REFERENCE_VOTING=1",
+]
