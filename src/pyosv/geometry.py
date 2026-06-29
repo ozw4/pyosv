@@ -105,6 +105,26 @@ def fault_dip_from_normal_vector(w) -> float:
     return float(np.rad2deg(np.arccos(-w1)))
 
 
+def strike_and_dip_from_normal(
+    u1: np.ndarray,
+    u2: np.ndarray,
+    u3: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return fault strike and dip angle volumes for normal components."""
+    u1_array, u2_array, u3_array = _validate_matching_arrays3(
+        (u1, u2, u3),
+        ("u1", "u2", "u3"),
+    )
+    flip = u1_array > 0.0
+    w1 = np.where(flip, -u1_array, u1_array)
+    w2 = np.where(flip, -u2_array, u2_array)
+    w3 = np.where(flip, -u3_array, u3_array)
+
+    fp = range360(np.rad2deg(np.arctan2(-w3, w2))).astype(np.float32, copy=False)
+    ft = np.rad2deg(np.arccos(-w1)).astype(np.float32, copy=False)
+    return fp, ft
+
+
 def cross_product(u, v) -> np.ndarray:
     """Return the OSV cross product of two 3-component vectors."""
     u1, u2, u3 = _vector3(u)
@@ -117,3 +137,29 @@ def cross_product(u, v) -> np.ndarray:
         ],
         dtype=np.float32,
     )
+
+
+def _validate_matching_arrays3(
+    arrays: tuple[np.ndarray, ...],
+    names: tuple[str, ...],
+) -> tuple[np.ndarray, ...]:
+    converted = tuple(_array3(array, name) for array, name in zip(arrays, names))
+    shape = converted[0].shape
+    first_name = names[0]
+    for array, name in zip(converted[1:], names[1:]):
+        if array.shape != shape:
+            raise ValueError(f"{first_name} and {name} shapes must match")
+
+    return converted
+
+
+def _array3(array: np.ndarray, name: str) -> np.ndarray:
+    try:
+        values = np.asarray(array, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric values") from exc
+
+    if values.ndim != 3:
+        raise ValueError(f"{name} must be a 3D array")
+
+    return values
