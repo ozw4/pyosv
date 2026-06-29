@@ -172,6 +172,28 @@ def test_backtrack_flat_cost_prefers_center_lag() -> None:
     np.testing.assert_allclose(path, 0.0)
 
 
+def test_backtrack_boundary_same_step_does_not_skip_intermediate_decisions() -> None:
+    accumulated = np.full((6, 3), 50.0, dtype=np.float32)
+    accumulated[5] = [0.0, 10.0, 20.0]
+    accumulated[4, 0] = 0.0
+    accumulated[3, 0] = 10.0
+    accumulated[2, 0] = 10.0
+    accumulated[2, 1] = 10.0
+    accumulated[1, 0] = 10.0
+    accumulated[1, 1] = 0.0
+    accumulated[0, 0] = 10.0
+    accumulated[0, 1] = 0.0
+    accumulated[0, 2] = 10.0
+    cost = np.zeros_like(accumulated)
+
+    path = backtrack_reverse_2d(accumulated, cost, lmin=0, bstrain=3)
+
+    np.testing.assert_allclose(
+        path,
+        np.array([1.0, 1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0, 0.0], dtype=np.float32),
+    )
+
+
 def test_backtrack_respects_bstrain_slope_limit() -> None:
     target = np.array([-2, -2, -2, -2, 2, 2, 2, 2, 2, 2], dtype=np.float32)
     cost = _valley_cost(target, lmin=-2, nl=5)

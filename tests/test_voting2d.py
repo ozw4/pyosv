@@ -205,6 +205,16 @@ def test_get_seeds_returns_seed_at_requested_sample() -> None:
     assert seeds[0].fp == pytest.approx(20.0)
 
 
+@pytest.mark.parametrize(("c1", "c2"), [(-1, 0), (0, -1), (2, 0), (0, 2)])
+def test_get_seeds_rejects_coordinates_outside_image(c1: int, c2: int) -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.zeros((2, 2), dtype=np.float32)
+    pt = np.zeros_like(ft)
+
+    with pytest.raises(ValueError, match="image bounds"):
+        voter.get_seeds(c1=c1, c2=c2, ft=ft, pt=pt)
+
+
 def test_seed_to_image_keeps_seed_values_above_threshold() -> None:
     voter = OptimalPathVoter(ru=3, rv=4)
     cells = [FaultCell2(1, 0, 0.7, 20.0), FaultCell2(0, 1, 0.8, 30.0)]

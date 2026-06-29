@@ -104,6 +104,11 @@ class OptimalPathVoter:
         ft_array, pt_array = _validate_matching_2d_arrays(ft, pt, "ft", "pt")
         i1 = _validate_int(c1, "c1")
         i2 = _validate_int(c2, "c2")
+        n2, n1 = ft_array.shape
+        if not 0 <= i1 < n1:
+            raise ValueError("c1 must be inside the image bounds")
+        if not 0 <= i2 < n2:
+            raise ValueError("c2 must be inside the image bounds")
 
         return [FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1])]
 

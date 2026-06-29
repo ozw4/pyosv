@@ -260,16 +260,19 @@ def _backtrack_2d(
             cost_minus += cost[kb, il_minus]
             cost_plus += cost[kb, il_plus]
 
+        lag_changed = False
         best_cost = _min3_prefer_center(cost_minus, cost_same, cost_plus)
         if best_cost != cost_same:
             if best_cost == cost_minus:
-                il = il_minus
+                next_il = il_minus
             else:
-                il = il_plus
+                next_il = il_plus
+            lag_changed = next_il != il
+            il = next_il
 
         ii += step
         path[ii] = il + lmin
-        if il == il_minus or il == il_plus:
+        if lag_changed:
             du = (path[ii] - path[ii - step]) * inverse_bstrain
             path[ii] = path[ii - step] + du
             for _ in range(ji, jb, step):
