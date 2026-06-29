@@ -6,7 +6,7 @@ The project uses the local `reference_osv/` directory as a read-only reference i
 
 ## Status
 
-This repository has the package scaffold plus the initial DAT I/O and reference dataset metadata. OSV algorithms, interpolation adapters, filters, voting kernels, scanners, and skinning will be implemented in later issues.
+This repository has the package scaffold plus the initial DAT I/O, reference dataset metadata, and early 2D voting utilities. Additional voting kernels, scanners, and skinning will be implemented in later issues.
 
 ## DAT I/O
 
@@ -29,6 +29,29 @@ ft = read_dat(path, dataset.shape, endian=dataset.endian)
 The local `reference_osv/` directory is a read-only bind mount and is not committed. Set `PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master` if the mount is not located at `./reference_osv`.
 
 See `docs/dat_io.md` for detailed I/O behavior and reference fixture test policy.
+
+## 2D Seed Picking
+
+`OptimalPathVoter.pick_seeds` extracts sparse 2D seed cells from fault
+likelihood (`ft`) and fault strike/angle (`pt`) images using the repository
+shape convention `(n2, n1)`:
+
+```python
+from pyosv.io import read_dat
+from pyosv.reference import REFERENCE_DATASETS_2D, resolve_reference_file
+from pyosv.voting2d import OptimalPathVoter
+
+dataset = REFERENCE_DATASETS_2D["f3d2d"]
+ft = read_dat(resolve_reference_file(dataset, "ft.dat"), dataset.shape, endian=dataset.endian)
+pt = read_dat(resolve_reference_file(dataset, "pt.dat"), dataset.shape, endian=dataset.endian)
+
+voter = OptimalPathVoter(ru=15, rv=30)
+seeds = voter.pick_seeds(d=4, fm=0.3, ft=ft, pt=pt)
+```
+
+The returned cells use `(i1, i2)` coordinates inside the image, with `fl`
+holding the seed fault likelihood and `fp` holding the corresponding `pt`
+sample.
 
 ## Equivalence Policy
 
