@@ -62,14 +62,19 @@ class FaultOrientScanner2:
         """Scan a 2D image for approximate fault likelihood and dip.
 
         The returned arrays have shape ``(n2, n1)``. ``ft`` is normalized to
-        ``[0, 1]`` and ``pt`` contains the selected dip angle in degrees.
+        ``[0, 1]`` and ``pt`` contains the selected voter-compatible fault
+        orientation angle in degrees.
         """
 
         image = self.validate_image(g, "g")
         theta_sampling = self.theta_sampling(theta_min, theta_max)
         if float(np.max(image) - np.min(image)) == 0.0:
             ft = np.zeros_like(image, dtype=np.float32)
-            pt = np.full_like(image, theta_sampling[0], dtype=np.float32)
+            pt = np.full_like(
+                image,
+                _feature_angle_to_fault_cell_angle(theta_sampling[0]),
+                dtype=np.float32,
+            )
             return ft, pt
 
         return self._scan_theta(theta_sampling, image)
@@ -88,8 +93,9 @@ class FaultOrientScanner2:
         """Keep likelihood maxima across local dip and zero orientation elsewhere.
 
         ``ft`` and ``pt`` must be finite 2D arrays with matching ``(n2, n1)``
-        shapes. ``pt`` is interpreted as a dip angle in degrees. The returned
-        likelihood and dip arrays are float32; retained dip values match the
+        shapes. ``pt`` is interpreted with the same normal-angle convention as
+        :class:`pyosv.cells.FaultCell2`. The returned likelihood and
+        orientation arrays are float32; retained orientation values match the
         input, and non-retained samples use zero as the orientation sentinel.
         """
 
@@ -127,6 +133,7 @@ class FaultOrientScanner2:
             theta_radians = math.radians(float(theta))
             normal1 = -math.sin(theta_radians)
             normal2 = math.cos(theta_radians)
+            fault_cell_angle = _feature_angle_to_fault_cell_angle(theta)
 
             edge = np.abs(normal1 * d1 + normal2 * d2)
             ridge = np.abs(
@@ -137,7 +144,7 @@ class FaultOrientScanner2:
 
             better = score > best_score
             best_score[better] = score[better]
-            best_theta[better] = theta
+            best_theta[better] = fault_cell_angle
 
         return _normalize_likelihood(best_score), best_theta.astype(np.float32, copy=False)
 
@@ -211,6 +218,10 @@ def _gaussian_derivatives(
         d22.astype(np.float32, copy=False),
         d12.astype(np.float32, copy=False),
     )
+
+
+def _feature_angle_to_fault_cell_angle(theta_degrees: float) -> np.float32:
+    return np.float32((180.0 - float(theta_degrees)) % 180.0)
 
 
 def _normalize_likelihood(score: np.ndarray) -> np.ndarray:

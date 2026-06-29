@@ -138,8 +138,30 @@ def test_scan_detects_synthetic_lineament_orientation(
 
     high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
     assert np.count_nonzero(high_likelihood) > 0
-    angle_error = _orientation_error_degrees(pt[high_likelihood], theta)
+    expected_pt = _voter_angle_from_feature_angle(theta)
+    angle_error = _orientation_error_degrees(pt[high_likelihood], expected_pt)
     assert float(np.median(angle_error)) <= 15.0
+
+
+def test_scan_outputs_voting_angle_for_down_right_diagonal_lineament() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, distance = _dipping_gaussian_lineament(45.0, n2=48, n1=48)
+
+    ft, pt = scanner.scan(30.0, 60.0, image)
+
+    near_line = np.abs(distance) <= 1.5
+    high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
+    assert np.count_nonzero(high_likelihood) > 0
+    angle_error = _orientation_error_degrees(pt[high_likelihood], 135.0)
+    assert float(np.median(angle_error)) <= 10.0
+
+    voter = OptimalPathVoter(ru=2, rv=5)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    fv, _, _ = voter.apply_voting(d=3, fm=0.45, ft=ft, pt=pt)
+
+    far_from_line = np.abs(distance) >= 10.0
+    assert float(np.mean(fv[near_line])) > float(np.mean(fv[far_from_line])) + 0.35
 
 
 def test_scan_output_feeds_apply_voting_on_synthetic_lineament() -> None:
@@ -217,6 +239,27 @@ def test_thin_narrows_broad_vertical_likelihood_ridge() -> None:
     np.testing.assert_array_equal(thinned_pt, expected_pt)
 
 
+def test_thin_narrows_broad_diagonal_likelihood_ridge_with_voting_angle() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    n = 9
+    i2, i1 = np.indices((n, n), dtype=np.intp)
+    distance = i2 - i1
+    ft = np.zeros((n, n), dtype=np.float32)
+    ft[np.abs(distance) == 1] = 1.0
+    ft[distance == 0] = 3.0
+    pt = np.full_like(ft, 135.0)
+
+    thinned_ft, thinned_pt = scanner.thin(ft, pt)
+
+    expected_ft = np.zeros_like(ft)
+    np.fill_diagonal(expected_ft, 3.0)
+    expected_pt = np.zeros_like(pt)
+    np.fill_diagonal(expected_pt, 135.0)
+    assert np.count_nonzero(thinned_ft) < np.count_nonzero(ft)
+    np.testing.assert_array_equal(thinned_ft, expected_ft)
+    np.testing.assert_array_equal(thinned_pt, expected_pt)
+
+
 def test_thin_preserves_orientation_only_where_likelihood_survives() -> None:
     scanner = FaultOrientScanner2(sigma1=2.0)
     ft = np.zeros((5, 5), dtype=np.float32)
@@ -285,6 +328,10 @@ def _orientation_error_degrees(
     expected_degrees: float,
 ) -> np.ndarray:
     return np.abs((actual - np.float32(expected_degrees) + 90.0) % 180.0 - 90.0)
+
+
+def _voter_angle_from_feature_angle(theta_degrees: float) -> np.float32:
+    return np.float32((180.0 - theta_degrees) % 180.0)
 
 
 def _dipping_gaussian_lineament(

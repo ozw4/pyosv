@@ -31,13 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--theta-min",
         type=float,
         default=-75.0,
-        help="Minimum scanner orientation in degrees.",
+        help="Minimum scanner feature orientation in degrees.",
     )
     parser.add_argument(
         "--theta-max",
         type=float,
         default=75.0,
-        help="Maximum scanner orientation in degrees.",
+        help="Maximum scanner feature orientation in degrees.",
     )
     parser.add_argument(
         "--sigma1",

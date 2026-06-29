@@ -17,16 +17,21 @@ accumulation.
 
 ## Angle Convention
 
-Angles are dip orientations in degrees in the 2D `(i2, i1)` image plane.
+`theta_min` and `theta_max` bound the candidate feature angles scanned in the
+2D `(i2, i1)` image plane. Feature angle `0` follows a horizontal feature along
+increasing `i1`, and positive feature angles dip toward increasing `i2` as
+`i1` increases.
 
-- `0` degrees follows a horizontal feature along increasing `i1`.
-- `90` and `-90` degrees are equivalent vertical orientations.
-- Positive angles dip toward increasing `i2` as `i1` increases.
+The returned `pt` image uses the same convention consumed by
+`pyosv.cells.FaultCell2` and `pyosv.voting2d.OptimalPathVoter`: the local fault
+normal is `(sin(pt), cos(pt))`, and the local strike direction is
+`(-cos(pt), sin(pt))` in `(i1, i2)` component order. Angles are equivalent
+modulo 180 degrees. A horizontal feature therefore has `pt` equivalent to `0`,
+a vertical feature has `pt` equivalent to `90`, and a down-right `45` degree
+feature has `pt` equivalent to `135`.
 
-The scanner evaluates the sampled range from `theta_min` to `theta_max` and
-stores the angle with the strongest local score. Because opposite normals are
-equivalent for the absolute derivative score, vertical features may be reported
-as either `90` or `-90` when both are in the sampled range.
+The scanner evaluates the sampled feature-angle range and stores the
+corresponding voter-compatible `pt` for the strongest local score.
 
 ## Outputs
 
@@ -34,15 +39,16 @@ as either `90` or `-90` when both are in the sampled range.
 
 - `ft`: normalized fault likelihood, `np.float32`, shape `(n2, n1)`, values in
   `[0, 1]`.
-- `pt`: selected dip angle in degrees, `np.float32`, shape `(n2, n1)`.
+- `pt`: selected voter-compatible orientation angle in degrees, `np.float32`,
+  shape `(n2, n1)`.
 
 Input images must be finite 2D numeric arrays and are converted to `float32`.
 Constant images return zero likelihood and a finite angle image.
 
 `FaultOrientScanner2.thin(ft, pt)` keeps local likelihood maxima across the
-local dip direction. It returns `(thinned_ft, thinned_pt)` as `float32` arrays
-with the same `(n2, n1)` shape; non-retained samples use zero for both
-likelihood and orientation.
+local normal direction implied by `pt`. It returns `(thinned_ft, thinned_pt)` as
+`float32` arrays with the same `(n2, n1)` shape; non-retained samples use zero
+for both likelihood and orientation.
 
 Scanner output can be passed directly to:
 
