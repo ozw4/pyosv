@@ -13,7 +13,7 @@ ARG NO_PROXY
 ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
     NO_PROXY=${NO_PROXY} \
-    DEBIAN_FRONTEND=noninteractive 
+    DEBIAN_FRONTEND=noninteractive
 
 RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections
 
@@ -58,7 +58,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN addgroup --gid $GID $USERNAME && \
     adduser --disabled-password --gecos "" --shell "/bin/bash" --uid $UID --gid $GID $USERNAME && \
-    mkdir -p /home/$USERNAME/.codex && \
+    mkdir -p /home/$USERNAME/.codex
 
 USER $USERNAME
 
