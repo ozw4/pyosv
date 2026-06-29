@@ -126,6 +126,51 @@ def test_numba_3d_local_sampling_matches_python_fallback() -> None:
     np.testing.assert_array_equal(accelerated, fallback)
 
 
+def test_numba_3d_local_sampling_matches_fallback_at_float32_half_boundary() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=3, rw=0)
+    i3, i2, i1 = np.indices((5, 5, 5), dtype=np.float32)
+    fx = (0.01 * i1 + 0.1 * i2 + 0.2 * i3).astype(np.float32)
+    normal = np.array(
+        [np.nextafter(np.float32(0.5), np.float32(0.0)), 0.0, 0.0],
+        dtype=np.float32,
+    )
+    dip = np.zeros(3, dtype=np.float32)
+    strike = np.zeros(3, dtype=np.float32)
+
+    fallback = voting3d._samples_in_uvw_box_python(
+        2,
+        2,
+        2,
+        voter.ru,
+        voter.rv,
+        voter.rw,
+        normal,
+        dip,
+        strike,
+        fx,
+        voter.lmins,
+        voter.lmaxs,
+    )
+    accelerated = voting3d._samples_in_uvw_box_numba(
+        2,
+        2,
+        2,
+        voter.ru,
+        voter.rv,
+        voter.rw,
+        normal,
+        dip,
+        strike,
+        fx,
+        voter.lmins,
+        voter.lmaxs,
+    )
+
+    expected = np.float32(1.0) - fx[2, 2, 3]
+    assert fallback[0, 6, 2] == expected
+    np.testing.assert_array_equal(accelerated, fallback)
+
+
 def test_numba_3d_vote_accumulation_matches_python_fallback() -> None:
     ft = np.zeros((9, 9, 9), dtype=np.float32)
     ft[2:7, 4, 2:7] = 0.8
