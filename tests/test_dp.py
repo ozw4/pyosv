@@ -86,6 +86,67 @@ def test_accumulate_and_backtrack_follow_straight_valley() -> None:
     assert np.isfinite(path).all()
 
 
+def test_find_path_2d_horizontal_valley_returns_constant_lag() -> None:
+    expected = np.full(16, 2.0, dtype=np.float32)
+    cost = _valley_cost(expected, lmin=-4, nl=9)
+
+    path = find_path_2d(cost, lmin=-4, bstrain=1, attribute_smoothing=0)
+
+    assert path.shape == expected.shape
+    assert path.dtype == np.float32
+    np.testing.assert_allclose(path, expected, atol=0.01)
+
+
+def test_find_path_2d_linear_sloping_valley_within_strain_limit() -> None:
+    expected = np.linspace(-2.0, 2.0, 21, dtype=np.float32)
+    cost = _valley_cost(expected, lmin=-3, nl=7)
+
+    path = find_path_2d(cost, lmin=-3, bstrain=2, attribute_smoothing=0)
+
+    assert np.max(np.abs(np.diff(path))) <= 0.5
+    assert np.mean(np.abs(path - expected)) <= 0.2
+    assert np.max(np.abs(path - expected)) <= 0.5
+
+
+def test_find_path_2d_linear_sloping_valley_beyond_strain_limit_is_constrained() -> None:
+    expected = np.array([-2, -2, -2, -2, 2, 2, 2, 2, 2, 2], dtype=np.float32)
+    cost = _valley_cost(expected, lmin=-2, nl=5)
+
+    path = find_path_2d(cost, lmin=-2, bstrain=4, attribute_smoothing=0)
+
+    assert np.max(np.abs(np.diff(path))) <= 0.25
+    assert np.mean(np.abs(path - expected)) > 1.0
+    assert np.any(np.abs(path - expected) > 1.0)
+
+
+def test_find_path_2d_noisy_valley_with_smoothing_stays_near_valley() -> None:
+    expected = np.full(48, 1.0, dtype=np.float32)
+    cost = _valley_cost(expected, lmin=-4, nl=9)
+    rng = np.random.default_rng(20240629)
+    noisy_cost = cost + rng.normal(0.0, 0.75, size=cost.shape).astype(np.float32)
+
+    path = find_path_2d(
+        noisy_cost,
+        lmin=-4,
+        bstrain=2,
+        attribute_smoothing=1,
+        path_smoothing=1.0,
+    )
+
+    assert path.shape == expected.shape
+    assert np.isfinite(path).all()
+    assert np.mean(np.abs(path - expected)) <= 0.2
+    assert np.max(np.abs(path - expected)) <= 0.5
+
+
+def test_find_path_2d_all_equal_cost_tie_breaks_to_center_lag() -> None:
+    cost = np.zeros((11, 7), dtype=np.float32)
+
+    path = find_path_2d(cost, lmin=-3, bstrain=3, attribute_smoothing=0)
+
+    np.testing.assert_array_equal(path, np.zeros(11, dtype=np.float32))
+
+
 def test_backtrack_flat_cost_prefers_center_lag() -> None:
     cost = np.zeros((8, 5), dtype=np.float32)
 

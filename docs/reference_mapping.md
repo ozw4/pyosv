@@ -17,6 +17,23 @@ This table records the initial target modules for the Python reimplementation. I
 | `RecursiveExponentialFilter` use sites | `pyosv.filters` | approximate |
 | `RecursiveGaussianFilterP.java` | `pyosv.filters` | approximate/later |
 
+## Dynamic-programming path kernel
+
+The 2D dynamic-programming path kernel used by
+`OptimalPathVoter.java` is mapped to `pyosv.dp` helpers:
+
+| Reference method | Python helper | Notes |
+| --- | --- | --- |
+| `findPath` | `find_path_2d` | high-level path extraction with optional attribute and path smoothing |
+| `accumulateForward` | `accumulate_forward_2d` / `accumulate_2d(direction=1)` | forward accumulated cost image |
+| `backtrackReverse` | `backtrack_reverse_2d` | reverse backtracking through a forward accumulation |
+
+DP cost images use shape `(ni, nl)`, where `ni` is the path direction
+sample count and `nl` is the lag-axis sample count. This is a specialized 2D
+array under the repository-wide `(n2, n1)` convention. Paths returned by
+`find_path_2d` and `backtrack_reverse_2d` have shape `(ni,)` and `float32`
+lag values.
+
 ## Approximation policy
 
 `pyosv` does not attempt bit-exact reproduction of Mines JTK interpolation or
