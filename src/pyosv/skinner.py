@@ -30,7 +30,10 @@ class FaultSkinner:
         min_skin_size: int | None = None,
         connectivity: str = "corner",
     ) -> None:
-        self.min_likelihood = _validate_finite_float(min_likelihood, "min_likelihood")
+        self.min_likelihood = _validate_nonnegative_finite_float(
+            min_likelihood,
+            "min_likelihood",
+        )
         self.min_skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
         self.connectivity = _validate_connectivity(connectivity)
 
@@ -41,7 +44,7 @@ class FaultSkinner:
         vt: np.ndarray,
         min_likelihood: float | None = None,
     ) -> list[FaultCell]:
-        """Extract cells where ``fv >= min_likelihood``.
+        """Extract cells where positive ``fv`` values satisfy ``min_likelihood``.
 
         Returned cells are sorted in global volume order: increasing ``i3``, then
         ``i2``, then ``i1``. Input volumes use the project-wide ``(n3, n2, n1)``
@@ -55,11 +58,12 @@ class FaultSkinner:
         threshold = (
             self.min_likelihood
             if min_likelihood is None
-            else _validate_finite_float(min_likelihood, "min_likelihood")
+            else _validate_nonnegative_finite_float(min_likelihood, "min_likelihood")
         )
 
         cells: list[FaultCell] = []
-        for i3, i2, i1 in np.argwhere(fv_array >= threshold):
+        mask = (fv_array > np.float32(0.0)) & (fv_array >= np.float32(threshold))
+        for i3, i2, i1 in np.argwhere(mask):
             cells.append(
                 FaultCell(
                     operator.index(i1),
@@ -157,13 +161,13 @@ def _connectivity_offsets(connectivity: str) -> tuple[tuple[int, int, int], ...]
     return tuple(offsets)
 
 
-def _validate_finite_float(value: float, name: str) -> float:
+def _validate_nonnegative_finite_float(value: float, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise ValueError(f"{name} must be a finite number")
+        raise ValueError(f"{name} must be a finite nonnegative number")
 
     value_float = float(value)
-    if not math.isfinite(value_float):
-        raise ValueError(f"{name} must be a finite number")
+    if not math.isfinite(value_float) or value_float < 0.0:
+        raise ValueError(f"{name} must be a finite nonnegative number")
 
     return value_float
 

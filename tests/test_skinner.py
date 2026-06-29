@@ -15,7 +15,7 @@ def test_constructor_stores_configuration_for_later_grouping() -> None:
     assert skinner.connectivity == "corner"
 
 
-@pytest.mark.parametrize("min_likelihood", [np.nan, np.inf, True, "0.5"])
+@pytest.mark.parametrize("min_likelihood", [-0.1, np.nan, np.inf, True, "0.5"])
 def test_constructor_rejects_invalid_min_likelihood(min_likelihood: object) -> None:
     with pytest.raises(ValueError, match="min_likelihood"):
         FaultSkinner(min_likelihood=min_likelihood)  # type: ignore[arg-type]
@@ -83,6 +83,14 @@ def test_cells_from_votes_returns_empty_list_without_candidates() -> None:
     assert FaultSkinner().cells_from_votes(fv, vp, vt, min_likelihood=0.1) == []
 
 
+def test_cells_from_votes_excludes_zero_background_by_default() -> None:
+    fv = np.zeros((2, 3, 4), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    assert FaultSkinner().cells_from_votes(fv, vp, vt) == []
+
+
 @pytest.mark.parametrize(
     ("fv", "vp", "vt", "match"),
     [
@@ -123,7 +131,7 @@ def test_cells_from_votes_rejects_non_finite_inputs(name: str) -> None:
         FaultSkinner().cells_from_votes(arrays["fv"], arrays["vp"], arrays["vt"])
 
 
-@pytest.mark.parametrize("min_likelihood", [np.nan, np.inf, True, "0.5"])
+@pytest.mark.parametrize("min_likelihood", [-0.1, np.nan, np.inf, True, "0.5"])
 def test_cells_from_votes_rejects_invalid_threshold_override(min_likelihood: object) -> None:
     fv = np.zeros((1, 1, 1), dtype=np.float32)
     vp = np.zeros_like(fv)
@@ -136,6 +144,34 @@ def test_cells_from_votes_rejects_invalid_threshold_override(min_likelihood: obj
             vt,
             min_likelihood=min_likelihood,  # type: ignore[arg-type]
         )
+
+
+def test_cells_from_votes_includes_samples_equal_to_positive_threshold() -> None:
+    fv = np.array([[[0.0, 0.49, 0.5, 0.75]]], dtype=np.float32)
+    vp = np.full_like(fv, 10.0)
+    vt = np.full_like(fv, 20.0)
+
+    cells = FaultSkinner(min_likelihood=0.5).cells_from_votes(fv, vp, vt)
+
+    assert [cell.index for cell in cells] == [(2, 0, 0), (3, 0, 0)]
+    assert [cell.fl for cell in cells] == pytest.approx([0.5, 0.75])
+
+
+def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
+    fv = np.zeros((2, 3, 4), dtype=np.float32)
+    vp = np.full_like(fv, 25.0)
+    vt = np.full_like(fv, 65.0)
+    fv[0, 0, 0] = 0.2
+    fv[0, 0, 1] = 0.3
+    fv[1, 2, 3] = 0.4
+
+    skins = find_skins(fv, vp, vt)
+
+    assert [len(skin) for skin in skins] == [2, 1]
+    assert [[cell.index for cell in skin] for skin in skins] == [
+        [(0, 0, 0), (1, 0, 0)],
+        [(3, 2, 1)],
+    ]
 
 
 def test_find_skins_returns_separated_planar_patches_as_two_skins() -> None:

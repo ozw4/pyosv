@@ -12,9 +12,11 @@ cell order, supports iteration and `len()`, and exposes helper arrays:
 - `indices()` returns an `(n, 3)` `int32` array in `(i1, i2, i3)` order.
 - `likelihoods()` returns an `(n,)` `float32` array of fault likelihood values.
 
-`FaultSkinner.cells_from_votes` extracts one `FaultCell` at every sample where
-`fv >= min_likelihood`. Input arrays are global 3D volumes with shape
-`(n3, n2, n1)`, and `vp` and `vt` must match `fv`.
+`FaultSkinner.cells_from_votes` extracts one `FaultCell` for positive `fv`
+samples where `fv >= min_likelihood`. Zero-valued background samples are
+excluded even when `min_likelihood=0.0`. `min_likelihood` must be finite and
+nonnegative. Input arrays are global 3D volumes with shape `(n3, n2, n1)`, and
+`vp` and `vt` must match `fv`.
 
 `FaultSkinner.find_skins` groups extracted cells by voxel connected components.
 Connectivity is configured as:
