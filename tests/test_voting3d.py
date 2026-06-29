@@ -624,6 +624,152 @@ def test_apply_voting_rejects_nonfinite_inputs(
         voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
 
 
+def test_thin_returns_finite_float32_volume_without_modifying_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[:, 1, :] = 0.5
+    fv[:, 2, :] = 1.0
+    fv[:, 3, :] = 0.5
+    vp = np.full_like(fv, 30.0)
+    vt = np.full_like(fv, 45.0)
+    fv_before = fv.copy()
+    vp_before = vp.copy()
+    vt_before = vt.copy()
+
+    fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    np.testing.assert_array_equal(fv, fv_before)
+    np.testing.assert_array_equal(vp, vp_before)
+    np.testing.assert_array_equal(vt, vt_before)
+
+
+def test_thin_narrows_planar_ridge_along_fault_normal() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((7, 9, 7), dtype=np.float32)
+    fv[1:6, 3, 1:6] = 0.6
+    fv[1:6, 4, 1:6] = 1.0
+    fv[1:6, 5, 1:6] = 0.6
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+
+    fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.count_nonzero(fvt) < np.count_nonzero(fv)
+    assert np.count_nonzero(fvt[:, 4, :]) > 0
+    assert np.count_nonzero(fvt[:, :4, :]) == 0
+    assert np.count_nonzero(fvt[:, 5:, :]) == 0
+
+
+def test_thin_suppresses_broad_planar_ridge_to_center_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((7, 9, 7), dtype=np.float32)
+    fv[1:6, 2, 1:6] = 0.7
+    fv[1:6, 3:6, 1:6] = 1.0
+    fv[1:6, 6, 1:6] = 0.7
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+
+    fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    assert np.count_nonzero(fvt) < np.count_nonzero(fv)
+    assert np.count_nonzero(fvt[:, 4, :]) == 25
+    assert np.count_nonzero(fvt[:, :4, :]) == 0
+    assert np.count_nonzero(fvt[:, 5:, :]) == 0
+    np.testing.assert_array_equal(fvt[:, 4, :], fv[:, 4, :])
+
+
+def test_thin_returns_zero_for_flat_volume() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.full((4, 5, 6), 0.75, dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+
+    with np.errstate(all="raise"):
+        fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    np.testing.assert_array_equal(fvt, np.zeros_like(fv))
+
+
+def test_thin_zero_orientation_angles_return_finite_scores() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[:, :, 2] = 1.0
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    with np.errstate(all="raise"):
+        fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+
+
+def test_thin_rejects_mismatched_shapes() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((2, 3, 4), dtype=np.float32)
+    vp = np.zeros((2, 4, 3), dtype=np.float32)
+    vt = np.zeros_like(fv)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.thin(fv, vp, vt)
+
+
+@pytest.mark.parametrize(
+    ("fv_value", "vp_value", "vt_value", "message"),
+    [
+        (np.nan, 0.0, 0.0, "fv"),
+        (0.0, np.inf, 0.0, "vp"),
+        (0.0, 0.0, np.nan, "vt"),
+    ],
+)
+def test_thin_rejects_nonfinite_inputs(
+    fv_value: float,
+    vp_value: float,
+    vt_value: float,
+    message: str,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    fv[1, 1, 1] = fv_value
+    vp[1, 1, 1] = vp_value
+    vt[1, 1, 1] = vt_value
+
+    with pytest.raises(ValueError, match=message):
+        voter.thin(fv, vp, vt)
+
+
+@pytest.mark.parametrize(
+    "fv",
+    [
+        np.zeros((2, 3), dtype=np.float32),
+        np.zeros((1, 2, 3, 4), dtype=np.float32),
+    ],
+)
+def test_thin_rejects_non_3d_arrays(fv: np.ndarray) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="fv must be a 3D array"):
+        voter.thin(
+            fv,
+            np.zeros((2, 3, 4), dtype=np.float32),
+            np.zeros((2, 3, 4), dtype=np.float32),
+        )
+
+
 def test_apply_voting_highlights_simple_fault_like_plane() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     voter.set_attribute_smoothing(0)
@@ -654,6 +800,32 @@ def test_apply_voting_highlights_simple_fault_like_plane() -> None:
     assert fv.max() > 0.0
     assert fv[plane_mask].mean() > fv[background_mask].mean()
     assert np.count_nonzero(fv[plane_mask]) > 0
+
+
+def test_apply_voting_then_thin_returns_sparse_plane_maxima() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+    plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    plane_mask[3:8, 5, 3:8] = True
+    near_plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    near_plane_mask[:, 4:7, :] = True
+
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == ft.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    assert np.count_nonzero(fvt) < np.count_nonzero(fv)
+    assert np.count_nonzero(fvt[plane_mask]) > 0
+    assert fvt[plane_mask].mean() > fvt[~near_plane_mask].mean()
+    assert np.argwhere(fvt == fvt.max())[:, 1].min() >= 4
+    assert np.argwhere(fvt == fvt.max())[:, 1].max() <= 6
 
 
 def test_apply_voting_is_deterministic_for_same_inputs() -> None:

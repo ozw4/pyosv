@@ -37,6 +37,7 @@ tt = np.full_like(ft, 90.0)
 voter = OptimalSurfaceVoter(ru=6, rv=8, rw=8)
 voter.set_strain_max(0.25, 0.25)
 fv, vp, vt = voter.apply_voting(d=4, fm=0.3, ft=ft, pt=pt, tt=tt)
+fvt = voter.thin(fv, vp, vt)
 ```
 
 The returned `fv`, `vp`, and `vt` arrays have the same `(n3, n2, n1)` shape as
@@ -44,11 +45,17 @@ the inputs. `fv` is a normalized `float32` vote volume in `[0, 1]`; `vp` and
 `vt` store the strike and dip angles associated with the strongest local vote at
 each sample.
 
+`OptimalSurfaceVoter.thin` keeps practical local maxima from `fv` along the
+fault-normal field derived from `vp` and `vt`. It returns a thinned `float32`
+vote volume with the same shape. The thinning interpolation and smoothing use
+SciPy adapters, so this is a practical approximation of the reference workflow
+rather than a bit-exact Mines JTK implementation.
+
 ## MVP Limitations
 
 This is the 3D voting MVP, not the complete Java 3D fault interpretation
 pipeline. The implementation is sequential and currently covered by synthetic
-regression tests only. It does not include 3D thinning.
+regression tests only.
 
 `FaultOrientScanner3` and `FaultSkinner` equivalents are later milestones, so
 current 3D workflows must provide `ft`, `pt`, and `tt` volumes directly.
