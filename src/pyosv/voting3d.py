@@ -18,6 +18,7 @@ from pyosv.dp import (
 )
 from pyosv.filters import smooth3d
 from pyosv.geometry import range360
+from pyosv.interp import sample3
 
 __all__ = ["OptimalSurfaceVoter"]
 
@@ -196,13 +197,26 @@ class OptimalSurfaceVoter:
         return fv, vp, vt
 
     def thin(self, fv: np.ndarray, vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
-        """Return a placeholder 3D thinned voting-score volume."""
+        """Keep 3D voting-score maxima along the local fault-normal field."""
 
-        (fv_array, _, _) = _validate_matching_finite_arrays3_many(
+        fv_array, vp_array, vt_array = _validate_matching_finite_arrays3_many(
             (fv, vp, vt),
             ("fv", "vp", "vt"),
         )
-        return np.zeros(fv_array.shape, dtype=np.float32)
+        n3, n2, n1 = fv_array.shape
+        thinned = np.zeros((n3, n2, n1), dtype=np.float32)
+        if fv_array.size == 0:
+            return thinned
+
+        fs = smooth3d(fv_array, 1.0).astype(np.float32, copy=False)
+        i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
+        w1, w2, w3 = _fault_normal_components_from_strike_and_dip(vp_array, vt_array)
+
+        fp = sample3(fs, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
+        fm = sample3(fs, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
+        keep = (fp < fs) & (fm < fs)
+        thinned[keep] = fv_array[keep]
+        return thinned
 
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
@@ -433,6 +447,26 @@ def _update_orientation_if_stronger(
         vm[i3, i2, i1] = fa
         vp[i3, i2, i1] = vp_value
         vt[i3, i2, i1] = vt_value
+
+
+def _fault_normal_components_from_strike_and_dip(
+    phi: np.ndarray,
+    theta: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    p = np.deg2rad(phi).astype(np.float32, copy=False)
+    t = np.deg2rad(theta).astype(np.float32, copy=False)
+    cp = np.cos(p)
+    sp = np.sin(p)
+    ct = np.cos(t)
+    st = np.sin(t)
+    w1 = -ct
+    w2 = st * cp
+    w3 = -st * sp
+    return (
+        w1.astype(np.float32, copy=False),
+        w2.astype(np.float32, copy=False),
+        w3.astype(np.float32, copy=False),
+    )
 
 
 def _smooth_fault_likelihood_3d(
