@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pyosv.interp import sample2, sample3
+from pyosv.interp import rotate2d, sample2, sample3, warp2d
 
 
 def test_sample2_constant_image_returns_constant() -> None:
@@ -36,6 +36,58 @@ def test_sample2_midpoint_coordinates_use_linear_interpolation() -> None:
 
     assert isinstance(sampled, float)
     assert sampled == pytest.approx(24.0)
+
+
+def test_warp2d_identity_coordinates_reproduce_input() -> None:
+    image = np.arange(20, dtype=np.float32).reshape(4, 5)
+    x2, x1 = np.indices(image.shape, dtype=np.float32)
+
+    warped = warp2d(image, x1, x2)
+
+    assert warped.shape == image.shape
+    assert warped.dtype == np.float32
+    np.testing.assert_allclose(warped, image)
+
+
+def test_warp2d_constant_image_returns_constant() -> None:
+    image = np.full((4, 5), 3.5, dtype=np.float32)
+    x1 = np.array([[0.0, 1.5], [4.0, -2.0]], dtype=np.float32)
+    x2 = np.array([[0.0, 2.5], [3.0, 1.0]], dtype=np.float32)
+
+    warped = warp2d(image, x1, x2)
+
+    assert warped.shape == x1.shape
+    assert warped.dtype == np.float32
+    np.testing.assert_allclose(warped, np.full(x1.shape, 3.5, dtype=np.float32))
+
+
+def test_rotate2d_reshape_false_preserves_input_shape() -> None:
+    image = np.arange(20, dtype=np.float32).reshape(4, 5)
+
+    rotated = rotate2d(image, 30.0, reshape=False)
+
+    assert rotated.shape == image.shape
+    assert rotated.dtype == np.float32
+
+
+def test_rotate2d_constant_image_returns_constant() -> None:
+    image = np.full((5, 6), -4.25, dtype=np.float32)
+
+    rotated = rotate2d(image, 35.0)
+
+    assert rotated.shape == image.shape
+    assert rotated.dtype == np.float32
+    np.testing.assert_allclose(rotated, image)
+
+
+def test_rotate2d_zero_degrees_is_near_identity() -> None:
+    image = np.arange(20, dtype=np.float32).reshape(4, 5)
+
+    rotated = rotate2d(image, 0.0)
+
+    assert rotated.shape == image.shape
+    assert rotated.dtype == np.float32
+    np.testing.assert_allclose(rotated, image, atol=1.0e-6)
 
 
 def test_sample3_constant_volume_returns_constant() -> None:

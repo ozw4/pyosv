@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import map_coordinates
+from scipy import ndimage
 
-__all__ = ["sample2", "sample3"]
+__all__ = ["rotate2d", "sample2", "sample3", "warp2d"]
 
 
 def sample2(image, x1, x2, *, order: int = 1, mode: str = "nearest"):
@@ -25,7 +25,7 @@ def sample2(image, x1, x2, *, order: int = 1, mode: str = "nearest"):
     x1_broadcast, x2_broadcast = np.broadcast_arrays(x1_array, x2_array)
     coordinates = _coordinates_for_map((x2_broadcast, x1_broadcast), scalar_input)
 
-    sampled = map_coordinates(image_array, coordinates, order=order, mode=mode)
+    sampled = ndimage.map_coordinates(image_array, coordinates, order=order, mode=mode)
     return _restore_sampled_type(sampled, image_array.dtype, scalar_input)
 
 
@@ -55,8 +55,44 @@ def sample3(volume, x1, x2, x3, *, order: int = 1, mode: str = "nearest"):
         scalar_input,
     )
 
-    sampled = map_coordinates(volume_array, coordinates, order=order, mode=mode)
+    sampled = ndimage.map_coordinates(volume_array, coordinates, order=order, mode=mode)
     return _restore_sampled_type(sampled, volume_array.dtype, scalar_input)
+
+
+def warp2d(image, x1, x2, *, order: int = 1, mode: str = "nearest") -> np.ndarray:
+    """Warp a 2D image using Java-style coordinate arrays.
+
+    ``image`` must have shape ``(n2, n1)``. ``x1`` and ``x2`` are broadcast to
+    the output shape and interpreted as coordinates along axis 1 and axis 0.
+    """
+
+    image_array = np.asarray(image)
+    warped = np.asarray(sample2(image_array, x1, x2, order=order, mode=mode))
+    return _restore_array_type(warped, image_array.dtype)
+
+
+def rotate2d(
+    image,
+    angle_degrees: float,
+    *,
+    reshape: bool = False,
+    order: int = 1,
+    mode: str = "nearest",
+) -> np.ndarray:
+    """Rotate a 2D ``(n2, n1)`` image by ``angle_degrees``."""
+
+    image_array = np.asarray(image)
+    if image_array.ndim != 2:
+        raise ValueError("image must have shape (n2, n1)")
+
+    rotated = ndimage.rotate(
+        image_array,
+        angle_degrees,
+        reshape=reshape,
+        order=order,
+        mode=mode,
+    )
+    return _restore_array_type(rotated, image_array.dtype)
 
 
 def _coordinates_for_map(axis_coordinates, scalar_input: bool) -> np.ndarray:
@@ -69,6 +105,10 @@ def _coordinates_for_map(axis_coordinates, scalar_input: bool) -> np.ndarray:
 def _restore_sampled_type(sampled: np.ndarray, input_dtype: np.dtype, scalar_input: bool):
     if scalar_input:
         return float(sampled[0])
+    return _restore_array_type(sampled, input_dtype)
+
+
+def _restore_array_type(sampled: np.ndarray, input_dtype: np.dtype) -> np.ndarray:
     if input_dtype == np.dtype("float32") and sampled.dtype != np.float32:
         return sampled.astype(np.float32, copy=False)
     return sampled
