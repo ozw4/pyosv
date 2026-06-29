@@ -10,7 +10,9 @@ from pyosv.dp import (
     smooth_path_1d,
     strain_to_bstrain,
     update_shift_ranges,
+    update_shift_ranges_3d,
     validate_cost_2d,
+    validate_cost_3d,
 )
 
 
@@ -80,6 +82,66 @@ def test_validate_cost_2d_preserves_float32_array_without_copy() -> None:
 def test_validate_cost_2d_rejects_invalid_inputs(cost: np.ndarray) -> None:
     with pytest.raises(ValueError):
         validate_cost_2d(cost)
+
+
+def test_validate_cost_3d_accepts_finite_array_as_float32() -> None:
+    cost = np.arange(24, dtype=np.float64).reshape(2, 3, 4)
+
+    validated = validate_cost_3d(cost)
+
+    assert validated.shape == (2, 3, 4)
+    assert validated.dtype == np.float32
+    np.testing.assert_allclose(validated, cost.astype(np.float32))
+
+
+def test_validate_cost_3d_preserves_float32_array_without_copy() -> None:
+    cost = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+
+    validated = validate_cost_3d(cost)
+
+    assert validated is cost
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [
+        np.zeros((2, 3), dtype=np.float32),
+        np.zeros((1, 2, 3, 4), dtype=np.float32),
+        np.array([[[0.0, np.nan]]], dtype=np.float32),
+        np.array([[[0.0, np.inf]]], dtype=np.float32),
+    ],
+)
+def test_validate_cost_3d_rejects_invalid_inputs(cost: np.ndarray) -> None:
+    with pytest.raises(ValueError):
+        validate_cost_3d(cost)
+
+
+def test_update_shift_ranges_3d_shapes_match_surface_shift_counts() -> None:
+    lmins, lmaxs = update_shift_ranges_3d(ru=3, rv=4, rw=5)
+
+    assert lmins.shape == (11, 9)
+    assert lmaxs.shape == (11, 9)
+    assert lmins.dtype == np.int32
+    assert lmaxs.dtype == np.int32
+
+
+def test_update_shift_ranges_3d_zeroes_offsets_within_reference_radius() -> None:
+    lmins, lmaxs = update_shift_ranges_3d(ru=4, rv=3, rw=3)
+
+    for iw in range(-3, 4):
+        for iv in range(-3, 4):
+            if np.sqrt(iw * iw + iv * iv) <= 2.0:
+                assert lmins[iw + 3, iv + 3] == 0
+                assert lmaxs[iw + 3, iv + 3] == 0
+
+
+def test_update_shift_ranges_3d_uses_java_rounding_and_clips_to_ru() -> None:
+    lmins, lmaxs = update_shift_ranges_3d(ru=2, rv=3, rw=3)
+
+    assert lmins[3 + 2, 3 + 1] == -2
+    assert lmaxs[3 + 2, 3 + 1] == 2
+    assert lmins[3 + 3, 3 + 3] == -2
+    assert lmaxs[3 + 3, 3 + 3] == 2
 
 
 def test_accumulate_and_backtrack_follow_straight_valley() -> None:

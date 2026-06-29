@@ -19,7 +19,9 @@ __all__ = [
     "smooth_path_1d",
     "strain_to_bstrain",
     "update_shift_ranges",
+    "update_shift_ranges_3d",
     "validate_cost_2d",
+    "validate_cost_3d",
 ]
 
 
@@ -29,6 +31,20 @@ def validate_cost_2d(cost: np.ndarray) -> np.ndarray:
     cost_array = np.asarray(cost)
     if cost_array.ndim != 2:
         raise ValueError("cost must have shape (ni, nl)")
+
+    cost_float32 = cost_array.astype(np.float32, copy=False)
+    if not np.isfinite(cost_float32).all():
+        raise ValueError("cost must contain only finite values")
+
+    return cost_float32
+
+
+def validate_cost_3d(cost: np.ndarray) -> np.ndarray:
+    """Validate and normalize a 3D local surface cost volume."""
+
+    cost_array = np.asarray(cost)
+    if cost_array.ndim != 3:
+        raise ValueError("cost must have shape (nw, nv, nu)")
 
     cost_float32 = cost_array.astype(np.float32, copy=False)
     if not np.isfinite(cost_float32).all():
@@ -221,6 +237,31 @@ def update_shift_ranges(ru: int, rv: int) -> tuple[np.ndarray, np.ndarray]:
     return lmins, lmaxs
 
 
+def update_shift_ranges_3d(ru: int, rv: int, rw: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``_lmins`` and ``_lmaxs`` arrays for 3D surface shift bounds."""
+
+    ru_int = _validate_nonnegative_int(ru, "ru")
+    rv_int = _validate_nonnegative_int(rv, "rv")
+    rw_int = _validate_nonnegative_int(rw, "rw")
+
+    nv = 2 * rv_int + 1
+    nw = 2 * rw_int + 1
+    lmins = np.zeros((nw, nv), dtype=np.int32)
+    lmaxs = np.zeros((nw, nv), dtype=np.int32)
+
+    for iw in range(-rw_int, rw_int + 1):
+        iw_index = iw + rw_int
+        for iv in range(-rv_int, rv_int + 1):
+            wv = math.sqrt(iw * iw + iv * iv)
+            if wv > 2.0:
+                shift = _java_round(wv)
+                iv_index = iv + rv_int
+                lmins[iw_index, iv_index] = max(-shift, -ru_int)
+                lmaxs[iw_index, iv_index] = min(shift, ru_int)
+
+    return lmins, lmaxs
+
+
 def _backtrack_2d(
     accumulated: np.ndarray,
     cost: np.ndarray,
@@ -297,6 +338,10 @@ def _validate_direction(direction: int) -> int:
     if direction_int not in (-1, 1):
         raise ValueError("direction must be -1 or 1")
     return direction_int
+
+
+def _java_round(value: float) -> int:
+    return math.floor(float(value) + 0.5)
 
 
 def _validate_int(value: int, name: str) -> int:
