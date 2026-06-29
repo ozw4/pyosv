@@ -2,7 +2,17 @@ import numpy as np
 import pytest
 
 from pyosv.cells import FaultCell
-from pyosv.voting3d import OptimalSurfaceVoter
+from pyosv.geometry import (
+    fault_dip_vector_from_strike_and_dip,
+    fault_normal_vector_from_strike_and_dip,
+    fault_strike_vector_from_strike_and_dip,
+)
+from pyosv.voting3d import (
+    OptimalSurfaceVoter,
+    _normalize_and_power_3d,
+    _smooth_fault_likelihood_3d,
+    _surface_strike_and_dip,
+)
 
 
 def test_constructor_initializes_range_and_default_configuration() -> None:
@@ -449,3 +459,375 @@ def test_samples_in_uvw_box_rounds_and_clamps_near_volume_boundary() -> None:
     assert np.isfinite(costs).all()
     assert costs[0, 0, 0] == pytest.approx(1.0 - fx[0, 0, 0])
     assert costs[4, 4, 4] == pytest.approx(1.0 - fx[1, 1, 1])
+
+
+def test_surface_voting_adds_votes_on_high_likelihood_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 3:8] = 0.8
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    expected_mask = np.zeros_like(ft, dtype=np.bool_)
+    expected_mask[3:8, 4:7, 3:8] = True
+    assert fe[expected_mask].sum() == pytest.approx(60.0)
+    assert np.count_nonzero(fe) == 75
+    np.testing.assert_allclose(fe[expected_mask], 0.8)
+    np.testing.assert_allclose(vm[expected_mask], 0.8)
+    np.testing.assert_allclose(vp[expected_mask], 0.0, atol=1e-7)
+    np.testing.assert_allclose(vt[expected_mask], 90.0, atol=1e-5)
+    np.testing.assert_array_equal(fe[~expected_mask], np.zeros_like(fe[~expected_mask]))
+    np.testing.assert_array_equal(vm[~expected_mask], np.zeros_like(vm[~expected_mask]))
+    np.testing.assert_array_equal(vp[~expected_mask], np.full_like(vp[~expected_mask], -1.0))
+    np.testing.assert_array_equal(vt[~expected_mask], np.full_like(vt[~expected_mask], -1.0))
+    for array in (fe, vp, vt, vm):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+
+
+def test_surface_voting_keeps_stronger_orientation_when_later_vote_is_weaker() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft_strong = np.zeros((11, 11, 11), dtype=np.float32)
+    ft_strong[3:8, 5, 3:8] = 0.8
+    ft_weak = np.zeros_like(ft_strong)
+    ft_weak[5, 3:8, 3:8] = 0.2
+    fe = np.zeros_like(ft_strong)
+    vp = np.full_like(ft_strong, -1.0)
+    vt = np.full_like(ft_strong, -1.0)
+    vm = np.zeros_like(ft_strong)
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft_strong, fe, vp, vt, vm)
+    voter._surface_voting(FaultCell(5, 5, 5, 0.2, 90.0, 90.0), ft_weak, fe, vp, vt, vm)
+
+    assert fe[5, 5, 5] == pytest.approx(1.0)
+    assert vm[5, 5, 5] == pytest.approx(0.8)
+    assert vp[5, 5, 5] == pytest.approx(0.0, abs=1e-7)
+    assert vt[5, 5, 5] == pytest.approx(90.0, abs=1e-5)
+
+
+def test_surface_voting_accepts_boundary_surface_samples() -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.ones((3, 3, 3), dtype=np.float32)
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+
+    voter._surface_voting(FaultCell(0, 0, 0, 1.0, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    expected_mask = np.zeros_like(ft, dtype=np.bool_)
+    expected_mask[0:2, 0:2, 0:2] = True
+    np.testing.assert_allclose(fe[expected_mask], 1.0)
+    np.testing.assert_allclose(vm[expected_mask], 1.0)
+    np.testing.assert_allclose(vp[expected_mask], 0.0, atol=1e-7)
+    np.testing.assert_allclose(vt[expected_mask], 90.0, atol=1e-5)
+    np.testing.assert_array_equal(fe[~expected_mask], np.zeros_like(fe[~expected_mask]))
+    np.testing.assert_array_equal(vm[~expected_mask], np.zeros_like(vm[~expected_mask]))
+    np.testing.assert_array_equal(vp[~expected_mask], np.full_like(vp[~expected_mask], -1.0))
+    np.testing.assert_array_equal(vt[~expected_mask], np.full_like(vt[~expected_mask], -1.0))
+
+
+def test_surface_voting_is_deterministic_for_same_seed_and_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 3:8] = 0.8
+    first = (
+        np.zeros_like(ft),
+        np.full_like(ft, -1.0),
+        np.full_like(ft, -1.0),
+        np.zeros_like(ft),
+    )
+    second = tuple(array.copy() for array in first)
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, *first)
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, *second)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
+def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((7, 8, 9), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    fv, vp, vt = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for array in (fv, vp, vt):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+        np.testing.assert_array_equal(array, np.zeros_like(ft))
+
+
+def test_apply_voting_accepts_empty_n3_volume() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((0, 8, 9), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    fv, vp, vt = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for array in (fv, vp, vt):
+        assert array.shape == (0, 8, 9)
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+        np.testing.assert_array_equal(array, np.zeros_like(ft))
+
+
+def test_apply_voting_rejects_mismatched_shapes() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((2, 3, 4), dtype=np.float32)
+    pt = np.zeros((2, 4, 3), dtype=np.float32)
+    tt = np.zeros_like(ft)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+
+@pytest.mark.parametrize(
+    ("ft_value", "pt_value", "tt_value", "message"),
+    [
+        (np.nan, 0.0, 0.0, "ft"),
+        (0.0, np.inf, 0.0, "pt"),
+        (0.0, 0.0, np.nan, "tt"),
+    ],
+)
+def test_apply_voting_rejects_nonfinite_inputs(
+    ft_value: float,
+    pt_value: float,
+    tt_value: float,
+    message: str,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((3, 3, 3), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+    ft[1, 1, 1] = ft_value
+    pt[1, 1, 1] = pt_value
+    tt[1, 1, 1] = tt_value
+
+    with pytest.raises(ValueError, match=message):
+        voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+
+def test_apply_voting_highlights_simple_fault_like_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+    plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    plane_mask[3:8, 5, 3:8] = True
+    background_mask = np.zeros_like(ft, dtype=np.bool_)
+    background_mask[3:8, 2, 3:8] = True
+    background_mask[3:8, 8, 3:8] = True
+
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert fv.shape == ft.shape
+    assert vp.shape == ft.shape
+    assert vt.shape == ft.shape
+    assert fv.dtype == np.float32
+    assert vp.dtype == np.float32
+    assert vt.dtype == np.float32
+    assert np.isfinite(fv).all()
+    assert np.isfinite(vp).all()
+    assert np.isfinite(vt).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert fv.max() > 0.0
+    assert fv[plane_mask].mean() > fv[background_mask].mean()
+    assert np.count_nonzero(fv[plane_mask]) > 0
+
+
+def test_apply_voting_is_deterministic_for_same_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+
+    first = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    second = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
+def test_apply_voting_localizes_broad_gently_dipping_ridge() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    n3, n2, n1 = 13, 14, 13
+    ft = np.zeros((n3, n2, n1), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 75.0)
+    near_surface = np.zeros_like(ft, dtype=np.bool_)
+    far_from_surface = np.zeros_like(ft, dtype=np.bool_)
+    center1 = 6.0
+    center2 = 6.0
+    slope = np.float32(np.tan(np.deg2rad(15.0)))
+
+    for i3 in range(3, 10):
+        for i1 in range(2, 11):
+            surface_i2 = center2 + slope * (i1 - center1)
+            for i2 in range(2, 12):
+                distance = abs(i2 - surface_i2)
+                if distance <= 1.25:
+                    ft[i3, i2, i1] = np.exp(-0.5 * (distance / 0.75) ** 2)
+                    near_surface[i3, i2, i1] = True
+                if distance >= 4.0:
+                    far_from_surface[i3, i2, i1] = True
+
+    fv, vp, vt = voter.apply_voting(d=4, fm=0.55, ft=ft, pt=pt, tt=tt)
+    fv_second, vp_second, vt_second = voter.apply_voting(d=4, fm=0.55, ft=ft, pt=pt, tt=tt)
+
+    assert fv.shape == (n3, n2, n1)
+    assert vp.shape == (n3, n2, n1)
+    assert vt.shape == (n3, n2, n1)
+    for array in (fv, vp, vt):
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert np.count_nonzero(fv[near_surface]) > 0
+    assert fv[near_surface].mean() > fv[far_from_surface].mean()
+    np.testing.assert_array_equal(fv, fv_second)
+    np.testing.assert_array_equal(vp, vp_second)
+    np.testing.assert_array_equal(vt, vt_second)
+
+
+def test_apply_voting_handles_small_volume_with_clipped_local_boxes() -> None:
+    voter = OptimalSurfaceVoter(ru=2, rv=3, rw=3)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((5, 5, 5), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[1:4, 2, 1:4] = 0.9
+    plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    plane_mask[1:4, 2, 1:4] = True
+
+    fv, vp, vt = voter.apply_voting(d=2, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert fv.shape == (5, 5, 5)
+    assert vp.shape == (5, 5, 5)
+    assert vt.shape == (5, 5, 5)
+    for array in (fv, vp, vt):
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert fv.max() > 0.0
+    assert fv[plane_mask].mean() > fv[~plane_mask].mean()
+    max_mask = fv == fv.max()
+    assert np.any(max_mask & plane_mask)
+
+
+def test_normalize_and_power_3d_zero_dynamic_range_returns_finite_zeros() -> None:
+    volume = np.full((2, 3, 4), 7.5, dtype=np.float32)
+
+    with np.errstate(all="raise"):
+        scores = _normalize_and_power_3d(volume)
+
+    assert scores.shape == volume.shape
+    assert scores.dtype == np.float32
+    assert np.isfinite(scores).all()
+    np.testing.assert_array_equal(scores, np.zeros_like(volume))
+
+
+def test_normalize_and_power_3d_simple_ramp_uses_min_max_and_power() -> None:
+    volume = np.array([[[2.0, 3.0, 4.0]]], dtype=np.float32)
+
+    scores = _normalize_and_power_3d(volume, sigma=0.0, power=4)
+
+    expected = np.array([[[0.0, 0.9375, 1.0]]], dtype=np.float32)
+    assert scores.dtype == np.float32
+    np.testing.assert_allclose(scores, expected, rtol=0.0, atol=1e-7)
+
+
+def test_smooth_fault_likelihood_3d_preserves_shape_and_bounds() -> None:
+    volume = np.zeros((5, 6, 7), dtype=np.float32)
+    volume[2, 3, 4] = 10.0
+
+    smoothed = _smooth_fault_likelihood_3d(volume, sigma=1.0)
+
+    assert smoothed.shape == volume.shape
+    assert smoothed.dtype == np.float32
+    assert np.isfinite(smoothed).all()
+    assert smoothed.min() >= -1e-6
+    assert smoothed.max() <= 1.0 + 1e-6
+    assert smoothed[2, 3, 4] == pytest.approx(1.0)
+
+
+def test_smooth_fault_likelihood_3d_zero_dynamic_range_returns_finite_zeros() -> None:
+    volume = np.full((3, 4, 5), 2.0, dtype=np.float32)
+
+    with np.errstate(all="raise"):
+        smoothed = _smooth_fault_likelihood_3d(volume, sigma=1.0)
+
+    assert smoothed.shape == volume.shape
+    assert smoothed.dtype == np.float32
+    assert np.isfinite(smoothed).all()
+    np.testing.assert_array_equal(smoothed, np.zeros_like(volume))
+
+
+def test_surface_strike_and_dip_flat_surface_recovers_seed_orientation() -> None:
+    strike_angle = 30.0
+    dip_angle = 60.0
+    normal = fault_normal_vector_from_strike_and_dip(strike_angle, dip_angle)
+    dip = fault_dip_vector_from_strike_and_dip(strike_angle, dip_angle)
+    strike = fault_strike_vector_from_strike_and_dip(strike_angle, dip_angle)
+    surface = np.zeros((5, 5), dtype=np.float32)
+
+    actual_strike, actual_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=None,
+    )
+
+    assert np.isfinite(actual_strike)
+    assert np.isfinite(actual_dip)
+    assert actual_strike == pytest.approx(strike_angle, abs=1e-5)
+    assert actual_dip == pytest.approx(dip_angle, abs=1e-5)
+
+
+def test_surface_strike_and_dip_sloped_surface_returns_finite_angles() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    w, v = np.indices((5, 5), dtype=np.float32)
+    surface = 0.25 * (v - 2.0) - 0.5 * (w - 2.0)
+
+    actual_strike, actual_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=0.0,
+    )
+
+    assert np.isfinite(actual_strike)
+    assert np.isfinite(actual_dip)
+    assert 0.0 <= actual_strike < 360.0
+    assert 0.0 <= actual_dip <= 180.0

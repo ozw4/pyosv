@@ -9,7 +9,15 @@ import operator
 import numpy as np
 
 from pyosv.cells import FaultCell
-from pyosv.dp import shift_range, strain_to_bstrain, update_shift_ranges_3d
+from pyosv.dp import (
+    find_surface_3d,
+    shift_range,
+    smooth_surface_2d,
+    strain_to_bstrain,
+    update_shift_ranges_3d,
+)
+from pyosv.filters import smooth3d
+from pyosv.geometry import range360
 
 __all__ = ["OptimalSurfaceVoter"]
 
@@ -159,6 +167,34 @@ class OptimalSurfaceVoter:
             ),
         ]
 
+    def apply_voting(
+        self,
+        d: int,
+        fm: float,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run 3D surface voting for all selected seeds."""
+
+        ft_array, pt_array, tt_array = _validate_matching_finite_arrays3_many(
+            (ft, pt, tt),
+            ("ft", "pt", "tt"),
+        )
+        seeds = self.pick_seeds(d, fm, ft_array, pt_array, tt_array)
+        fs = _smooth_fault_likelihood_3d(ft_array)
+
+        fe = np.zeros_like(ft_array, dtype=np.float32)
+        vp = np.zeros_like(ft_array, dtype=np.float32)
+        vt = np.zeros_like(ft_array, dtype=np.float32)
+        vm = np.zeros_like(ft_array, dtype=np.float32)
+
+        for seed in seeds:
+            self._surface_voting(seed, fs, fe, vp, vt, vm)
+
+        fv = _normalize_and_power_3d(fe)
+        return fv, vp, vt
+
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
 
@@ -239,6 +275,241 @@ class OptimalSurfaceVoter:
 
         return costs
 
+    def _surface_voting(
+        self,
+        cell: FaultCell,
+        ft: np.ndarray,
+        fe: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        vm: np.ndarray,
+    ) -> None:
+        """Accumulate one seed cell's 3D optimal-surface vote in-place."""
+
+        ft_array, fe_array, vp_array, vt_array, vm_array = _validate_matching_arrays3(
+            (ft, fe, vp, vt, vm),
+            ("ft", "fe", "vp", "vt", "vm"),
+        )
+        n3, n2, n1 = ft_array.shape
+        c1 = cell.i1
+        c2 = cell.i2
+        c3 = cell.i3
+        if not 0 <= c1 < n1:
+            raise ValueError("cell.i1 must be inside the image bounds")
+        if not 0 <= c2 < n2:
+            raise ValueError("cell.i2 must be inside the image bounds")
+        if not 0 <= c3 < n3:
+            raise ValueError("cell.i3 must be inside the image bounds")
+
+        normal = cell.fault_normal()
+        dip = cell.fault_dip_vector()
+        strike = cell.fault_strike_vector()
+        costs = self.samples_in_uvw_box(c1, c2, c3, normal, dip, strike, ft_array)
+        surface = find_surface_3d(
+            costs,
+            lmin=self.lmin,
+            bstrain1=self.bstrain1,
+            bstrain2=self.bstrain2,
+            attribute_smoothing=self.attribute_smoothing,
+            surface_smoothing1=self.surface_smoothing1,
+            surface_smoothing2=self.surface_smoothing2,
+        )
+
+        valid_surface_samples: list[tuple[int, int, int]] = []
+        fa = np.float32(0.0)
+        for kw in range(surface.shape[0]):
+            iw = kw - self.rw
+            dw1 = c1 + iw * strike[0]
+            dw2 = c2 + iw * strike[1]
+            dw3 = c3 + iw * strike[2]
+            for kv in range(surface.shape[1]):
+                iu = surface[kw, kv]
+                iv = kv - self.rv
+                x1 = iu * normal[0] + iv * dip[0] + dw1
+                x2 = iu * normal[1] + iv * dip[1] + dw2
+                x3 = iu * normal[2] + iv * dip[2] + dw3
+                i1 = math.floor(float(x1) + 0.5)
+                i2 = math.floor(float(x2) + 0.5)
+                i3 = math.floor(float(x3) + 0.5)
+                if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+                    continue
+
+                fa += ft_array[i3, i2, i1]
+                valid_surface_samples.append((i3, i2, i1))
+
+        if not valid_surface_samples:
+            return
+
+        fa /= np.float32(len(valid_surface_samples))
+        strike_angle, dip_angle = _surface_strike_and_dip(
+            normal,
+            dip,
+            strike,
+            surface,
+            sigma=None,
+        )
+        vp_value = np.float32(strike_angle)
+        vt_value = np.float32(dip_angle)
+        align_i3 = abs(normal[2]) > abs(normal[1])
+
+        for i3, i2, i1 in valid_surface_samples:
+            fe_array[i3, i2, i1] += fa
+            _update_orientation_if_stronger(
+                i3,
+                i2,
+                i1,
+                fa,
+                vp_value,
+                vt_value,
+                vp_array,
+                vt_array,
+                vm_array,
+            )
+
+            if align_i3:
+                neighbor_samples = ((i3 - 1, i2, i1), (i3 + 1, i2, i1))
+            else:
+                neighbor_samples = ((i3, i2 - 1, i1), (i3, i2 + 1, i1))
+
+            for j3, j2, j1 in neighbor_samples:
+                if not (0 <= j1 < n1 and 0 <= j2 < n2 and 0 <= j3 < n3):
+                    continue
+                fe_array[j3, j2, j1] += fa
+                _update_orientation_if_stronger(
+                    j3,
+                    j2,
+                    j1,
+                    fa,
+                    vp_value,
+                    vt_value,
+                    vp_array,
+                    vt_array,
+                    vm_array,
+                )
+
+
+def _normalize_and_power_3d(
+    x: np.ndarray,
+    *,
+    sigma: float = 1.0,
+    power: int = 8,
+) -> np.ndarray:
+    x_array = _validate_finite_array3(x, "x").astype(np.float32, copy=True)
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+    power_int = _validate_positive_int(power, "power")
+
+    if x_array.size == 0:
+        return x_array
+
+    if sigma_float > 0.0:
+        x_array = smooth3d(x_array, sigma_float).astype(np.float32, copy=False)
+
+    _normalize_unit_range_in_place(x_array)
+    enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
+    return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _update_orientation_if_stronger(
+    i3: int,
+    i2: int,
+    i1: int,
+    fa: np.float32,
+    vp_value: np.float32,
+    vt_value: np.float32,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    vm: np.ndarray,
+) -> None:
+    if fa > vm[i3, i2, i1]:
+        vm[i3, i2, i1] = fa
+        vp[i3, i2, i1] = vp_value
+        vt[i3, i2, i1] = vt_value
+
+
+def _smooth_fault_likelihood_3d(
+    ft: np.ndarray,
+    *,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    ft_array = _validate_finite_array3(ft, "ft").astype(np.float32, copy=True)
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+
+    if ft_array.size == 0:
+        return ft_array
+
+    if sigma_float > 0.0:
+        ft_array = smooth3d(ft_array, sigma_float).astype(np.float32, copy=False)
+
+    _normalize_unit_range_in_place(ft_array)
+    return ft_array
+
+
+def _surface_strike_and_dip(
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    *,
+    sigma: float | None = None,
+) -> tuple[float, float]:
+    normal_array = _validate_finite_vector3(normal, "normal")
+    dip_array = _validate_finite_vector3(dip, "dip")
+    strike_array = _validate_finite_vector3(strike, "strike")
+    surface_array = _validate_finite_array2(surface, "surface").astype(
+        np.float32,
+        copy=True,
+    )
+    if surface_array.shape[0] < 3 or surface_array.shape[1] < 3:
+        raise ValueError("surface must have at least three samples along w and v")
+
+    if sigma is not None:
+        sigma_float = _validate_nonnegative_float(sigma, "sigma")
+        if sigma_float > 0.0:
+            surface_array = smooth_surface_2d(
+                surface_array,
+                sigma1=sigma_float,
+                sigma2=sigma_float,
+            ).astype(np.float32, copy=False)
+
+    iw = surface_array.shape[0] // 2
+    iv = surface_array.shape[1] // 2
+    local_normal = np.array(
+        [
+            1.0,
+            -0.5 * (surface_array[iw, iv + 1] - surface_array[iw, iv - 1]),
+            -0.5 * (surface_array[iw + 1, iv] - surface_array[iw - 1, iv]),
+        ],
+        dtype=np.float32,
+    )
+    local_normal /= np.linalg.norm(local_normal)
+
+    global_normal = (
+        normal_array * local_normal[0]
+        + dip_array * local_normal[1]
+        + strike_array * local_normal[2]
+    ).astype(np.float32, copy=False)
+    normal_norm = np.linalg.norm(global_normal)
+    if normal_norm == 0.0:
+        raise ValueError("surface basis vectors must produce a nonzero normal")
+    global_normal /= normal_norm
+
+    if global_normal[0] > 0.0:
+        global_normal = -global_normal
+
+    dip_angle = float(np.rad2deg(np.arccos(np.clip(-global_normal[0], -1.0, 1.0))))
+    strike_angle = range360(
+        np.rad2deg(np.arctan2(-global_normal[2], global_normal[1])),
+    )
+    return strike_angle, dip_angle
+
+
+def _normalize_unit_range_in_place(x: np.ndarray) -> None:
+    x -= np.min(x)
+    max_value = np.max(x)
+    if max_value > 0.0:
+        x /= max_value
+    np.clip(x, 0.0, 1.0, out=x)
+
 
 def _validate_int(value: int, name: str) -> int:
     if isinstance(value, bool):
@@ -258,6 +529,18 @@ def _validate_nonnegative_int(value: int, name: str) -> int:
 
     if value_int < 0:
         raise ValueError(f"{name} must be a nonnegative integer")
+
+    return value_int
+
+
+def _validate_positive_int(value: int, name: str) -> int:
+    try:
+        value_int = _validate_int(value, name)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+
+    if value_int <= 0:
+        raise ValueError(f"{name} must be a positive integer")
 
     return value_int
 
@@ -314,6 +597,37 @@ def _validate_matching_arrays3(
     return validated
 
 
+def _validate_finite_array3(array: np.ndarray, name: str) -> np.ndarray:
+    array = _validate_array3(array, name)
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            array = array.astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric finite values") from exc
+
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite values")
+
+    return array
+
+
+def _validate_finite_array2(array: np.ndarray, name: str) -> np.ndarray:
+    array = np.asarray(array)
+    if array.ndim != 2:
+        raise ValueError(f"{name} must be a 2D array")
+
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            array = array.astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric finite values") from exc
+
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite values")
+
+    return array
+
+
 def _validate_array3(array: np.ndarray, name: str) -> np.ndarray:
     array = np.asarray(array)
     if array.ndim != 3:
@@ -326,5 +640,13 @@ def _validate_vector3(vector: np.ndarray, name: str) -> np.ndarray:
     vector_array = np.asarray(vector, dtype=np.float32)
     if vector_array.shape != (3,):
         raise ValueError(f"{name} must have shape (3,)")
+
+    return vector_array
+
+
+def _validate_finite_vector3(vector: np.ndarray, name: str) -> np.ndarray:
+    vector_array = _validate_vector3(vector, name)
+    if not np.isfinite(vector_array).all():
+        raise ValueError(f"{name} must contain only finite values")
 
     return vector_array
