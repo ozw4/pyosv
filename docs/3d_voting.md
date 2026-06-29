@@ -23,7 +23,9 @@ directory.
 ## Minimal Usage
 
 `OptimalSurfaceVoter.apply_voting` runs the current 3D voting MVP on fault
-likelihood, strike, and dip volumes:
+likelihood, strike, and dip volumes. These volumes may come from
+`FaultOrientScanner3` or from another workflow that follows the same shape and
+angle conventions:
 
 ```python
 import numpy as np
@@ -57,5 +59,5 @@ This is the 3D voting MVP, not the complete Java 3D fault interpretation
 pipeline. The implementation is sequential and currently covered by synthetic
 regression tests only.
 
-`FaultOrientScanner3` and `FaultSkinner` equivalents are later milestones, so
-current 3D workflows must provide `ft`, `pt`, and `tt` volumes directly.
+See `docs/orient3d.md` for the approximate 3D orientation scanner. A
+`FaultSkinner` equivalent remains a later milestone.
