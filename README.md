@@ -6,7 +6,29 @@ The project uses the local `reference_osv/` directory as a read-only reference i
 
 ## Status
 
-This repository is scaffold-only. OSV algorithms, I/O helpers, interpolation adapters, filters, voting kernels, scanners, and skinning will be implemented in later issues.
+This repository has the package scaffold plus the initial DAT I/O and reference dataset metadata. OSV algorithms, interpolation adapters, filters, voting kernels, scanners, and skinning will be implemented in later issues.
+
+## DAT I/O
+
+`pyosv.io.read_dat` and `pyosv.io.write_dat` read and write raw scalar `.dat` files. The array shape convention is:
+
+- 2D arrays: `(n2, n1)`
+- 3D arrays: `(n3, n2, n1)`
+
+`reference_osv` `.dat` files are treated as big-endian `float32` by default. Use the reference metadata helpers to keep paths, shapes, and endian settings aligned:
+
+```python
+from pyosv.io import read_dat
+from pyosv.reference import REFERENCE_DATASETS_2D, resolve_reference_file
+
+dataset = REFERENCE_DATASETS_2D["f3d2d"]
+path = resolve_reference_file(dataset, "ft.dat")
+ft = read_dat(path, dataset.shape, endian=dataset.endian)
+```
+
+The local `reference_osv/` directory is a read-only bind mount and is not committed. Set `PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master` if the mount is not located at `./reference_osv`.
+
+See `docs/dat_io.md` for detailed I/O behavior and reference fixture test policy.
 
 ## Setup
 
