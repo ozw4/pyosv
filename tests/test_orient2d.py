@@ -3,6 +3,7 @@ import pytest
 
 import pyosv
 from pyosv.orient2d import FaultOrientScanner2
+from pyosv.voting2d import OptimalPathVoter
 
 
 def test_fault_orient_scanner_import_does_not_change_package_root_api() -> None:
@@ -113,12 +114,23 @@ def test_scan_constant_input_has_zero_finite_likelihood() -> None:
     assert np.isfinite(pt).all()
 
 
-def test_scan_detects_dipping_synthetic_lineament() -> None:
+@pytest.mark.parametrize(
+    ("theta", "theta_min", "theta_max"),
+    [
+        (0.0, -45.0, 45.0),
+        (30.0, -60.0, 60.0),
+        (90.0, -90.0, 90.0),
+    ],
+)
+def test_scan_detects_synthetic_lineament_orientation(
+    theta: float,
+    theta_min: float,
+    theta_max: float,
+) -> None:
     scanner = FaultOrientScanner2(sigma1=2.0)
-    theta = 30.0
     image, distance = _dipping_gaussian_lineament(theta)
 
-    ft, pt = scanner.scan(-60.0, 60.0, image)
+    ft, pt = scanner.scan(theta_min, theta_max, image)
 
     near_line = np.abs(distance) <= 1.5
     far_from_line = np.abs(distance) >= 12.0
@@ -126,7 +138,33 @@ def test_scan_detects_dipping_synthetic_lineament() -> None:
 
     high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
     assert np.count_nonzero(high_likelihood) > 0
-    assert float(np.median(np.abs(pt[high_likelihood] - theta))) <= 15.0
+    angle_error = _orientation_error_degrees(pt[high_likelihood], theta)
+    assert float(np.median(angle_error)) <= 15.0
+
+
+def test_scan_output_feeds_apply_voting_on_synthetic_lineament() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, distance = _dipping_gaussian_lineament(25.0, n2=48, n1=64)
+    ft, pt = scanner.scan(-75.0, 75.0, image)
+    near_line = np.abs(distance) <= 1.5
+    far_from_line = np.abs(distance) >= 10.0
+    voter = OptimalPathVoter(ru=2, rv=5)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+
+    fv, w1, w2 = voter.apply_voting(d=3, fm=0.45, ft=ft, pt=pt)
+
+    assert fv.shape == image.shape
+    assert w1.shape == image.shape
+    assert w2.shape == image.shape
+    assert fv.dtype == np.float32
+    assert w1.dtype == np.float32
+    assert w2.dtype == np.float32
+    assert np.isfinite(fv).all()
+    assert np.isfinite(w1).all()
+    assert np.isfinite(w2).all()
+    assert fv.max() > 0.0
+    assert float(np.mean(fv[near_line])) > float(np.mean(fv[far_from_line])) + 0.35
 
 
 def test_scan_dip_matches_scan() -> None:
@@ -242,8 +280,19 @@ def test_thin_rejects_non_2d_arrays() -> None:
         )
 
 
-def _dipping_gaussian_lineament(theta_degrees: float) -> tuple[np.ndarray, np.ndarray]:
-    n2, n1 = 96, 128
+def _orientation_error_degrees(
+    actual: np.ndarray,
+    expected_degrees: float,
+) -> np.ndarray:
+    return np.abs((actual - np.float32(expected_degrees) + 90.0) % 180.0 - 90.0)
+
+
+def _dipping_gaussian_lineament(
+    theta_degrees: float,
+    *,
+    n2: int = 96,
+    n1: int = 128,
+) -> tuple[np.ndarray, np.ndarray]:
     x2, x1 = np.mgrid[:n2, :n1].astype(np.float32)
     x1 -= np.float32((n1 - 1) / 2.0)
     x2 -= np.float32((n2 - 1) / 2.0)

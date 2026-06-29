@@ -12,7 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
 EXAMPLE_SCRIPTS = tuple(sorted(EXAMPLES_DIR.glob("*.py")))
 EXAMPLE_MODULES = tuple(script.stem for script in EXAMPLE_SCRIPTS)
+REFERENCE_EXAMPLE_MODULES = ("run_2d_f3d2d", "run_2d_reference")
 REPOSITORY_ROOT_OUTPUTS = ("fv_py.dat", "fvt_py.dat")
+SYNTHETIC_OUTPUTS = ("g_py.dat", "ft_py.dat", "pt_py.dat", "fv_py.dat", "fvt_py.dat")
 
 
 def _run_example(script_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -90,8 +92,8 @@ def test_example_modules_import_without_running_workflow(
     assert callable(module.run_example)
 
 
-@pytest.mark.parametrize("module_name", EXAMPLE_MODULES)
-def test_example_output_dir_is_required(
+@pytest.mark.parametrize("module_name", REFERENCE_EXAMPLE_MODULES)
+def test_reference_example_output_dir_is_required(
     module_name: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -103,6 +105,19 @@ def test_example_output_dir_is_required(
 
     assert len(output_dir_actions) == 1
     assert output_dir_actions[0].required is True
+
+
+def test_synthetic_scan_vote_example_output_dir_is_optional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_example_module("run_2d_synthetic_scan_vote", monkeypatch)
+    parser = module.build_parser()
+    output_dir_actions = [
+        action for action in parser._actions if "--output-dir" in action.option_strings
+    ]
+
+    assert len(output_dir_actions) == 1
+    assert output_dir_actions[0].required is False
 
 
 @pytest.mark.parametrize(
@@ -124,6 +139,18 @@ def test_example_missing_output_dir_does_not_write_to_repository_root(
     after = {path: _path_signature(path) for path in output_paths}
     assert result.returncode != 0
     assert "--output-dir" in result.stderr
+    assert after == before
+
+
+def test_synthetic_scan_vote_without_output_dir_does_not_write_to_repository_root() -> None:
+    output_paths = [REPO_ROOT / name for name in SYNTHETIC_OUTPUTS]
+    before = {path: _path_signature(path) for path in output_paths}
+
+    result = _run_example(EXAMPLES_DIR / "run_2d_synthetic_scan_vote.py")
+
+    after = {path: _path_signature(path) for path in output_paths}
+    assert result.returncode == 0
+    assert "fv_nonzero=" in result.stdout
     assert after == before
 
 
