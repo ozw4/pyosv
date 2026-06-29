@@ -30,7 +30,7 @@ The local `reference_osv/` directory is a read-only bind mount and is not commit
 
 See `docs/dat_io.md` for detailed I/O behavior and reference fixture test policy.
 
-## 2D Seed Picking
+## 2D Voting
 
 `OptimalPathVoter.pick_seeds` extracts sparse 2D seed cells from fault
 likelihood (`ft`) and fault strike/angle (`pt`) images using the repository
@@ -52,6 +52,15 @@ seeds = voter.pick_seeds(d=4, fm=0.3, ft=ft, pt=pt)
 The returned cells use `(i1, i2)` coordinates inside the image, with `fl`
 holding the seed fault likelihood and `fp` holding the corresponding `pt`
 sample.
+
+`OptimalPathVoter.apply_voting` runs deterministic 2D optimal-path voting over
+the selected seeds and returns `(fv, w1, w2)` arrays with the same `(n2, n1)`
+shape. `fv` is the normalized float32 vote image, and `w1`/`w2` are the vector
+components associated with the strongest local vote at each image sample:
+
+```python
+fv, w1, w2 = voter.apply_voting(d=4, fm=0.3, ft=ft, pt=pt)
+```
 
 ## Equivalence Policy
 
