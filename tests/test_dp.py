@@ -42,6 +42,13 @@ def test_update_shift_ranges_matches_reference_semantics() -> None:
     np.testing.assert_array_equal(lmaxs, np.array([3, 3, 0, 0, 0, 0, 0, 3, 3]))
 
 
+def test_update_shift_ranges_uses_configured_bstrain_spacing() -> None:
+    lmins, lmaxs = update_shift_ranges(ru=3, rv=4, bstrain=1)
+
+    np.testing.assert_array_equal(lmins, np.array([-3, -3, -2, -1, 0, -1, -2, -3, -3]))
+    np.testing.assert_array_equal(lmaxs, np.array([3, 3, 2, 1, 0, 1, 2, 3, 3]))
+
+
 def test_validate_cost_2d_accepts_finite_array_as_float32() -> None:
     cost = np.arange(6, dtype=np.float64).reshape(2, 3)
 

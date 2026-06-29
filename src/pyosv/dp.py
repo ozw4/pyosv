@@ -201,19 +201,26 @@ def shift_range(ru: int) -> tuple[int, int, int]:
     return lmin, lmax, nl
 
 
-def update_shift_ranges(ru: int, rv: int) -> tuple[np.ndarray, np.ndarray]:
-    """Return Java-reference ``_lmins`` and ``_lmaxs`` arrays for shift bounds."""
+def update_shift_ranges(
+    ru: int,
+    rv: int,
+    *,
+    bstrain: int = 4,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``_lmins`` and ``_lmaxs`` arrays for OSV shift bounds."""
 
     ru_int = _validate_nonnegative_int(ru, "ru")
     rv_int = _validate_nonnegative_int(rv, "rv")
+    bstrain_int = _validate_positive_int(bstrain, "bstrain")
     lmin, lmax, _ = shift_range(ru_int)
 
     nv = 2 * rv_int + 1
     lmins = np.zeros(nv, dtype=np.int32)
     lmaxs = np.zeros(nv, dtype=np.int32)
+    zero_radius = 0.5 * bstrain_int
 
     for iv in range(-rv_int, rv_int + 1):
-        if abs(iv) > 2:
+        if abs(iv) > zero_radius:
             index = iv + rv_int
             lmins[index] = max(-abs(iv), lmin)
             lmaxs[index] = min(abs(iv), lmax)
