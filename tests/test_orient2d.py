@@ -140,6 +140,108 @@ def test_scan_dip_matches_scan() -> None:
     np.testing.assert_array_equal(dip_pt, scan_pt)
 
 
+def test_thin_returns_float32_arrays_without_modifying_inputs() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    ft = np.zeros((3, 5), dtype=np.float64)
+    ft[1] = np.array([0.0, 1.0, 3.0, 1.0, 0.0], dtype=np.float64)
+    pt = np.full_like(ft, 90.0)
+    ft_before = ft.copy()
+    pt_before = pt.copy()
+
+    thinned_ft, thinned_pt = scanner.thin(ft, pt)
+
+    assert thinned_ft.shape == ft.shape
+    assert thinned_pt.shape == pt.shape
+    assert thinned_ft.dtype == np.float32
+    assert thinned_pt.dtype == np.float32
+    assert np.isfinite(thinned_ft).all()
+    assert np.isfinite(thinned_pt).all()
+    np.testing.assert_array_equal(ft, ft_before)
+    np.testing.assert_array_equal(pt, pt_before)
+
+
+def test_thin_narrows_broad_vertical_likelihood_ridge() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    ft = np.zeros((5, 7), dtype=np.float32)
+    ft[:, 2] = 1.0
+    ft[:, 3] = 3.0
+    ft[:, 4] = 1.0
+    pt = np.full_like(ft, 90.0)
+
+    thinned_ft, thinned_pt = scanner.thin(ft, pt)
+
+    expected_ft = np.zeros_like(ft)
+    expected_ft[:, 3] = 3.0
+    expected_pt = np.zeros_like(pt)
+    expected_pt[:, 3] = 90.0
+    assert np.count_nonzero(thinned_ft) < np.count_nonzero(ft)
+    np.testing.assert_array_equal(thinned_ft, expected_ft)
+    np.testing.assert_array_equal(thinned_pt, expected_pt)
+
+
+def test_thin_preserves_orientation_only_where_likelihood_survives() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    ft = np.zeros((5, 5), dtype=np.float32)
+    ft[2, 1:4] = np.array([1.0, 4.0, 1.0], dtype=np.float32)
+    pt = np.full_like(ft, 90.0)
+    pt[2, 2] = 35.0
+
+    thinned_ft, thinned_pt = scanner.thin(ft, pt)
+
+    assert thinned_ft[2, 2] == np.float32(4.0)
+    assert thinned_pt[2, 2] == np.float32(35.0)
+    np.testing.assert_array_equal(thinned_pt[thinned_ft == 0.0], 0.0)
+
+
+def test_thin_returns_zero_for_flat_likelihood_map() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    ft = np.ones((5, 6), dtype=np.float32)
+    pt = np.full_like(ft, 25.0)
+
+    thinned_ft, thinned_pt = scanner.thin(ft, pt)
+
+    np.testing.assert_array_equal(thinned_ft, np.zeros_like(ft))
+    np.testing.assert_array_equal(thinned_pt, np.zeros_like(pt))
+
+
+def test_thin_rejects_mismatched_shapes() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    ft = np.zeros((2, 3), dtype=np.float32)
+    pt = np.zeros((3, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        scanner.thin(ft, pt)
+
+
+@pytest.mark.parametrize(
+    ("ft_value", "pt_value", "message"),
+    [(np.nan, 0.0, "ft"), (0.0, np.inf, "pt")],
+)
+def test_thin_rejects_nonfinite_inputs(
+    ft_value: float,
+    pt_value: float,
+    message: str,
+) -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    ft = np.zeros((3, 3), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    ft[1, 1] = ft_value
+    pt[1, 1] = pt_value
+
+    with pytest.raises(ValueError, match=message):
+        scanner.thin(ft, pt)
+
+
+def test_thin_rejects_non_2d_arrays() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+
+    with pytest.raises(ValueError, match="ft must be a 2D array"):
+        scanner.thin(
+            np.zeros((1, 2, 3), dtype=np.float32),
+            np.zeros((2, 3), dtype=np.float32),
+        )
+
+
 def _dipping_gaussian_lineament(theta_degrees: float) -> tuple[np.ndarray, np.ndarray]:
     n2, n1 = 96, 128
     x2, x1 = np.mgrid[:n2, :n1].astype(np.float32)

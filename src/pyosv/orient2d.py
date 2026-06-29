@@ -8,6 +8,8 @@ import numbers
 import numpy as np
 from scipy import ndimage
 
+from pyosv.interp import sample2
+
 __all__ = ["FaultOrientScanner2"]
 
 
@@ -82,6 +84,33 @@ class FaultOrientScanner2:
 
         return self.scan(theta_min, theta_max, g)
 
+    def thin(self, ft: np.ndarray, pt: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Keep likelihood maxima across local dip and zero orientation elsewhere.
+
+        ``ft`` and ``pt`` must be finite 2D arrays with matching ``(n2, n1)``
+        shapes. ``pt`` is interpreted as a dip angle in degrees. The returned
+        likelihood and dip arrays are float32; retained dip values match the
+        input, and non-retained samples use zero as the orientation sentinel.
+        """
+
+        ft_array, pt_array = _validate_matching_finite_images2(ft, pt, "ft", "pt")
+        n2, n1 = ft_array.shape
+        i2, i1 = np.indices((n2, n1), dtype=np.float32)
+
+        theta = np.deg2rad(pt_array).astype(np.float32, copy=False)
+        d1 = np.sin(theta).astype(np.float32, copy=False)
+        d2 = np.cos(theta).astype(np.float32, copy=False)
+
+        fp = sample2(ft_array, i1 + d1, i2 + d2)
+        fm = sample2(ft_array, i1 - d1, i2 - d2)
+        keep = (ft_array > np.float32(0.0)) & (fp < ft_array) & (fm < ft_array)
+
+        thinned_ft = np.zeros((n2, n1), dtype=np.float32)
+        thinned_pt = np.zeros((n2, n1), dtype=np.float32)
+        thinned_ft[keep] = ft_array[keep]
+        thinned_pt[keep] = pt_array[keep]
+        return thinned_ft, thinned_pt
+
     def _scan_theta(
         self,
         theta_sampling: np.ndarray,
@@ -150,6 +179,20 @@ def _validate_finite_image2(image: np.ndarray, name: str) -> np.ndarray:
         raise ValueError(f"{name} must contain only finite values")
 
     return image_float32
+
+
+def _validate_matching_finite_images2(
+    first: np.ndarray,
+    second: np.ndarray,
+    first_name: str,
+    second_name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    first_array = _validate_finite_image2(first, first_name)
+    second_array = _validate_finite_image2(second, second_name)
+    if first_array.shape != second_array.shape:
+        raise ValueError(f"{first_name} and {second_name} shapes must match")
+
+    return first_array, second_array
 
 
 def _gaussian_derivatives(
