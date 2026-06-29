@@ -4,6 +4,7 @@ import pytest
 from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
 from pyosv.skinner import FaultSkinner, find_skins
+from pyosv.voting3d import OptimalSurfaceVoter
 
 
 def test_constructor_stores_configuration_for_later_grouping() -> None:
@@ -199,3 +200,29 @@ def test_find_skins_filters_small_components_and_orders_remaining_skins() -> Non
 
     assert [len(skin) for skin in skins] == [3, 2]
     assert [skin.cells[0].index for skin in skins] == [(4, 3, 0), (0, 1, 0)]
+
+
+def test_find_skins_groups_thinned_apply_voting_plane_as_one_dominant_skin() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    fvt = voter.thin(fv, vp, vt)
+    skins = FaultSkinner(
+        min_likelihood=0.7,
+        min_skin_size=20,
+        connectivity="corner",
+    ).find_skins(fvt, vp, vt)
+
+    assert len(skins) == 1
+    skin = skins[0]
+    indices = skin.indices()
+    assert len(skin) == 105
+    assert indices.dtype == np.int32
+    assert np.count_nonzero(indices[:, 1] == 5) > 0.75 * len(skin)
+    assert skin.likelihoods().min() >= 0.7

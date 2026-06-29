@@ -11,8 +11,8 @@ This table records the initial target modules for the Python reimplementation. I
 | `OptimalSurfaceVoter.java` | `pyosv.voting3d` | high |
 | `FaultOrientScanner2.java` | `pyosv.orient2d` | medium |
 | `FaultOrientScanner3.java` | `pyosv.orient3d` | later |
-| `FaultSkin.java` | `pyosv.skin` | later |
-| `FaultSkinner.java` | `pyosv.skinner` | later |
+| `FaultSkin.java` | `pyosv.skin` | minimal |
+| `FaultSkinner.java` | `pyosv.skinner` | minimal connected components |
 | `SincInterpolator` use sites | `pyosv.interp` | approximate |
 | `RecursiveExponentialFilter` use sites | `pyosv.filters` | approximate |
 | `RecursiveGaussianFilterP.java` | `pyosv.filters` | approximate/later |
