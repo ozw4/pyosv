@@ -256,7 +256,57 @@ def test_samples_in_uv_box_returns_constant_cost_from_constant_fx() -> None:
 
     assert costs.shape == (2 * voter.rv + 1, 2 * voter.ru + 1)
     assert costs.dtype == np.float32
-    np.testing.assert_array_equal(costs, np.full((7, 5), 0.75, dtype=np.float32))
+    expected = np.ones((7, 5), dtype=np.float32)
+    for kv in range(expected.shape[0]):
+        ku_min = voter.lmins[kv] + voter.ru
+        ku_max = voter.lmaxs[kv] + voter.ru
+        expected[kv, ku_min : ku_max + 1] = 0.75
+    np.testing.assert_array_equal(costs, expected)
+
+
+def test_samples_in_uv_box_respects_reference_shift_ranges() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    fx = np.full((20, 20), 0.25, dtype=np.float32)
+
+    costs = voter.samples_in_uv_box(
+        c1=10,
+        c2=10,
+        normal=np.array([1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    assert costs.shape == (9, 7)
+    assert costs.dtype == np.float32
+
+    for kv in range(2 * voter.rv + 1):
+        ku_min = voter.lmins[kv] + voter.ru
+        ku_max = voter.lmaxs[kv] + voter.ru
+
+        if ku_min > 0:
+            np.testing.assert_array_equal(costs[kv, :ku_min], 1.0)
+        if ku_max + 1 < costs.shape[1]:
+            np.testing.assert_array_equal(costs[kv, ku_max + 1 :], 1.0)
+        np.testing.assert_array_equal(costs[kv, ku_min : ku_max + 1], 0.75)
+
+
+def test_samples_in_uv_box_central_strike_rows_sample_only_zero_normal_shift() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    fx = np.full((20, 20), 0.25, dtype=np.float32)
+
+    costs = voter.samples_in_uv_box(
+        c1=10,
+        c2=10,
+        normal=np.array([1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    for iv in range(-2, 3):
+        kv = iv + voter.rv
+        expected = np.ones(2 * voter.ru + 1, dtype=np.float32)
+        expected[voter.ru] = 0.75
+        np.testing.assert_array_equal(costs[kv], expected)
 
 
 def test_samples_in_uv_box_v_then_u_shape_and_center_uses_seed_coordinate() -> None:
