@@ -87,3 +87,66 @@ def test_validate_image_rejects_invalid_inputs(image: object, message: str) -> N
 
     with pytest.raises(ValueError, match=message):
         scanner.validate_image(image)  # type: ignore[arg-type]
+
+
+def test_scan_returns_float32_arrays_matching_input_shape() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.zeros((12, 10), dtype=np.float64)
+
+    ft, pt = scanner.scan(-45.0, 45.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+
+
+def test_scan_constant_input_has_zero_finite_likelihood() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.full((24, 20), 3.0, dtype=np.float32)
+
+    ft, pt = scanner.scan(-60.0, 60.0, image)
+
+    np.testing.assert_array_equal(ft, np.zeros_like(image, dtype=np.float32))
+    assert np.isfinite(pt).all()
+
+
+def test_scan_detects_dipping_synthetic_lineament() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    theta = 30.0
+    image, distance = _dipping_gaussian_lineament(theta)
+
+    ft, pt = scanner.scan(-60.0, 60.0, image)
+
+    near_line = np.abs(distance) <= 1.5
+    far_from_line = np.abs(distance) >= 12.0
+    assert float(np.mean(ft[near_line])) > float(np.mean(ft[far_from_line])) + 0.25
+
+    high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
+    assert np.count_nonzero(high_likelihood) > 0
+    assert float(np.median(np.abs(pt[high_likelihood] - theta))) <= 15.0
+
+
+def test_scan_dip_matches_scan() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _dipping_gaussian_lineament(-20.0)
+
+    scan_ft, scan_pt = scanner.scan(-45.0, 45.0, image)
+    dip_ft, dip_pt = scanner.scan_dip(-45.0, 45.0, image)
+
+    np.testing.assert_array_equal(dip_ft, scan_ft)
+    np.testing.assert_array_equal(dip_pt, scan_pt)
+
+
+def _dipping_gaussian_lineament(theta_degrees: float) -> tuple[np.ndarray, np.ndarray]:
+    n2, n1 = 96, 128
+    x2, x1 = np.mgrid[:n2, :n1].astype(np.float32)
+    x1 -= np.float32((n1 - 1) / 2.0)
+    x2 -= np.float32((n2 - 1) / 2.0)
+
+    theta_radians = np.deg2rad(theta_degrees)
+    distance = x2 * np.cos(theta_radians) - x1 * np.sin(theta_radians)
+    image = np.exp(-0.5 * (distance / np.float32(1.2)) ** 2)
+    return image.astype(np.float32), distance.astype(np.float32)
