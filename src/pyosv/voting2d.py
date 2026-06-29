@@ -10,7 +10,8 @@ from collections.abc import Sequence
 import numpy as np
 
 from pyosv.cells import FaultCell2
-from pyosv.dp import shift_range, strain_to_bstrain, update_shift_ranges
+from pyosv.dp import find_path_2d, shift_range, strain_to_bstrain, update_shift_ranges
+from pyosv.filters import smooth2d
 
 __all__ = ["OptimalPathVoter"]
 
@@ -112,6 +113,29 @@ class OptimalPathVoter:
 
         return [FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1])]
 
+    def apply_voting(
+        self,
+        d: int,
+        fm: float,
+        ft: np.ndarray,
+        pt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run 2D path voting for all selected seeds."""
+
+        ft_array, pt_array = _validate_matching_finite_arrays2(ft, pt, "ft", "pt")
+        seeds = self.pick_seeds(d, fm, ft_array, pt_array)
+
+        fe = np.zeros_like(ft_array, dtype=np.float32)
+        fc = np.zeros_like(ft_array, dtype=np.float32)
+        w1 = np.zeros_like(ft_array, dtype=np.float32)
+        w2 = np.zeros_like(ft_array, dtype=np.float32)
+
+        for seed in seeds:
+            self._path_voting(seed, ft_array, fc, fe, w1, w2)
+
+        fv = _normalize_and_power_2d(fe)
+        return fv, w1, w2
+
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
 
@@ -157,6 +181,71 @@ class OptimalPathVoter:
 
         return costs
 
+    def _path_voting(
+        self,
+        cell: FaultCell2,
+        ft: np.ndarray,
+        fc: np.ndarray,
+        fe: np.ndarray,
+        w1: np.ndarray,
+        w2: np.ndarray,
+    ) -> None:
+        """Accumulate one seed cell's 2D optimal-path vote in-place."""
+
+        ft_array, fc_array, fe_array, w1_array, w2_array = _validate_matching_arrays2(
+            (ft, fc, fe, w1, w2),
+            ("ft", "fc", "fe", "w1", "w2"),
+        )
+        n2, n1 = ft_array.shape
+        c1 = cell.i1
+        c2 = cell.i2
+        if not 0 <= c1 < n1:
+            raise ValueError("cell.i1 must be inside the image bounds")
+        if not 0 <= c2 < n2:
+            raise ValueError("cell.i2 must be inside the image bounds")
+
+        normal = cell.fault_normal()
+        strike = cell.fault_strike_vector()
+        costs = self.samples_in_uv_box(c1, c2, normal, strike, ft_array)
+        path = find_path_2d(
+            costs,
+            lmin=self.lmin,
+            bstrain=self.bstrain1,
+            attribute_smoothing=self.attribute_smoothing,
+            path_smoothing=self.path_smoothing1,
+        )
+
+        valid_path_samples: list[tuple[int, int, float, float]] = []
+        fa = np.float32(0.0)
+        for kv, iu in enumerate(path):
+            if kv == 0:
+                p2i = np.float32(path[1] - iu) if path.size > 1 else np.float32(0.0)
+            else:
+                p2i = np.float32(iu - path[kv - 1])
+
+            iv = kv - self.rv
+            x1 = c1 + iu * normal[0] + iv * strike[0]
+            x2 = c2 + iu * normal[1] + iv * strike[1]
+            i1 = math.floor(float(x1) + 0.5)
+            i2 = math.floor(float(x2) + 0.5)
+            if i1 <= 0 or i1 >= n1 - 1 or i2 <= 0 or i2 >= n2 - 1:
+                continue
+
+            fa += ft_array[i2, i1]
+            psi = np.float32(1.0 / math.sqrt(float(p2i * p2i + np.float32(1.0))))
+            valid_path_samples.append((i2, i1, np.float32(-psi), p2i * psi))
+
+        if not valid_path_samples:
+            return
+
+        fa /= np.float32(len(valid_path_samples))
+        for i2, i1, p1i, p2i in valid_path_samples:
+            fe_array[i2, i1] += fa
+            if fa > fc_array[i2, i1]:
+                fc_array[i2, i1] = fa
+                w1_array[i2, i1] = normal[0] * p1i + strike[0] * p2i
+                w2_array[i2, i1] = normal[1] * p1i + strike[1] * p2i
+
     def seed_to_image(
         self,
         fmin: float,
@@ -191,6 +280,31 @@ class OptimalPathVoter:
         return xs
 
 
+def _normalize_and_power_2d(
+    x: np.ndarray,
+    *,
+    sigma: float = 1.0,
+    power: int = 4,
+) -> np.ndarray:
+    x_array = _validate_array2(x, "x").astype(np.float32, copy=True)
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+    power_int = _validate_positive_int(power, "power")
+
+    if x_array.size == 0:
+        return x_array
+
+    if sigma_float > 0.0:
+        x_array = smooth2d(x_array, sigma_float).astype(np.float32, copy=False)
+
+    x_array -= np.min(x_array)
+    max_value = np.max(x_array)
+    if max_value > 0.0:
+        x_array /= max_value
+
+    enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
+    return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 def _validate_int(value: int, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
@@ -209,6 +323,18 @@ def _validate_nonnegative_int(value: int, name: str) -> int:
 
     if value_int < 0:
         raise ValueError(f"{name} must be a nonnegative integer")
+
+    return value_int
+
+
+def _validate_positive_int(value: int, name: str) -> int:
+    try:
+        value_int = _validate_int(value, name)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+
+    if value_int <= 0:
+        raise ValueError(f"{name} must be a positive integer")
 
     return value_int
 
@@ -244,6 +370,54 @@ def _validate_matching_2d_arrays(
         raise ValueError(f"{first_name} and {second_name} shapes must match")
 
     return first_array, second_array
+
+
+def _validate_matching_finite_arrays2(
+    first: np.ndarray,
+    second: np.ndarray,
+    first_name: str,
+    second_name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    first_array, second_array = _validate_matching_2d_arrays(
+        first,
+        second,
+        first_name,
+        second_name,
+    )
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            first_float32 = first_array.astype(np.float32, copy=False)
+            second_float32 = second_array.astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{first_name} and {second_name} must contain numeric finite values",
+        ) from exc
+
+    if not np.isfinite(first_float32).all():
+        raise ValueError(f"{first_name} must contain only finite values")
+    if not np.isfinite(second_float32).all():
+        raise ValueError(f"{second_name} must contain only finite values")
+
+    return first_float32, second_float32
+
+
+def _validate_matching_arrays2(
+    arrays: tuple[np.ndarray, ...],
+    names: tuple[str, ...],
+) -> tuple[np.ndarray, ...]:
+    if len(arrays) != len(names):
+        raise ValueError("arrays and names must have the same length")
+    if not arrays:
+        raise ValueError("at least one array is required")
+
+    validated = tuple(_validate_array2(array, name) for array, name in zip(arrays, names))
+    shape = validated[0].shape
+    first_name = names[0]
+    for array, name in zip(validated[1:], names[1:]):
+        if array.shape != shape:
+            raise ValueError(f"{first_name} and {name} shapes must match")
+
+    return validated
 
 
 def _validate_array2(array: np.ndarray, name: str) -> np.ndarray:
