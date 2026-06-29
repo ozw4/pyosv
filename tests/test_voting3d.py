@@ -513,7 +513,7 @@ def test_surface_voting_keeps_stronger_orientation_when_later_vote_is_weaker() -
     assert vt[5, 5, 5] == pytest.approx(90.0, abs=1e-5)
 
 
-def test_surface_voting_skips_seed_with_no_valid_interior_surface_samples() -> None:
+def test_surface_voting_accepts_boundary_surface_samples() -> None:
     voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
     voter.set_attribute_smoothing(0)
     voter.set_surface_smoothing(0.0, 0.0)
@@ -525,10 +525,16 @@ def test_surface_voting_skips_seed_with_no_valid_interior_surface_samples() -> N
 
     voter._surface_voting(FaultCell(0, 0, 0, 1.0, 0.0, 90.0), ft, fe, vp, vt, vm)
 
-    np.testing.assert_array_equal(fe, np.zeros_like(fe))
-    np.testing.assert_array_equal(vm, np.zeros_like(vm))
-    np.testing.assert_array_equal(vp, np.full_like(vp, -1.0))
-    np.testing.assert_array_equal(vt, np.full_like(vt, -1.0))
+    expected_mask = np.zeros_like(ft, dtype=np.bool_)
+    expected_mask[0:2, 0:2, 0:2] = True
+    np.testing.assert_allclose(fe[expected_mask], 1.0)
+    np.testing.assert_allclose(vm[expected_mask], 1.0)
+    np.testing.assert_allclose(vp[expected_mask], 0.0, atol=1e-7)
+    np.testing.assert_allclose(vt[expected_mask], 90.0, atol=1e-5)
+    np.testing.assert_array_equal(fe[~expected_mask], np.zeros_like(fe[~expected_mask]))
+    np.testing.assert_array_equal(vm[~expected_mask], np.zeros_like(vm[~expected_mask]))
+    np.testing.assert_array_equal(vp[~expected_mask], np.full_like(vp[~expected_mask], -1.0))
+    np.testing.assert_array_equal(vt[~expected_mask], np.full_like(vt[~expected_mask], -1.0))
 
 
 def test_surface_voting_is_deterministic_for_same_seed_and_inputs() -> None:

@@ -331,11 +331,7 @@ class OptimalSurfaceVoter:
                 i1 = math.floor(float(x1) + 0.5)
                 i2 = math.floor(float(x2) + 0.5)
                 i3 = math.floor(float(x3) + 0.5)
-                if i1 < 0 or i1 >= n1:
-                    continue
-                if i2 <= 0 or i2 >= n2 - 1:
-                    continue
-                if i3 <= 0 or i3 >= n3 - 1:
+                if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
                     continue
 
                 fa += ft_array[i3, i2, i1]
@@ -376,6 +372,8 @@ class OptimalSurfaceVoter:
                 neighbor_samples = ((i3, i2 - 1, i1), (i3, i2 + 1, i1))
 
             for j3, j2, j1 in neighbor_samples:
+                if not (0 <= j1 < n1 and 0 <= j2 < n2 and 0 <= j3 < n3):
+                    continue
                 fe_array[j3, j2, j1] += fa
                 _update_orientation_if_stronger(
                     j3,
