@@ -7,6 +7,8 @@ from pyosv.dp import (
     backtrack_reverse_2d,
     find_path_2d,
     shift_range,
+    smooth_fault_attributes_2d,
+    smooth_fault_attributes_3d,
     smooth_path_1d,
     strain_to_bstrain,
     update_shift_ranges,
@@ -288,6 +290,79 @@ def test_find_path_2d_restores_straight_valley() -> None:
     assert path.shape == (15,)
     np.testing.assert_allclose(path, expected, atol=0.01)
     assert np.isfinite(path).all()
+
+
+def test_smooth_fault_attributes_3d_preserves_constant_volume() -> None:
+    cost = np.full((4, 5, 3), 2.5, dtype=np.float32)
+
+    smoothed = smooth_fault_attributes_3d(cost, bstrain1=2, bstrain2=3)
+
+    assert smoothed.shape == cost.shape
+    assert smoothed.dtype == np.float32
+    assert np.isfinite(smoothed).all()
+    np.testing.assert_allclose(smoothed, smoothed[0, 0, 0])
+
+
+def test_smooth_fault_attributes_3d_matches_staged_2d_smoothing() -> None:
+    rng = np.random.default_rng(20240629)
+    cost = rng.normal(size=(3, 4, 5)).astype(np.float32)
+
+    expected_v = np.empty_like(cost)
+    for iw in range(cost.shape[0]):
+        expected_v[iw] = smooth_fault_attributes_2d(cost[iw], bstrain=2)
+
+    expected = np.empty_like(cost)
+    for iv in range(cost.shape[1]):
+        expected[:, iv, :] = smooth_fault_attributes_2d(expected_v[:, iv, :], bstrain=1)
+
+    smoothed = smooth_fault_attributes_3d(cost, bstrain1=2, bstrain2=1)
+
+    assert smoothed.dtype == np.float32
+    np.testing.assert_allclose(smoothed, expected)
+
+
+def test_smooth_fault_attributes_3d_keeps_synthetic_surface_within_lag_bounds() -> None:
+    nw, nv, nu = 5, 7, 9
+    lmin = -4
+    lags = lmin + np.arange(nu, dtype=np.float32)
+    w = np.arange(nw, dtype=np.float32)[:, None]
+    v = np.arange(nv, dtype=np.float32)[None, :]
+    surface = np.clip(0.5 * (w - 2.0) + 0.25 * (v - 3.0), -3.0, 3.0)
+    cost = (lags[None, None, :] - surface[:, :, None]) ** 2
+
+    smoothed = smooth_fault_attributes_3d(cost, bstrain1=2, bstrain2=2)
+    picked_lags = lmin + np.argmin(smoothed, axis=2)
+
+    assert smoothed.shape == cost.shape
+    assert smoothed.dtype == np.float32
+    assert np.isfinite(smoothed).all()
+    assert picked_lags.min() >= lmin
+    assert picked_lags.max() <= lmin + nu - 1
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [
+        np.zeros((2, 3), dtype=np.float32),
+        np.zeros((1, 2, 3, 4), dtype=np.float32),
+        np.array([[[0.0, np.nan]]], dtype=np.float32),
+        np.array([[[0.0, np.inf]]], dtype=np.float32),
+    ],
+)
+def test_smooth_fault_attributes_3d_rejects_invalid_cost(cost: np.ndarray) -> None:
+    with pytest.raises(ValueError):
+        smooth_fault_attributes_3d(cost, bstrain1=1, bstrain2=1)
+
+
+@pytest.mark.parametrize(("bstrain1", "bstrain2"), [(0, 1), (1, 0), (1.5, 1)])
+def test_smooth_fault_attributes_3d_rejects_invalid_bstrain(
+    bstrain1: int,
+    bstrain2: int,
+) -> None:
+    cost = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError):
+        smooth_fault_attributes_3d(cost, bstrain1=bstrain1, bstrain2=bstrain2)
 
 
 def test_find_path_2d_does_not_modify_input_cost() -> None:

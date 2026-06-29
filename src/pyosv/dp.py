@@ -16,6 +16,7 @@ __all__ = [
     "find_path_2d",
     "shift_range",
     "smooth_fault_attributes_2d",
+    "smooth_fault_attributes_3d",
     "smooth_path_1d",
     "strain_to_bstrain",
     "update_shift_ranges",
@@ -155,6 +156,36 @@ def smooth_fault_attributes_2d(cost: np.ndarray, *, bstrain: int) -> np.ndarray:
     forward = accumulate_2d(cost_array, bstrain=bstrain_int, direction=1)
     reverse = accumulate_2d(cost_array, bstrain=bstrain_int, direction=-1)
     return (forward + reverse - cost_array).astype(np.float32, copy=False)
+
+
+def smooth_fault_attributes_3d(
+    cost: np.ndarray,
+    *,
+    bstrain1: int,
+    bstrain2: int,
+) -> np.ndarray:
+    """Smooth 3D local surface costs in ``v`` and then ``w`` directions."""
+
+    cost_array = validate_cost_3d(cost)
+    bstrain1_int = _validate_positive_int(bstrain1, "bstrain1")
+    bstrain2_int = _validate_positive_int(bstrain2, "bstrain2")
+
+    nw, nv, nu = cost_array.shape
+    smoothed_v = np.empty((nw, nv, nu), dtype=np.float32)
+    for iw in range(nw):
+        smoothed_v[iw] = smooth_fault_attributes_2d(
+            cost_array[iw],
+            bstrain=bstrain1_int,
+        )
+
+    smoothed_w = np.empty_like(smoothed_v, dtype=np.float32)
+    for iv in range(nv):
+        smoothed_w[:, iv, :] = smooth_fault_attributes_2d(
+            smoothed_v[:, iv, :],
+            bstrain=bstrain2_int,
+        )
+
+    return smoothed_w
 
 
 def find_path_2d(
