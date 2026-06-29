@@ -148,7 +148,14 @@ class OptimalPathVoter:
         np.clip(j1, 0, n1 - 1, out=j1)
         np.clip(j2, 0, n2 - 1, out=j2)
 
-        return (np.float32(1.0) - fx_array[j2, j1]).astype(np.float32, copy=False)
+        sampled = (np.float32(1.0) - fx_array[j2, j1]).astype(np.float32, copy=False)
+        costs = np.ones((2 * self.rv + 1, 2 * self.ru + 1), dtype=np.float32)
+        for kv in range(costs.shape[0]):
+            ku_min = self.lmins[kv] + self.ru
+            ku_max = self.lmaxs[kv] + self.ru
+            costs[kv, ku_min : ku_max + 1] = sampled[kv, ku_min : ku_max + 1]
+
+        return costs
 
     def seed_to_image(
         self,
