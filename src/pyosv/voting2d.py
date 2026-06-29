@@ -33,7 +33,6 @@ class OptimalPathVoter:
         """Set the maximum fault-curve strain in the first dimension."""
 
         self.bstrain1 = strain_to_bstrain(strain_max1)
-        self._update_shift_ranges()
 
     def set_attribute_smoothing(self, attribute_smoothing: int) -> None:
         """Set the number of nonlinear smoothings for fault attributes."""
@@ -52,11 +51,7 @@ class OptimalPathVoter:
         )
 
     def _update_shift_ranges(self) -> None:
-        self.lmins, self.lmaxs = update_shift_ranges(
-            self.ru,
-            self.rv,
-            bstrain=self.bstrain1,
-        )
+        self.lmins, self.lmaxs = update_shift_ranges(self.ru, self.rv)
 
     def pick_seeds(
         self,

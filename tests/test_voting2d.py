@@ -33,22 +33,16 @@ def test_shift_range_arrays_match_strike_radius_shape() -> None:
     assert voter.lmaxs.shape == (2 * voter.rv + 1,)
 
 
-def test_set_strain_max_updates_bstrain_spacing() -> None:
+def test_set_strain_max_updates_only_bstrain_spacing() -> None:
     voter = OptimalPathVoter(ru=3, rv=4)
-    voter.lmins = np.full_like(voter.lmins, 99)
-    voter.lmaxs = np.full_like(voter.lmaxs, 99)
+    lmins_before = voter.lmins.copy()
+    lmaxs_before = voter.lmaxs.copy()
 
     voter.set_strain_max(1.0)
 
     assert voter.bstrain1 == 1
-    np.testing.assert_array_equal(
-        voter.lmins,
-        np.array([-3, -3, -2, -1, 0, -1, -2, -3, -3], dtype=np.int32),
-    )
-    np.testing.assert_array_equal(
-        voter.lmaxs,
-        np.array([3, 3, 2, 1, 0, 1, 2, 3, 3], dtype=np.int32),
-    )
+    np.testing.assert_array_equal(voter.lmins, lmins_before)
+    np.testing.assert_array_equal(voter.lmaxs, lmaxs_before)
 
 
 def test_set_strain_max_keeps_default_bstrain_spacing() -> None:
