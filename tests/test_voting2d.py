@@ -215,6 +215,85 @@ def test_get_seeds_rejects_coordinates_outside_image(c1: int, c2: int) -> None:
         voter.get_seeds(c1=c1, c2=c2, ft=ft, pt=pt)
 
 
+def test_update_vector_map_radius_two_positive_columns_follow_vector() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+
+    vector_map = voter.update_vector_map(radius=2, vector=np.array([1.0, 0.0]))
+
+    assert vector_map.shape == (2, 5)
+    assert vector_map.dtype == np.float32
+    np.testing.assert_array_equal(
+        vector_map,
+        np.array(
+            [
+                [-2.0, -1.0, 0.0, 1.0, 2.0],
+                [-0.0, -0.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_update_vector_map_center_column_is_zero_displacement() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+
+    vector_map = voter.update_vector_map(radius=3, vector=np.array([2.0, -0.5]))
+
+    np.testing.assert_array_equal(vector_map[:, 3], np.zeros(2, dtype=np.float32))
+
+
+def test_samples_in_uv_box_returns_constant_cost_from_constant_fx() -> None:
+    voter = OptimalPathVoter(ru=2, rv=3)
+    fx = np.full((5, 6), 0.25, dtype=np.float32)
+
+    costs = voter.samples_in_uv_box(
+        c1=3,
+        c2=2,
+        normal=np.array([1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    assert costs.shape == (2 * voter.rv + 1, 2 * voter.ru + 1)
+    assert costs.dtype == np.float32
+    np.testing.assert_array_equal(costs, np.full((7, 5), 0.75, dtype=np.float32))
+
+
+def test_samples_in_uv_box_v_then_u_shape_and_center_uses_seed_coordinate() -> None:
+    voter = OptimalPathVoter(ru=2, rv=1)
+    i2, i1 = np.indices((5, 6), dtype=np.float32)
+    fx = 0.1 * i2 + 0.01 * i1
+
+    costs = voter.samples_in_uv_box(
+        c1=3,
+        c2=2,
+        normal=np.array([1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    assert costs.shape == (3, 5)
+    assert costs[voter.rv, voter.ru] == pytest.approx(1.0 - fx[2, 3])
+
+
+def test_samples_in_uv_box_rounds_and_clamps_near_image_boundary() -> None:
+    voter = OptimalPathVoter(ru=2, rv=2)
+    i2, i1 = np.indices((3, 4), dtype=np.float32)
+    fx = 0.1 * i2 + 0.01 * i1
+
+    costs = voter.samples_in_uv_box(
+        c1=0,
+        c2=0,
+        normal=np.array([1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    assert costs.shape == (2 * voter.rv + 1, 2 * voter.ru + 1)
+    assert np.isfinite(costs).all()
+    assert costs[0, 0] == pytest.approx(1.0 - fx[0, 0])
+
+
 def test_seed_to_image_keeps_seed_values_above_threshold() -> None:
     voter = OptimalPathVoter(ru=3, rv=4)
     cells = [FaultCell2(1, 0, 0.7, 20.0), FaultCell2(0, 1, 0.8, 30.0)]
