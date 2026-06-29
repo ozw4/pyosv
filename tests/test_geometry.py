@@ -13,6 +13,7 @@ from pyosv.geometry import (
     fault_strike_vector_from_strike_and_dip,
     range180,
     range360,
+    strike_and_dip_from_normal,
 )
 
 
@@ -127,3 +128,61 @@ def test_invalid_dip_and_normal_vectors_raise_value_error() -> None:
 
     with pytest.raises(ValueError, match="normal vector is not vertical"):
         fault_strike_from_normal_vector(np.array([1.0, 0.0, 0.0], dtype=np.float32))
+
+
+def test_strike_and_dip_from_normal_returns_float32_angle_volumes() -> None:
+    u1 = np.array(
+        [[[-0.5, -0.5], [0.5, 0.5]]],
+        dtype=np.float32,
+    )
+    u2 = np.array(
+        [[[0.8660254, 0.0], [-0.8660254, 0.0]]],
+        dtype=np.float32,
+    )
+    u3 = np.array(
+        [[[0.0, -0.8660254], [0.0, 0.8660254]]],
+        dtype=np.float32,
+    )
+
+    fp, ft = strike_and_dip_from_normal(u1, u2, u3)
+
+    assert fp.shape == u1.shape
+    assert ft.shape == u1.shape
+    assert fp.dtype == np.float32
+    assert ft.dtype == np.float32
+    np.testing.assert_allclose(
+        fp,
+        np.array([[[0.0, 90.0], [0.0, 90.0]]], dtype=np.float32),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(ft, np.full_like(u1, 60.0), atol=1e-5)
+
+
+def test_strike_and_dip_from_normal_matches_scalar_geometry_helpers() -> None:
+    normal = fault_normal_vector_from_strike_and_dip(270.0, 30.0)
+    u1 = np.full((2, 1, 3), normal[0], dtype=np.float32)
+    u2 = np.full_like(u1, normal[1])
+    u3 = np.full_like(u1, normal[2])
+
+    fp, ft = strike_and_dip_from_normal(u1, u2, u3)
+
+    np.testing.assert_allclose(fp, np.full_like(u1, 270.0), atol=1e-5)
+    np.testing.assert_allclose(ft, np.full_like(u1, 30.0), atol=1e-5)
+
+
+def test_strike_and_dip_from_normal_rejects_shape_mismatch() -> None:
+    u1 = np.zeros((2, 3, 4), dtype=np.float32)
+    u2 = np.zeros((2, 3, 5), dtype=np.float32)
+    u3 = np.zeros_like(u1)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        strike_and_dip_from_normal(u1, u2, u3)
+
+
+def test_strike_and_dip_from_normal_rejects_non_3d_arrays() -> None:
+    u1 = np.zeros((2, 3), dtype=np.float32)
+    u2 = np.zeros_like(u1)
+    u3 = np.zeros_like(u1)
+
+    with pytest.raises(ValueError, match="u1 must be a 3D array"):
+        strike_and_dip_from_normal(u1, u2, u3)
