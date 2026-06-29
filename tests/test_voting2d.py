@@ -491,6 +491,72 @@ def test_thin_keeps_vertical_local_maximum() -> None:
     np.testing.assert_array_equal(thinned, expected)
 
 
+def test_thin_keeps_vertical_ridge_crossed_by_horizontal_vectors() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((5, 7), dtype=np.float32)
+    f[:, 3] = 2.0
+    w1 = np.ones_like(f)
+    w2 = np.zeros_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    expected = np.zeros_like(f)
+    expected[:, 3] = 2.0
+    assert thinned.shape == f.shape
+    assert thinned.dtype == np.float32
+    assert np.isfinite(thinned).all()
+    np.testing.assert_array_equal(thinned, expected)
+
+
+def test_thin_keeps_horizontal_ridge_crossed_by_vertical_vectors() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((7, 5), dtype=np.float32)
+    f[3, :] = 2.0
+    w1 = np.zeros_like(f)
+    w2 = np.ones_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    expected = np.zeros_like(f)
+    expected[3, :] = 2.0
+    assert thinned.shape == f.shape
+    assert thinned.dtype == np.float32
+    assert np.isfinite(thinned).all()
+    np.testing.assert_array_equal(thinned, expected)
+
+
+def test_thin_suppresses_broad_ridge_to_centerline() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((5, 7), dtype=np.float32)
+    f[:, 2] = 1.0
+    f[:, 3] = 3.0
+    f[:, 4] = 1.0
+    w1 = np.ones_like(f)
+    w2 = np.zeros_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    expected = np.zeros_like(f)
+    expected[:, 3] = 3.0
+    assert np.count_nonzero(thinned) < np.count_nonzero(f)
+    assert np.isfinite(thinned).all()
+    np.testing.assert_array_equal(thinned, expected)
+
+
+def test_thin_returns_zero_for_flat_image() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.ones((5, 6), dtype=np.float32)
+    w1 = np.ones_like(f)
+    w2 = np.zeros_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    assert thinned.shape == f.shape
+    assert thinned.dtype == np.float32
+    assert np.isfinite(thinned).all()
+    np.testing.assert_array_equal(thinned, np.zeros_like(f))
+
+
 def test_thin_uses_fractional_linear_samples() -> None:
     voter = OptimalPathVoter(ru=1, rv=1)
     f = np.zeros((3, 5), dtype=np.float32)
