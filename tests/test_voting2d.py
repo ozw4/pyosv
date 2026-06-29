@@ -484,6 +484,57 @@ def test_apply_voting_highlights_simple_fault_like_line() -> None:
     assert fv[7, 4:11].mean() > fv[[3, 11], 4:11].mean()
 
 
+def test_apply_voting_highlights_vertical_constant_angle_line() -> None:
+    voter = OptimalPathVoter(ru=1, rv=4)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft = np.zeros((17, 17), dtype=np.float32)
+    pt = np.full_like(ft, 90.0)
+    ft[3:14, 8] = 0.9
+    line_mask = np.zeros_like(ft, dtype=np.bool_)
+    line_mask[4:13, 8] = True
+    background_mask = np.zeros_like(ft, dtype=np.bool_)
+    background_mask[4:13, 4] = True
+    background_mask[4:13, 12] = True
+
+    fv, w1, w2 = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt)
+
+    assert fv.shape == ft.shape
+    assert w1.shape == ft.shape
+    assert w2.shape == ft.shape
+    assert np.isfinite(fv).all()
+    assert np.isfinite(w1).all()
+    assert np.isfinite(w2).all()
+    assert fv.max() > 0.0
+    assert fv[line_mask].mean() > fv[background_mask].mean() + 0.4
+
+
+def test_apply_voting_highlights_diagonal_constant_angle_line() -> None:
+    voter = OptimalPathVoter(ru=2, rv=5)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft = np.zeros((21, 21), dtype=np.float32)
+    pt = np.full_like(ft, 135.0)
+    line_mask = np.zeros_like(ft, dtype=np.bool_)
+    for i2 in range(5, 16):
+        ft[i2, i2] = 0.9
+        line_mask[i2, i2] = True
+    background_mask = np.zeros_like(ft, dtype=np.bool_)
+    background_mask[5:16, 4] = True
+    background_mask[4, 5:16] = True
+
+    fv, w1, w2 = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt)
+
+    assert fv.shape == ft.shape
+    assert w1.shape == ft.shape
+    assert w2.shape == ft.shape
+    assert np.isfinite(fv).all()
+    assert np.isfinite(w1).all()
+    assert np.isfinite(w2).all()
+    assert fv.max() > 0.0
+    assert fv[line_mask].mean() > fv[background_mask].mean() + 0.4
+
+
 def test_apply_voting_is_deterministic_for_same_inputs() -> None:
     voter = OptimalPathVoter(ru=1, rv=3)
     voter.set_attribute_smoothing(0)
