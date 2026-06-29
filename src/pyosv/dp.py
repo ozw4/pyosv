@@ -7,19 +7,24 @@ import operator
 
 import numpy as np
 
-from pyosv.filters import smooth1d
+from pyosv.filters import smooth1d, smooth2d
 
 __all__ = [
     "accumulate_2d",
     "accumulate_forward_2d",
     "backtrack_reverse_2d",
+    "find_surface_3d",
     "find_path_2d",
     "shift_range",
     "smooth_fault_attributes_2d",
+    "smooth_fault_attributes_3d",
+    "smooth_surface_2d",
     "smooth_path_1d",
     "strain_to_bstrain",
     "update_shift_ranges",
+    "update_shift_ranges_3d",
     "validate_cost_2d",
+    "validate_cost_3d",
 ]
 
 
@@ -29,6 +34,20 @@ def validate_cost_2d(cost: np.ndarray) -> np.ndarray:
     cost_array = np.asarray(cost)
     if cost_array.ndim != 2:
         raise ValueError("cost must have shape (ni, nl)")
+
+    cost_float32 = cost_array.astype(np.float32, copy=False)
+    if not np.isfinite(cost_float32).all():
+        raise ValueError("cost must contain only finite values")
+
+    return cost_float32
+
+
+def validate_cost_3d(cost: np.ndarray) -> np.ndarray:
+    """Validate and normalize a 3D local surface cost volume."""
+
+    cost_array = np.asarray(cost)
+    if cost_array.ndim != 3:
+        raise ValueError("cost must have shape (nw, nv, nu)")
 
     cost_float32 = cost_array.astype(np.float32, copy=False)
     if not np.isfinite(cost_float32).all():
@@ -131,6 +150,28 @@ def smooth_path_1d(path: np.ndarray, sigma: float, *, bstrain: int = 1) -> np.nd
     return smooth1d(path_array, sigma_float * bstrain_int)
 
 
+def smooth_surface_2d(
+    surface: np.ndarray,
+    *,
+    sigma1: float = 0.0,
+    sigma2: float = 0.0,
+) -> np.ndarray:
+    """Smooth a 2D ``(nw, nv)`` lag surface along ``v`` and ``w`` axes."""
+
+    surface_array = np.asarray(surface, dtype=np.float32)
+    if surface_array.ndim != 2:
+        raise ValueError("surface must have shape (nw, nv)")
+    if not np.isfinite(surface_array).all():
+        raise ValueError("surface must contain only finite values")
+
+    sigma1_float = _validate_nonnegative_float(sigma1, "sigma1")
+    sigma2_float = _validate_nonnegative_float(sigma2, "sigma2")
+    if sigma1_float == 0.0 and sigma2_float == 0.0:
+        return surface_array.copy()
+
+    return smooth2d(surface_array, (sigma2_float, sigma1_float))
+
+
 def smooth_fault_attributes_2d(cost: np.ndarray, *, bstrain: int) -> np.ndarray:
     """Smooth 2D fault attributes with forward and reverse DP accumulation."""
 
@@ -139,6 +180,36 @@ def smooth_fault_attributes_2d(cost: np.ndarray, *, bstrain: int) -> np.ndarray:
     forward = accumulate_2d(cost_array, bstrain=bstrain_int, direction=1)
     reverse = accumulate_2d(cost_array, bstrain=bstrain_int, direction=-1)
     return (forward + reverse - cost_array).astype(np.float32, copy=False)
+
+
+def smooth_fault_attributes_3d(
+    cost: np.ndarray,
+    *,
+    bstrain1: int,
+    bstrain2: int,
+) -> np.ndarray:
+    """Smooth 3D local surface costs in ``v`` and then ``w`` directions."""
+
+    cost_array = validate_cost_3d(cost)
+    bstrain1_int = _validate_positive_int(bstrain1, "bstrain1")
+    bstrain2_int = _validate_positive_int(bstrain2, "bstrain2")
+
+    nw, nv, nu = cost_array.shape
+    smoothed_v = np.empty((nw, nv, nu), dtype=np.float32)
+    for iw in range(nw):
+        smoothed_v[iw] = smooth_fault_attributes_2d(
+            cost_array[iw],
+            bstrain=bstrain1_int,
+        )
+
+    smoothed_w = np.empty_like(smoothed_v, dtype=np.float32)
+    for iv in range(nv):
+        smoothed_w[:, iv, :] = smooth_fault_attributes_2d(
+            smoothed_v[:, iv, :],
+            bstrain=bstrain2_int,
+        )
+
+    return smoothed_w
 
 
 def find_path_2d(
@@ -175,6 +246,64 @@ def find_path_2d(
         path = smooth_path_1d(path, path_smoothing_float, bstrain=bstrain_int)
 
     return path.astype(np.float32, copy=False)
+
+
+def find_surface_3d(
+    cost: np.ndarray,
+    *,
+    lmin: int,
+    bstrain1: int,
+    bstrain2: int,
+    attribute_smoothing: int = 1,
+    surface_smoothing1: float = 0.0,
+    surface_smoothing2: float = 0.0,
+) -> np.ndarray:
+    """Find a 2D optimal lag surface through a 3D ``(nw, nv, nu)`` cost volume."""
+
+    cost_array = validate_cost_3d(cost)
+    lmin_int = _validate_int(lmin, "lmin")
+    bstrain1_int = _validate_positive_int(bstrain1, "bstrain1")
+    bstrain2_int = _validate_positive_int(bstrain2, "bstrain2")
+    attribute_smoothing_int = _validate_nonnegative_int(
+        attribute_smoothing,
+        "attribute_smoothing",
+    )
+    surface_smoothing1_float = _validate_nonnegative_float(
+        surface_smoothing1,
+        "surface_smoothing1",
+    )
+    surface_smoothing2_float = _validate_nonnegative_float(
+        surface_smoothing2,
+        "surface_smoothing2",
+    )
+
+    smoothed_cost = cost_array.copy()
+    for _ in range(attribute_smoothing_int):
+        smoothed_cost = smooth_fault_attributes_3d(
+            smoothed_cost,
+            bstrain1=bstrain1_int,
+            bstrain2=bstrain2_int,
+        )
+
+    nw, nv, _ = smoothed_cost.shape
+    surface = np.empty((nw, nv), dtype=np.float32)
+    for iw in range(nw):
+        surface[iw] = find_path_2d(
+            smoothed_cost[iw],
+            lmin=lmin_int,
+            bstrain=bstrain1_int,
+            attribute_smoothing=0,
+            path_smoothing=0.0,
+        )
+
+    if surface_smoothing1_float > 0.0 or surface_smoothing2_float > 0.0:
+        surface = smooth_surface_2d(
+            surface,
+            sigma1=surface_smoothing1_float,
+            sigma2=surface_smoothing2_float,
+        )
+
+    return surface.astype(np.float32, copy=False)
 
 
 def strain_to_bstrain(strain_max: float) -> int:
@@ -217,6 +346,31 @@ def update_shift_ranges(ru: int, rv: int) -> tuple[np.ndarray, np.ndarray]:
             index = iv + rv_int
             lmins[index] = max(-abs(iv), lmin)
             lmaxs[index] = min(abs(iv), lmax)
+
+    return lmins, lmaxs
+
+
+def update_shift_ranges_3d(ru: int, rv: int, rw: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``_lmins`` and ``_lmaxs`` arrays for 3D surface shift bounds."""
+
+    ru_int = _validate_nonnegative_int(ru, "ru")
+    rv_int = _validate_nonnegative_int(rv, "rv")
+    rw_int = _validate_nonnegative_int(rw, "rw")
+
+    nv = 2 * rv_int + 1
+    nw = 2 * rw_int + 1
+    lmins = np.zeros((nw, nv), dtype=np.int32)
+    lmaxs = np.zeros((nw, nv), dtype=np.int32)
+
+    for iw in range(-rw_int, rw_int + 1):
+        iw_index = iw + rw_int
+        for iv in range(-rv_int, rv_int + 1):
+            wv = math.sqrt(iw * iw + iv * iv)
+            if wv > 2.0:
+                shift = _java_round(wv)
+                iv_index = iv + rv_int
+                lmins[iw_index, iv_index] = max(-shift, -ru_int)
+                lmaxs[iw_index, iv_index] = min(shift, ru_int)
 
     return lmins, lmaxs
 
@@ -297,6 +451,10 @@ def _validate_direction(direction: int) -> int:
     if direction_int not in (-1, 1):
         raise ValueError("direction must be -1 or 1")
     return direction_int
+
+
+def _java_round(value: float) -> int:
+    return math.floor(float(value) + 0.5)
 
 
 def _validate_int(value: int, name: str) -> int:
