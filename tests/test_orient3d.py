@@ -2,7 +2,9 @@ import numpy as np
 import pytest
 
 import pyosv
+from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.orient3d import FaultOrientScanner3
+from pyosv.voting3d import OptimalSurfaceVoter
 
 
 def test_fault_orient_scanner3_import_does_not_change_package_root_api() -> None:
@@ -149,12 +151,157 @@ def test_validate_image_rejects_invalid_inputs(image: object, message: str) -> N
         scanner.validate_image(image)  # type: ignore[arg-type]
 
 
-def test_scan_skeleton_validates_inputs_before_not_implemented() -> None:
+def test_scan_validates_sampling_inputs_before_image_response() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     image = np.zeros((2, 3, 4), dtype=np.float32)
 
-    with pytest.raises(NotImplementedError, match="3D scan response"):
-        scanner.scan(0.0, 360.0, 35.0, 85.0, image)
-
     with pytest.raises(ValueError, match="phi_max"):
         scanner.scan(360.0, 0.0, 35.0, 85.0, image)
+
+
+def test_scan_constant_input_returns_zero_likelihood_and_finite_angles() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.full((5, 6, 7), 3.0, dtype=np.float64)
+
+    ft, pt, tt = scanner.scan(10.0, 40.0, 30.0, 60.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert tt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert tt.dtype == np.float32
+    np.testing.assert_array_equal(ft, np.zeros(image.shape, dtype=np.float32))
+    np.testing.assert_array_equal(pt, np.full(image.shape, 10.0, dtype=np.float32))
+    np.testing.assert_array_equal(tt, np.full(image.shape, 30.0, dtype=np.float32))
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert np.isfinite(tt).all()
+
+
+def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> None:
+    true_phi = 45.0
+    true_theta = 50.0
+    image, distance = _planar_gaussian_fault(true_phi, true_theta)
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    ft, pt, tt = scanner.scan(0.0, 90.0, 20.0, 80.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert tt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert tt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert np.isfinite(tt).all()
+    assert float(ft.min()) >= 0.0
+    assert float(ft.max()) <= 1.0
+
+    near_plane = np.abs(distance) <= 1.0
+    far_from_plane = np.abs(distance) >= 8.0
+    assert float(np.mean(ft[near_plane])) > 2.0 * float(np.mean(ft[far_from_plane]))
+
+    high_likelihood = ft >= np.percentile(ft, 98.0)
+    phi_error = _periodic_angle_error(pt[high_likelihood], true_phi, period=180.0)
+    theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
+    assert float(np.median(phi_error)) <= 20.0
+    assert float(np.median(theta_error)) <= 20.0
+
+
+def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((7, 9, 7), dtype=np.float32)
+    ft[1:6, 3, 1:6] = 0.6
+    ft[1:6, 4, 1:6] = 1.0
+    ft[1:6, 5, 1:6] = 0.6
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft_before = ft.copy()
+    pt_before = pt.copy()
+    tt_before = tt.copy()
+
+    thinned_ft, thinned_pt, thinned_tt = scanner.thin(ft, pt, tt)
+
+    for array in (thinned_ft, thinned_pt, thinned_tt):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    np.testing.assert_array_equal(ft, ft_before)
+    np.testing.assert_array_equal(pt, pt_before)
+    np.testing.assert_array_equal(tt, tt_before)
+    assert np.count_nonzero(thinned_ft) == 25
+    np.testing.assert_array_equal(thinned_ft[:, 4, :], ft[:, 4, :])
+    np.testing.assert_array_equal(thinned_ft[:, :4, :], np.zeros_like(thinned_ft[:, :4, :]))
+    np.testing.assert_array_equal(thinned_ft[:, 5:, :], np.zeros_like(thinned_ft[:, 5:, :]))
+    np.testing.assert_array_equal(thinned_pt[thinned_ft > 0.0], pt[thinned_ft > 0.0])
+    np.testing.assert_array_equal(thinned_tt[thinned_ft > 0.0], tt[thinned_ft > 0.0])
+    np.testing.assert_array_equal(thinned_pt[thinned_ft == 0.0], 0.0)
+    np.testing.assert_array_equal(thinned_tt[thinned_ft == 0.0], 0.0)
+
+
+def test_scan_output_feeds_voting_and_thinning_on_small_planar_volume() -> None:
+    true_phi = 0.0
+    true_theta = 90.0
+    image, distance = _planar_gaussian_fault(
+        true_phi,
+        true_theta,
+        shape=(15, 15, 15),
+        width=1.0,
+    )
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+
+    ft, pt, tt = scanner.scan(true_phi, true_phi, true_theta, true_theta, image)
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    fvt = voter.thin(fv, vp, vt)
+    second = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for array in (ft, pt, tt, fv, vp, vt, fvt):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert fv.max() > 0.0
+    assert fvt.max() > 0.0
+
+    near_plane = np.abs(distance) <= 1.0
+    far_from_plane = np.abs(distance) >= 5.0
+    assert float(fv[near_plane].mean()) > float(fv[far_from_plane].mean())
+    max_samples = fvt == fvt.max()
+    assert float(np.mean(np.abs(distance[max_samples]))) <= 1.0
+    assert not np.any(max_samples & far_from_plane)
+    for first_array, second_array in zip((fv, vp, vt), second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
+def _planar_gaussian_fault(
+    phi: float,
+    theta: float,
+    *,
+    shape: tuple[int, int, int] = (40, 42, 44),
+    width: float = 1.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    n3, n2, n1 = shape
+    i3, i2, i1 = np.indices(shape, dtype=np.float32)
+    center1 = np.float32(0.5 * (n1 - 1))
+    center2 = np.float32(0.5 * (n2 - 1))
+    center3 = np.float32(0.5 * (n3 - 1))
+    w1, w2, w3 = fault_normal_vector_from_strike_and_dip(phi, theta)
+    distance = w1 * (i1 - center1) + w2 * (i2 - center2) + w3 * (i3 - center3)
+    image = np.exp(-0.5 * (distance / np.float32(width)) ** 2)
+    return image.astype(np.float32, copy=False), distance.astype(np.float32, copy=False)
+
+
+def _periodic_angle_error(
+    actual: np.ndarray,
+    expected: float,
+    *,
+    period: float,
+) -> np.ndarray:
+    half_period = np.float32(0.5 * period)
+    return np.abs((actual - np.float32(expected) + half_period) % period - half_period)

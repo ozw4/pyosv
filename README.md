@@ -8,8 +8,8 @@ The project uses the local `reference_osv/` directory as a read-only reference i
 
 This repository has the package scaffold plus DAT I/O, reference dataset
 metadata, the implemented 2D orientation scanner and optimal-path voting
-workflow, and a synthetic-test-covered 3D voting/thinning MVP. Additional
-scanners and skinning will be implemented in later issues.
+workflow, an approximate 3D orientation scanner, and a synthetic-test-covered
+3D voting/thinning MVP. Skinning will be implemented in later issues.
 
 ## DAT I/O
 
@@ -93,6 +93,13 @@ python examples/run_2d_synthetic_scan_vote.py
 
 Pass `--output-dir` to that synthetic example only when generated DAT outputs
 should be written.
+
+The approximate 3D scanner is documented in `docs/orient3d.md`, with a small
+self-contained example:
+
+```bash
+python examples/run_3d_synthetic_scan_vote.py
+```
 
 The reference example scripts read `ft.dat` and `pt.dat` from `reference_osv/`
 or `PYOSV_REFERENCE_OSV`, then write generated files such as `fv_py.dat` and

@@ -14,7 +14,16 @@ EXAMPLE_SCRIPTS = tuple(sorted(EXAMPLES_DIR.glob("*.py")))
 EXAMPLE_MODULES = tuple(script.stem for script in EXAMPLE_SCRIPTS)
 REFERENCE_EXAMPLE_MODULES = ("run_2d_f3d2d", "run_2d_reference")
 REPOSITORY_ROOT_OUTPUTS = ("fv_py.dat", "fvt_py.dat")
-SYNTHETIC_OUTPUTS = ("g_py.dat", "ft_py.dat", "pt_py.dat", "fv_py.dat", "fvt_py.dat")
+SYNTHETIC_OUTPUTS = (
+    "g_py.dat",
+    "ft_py.dat",
+    "pt_py.dat",
+    "tt_py.dat",
+    "fv_py.dat",
+    "vp_py.dat",
+    "vt_py.dat",
+    "fvt_py.dat",
+)
 
 
 def _run_example(script_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -151,6 +160,19 @@ def test_synthetic_scan_vote_without_output_dir_does_not_write_to_repository_roo
     after = {path: _path_signature(path) for path in output_paths}
     assert result.returncode == 0
     assert "fv_nonzero=" in result.stdout
+    assert after == before
+
+
+def test_3d_synthetic_scan_vote_without_output_dir_does_not_write_to_repository_root() -> None:
+    output_paths = [REPO_ROOT / name for name in SYNTHETIC_OUTPUTS]
+    before = {path: _path_signature(path) for path in output_paths}
+
+    result = _run_example(EXAMPLES_DIR / "run_3d_synthetic_scan_vote.py")
+
+    after = {path: _path_signature(path) for path in output_paths}
+    assert result.returncode == 0
+    assert "fv_nonzero=" in result.stdout
+    assert "fvt_max=" in result.stdout
     assert after == before
 
 
