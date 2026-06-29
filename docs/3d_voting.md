@@ -59,5 +59,5 @@ This is the 3D voting MVP, not the complete Java 3D fault interpretation
 pipeline. The implementation is sequential and currently covered by synthetic
 regression tests only.
 
-See `docs/orient3d.md` for the approximate 3D orientation scanner. A
-`FaultSkinner` equivalent remains a later milestone.
+See `docs/orient3d.md` for the approximate 3D orientation scanner. See
+`docs/skinning.md` for the current minimal connected-component skinning layer.
