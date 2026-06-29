@@ -2,7 +2,17 @@ import numpy as np
 import pytest
 
 from pyosv.cells import FaultCell
-from pyosv.voting3d import OptimalSurfaceVoter
+from pyosv.geometry import (
+    fault_dip_vector_from_strike_and_dip,
+    fault_normal_vector_from_strike_and_dip,
+    fault_strike_vector_from_strike_and_dip,
+)
+from pyosv.voting3d import (
+    OptimalSurfaceVoter,
+    _normalize_and_power_3d,
+    _smooth_fault_likelihood_3d,
+    _surface_strike_and_dip,
+)
 
 
 def test_constructor_initializes_range_and_default_configuration() -> None:
@@ -449,3 +459,94 @@ def test_samples_in_uvw_box_rounds_and_clamps_near_volume_boundary() -> None:
     assert np.isfinite(costs).all()
     assert costs[0, 0, 0] == pytest.approx(1.0 - fx[0, 0, 0])
     assert costs[4, 4, 4] == pytest.approx(1.0 - fx[1, 1, 1])
+
+
+def test_normalize_and_power_3d_zero_dynamic_range_returns_finite_zeros() -> None:
+    volume = np.full((2, 3, 4), 7.5, dtype=np.float32)
+
+    with np.errstate(all="raise"):
+        scores = _normalize_and_power_3d(volume)
+
+    assert scores.shape == volume.shape
+    assert scores.dtype == np.float32
+    assert np.isfinite(scores).all()
+    np.testing.assert_array_equal(scores, np.zeros_like(volume))
+
+
+def test_normalize_and_power_3d_simple_ramp_uses_min_max_and_power() -> None:
+    volume = np.array([[[2.0, 3.0, 4.0]]], dtype=np.float32)
+
+    scores = _normalize_and_power_3d(volume, sigma=0.0, power=4)
+
+    expected = np.array([[[0.0, 0.9375, 1.0]]], dtype=np.float32)
+    assert scores.dtype == np.float32
+    np.testing.assert_allclose(scores, expected, rtol=0.0, atol=1e-7)
+
+
+def test_smooth_fault_likelihood_3d_preserves_shape_and_bounds() -> None:
+    volume = np.zeros((5, 6, 7), dtype=np.float32)
+    volume[2, 3, 4] = 10.0
+
+    smoothed = _smooth_fault_likelihood_3d(volume, sigma=1.0)
+
+    assert smoothed.shape == volume.shape
+    assert smoothed.dtype == np.float32
+    assert np.isfinite(smoothed).all()
+    assert smoothed.min() >= -1e-6
+    assert smoothed.max() <= 1.0 + 1e-6
+    assert smoothed[2, 3, 4] == pytest.approx(1.0)
+
+
+def test_smooth_fault_likelihood_3d_zero_dynamic_range_returns_finite_zeros() -> None:
+    volume = np.full((3, 4, 5), 2.0, dtype=np.float32)
+
+    with np.errstate(all="raise"):
+        smoothed = _smooth_fault_likelihood_3d(volume, sigma=1.0)
+
+    assert smoothed.shape == volume.shape
+    assert smoothed.dtype == np.float32
+    assert np.isfinite(smoothed).all()
+    np.testing.assert_array_equal(smoothed, np.zeros_like(volume))
+
+
+def test_surface_strike_and_dip_flat_surface_recovers_seed_orientation() -> None:
+    strike_angle = 30.0
+    dip_angle = 60.0
+    normal = fault_normal_vector_from_strike_and_dip(strike_angle, dip_angle)
+    dip = fault_dip_vector_from_strike_and_dip(strike_angle, dip_angle)
+    strike = fault_strike_vector_from_strike_and_dip(strike_angle, dip_angle)
+    surface = np.zeros((5, 5), dtype=np.float32)
+
+    actual_strike, actual_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=None,
+    )
+
+    assert np.isfinite(actual_strike)
+    assert np.isfinite(actual_dip)
+    assert actual_strike == pytest.approx(strike_angle, abs=1e-5)
+    assert actual_dip == pytest.approx(dip_angle, abs=1e-5)
+
+
+def test_surface_strike_and_dip_sloped_surface_returns_finite_angles() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    w, v = np.indices((5, 5), dtype=np.float32)
+    surface = 0.25 * (v - 2.0) - 0.5 * (w - 2.0)
+
+    actual_strike, actual_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=0.0,
+    )
+
+    assert np.isfinite(actual_strike)
+    assert np.isfinite(actual_dip)
+    assert 0.0 <= actual_strike < 360.0
+    assert 0.0 <= actual_dip <= 180.0

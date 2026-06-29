@@ -9,7 +9,14 @@ import operator
 import numpy as np
 
 from pyosv.cells import FaultCell
-from pyosv.dp import shift_range, strain_to_bstrain, update_shift_ranges_3d
+from pyosv.dp import (
+    shift_range,
+    smooth_surface_2d,
+    strain_to_bstrain,
+    update_shift_ranges_3d,
+)
+from pyosv.filters import smooth3d
+from pyosv.geometry import range360
 
 __all__ = ["OptimalSurfaceVoter"]
 
@@ -240,6 +247,112 @@ class OptimalSurfaceVoter:
         return costs
 
 
+def _normalize_and_power_3d(
+    x: np.ndarray,
+    *,
+    sigma: float = 1.0,
+    power: int = 8,
+) -> np.ndarray:
+    x_array = _validate_finite_array3(x, "x").astype(np.float32, copy=True)
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+    power_int = _validate_positive_int(power, "power")
+
+    if x_array.size == 0:
+        return x_array
+
+    if sigma_float > 0.0:
+        x_array = smooth3d(x_array, sigma_float).astype(np.float32, copy=False)
+
+    _normalize_unit_range_in_place(x_array)
+    enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
+    return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _smooth_fault_likelihood_3d(
+    ft: np.ndarray,
+    *,
+    sigma: float = 1.0,
+) -> np.ndarray:
+    ft_array = _validate_finite_array3(ft, "ft").astype(np.float32, copy=True)
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+
+    if ft_array.size == 0:
+        return ft_array
+
+    if sigma_float > 0.0:
+        ft_array = smooth3d(ft_array, sigma_float).astype(np.float32, copy=False)
+
+    _normalize_unit_range_in_place(ft_array)
+    return ft_array
+
+
+def _surface_strike_and_dip(
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    *,
+    sigma: float | None = None,
+) -> tuple[float, float]:
+    normal_array = _validate_finite_vector3(normal, "normal")
+    dip_array = _validate_finite_vector3(dip, "dip")
+    strike_array = _validate_finite_vector3(strike, "strike")
+    surface_array = _validate_finite_array2(surface, "surface").astype(
+        np.float32,
+        copy=True,
+    )
+    if surface_array.shape[0] < 3 or surface_array.shape[1] < 3:
+        raise ValueError("surface must have at least three samples along w and v")
+
+    if sigma is not None:
+        sigma_float = _validate_nonnegative_float(sigma, "sigma")
+        if sigma_float > 0.0:
+            surface_array = smooth_surface_2d(
+                surface_array,
+                sigma1=sigma_float,
+                sigma2=sigma_float,
+            ).astype(np.float32, copy=False)
+
+    iw = surface_array.shape[0] // 2
+    iv = surface_array.shape[1] // 2
+    local_normal = np.array(
+        [
+            1.0,
+            -0.5 * (surface_array[iw, iv + 1] - surface_array[iw, iv - 1]),
+            -0.5 * (surface_array[iw + 1, iv] - surface_array[iw - 1, iv]),
+        ],
+        dtype=np.float32,
+    )
+    local_normal /= np.linalg.norm(local_normal)
+
+    global_normal = (
+        normal_array * local_normal[0]
+        + dip_array * local_normal[1]
+        + strike_array * local_normal[2]
+    ).astype(np.float32, copy=False)
+    normal_norm = np.linalg.norm(global_normal)
+    if normal_norm == 0.0:
+        raise ValueError("surface basis vectors must produce a nonzero normal")
+    global_normal /= normal_norm
+
+    if global_normal[0] > 0.0:
+        global_normal = -global_normal
+
+    dip_angle = float(np.rad2deg(np.arccos(np.clip(-global_normal[0], -1.0, 1.0))))
+    strike_angle = range360(
+        np.rad2deg(np.arctan2(-global_normal[2], global_normal[1])),
+    )
+    return strike_angle, dip_angle
+
+
+def _normalize_unit_range_in_place(x: np.ndarray) -> None:
+    x -= np.min(x)
+    max_value = np.max(x)
+    if max_value > 0.0:
+        x /= max_value
+    np.clip(x, 0.0, 1.0, out=x)
+
+
 def _validate_int(value: int, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
@@ -258,6 +371,18 @@ def _validate_nonnegative_int(value: int, name: str) -> int:
 
     if value_int < 0:
         raise ValueError(f"{name} must be a nonnegative integer")
+
+    return value_int
+
+
+def _validate_positive_int(value: int, name: str) -> int:
+    try:
+        value_int = _validate_int(value, name)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+
+    if value_int <= 0:
+        raise ValueError(f"{name} must be a positive integer")
 
     return value_int
 
@@ -314,6 +439,37 @@ def _validate_matching_arrays3(
     return validated
 
 
+def _validate_finite_array3(array: np.ndarray, name: str) -> np.ndarray:
+    array = _validate_array3(array, name)
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            array = array.astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric finite values") from exc
+
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite values")
+
+    return array
+
+
+def _validate_finite_array2(array: np.ndarray, name: str) -> np.ndarray:
+    array = np.asarray(array)
+    if array.ndim != 2:
+        raise ValueError(f"{name} must be a 2D array")
+
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            array = array.astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric finite values") from exc
+
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite values")
+
+    return array
+
+
 def _validate_array3(array: np.ndarray, name: str) -> np.ndarray:
     array = np.asarray(array)
     if array.ndim != 3:
@@ -326,5 +482,13 @@ def _validate_vector3(vector: np.ndarray, name: str) -> np.ndarray:
     vector_array = np.asarray(vector, dtype=np.float32)
     if vector_array.shape != (3,):
         raise ValueError(f"{name} must have shape (3,)")
+
+    return vector_array
+
+
+def _validate_finite_vector3(vector: np.ndarray, name: str) -> np.ndarray:
+    vector_array = _validate_vector3(vector, name)
+    if not np.isfinite(vector_array).all():
+        raise ValueError(f"{name} must contain only finite values")
 
     return vector_array
