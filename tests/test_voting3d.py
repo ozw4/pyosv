@@ -567,6 +567,21 @@ def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
         np.testing.assert_array_equal(array, np.zeros_like(ft))
 
 
+def test_apply_voting_accepts_empty_n3_volume() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((0, 8, 9), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    fv, vp, vt = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for array in (fv, vp, vt):
+        assert array.shape == (0, 8, 9)
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+        np.testing.assert_array_equal(array, np.zeros_like(ft))
+
+
 def test_apply_voting_rejects_mismatched_shapes() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     ft = np.zeros((2, 3, 4), dtype=np.float32)
@@ -632,6 +647,7 @@ def test_apply_voting_highlights_simple_fault_like_plane() -> None:
     assert fv.max() <= 1.0 + 1e-6
     assert fv.max() > 0.0
     assert fv[plane_mask].mean() > fv[background_mask].mean()
+    assert np.count_nonzero(fv[plane_mask]) > 0
 
 
 def test_apply_voting_is_deterministic_for_same_inputs() -> None:
@@ -648,6 +664,76 @@ def test_apply_voting_is_deterministic_for_same_inputs() -> None:
 
     for first_array, second_array in zip(first, second):
         np.testing.assert_array_equal(first_array, second_array)
+
+
+def test_apply_voting_localizes_broad_gently_dipping_ridge() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    n3, n2, n1 = 13, 14, 13
+    ft = np.zeros((n3, n2, n1), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 75.0)
+    near_surface = np.zeros_like(ft, dtype=np.bool_)
+    far_from_surface = np.zeros_like(ft, dtype=np.bool_)
+    center1 = 6.0
+    center2 = 6.0
+    slope = np.float32(np.tan(np.deg2rad(15.0)))
+
+    for i3 in range(3, 10):
+        for i1 in range(2, 11):
+            surface_i2 = center2 + slope * (i1 - center1)
+            for i2 in range(2, 12):
+                distance = abs(i2 - surface_i2)
+                if distance <= 1.25:
+                    ft[i3, i2, i1] = np.exp(-0.5 * (distance / 0.75) ** 2)
+                    near_surface[i3, i2, i1] = True
+                if distance >= 4.0:
+                    far_from_surface[i3, i2, i1] = True
+
+    fv, vp, vt = voter.apply_voting(d=4, fm=0.55, ft=ft, pt=pt, tt=tt)
+    fv_second, vp_second, vt_second = voter.apply_voting(d=4, fm=0.55, ft=ft, pt=pt, tt=tt)
+
+    assert fv.shape == (n3, n2, n1)
+    assert vp.shape == (n3, n2, n1)
+    assert vt.shape == (n3, n2, n1)
+    for array in (fv, vp, vt):
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert np.count_nonzero(fv[near_surface]) > 0
+    assert fv[near_surface].mean() > fv[far_from_surface].mean()
+    np.testing.assert_array_equal(fv, fv_second)
+    np.testing.assert_array_equal(vp, vp_second)
+    np.testing.assert_array_equal(vt, vt_second)
+
+
+def test_apply_voting_handles_small_volume_with_clipped_local_boxes() -> None:
+    voter = OptimalSurfaceVoter(ru=2, rv=3, rw=3)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((5, 5, 5), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[1:4, 2, 1:4] = 0.9
+    plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    plane_mask[1:4, 2, 1:4] = True
+
+    fv, vp, vt = voter.apply_voting(d=2, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert fv.shape == (5, 5, 5)
+    assert vp.shape == (5, 5, 5)
+    assert vt.shape == (5, 5, 5)
+    for array in (fv, vp, vt):
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert fv.max() > 0.0
+    assert fv[plane_mask].mean() > fv[~plane_mask].mean()
+    max_mask = fv == fv.max()
+    assert np.any(max_mask & plane_mask)
 
 
 def test_normalize_and_power_3d_zero_dynamic_range_returns_finite_zeros() -> None:
