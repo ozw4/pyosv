@@ -336,7 +336,10 @@ def test_smooth_surface_2d_rejects_invalid_inputs(
         smooth_surface_2d(surface, **kwargs)
 
 
-def test_find_surface_3d_flat_valley_returns_constant_lag() -> None:
+@pytest.mark.parametrize("attribute_smoothing", [0, 1])
+def test_find_surface_3d_flat_valley_returns_constant_lag(
+    attribute_smoothing: int,
+) -> None:
     expected = np.full((4, 16), 2.0, dtype=np.float32)
     cost = _surface_cost(expected, lmin=-4, nu=9)
 
@@ -345,7 +348,7 @@ def test_find_surface_3d_flat_valley_returns_constant_lag() -> None:
         lmin=-4,
         bstrain1=1,
         bstrain2=1,
-        attribute_smoothing=0,
+        attribute_smoothing=attribute_smoothing,
     )
 
     assert surface.shape == expected.shape
@@ -370,6 +373,30 @@ def test_find_surface_3d_linear_v_valley_returns_bounded_surface() -> None:
 
     assert np.max(np.abs(np.diff(surface, axis=1))) <= 0.5
     assert np.mean(np.abs(surface - expected)) <= 0.2
+    assert np.max(np.abs(surface - expected)) <= 0.5
+
+
+@pytest.mark.parametrize("attribute_smoothing", [0, 1])
+def test_find_surface_3d_linear_w_valley_returns_bounded_surface(
+    attribute_smoothing: int,
+) -> None:
+    nw, nv, nu = 21, 5, 9
+    expected_row = np.linspace(-2.0, 2.0, nw, dtype=np.float32)[:, None]
+    expected = np.broadcast_to(expected_row, (nw, nv)).copy()
+    cost = _surface_cost(expected, lmin=-4, nu=nu)
+
+    surface = find_surface_3d(
+        cost,
+        lmin=-4,
+        bstrain1=1,
+        bstrain2=2,
+        attribute_smoothing=attribute_smoothing,
+    )
+
+    assert surface.shape == expected.shape
+    assert surface.dtype == np.float32
+    assert np.isfinite(surface).all()
+    assert np.mean(np.abs(surface - expected)) <= 0.25
     assert np.max(np.abs(surface - expected)) <= 0.5
 
 
@@ -420,6 +447,32 @@ def test_find_surface_3d_surface_smoothing_reduces_abrupt_changes() -> None:
 
     assert np.max(np.abs(np.diff(smoothed, axis=1))) < np.max(
         np.abs(np.diff(unsmoothed, axis=1)),
+    )
+
+
+def test_find_surface_3d_surface_smoothing2_reduces_abrupt_changes() -> None:
+    expected = np.zeros((8, 5), dtype=np.float32)
+    expected[4:] = 2.0
+    cost = _surface_cost(expected, lmin=-2, nu=5)
+
+    unsmoothed = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+    smoothed = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+        surface_smoothing2=1.0,
+    )
+
+    assert np.max(np.abs(np.diff(smoothed, axis=0))) < np.max(
+        np.abs(np.diff(unsmoothed, axis=0)),
     )
 
 
