@@ -167,6 +167,34 @@ class OptimalSurfaceVoter:
             ),
         ]
 
+    def apply_voting(
+        self,
+        d: int,
+        fm: float,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run 3D surface voting for all selected seeds."""
+
+        ft_array, pt_array, tt_array = _validate_matching_finite_arrays3_many(
+            (ft, pt, tt),
+            ("ft", "pt", "tt"),
+        )
+        seeds = self.pick_seeds(d, fm, ft_array, pt_array, tt_array)
+        fs = _smooth_fault_likelihood_3d(ft_array)
+
+        fe = np.zeros_like(ft_array, dtype=np.float32)
+        vp = np.zeros_like(ft_array, dtype=np.float32)
+        vt = np.zeros_like(ft_array, dtype=np.float32)
+        vm = np.zeros_like(ft_array, dtype=np.float32)
+
+        for seed in seeds:
+            self._surface_voting(seed, fs, fe, vp, vt, vm)
+
+        fv = _normalize_and_power_3d(fe)
+        return fv, vp, vt
+
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
 

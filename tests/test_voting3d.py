@@ -552,6 +552,104 @@ def test_surface_voting_is_deterministic_for_same_seed_and_inputs() -> None:
         np.testing.assert_array_equal(first_array, second_array)
 
 
+def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((7, 8, 9), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    fv, vp, vt = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for array in (fv, vp, vt):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+        np.testing.assert_array_equal(array, np.zeros_like(ft))
+
+
+def test_apply_voting_rejects_mismatched_shapes() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((2, 3, 4), dtype=np.float32)
+    pt = np.zeros((2, 4, 3), dtype=np.float32)
+    tt = np.zeros_like(ft)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+
+@pytest.mark.parametrize(
+    ("ft_value", "pt_value", "tt_value", "message"),
+    [
+        (np.nan, 0.0, 0.0, "ft"),
+        (0.0, np.inf, 0.0, "pt"),
+        (0.0, 0.0, np.nan, "tt"),
+    ],
+)
+def test_apply_voting_rejects_nonfinite_inputs(
+    ft_value: float,
+    pt_value: float,
+    tt_value: float,
+    message: str,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((3, 3, 3), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+    ft[1, 1, 1] = ft_value
+    pt[1, 1, 1] = pt_value
+    tt[1, 1, 1] = tt_value
+
+    with pytest.raises(ValueError, match=message):
+        voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+
+def test_apply_voting_highlights_simple_fault_like_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+    plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    plane_mask[3:8, 5, 3:8] = True
+    background_mask = np.zeros_like(ft, dtype=np.bool_)
+    background_mask[3:8, 2, 3:8] = True
+    background_mask[3:8, 8, 3:8] = True
+
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert fv.shape == ft.shape
+    assert vp.shape == ft.shape
+    assert vt.shape == ft.shape
+    assert fv.dtype == np.float32
+    assert vp.dtype == np.float32
+    assert vt.dtype == np.float32
+    assert np.isfinite(fv).all()
+    assert np.isfinite(vp).all()
+    assert np.isfinite(vt).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert fv.max() > 0.0
+    assert fv[plane_mask].mean() > fv[background_mask].mean()
+
+
+def test_apply_voting_is_deterministic_for_same_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+
+    first = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    second = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
 def test_normalize_and_power_3d_zero_dynamic_range_returns_finite_zeros() -> None:
     volume = np.full((2, 3, 4), 7.5, dtype=np.float32)
 
