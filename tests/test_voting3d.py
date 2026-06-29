@@ -331,3 +331,121 @@ def test_get_seeds_rejects_coordinates_outside_image(c1: int, c2: int, c3: int) 
 
     with pytest.raises(ValueError, match="image bounds"):
         voter.get_seeds(c1=c1, c2=c2, c3=c3, ft=ft, pt=pt, tt=tt)
+
+
+def test_update_vector_map_radius_two_offsets_are_symmetric() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=1, rw=1)
+
+    vector_map = voter.update_vector_map(
+        radius=2,
+        vector=np.array([1.0, -0.5, 2.0]),
+    )
+
+    assert vector_map.shape == (3, 5)
+    assert vector_map.dtype == np.float32
+    np.testing.assert_array_equal(vector_map[:, 2], np.zeros(3, dtype=np.float32))
+    np.testing.assert_array_equal(vector_map[:, 0], -vector_map[:, 4])
+    np.testing.assert_array_equal(vector_map[:, 1], -vector_map[:, 3])
+    np.testing.assert_array_equal(
+        vector_map,
+        np.array(
+            [
+                [-2.0, -1.0, 0.0, 1.0, 2.0],
+                [1.0, 0.5, -0.0, -0.5, -1.0],
+                [-4.0, -2.0, 0.0, 2.0, 4.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_samples_in_uvw_box_returns_constant_cost_from_constant_fx() -> None:
+    voter = OptimalSurfaceVoter(ru=2, rv=2, rw=2)
+    fx = np.full((7, 8, 9), 0.25, dtype=np.float32)
+
+    costs = voter.samples_in_uvw_box(
+        c1=4,
+        c2=3,
+        c3=2,
+        normal=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    assert costs.shape == (2 * voter.rw + 1, 2 * voter.rv + 1, 2 * voter.ru + 1)
+    assert costs.dtype == np.float32
+    expected = np.ones((5, 5, 5), dtype=np.float32)
+    for kw in range(expected.shape[0]):
+        for kv in range(expected.shape[1]):
+            ku_min = voter.lmins[kw, kv] + voter.ru
+            ku_max = voter.lmaxs[kw, kv] + voter.ru
+            expected[kw, kv, ku_min : ku_max + 1] = 0.75
+    np.testing.assert_array_equal(costs, expected)
+
+
+def test_samples_in_uvw_box_respects_surface_shift_ranges() -> None:
+    voter = OptimalSurfaceVoter(ru=2, rv=2, rw=2)
+    fx = np.full((7, 8, 9), 0.25, dtype=np.float32)
+
+    costs = voter.samples_in_uvw_box(
+        c1=4,
+        c2=3,
+        c3=2,
+        normal=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    for kw in range(2 * voter.rw + 1):
+        for kv in range(2 * voter.rv + 1):
+            ku_min = voter.lmins[kw, kv] + voter.ru
+            ku_max = voter.lmaxs[kw, kv] + voter.ru
+
+            if ku_min > 0:
+                np.testing.assert_array_equal(costs[kw, kv, :ku_min], 1.0)
+            if ku_max + 1 < costs.shape[2]:
+                np.testing.assert_array_equal(costs[kw, kv, ku_max + 1 :], 1.0)
+            np.testing.assert_array_equal(costs[kw, kv, ku_min : ku_max + 1], 0.75)
+
+
+def test_samples_in_uvw_box_uses_n3_n2_n1_volume_indexing() -> None:
+    voter = OptimalSurfaceVoter(ru=2, rv=2, rw=2)
+    i3, i2, i1 = np.indices((7, 8, 9), dtype=np.float32)
+    fx = 100.0 * i3 + 10.0 * i2 + i1
+
+    costs = voter.samples_in_uvw_box(
+        c1=4,
+        c2=3,
+        c3=2,
+        normal=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        fx=fx,
+    )
+
+    assert costs[voter.rw, voter.rv, voter.ru] == pytest.approx(1.0 - fx[2, 3, 4])
+    assert costs[0, 0, 4] == pytest.approx(1.0 - fx[0, 1, 6])
+    assert costs[4, 4, 0] == pytest.approx(1.0 - fx[4, 5, 2])
+
+
+def test_samples_in_uvw_box_rounds_and_clamps_near_volume_boundary() -> None:
+    voter = OptimalSurfaceVoter(ru=2, rv=2, rw=2)
+    i3, i2, i1 = np.indices((3, 4, 5), dtype=np.float32)
+    fx = 100.0 * i3 + 10.0 * i2 + i1
+
+    costs = voter.samples_in_uvw_box(
+        c1=0,
+        c2=0,
+        c3=0,
+        normal=np.array([0.6, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 0.6, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 0.0, 0.6], dtype=np.float32),
+        fx=fx,
+    )
+
+    assert costs.shape == (2 * voter.rw + 1, 2 * voter.rv + 1, 2 * voter.ru + 1)
+    assert np.isfinite(costs).all()
+    assert costs[0, 0, 0] == pytest.approx(1.0 - fx[0, 0, 0])
+    assert costs[4, 4, 4] == pytest.approx(1.0 - fx[1, 1, 1])

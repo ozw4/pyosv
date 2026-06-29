@@ -159,6 +159,86 @@ class OptimalSurfaceVoter:
             ),
         ]
 
+    def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
+        """Return displacement vectors for offsets ``[-radius, radius]``."""
+
+        radius_int = _validate_nonnegative_int(radius, "radius")
+        vector_array = _validate_vector3(vector, "vector")
+        offsets = np.arange(-radius_int, radius_int + 1, dtype=np.float32)
+        return vector_array[:, np.newaxis] * offsets[np.newaxis, :]
+
+    def samples_in_uvw_box(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> np.ndarray:
+        """Sample ``1 - fx`` in the seed-centered local ``(w, v, u)`` box."""
+
+        fx_array = _validate_array3(fx, "fx")
+        n3, n2, n1 = fx_array.shape
+        i1 = _validate_int(c1, "c1")
+        i2 = _validate_int(c2, "c2")
+        i3 = _validate_int(c3, "c3")
+        if not 0 <= i1 < n1:
+            raise ValueError("c1 must be inside the image bounds")
+        if not 0 <= i2 < n2:
+            raise ValueError("c2 must be inside the image bounds")
+        if not 0 <= i3 < n3:
+            raise ValueError("c3 must be inside the image bounds")
+
+        normal_map = self.update_vector_map(self.ru, normal)
+        dip_map = self.update_vector_map(self.rv, dip)
+        strike_map = self.update_vector_map(self.rw, strike)
+        x1 = (
+            i1
+            + strike_map[0, :, np.newaxis, np.newaxis]
+            + dip_map[0, np.newaxis, :, np.newaxis]
+            + normal_map[0, np.newaxis, np.newaxis, :]
+        )
+        x2 = (
+            i2
+            + strike_map[1, :, np.newaxis, np.newaxis]
+            + dip_map[1, np.newaxis, :, np.newaxis]
+            + normal_map[1, np.newaxis, np.newaxis, :]
+        )
+        x3 = (
+            i3
+            + strike_map[2, :, np.newaxis, np.newaxis]
+            + dip_map[2, np.newaxis, :, np.newaxis]
+            + normal_map[2, np.newaxis, np.newaxis, :]
+        )
+        j1 = np.floor(x1 + 0.5).astype(np.intp, copy=False)
+        j2 = np.floor(x2 + 0.5).astype(np.intp, copy=False)
+        j3 = np.floor(x3 + 0.5).astype(np.intp, copy=False)
+        np.clip(j1, 0, n1 - 1, out=j1)
+        np.clip(j2, 0, n2 - 1, out=j2)
+        np.clip(j3, 0, n3 - 1, out=j3)
+
+        sampled = (np.float32(1.0) - fx_array[j3, j2, j1]).astype(
+            np.float32,
+            copy=False,
+        )
+        costs = np.ones(
+            (2 * self.rw + 1, 2 * self.rv + 1, 2 * self.ru + 1),
+            dtype=np.float32,
+        )
+        for kw in range(costs.shape[0]):
+            for kv in range(costs.shape[1]):
+                ku_min = self.lmins[kw, kv] + self.ru
+                ku_max = self.lmaxs[kw, kv] + self.ru
+                costs[kw, kv, ku_min : ku_max + 1] = sampled[
+                    kw,
+                    kv,
+                    ku_min : ku_max + 1,
+                ]
+
+        return costs
+
 
 def _validate_int(value: int, name: str) -> int:
     if isinstance(value, bool):
@@ -240,3 +320,11 @@ def _validate_array3(array: np.ndarray, name: str) -> np.ndarray:
         raise ValueError(f"{name} must be a 3D array")
 
     return array
+
+
+def _validate_vector3(vector: np.ndarray, name: str) -> np.ndarray:
+    vector_array = np.asarray(vector, dtype=np.float32)
+    if vector_array.shape != (3,):
+        raise ValueError(f"{name} must have shape (3,)")
+
+    return vector_array
