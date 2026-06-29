@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from pyosv._accel import NUMBA_AVAILABLE, njit
 from pyosv.cells import FaultCell2
 from pyosv.dp import find_path_2d, shift_range, strain_to_bstrain, update_shift_ranges
 from pyosv.filters import smooth2d
@@ -182,23 +183,29 @@ class OptimalPathVoter:
         if not 0 <= i2 < n2:
             raise ValueError("c2 must be inside the image bounds")
 
-        normal_map = self.update_vector_map(self.ru, normal)
-        strike_map = self.update_vector_map(self.rv, strike)
-        x1 = i1 + strike_map[0, :, np.newaxis] + normal_map[0, np.newaxis, :]
-        x2 = i2 + strike_map[1, :, np.newaxis] + normal_map[1, np.newaxis, :]
-        j1 = np.floor(x1 + 0.5).astype(np.intp, copy=False)
-        j2 = np.floor(x2 + 0.5).astype(np.intp, copy=False)
-        np.clip(j1, 0, n1 - 1, out=j1)
-        np.clip(j2, 0, n2 - 1, out=j2)
-
-        sampled = (np.float32(1.0) - fx_array[j2, j1]).astype(np.float32, copy=False)
-        costs = np.ones((2 * self.rv + 1, 2 * self.ru + 1), dtype=np.float32)
-        for kv in range(costs.shape[0]):
-            ku_min = self.lmins[kv] + self.ru
-            ku_max = self.lmaxs[kv] + self.ru
-            costs[kv, ku_min : ku_max + 1] = sampled[kv, ku_min : ku_max + 1]
-
-        return costs
+        if NUMBA_AVAILABLE:
+            return _samples_in_uv_box_numba(
+                i1,
+                i2,
+                self.ru,
+                self.rv,
+                normal,
+                strike,
+                fx_array,
+                self.lmins,
+                self.lmaxs,
+            )
+        return _samples_in_uv_box_python(
+            i1,
+            i2,
+            self.ru,
+            self.rv,
+            normal,
+            strike,
+            fx_array,
+            self.lmins,
+            self.lmaxs,
+        )
 
     def _path_voting(
         self,
@@ -234,36 +241,19 @@ class OptimalPathVoter:
             path_smoothing=self.path_smoothing1,
         )
 
-        valid_path_samples: list[tuple[int, int, float, float]] = []
-        fa = np.float32(0.0)
-        for kv, iu in enumerate(path):
-            if kv == 0:
-                p2i = np.float32(path[1] - iu) if path.size > 1 else np.float32(0.0)
-            else:
-                p2i = np.float32(iu - path[kv - 1])
-
-            iv = kv - self.rv
-            x1 = c1 + iu * normal[0] + iv * strike[0]
-            x2 = c2 + iu * normal[1] + iv * strike[1]
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            if i1 <= 0 or i1 >= n1 - 1 or i2 <= 0 or i2 >= n2 - 1:
-                continue
-
-            fa += ft_array[i2, i1]
-            psi = np.float32(1.0 / math.sqrt(float(p2i * p2i + np.float32(1.0))))
-            valid_path_samples.append((i2, i1, np.float32(-psi), p2i * psi))
-
-        if not valid_path_samples:
-            return
-
-        fa /= np.float32(len(valid_path_samples))
-        for i2, i1, p1i, p2i in valid_path_samples:
-            fe_array[i2, i1] += fa
-            if fa > fc_array[i2, i1]:
-                fc_array[i2, i1] = fa
-                w1_array[i2, i1] = normal[0] * p1i + strike[0] * p2i
-                w2_array[i2, i1] = normal[1] * p1i + strike[1] * p2i
+        _accumulate_path_votes(
+            c1,
+            c2,
+            self.rv,
+            normal,
+            strike,
+            path,
+            ft_array,
+            fc_array,
+            fe_array,
+            w1_array,
+            w2_array,
+        )
 
     def seed_to_image(
         self,
@@ -322,6 +312,203 @@ def _normalize_and_power_2d(
 
     enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
     return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _samples_in_uv_box_python(
+    c1: int,
+    c2: int,
+    ru: int,
+    rv: int,
+    normal: np.ndarray,
+    strike: np.ndarray,
+    fx: np.ndarray,
+    lmins: np.ndarray,
+    lmaxs: np.ndarray,
+) -> np.ndarray:
+    n2, n1 = fx.shape
+    costs = np.ones((2 * rv + 1, 2 * ru + 1), dtype=np.float32)
+    for kv in range(costs.shape[0]):
+        ku_min = lmins[kv] + ru
+        ku_max = lmaxs[kv] + ru
+        iv = kv - rv
+        for ku in range(ku_min, ku_max + 1):
+            iu = ku - ru
+            x1 = c1 + iv * strike[0] + iu * normal[0]
+            x2 = c2 + iv * strike[1] + iu * normal[1]
+            j1 = math.floor(float(x1) + 0.5)
+            j2 = math.floor(float(x2) + 0.5)
+            j1 = min(max(j1, 0), n1 - 1)
+            j2 = min(max(j2, 0), n2 - 1)
+            costs[kv, ku] = np.float32(1.0) - fx[j2, j1]
+
+    return costs
+
+
+@njit(cache=True)
+def _samples_in_uv_box_numba(
+    c1: int,
+    c2: int,
+    ru: int,
+    rv: int,
+    normal: np.ndarray,
+    strike: np.ndarray,
+    fx: np.ndarray,
+    lmins: np.ndarray,
+    lmaxs: np.ndarray,
+) -> np.ndarray:
+    n2, n1 = fx.shape
+    costs = np.ones((2 * rv + 1, 2 * ru + 1), dtype=np.float32)
+    for kv in range(costs.shape[0]):
+        ku_min = lmins[kv] + ru
+        ku_max = lmaxs[kv] + ru
+        iv = kv - rv
+        for ku in range(ku_min, ku_max + 1):
+            iu = ku - ru
+            x1 = c1 + iv * strike[0] + iu * normal[0]
+            x2 = c2 + iv * strike[1] + iu * normal[1]
+            j1 = math.floor(x1 + 0.5)
+            j2 = math.floor(x2 + 0.5)
+            j1 = min(max(j1, 0), n1 - 1)
+            j2 = min(max(j2, 0), n2 - 1)
+            costs[kv, ku] = np.float32(1.0) - fx[j2, j1]
+
+    return costs
+
+
+def _accumulate_path_votes(
+    c1: int,
+    c2: int,
+    rv: int,
+    normal: np.ndarray,
+    strike: np.ndarray,
+    path: np.ndarray,
+    ft: np.ndarray,
+    fc: np.ndarray,
+    fe: np.ndarray,
+    w1: np.ndarray,
+    w2: np.ndarray,
+) -> None:
+    if NUMBA_AVAILABLE:
+        _accumulate_path_votes_numba(c1, c2, rv, normal, strike, path, ft, fc, fe, w1, w2)
+        return
+    _accumulate_path_votes_python(c1, c2, rv, normal, strike, path, ft, fc, fe, w1, w2)
+
+
+def _accumulate_path_votes_python(
+    c1: int,
+    c2: int,
+    rv: int,
+    normal: np.ndarray,
+    strike: np.ndarray,
+    path: np.ndarray,
+    ft: np.ndarray,
+    fc: np.ndarray,
+    fe: np.ndarray,
+    w1: np.ndarray,
+    w2: np.ndarray,
+) -> None:
+    n2, n1 = ft.shape
+    fa = np.float32(0.0)
+    valid_count = 0
+    for kv in range(path.size):
+        iu = path[kv]
+        iv = kv - rv
+        x1 = c1 + iu * normal[0] + iv * strike[0]
+        x2 = c2 + iu * normal[1] + iv * strike[1]
+        i1 = math.floor(float(x1) + 0.5)
+        i2 = math.floor(float(x2) + 0.5)
+        if i1 <= 0 or i1 >= n1 - 1 or i2 <= 0 or i2 >= n2 - 1:
+            continue
+
+        fa += ft[i2, i1]
+        valid_count += 1
+
+    if valid_count == 0:
+        return
+
+    fa /= np.float32(valid_count)
+    for kv in range(path.size):
+        iu = path[kv]
+        if kv == 0:
+            p2i = np.float32(path[1] - iu) if path.size > 1 else np.float32(0.0)
+        else:
+            p2i = np.float32(iu - path[kv - 1])
+
+        iv = kv - rv
+        x1 = c1 + iu * normal[0] + iv * strike[0]
+        x2 = c2 + iu * normal[1] + iv * strike[1]
+        i1 = math.floor(float(x1) + 0.5)
+        i2 = math.floor(float(x2) + 0.5)
+        if i1 <= 0 or i1 >= n1 - 1 or i2 <= 0 or i2 >= n2 - 1:
+            continue
+
+        psi = np.float32(1.0 / math.sqrt(float(p2i * p2i + np.float32(1.0))))
+        p1i = np.float32(-psi)
+        p2i *= psi
+        fe[i2, i1] += fa
+        if fa > fc[i2, i1]:
+            fc[i2, i1] = fa
+            w1[i2, i1] = normal[0] * p1i + strike[0] * p2i
+            w2[i2, i1] = normal[1] * p1i + strike[1] * p2i
+
+
+@njit(cache=True)
+def _accumulate_path_votes_numba(
+    c1: int,
+    c2: int,
+    rv: int,
+    normal: np.ndarray,
+    strike: np.ndarray,
+    path: np.ndarray,
+    ft: np.ndarray,
+    fc: np.ndarray,
+    fe: np.ndarray,
+    w1: np.ndarray,
+    w2: np.ndarray,
+) -> None:
+    n2, n1 = ft.shape
+    fa = np.float32(0.0)
+    valid_count = 0
+    for kv in range(path.size):
+        iu = path[kv]
+        iv = kv - rv
+        x1 = c1 + iu * normal[0] + iv * strike[0]
+        x2 = c2 + iu * normal[1] + iv * strike[1]
+        i1 = math.floor(x1 + 0.5)
+        i2 = math.floor(x2 + 0.5)
+        if i1 <= 0 or i1 >= n1 - 1 or i2 <= 0 or i2 >= n2 - 1:
+            continue
+
+        fa += ft[i2, i1]
+        valid_count += 1
+
+    if valid_count == 0:
+        return
+
+    fa /= np.float32(valid_count)
+    for kv in range(path.size):
+        iu = path[kv]
+        if kv == 0:
+            p2i = np.float32(path[1] - iu) if path.size > 1 else np.float32(0.0)
+        else:
+            p2i = np.float32(iu - path[kv - 1])
+
+        iv = kv - rv
+        x1 = c1 + iu * normal[0] + iv * strike[0]
+        x2 = c2 + iu * normal[1] + iv * strike[1]
+        i1 = math.floor(x1 + 0.5)
+        i2 = math.floor(x2 + 0.5)
+        if i1 <= 0 or i1 >= n1 - 1 or i2 <= 0 or i2 >= n2 - 1:
+            continue
+
+        psi = np.float32(1.0 / math.sqrt(p2i * p2i + np.float32(1.0)))
+        p1i = np.float32(-psi)
+        p2i *= psi
+        fe[i2, i1] += fa
+        if fa > fc[i2, i1]:
+            fc[i2, i1] = fa
+            w1[i2, i1] = normal[0] * p1i + strike[0] * p2i
+            w2[i2, i1] = normal[1] * p1i + strike[1] * p2i
 
 
 def _validate_int(value: int, name: str) -> int:
