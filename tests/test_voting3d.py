@@ -461,6 +461,97 @@ def test_samples_in_uvw_box_rounds_and_clamps_near_volume_boundary() -> None:
     assert costs[4, 4, 4] == pytest.approx(1.0 - fx[1, 1, 1])
 
 
+def test_surface_voting_adds_votes_on_high_likelihood_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 3:8] = 0.8
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    expected_mask = np.zeros_like(ft, dtype=np.bool_)
+    expected_mask[3:8, 4:7, 3:8] = True
+    assert fe[expected_mask].sum() == pytest.approx(60.0)
+    assert np.count_nonzero(fe) == 75
+    np.testing.assert_allclose(fe[expected_mask], 0.8)
+    np.testing.assert_allclose(vm[expected_mask], 0.8)
+    np.testing.assert_allclose(vp[expected_mask], 0.0, atol=1e-7)
+    np.testing.assert_allclose(vt[expected_mask], 90.0, atol=1e-5)
+    np.testing.assert_array_equal(fe[~expected_mask], np.zeros_like(fe[~expected_mask]))
+    np.testing.assert_array_equal(vm[~expected_mask], np.zeros_like(vm[~expected_mask]))
+    np.testing.assert_array_equal(vp[~expected_mask], np.full_like(vp[~expected_mask], -1.0))
+    np.testing.assert_array_equal(vt[~expected_mask], np.full_like(vt[~expected_mask], -1.0))
+    for array in (fe, vp, vt, vm):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+
+
+def test_surface_voting_keeps_stronger_orientation_when_later_vote_is_weaker() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft_strong = np.zeros((11, 11, 11), dtype=np.float32)
+    ft_strong[3:8, 5, 3:8] = 0.8
+    ft_weak = np.zeros_like(ft_strong)
+    ft_weak[5, 3:8, 3:8] = 0.2
+    fe = np.zeros_like(ft_strong)
+    vp = np.full_like(ft_strong, -1.0)
+    vt = np.full_like(ft_strong, -1.0)
+    vm = np.zeros_like(ft_strong)
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft_strong, fe, vp, vt, vm)
+    voter._surface_voting(FaultCell(5, 5, 5, 0.2, 90.0, 90.0), ft_weak, fe, vp, vt, vm)
+
+    assert fe[5, 5, 5] == pytest.approx(1.0)
+    assert vm[5, 5, 5] == pytest.approx(0.8)
+    assert vp[5, 5, 5] == pytest.approx(0.0, abs=1e-7)
+    assert vt[5, 5, 5] == pytest.approx(90.0, abs=1e-5)
+
+
+def test_surface_voting_skips_seed_with_no_valid_interior_surface_samples() -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.ones((3, 3, 3), dtype=np.float32)
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+
+    voter._surface_voting(FaultCell(0, 0, 0, 1.0, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    np.testing.assert_array_equal(fe, np.zeros_like(fe))
+    np.testing.assert_array_equal(vm, np.zeros_like(vm))
+    np.testing.assert_array_equal(vp, np.full_like(vp, -1.0))
+    np.testing.assert_array_equal(vt, np.full_like(vt, -1.0))
+
+
+def test_surface_voting_is_deterministic_for_same_seed_and_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 3:8] = 0.8
+    first = (
+        np.zeros_like(ft),
+        np.full_like(ft, -1.0),
+        np.full_like(ft, -1.0),
+        np.zeros_like(ft),
+    )
+    second = tuple(array.copy() for array in first)
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, *first)
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, *second)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
 def test_normalize_and_power_3d_zero_dynamic_range_returns_finite_zeros() -> None:
     volume = np.full((2, 3, 4), 7.5, dtype=np.float32)
 
