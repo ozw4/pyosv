@@ -8,6 +8,7 @@ import operator
 
 import numpy as np
 
+from pyosv.cells import FaultCell
 from pyosv.dp import shift_range, strain_to_bstrain, update_shift_ranges_3d
 
 __all__ = ["OptimalSurfaceVoter"]
@@ -67,6 +68,97 @@ class OptimalSurfaceVoter:
     def _update_shift_ranges(self) -> None:
         self.lmins, self.lmaxs = update_shift_ranges_3d(self.ru, self.rv, self.rw)
 
+    def pick_seeds(
+        self,
+        d: int,
+        fm: float,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> list[FaultCell]:
+        """Pick 3D seed cells above a fault-likelihood threshold."""
+
+        distance = _validate_nonnegative_int(d, "d")
+        ft_array, pt_array, tt_array = _validate_matching_finite_arrays3_many(
+            (ft, pt, tt),
+            ("ft", "pt", "tt"),
+        )
+        threshold = np.float32(fm)
+        n3, n2, n1 = ft_array.shape
+
+        candidates = [
+            FaultCell(
+                i1,
+                i2,
+                i3,
+                ft_array[i3, i2, i1],
+                pt_array[i3, i2, i1],
+                tt_array[i3, i2, i1],
+            )
+            for i3 in range(n3)
+            for i2 in range(n2)
+            for i1 in range(n1)
+            if ft_array[i3, i2, i1] > threshold
+        ]
+        candidates.sort(key=operator.attrgetter("fl"))
+
+        mark = np.zeros((n3, n2, n1), dtype=np.bool_)
+        seeds: list[FaultCell] = []
+        for cell in reversed(candidates):
+            i1 = cell.i1
+            i2 = cell.i2
+            i3 = cell.i3
+            b1 = max(i1 - distance, 0)
+            b2 = max(i2 - distance, 0)
+            b3 = max(i3 - distance, 0)
+            e1 = min(i1 + distance, n1 - 1)
+            e2 = min(i2 + distance, n2 - 1)
+            e3 = min(i3 + distance, n3 - 1)
+            if mark[b3 : e3 + 1, b2 : e2 + 1, b1 : e1 + 1].any():
+                continue
+
+            seeds.append(cell)
+            mark[i3, i2, i1] = True
+
+        return seeds
+
+    def get_seeds(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> list[FaultCell]:
+        """Return the seed at one image sample."""
+
+        ft_array, pt_array, tt_array = _validate_matching_finite_arrays3_many(
+            (ft, pt, tt),
+            ("ft", "pt", "tt"),
+        )
+        i1 = _validate_int(c1, "c1")
+        i2 = _validate_int(c2, "c2")
+        i3 = _validate_int(c3, "c3")
+        n3, n2, n1 = ft_array.shape
+        if not 0 <= i1 < n1:
+            raise ValueError("c1 must be inside the image bounds")
+        if not 0 <= i2 < n2:
+            raise ValueError("c2 must be inside the image bounds")
+        if not 0 <= i3 < n3:
+            raise ValueError("c3 must be inside the image bounds")
+
+        return [
+            FaultCell(
+                i1,
+                i2,
+                i3,
+                ft_array[i3, i2, i1],
+                pt_array[i3, i2, i1],
+                tt_array[i3, i2, i1],
+            ),
+        ]
+
 
 def _validate_int(value: int, name: str) -> int:
     if isinstance(value, bool):
@@ -100,3 +192,51 @@ def _validate_nonnegative_float(value: float, name: str) -> float:
         raise ValueError(f"{name} must be a finite nonnegative number")
 
     return value_float
+
+
+def _validate_matching_finite_arrays3_many(
+    arrays: tuple[np.ndarray, ...],
+    names: tuple[str, ...],
+) -> tuple[np.ndarray, ...]:
+    validated = _validate_matching_arrays3(arrays, names)
+    finite_arrays: list[np.ndarray] = []
+    for array, name in zip(validated, names):
+        try:
+            with np.errstate(over="ignore", invalid="ignore"):
+                finite_array = array.astype(np.float32, copy=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must contain numeric finite values") from exc
+
+        if not np.isfinite(finite_array).all():
+            raise ValueError(f"{name} must contain only finite values")
+
+        finite_arrays.append(finite_array)
+
+    return tuple(finite_arrays)
+
+
+def _validate_matching_arrays3(
+    arrays: tuple[np.ndarray, ...],
+    names: tuple[str, ...],
+) -> tuple[np.ndarray, ...]:
+    if len(arrays) != len(names):
+        raise ValueError("arrays and names must have the same length")
+    if not arrays:
+        raise ValueError("at least one array is required")
+
+    validated = tuple(_validate_array3(array, name) for array, name in zip(arrays, names))
+    shape = validated[0].shape
+    first_name = names[0]
+    for array, name in zip(validated[1:], names[1:]):
+        if array.shape != shape:
+            raise ValueError(f"{first_name} and {name} shapes must match")
+
+    return validated
+
+
+def _validate_array3(array: np.ndarray, name: str) -> np.ndarray:
+    array = np.asarray(array)
+    if array.ndim != 3:
+        raise ValueError(f"{name} must be a 3D array")
+
+    return array

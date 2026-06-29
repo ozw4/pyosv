@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from pyosv.cells import FaultCell
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -154,3 +155,179 @@ def test_set_surface_smoothing_rejects_invalid_second_value(
 
     with pytest.raises(ValueError, match="surface_smoothing2"):
         voter.set_surface_smoothing(0.0, surface_smoothing)  # type: ignore[arg-type]
+
+
+def test_pick_seeds_returns_no_seeds_when_no_sample_exceeds_threshold() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.array([[[0.1, 0.2], [0.3, 0.4]]], dtype=np.float32)
+    pt = np.full_like(ft, 45.0)
+    tt = np.full_like(ft, 30.0)
+
+    seeds = voter.pick_seeds(d=1, fm=0.4, ft=ft, pt=pt, tt=tt)
+
+    assert seeds == []
+
+
+def test_pick_seeds_returns_fault_cell_with_volume_indices_and_angles() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.zeros((2, 3, 4), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+    ft[1, 2, 3] = 0.75
+    pt[1, 2, 3] = 35.0
+    tt[1, 2, 3] = 55.0
+
+    seeds = voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert len(seeds) == 1
+    seed = seeds[0]
+    assert isinstance(seed, FaultCell)
+    assert seed.i1 == 3
+    assert seed.i2 == 2
+    assert seed.i3 == 1
+    assert seed.fl == pytest.approx(0.75)
+    assert seed.fp == pytest.approx(35.0)
+    assert seed.ft == pytest.approx(55.0)
+
+
+def test_pick_seeds_suppresses_lower_candidate_inside_radius_box() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.zeros((5, 5, 5), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+    ft[2, 2, 2] = 0.9
+    ft[3, 3, 3] = 0.8
+    pt[2, 2, 2] = 20.0
+    tt[2, 2, 2] = 45.0
+    pt[3, 3, 3] = 40.0
+    tt[3, 3, 3] = 60.0
+
+    seeds = voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert [(seed.i1, seed.i2, seed.i3) for seed in seeds] == [(2, 2, 2)]
+    assert seeds[0].fl == pytest.approx(0.9)
+    assert seeds[0].fp == pytest.approx(20.0)
+    assert seeds[0].ft == pytest.approx(45.0)
+
+
+def test_pick_seeds_preserves_candidates_outside_radius_box() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.zeros((5, 5, 5), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+    ft[2, 2, 2] = 0.9
+    ft[4, 2, 2] = 0.8
+
+    seeds = voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert [(seed.i1, seed.i2, seed.i3) for seed in seeds] == [(2, 2, 2), (2, 2, 4)]
+    assert [seed.fl for seed in seeds] == pytest.approx([0.9, 0.8])
+
+
+def test_pick_seeds_with_zero_distance_returns_all_candidates_in_descending_likelihood() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.zeros((2, 2, 3), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+    ft[0, 0, 1] = 0.7
+    ft[0, 1, 0] = 0.6
+    ft[1, 1, 2] = 0.8
+
+    seeds = voter.pick_seeds(d=0, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert [(seed.i1, seed.i2, seed.i3) for seed in seeds] == [
+        (2, 1, 1),
+        (1, 0, 0),
+        (0, 1, 0),
+    ]
+    assert [seed.fl for seed in seeds] == pytest.approx([0.8, 0.7, 0.6])
+
+
+def test_pick_seeds_rejects_mismatched_shapes() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.zeros((2, 3, 4), dtype=np.float32)
+    pt = np.zeros((2, 4, 3), dtype=np.float32)
+    tt = np.zeros_like(ft)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+
+def test_pick_seeds_rejects_non_3d_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.zeros((3, 4), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    with pytest.raises(ValueError, match="ft must be a 3D array"):
+        voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    ["ft", "pt", "tt"],
+)
+def test_pick_seeds_rejects_nonfinite_inputs(bad_name: str) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    arrays = {
+        "ft": np.zeros((2, 2, 2), dtype=np.float32),
+        "pt": np.zeros((2, 2, 2), dtype=np.float32),
+        "tt": np.zeros((2, 2, 2), dtype=np.float32),
+    }
+    arrays[bad_name][0, 0, 0] = np.nan
+
+    with pytest.raises(ValueError, match=f"{bad_name} must contain only finite values"):
+        voter.pick_seeds(
+            d=1,
+            fm=0.5,
+            ft=arrays["ft"],
+            pt=arrays["pt"],
+            tt=arrays["tt"],
+        )
+
+
+def test_pick_seeds_does_not_modify_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.array([[[0.9, 0.8], [0.7, 0.6]]], dtype=np.float32)
+    pt = np.array([[[10.0, 20.0], [30.0, 40.0]]], dtype=np.float32)
+    tt = np.array([[[50.0, 60.0], [70.0, 80.0]]], dtype=np.float32)
+    ft_before = ft.copy()
+    pt_before = pt.copy()
+    tt_before = tt.copy()
+
+    voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    np.testing.assert_array_equal(ft, ft_before)
+    np.testing.assert_array_equal(pt, pt_before)
+    np.testing.assert_array_equal(tt, tt_before)
+
+
+def test_get_seeds_returns_seed_at_requested_sample() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+    pt = ft + 10.0
+    tt = ft + 20.0
+
+    seeds = voter.get_seeds(c1=1, c2=0, c3=1, ft=ft, pt=pt, tt=tt)
+
+    assert len(seeds) == 1
+    assert seeds[0].i1 == 1
+    assert seeds[0].i2 == 0
+    assert seeds[0].i3 == 1
+    assert seeds[0].fl == pytest.approx(5.0)
+    assert seeds[0].fp == pytest.approx(15.0)
+    assert seeds[0].ft == pytest.approx(25.0)
+
+
+@pytest.mark.parametrize(
+    ("c1", "c2", "c3"),
+    [(-1, 0, 0), (0, -1, 0), (0, 0, -1), (2, 0, 0), (0, 2, 0), (0, 0, 2)],
+)
+def test_get_seeds_rejects_coordinates_outside_image(c1: int, c2: int, c3: int) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    ft = np.zeros((2, 2, 2), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    with pytest.raises(ValueError, match="image bounds"):
+        voter.get_seeds(c1=c1, c2=c2, c3=c3, ft=ft, pt=pt, tt=tt)
