@@ -37,7 +37,9 @@ def test_f3d2d_seed_picking_smoke() -> None:
 
 
 @pytest.mark.slow_reference_voting
-def test_f3d2d_apply_voting_practical_equivalence_report() -> None:
+def test_f3d2d_apply_voting_practical_equivalence_report(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Print optional 2D voting metrics without imposing equivalence thresholds."""
 
     if os.environ.get("PYOSV_RUN_SLOW_REFERENCE_VOTING") != "1":
@@ -70,7 +72,8 @@ def test_f3d2d_apply_voting_practical_equivalence_report() -> None:
         "top_percentile_overlap": overlaps,
     }
 
-    print("\n2D voting practical-equivalence report:\n" + pformat(report, sort_dicts=False))
+    with capsys.disabled():
+        print("\n2D voting practical-equivalence report:\n" + pformat(report, sort_dicts=False))
 
     # These are report well-formedness checks only; they intentionally avoid
     # strict practical-equivalence thresholds while the implementation evolves.
