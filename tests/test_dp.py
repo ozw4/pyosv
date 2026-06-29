@@ -6,10 +6,12 @@ from pyosv.dp import (
     accumulate_forward_2d,
     backtrack_reverse_2d,
     find_path_2d,
+    find_surface_3d,
     shift_range,
     smooth_fault_attributes_2d,
     smooth_fault_attributes_3d,
     smooth_path_1d,
+    smooth_surface_2d,
     strain_to_bstrain,
     update_shift_ranges,
     update_shift_ranges_3d,
@@ -292,6 +294,172 @@ def test_find_path_2d_restores_straight_valley() -> None:
     assert np.isfinite(path).all()
 
 
+def test_smooth_surface_2d_zero_sigmas_preserve_surface_values() -> None:
+    surface = np.arange(12, dtype=np.float32).reshape(3, 4)
+
+    smoothed = smooth_surface_2d(surface, sigma1=0.0, sigma2=0.0)
+
+    assert smoothed.shape == surface.shape
+    assert smoothed.dtype == np.float32
+    assert smoothed is not surface
+    np.testing.assert_array_equal(smoothed, surface)
+
+
+def test_smooth_surface_2d_reduces_abrupt_changes() -> None:
+    surface = np.zeros((7, 9), dtype=np.float32)
+    surface[:, 4:] = 4.0
+
+    smoothed = smooth_surface_2d(surface, sigma1=1.0, sigma2=0.0)
+
+    assert smoothed.shape == surface.shape
+    assert smoothed.dtype == np.float32
+    assert np.max(np.abs(np.diff(smoothed, axis=1))) < np.max(
+        np.abs(np.diff(surface, axis=1)),
+    )
+    assert np.isfinite(smoothed).all()
+
+
+@pytest.mark.parametrize(
+    ("surface", "kwargs"),
+    [
+        (np.zeros(3, dtype=np.float32), {}),
+        (np.array([[0.0, np.nan]], dtype=np.float32), {}),
+        (np.zeros((2, 3), dtype=np.float32), {"sigma1": -1.0}),
+        (np.zeros((2, 3), dtype=np.float32), {"sigma2": np.inf}),
+    ],
+)
+def test_smooth_surface_2d_rejects_invalid_inputs(
+    surface: np.ndarray,
+    kwargs: dict[str, float],
+) -> None:
+    with pytest.raises(ValueError):
+        smooth_surface_2d(surface, **kwargs)
+
+
+def test_find_surface_3d_flat_valley_returns_constant_lag() -> None:
+    expected = np.full((4, 16), 2.0, dtype=np.float32)
+    cost = _surface_cost(expected, lmin=-4, nu=9)
+
+    surface = find_surface_3d(
+        cost,
+        lmin=-4,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+
+    assert surface.shape == expected.shape
+    assert surface.dtype == np.float32
+    assert np.isfinite(surface).all()
+    np.testing.assert_allclose(surface, expected, atol=0.01)
+
+
+def test_find_surface_3d_linear_v_valley_returns_bounded_surface() -> None:
+    nw, nv, nu = 5, 21, 9
+    expected_path = np.linspace(-2.0, 2.0, nv, dtype=np.float32)
+    expected = np.broadcast_to(expected_path, (nw, nv)).copy()
+    cost = _surface_cost(expected, lmin=-4, nu=nu)
+
+    surface = find_surface_3d(
+        cost,
+        lmin=-4,
+        bstrain1=2,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+
+    assert np.max(np.abs(np.diff(surface, axis=1))) <= 0.5
+    assert np.mean(np.abs(surface - expected)) <= 0.2
+    assert np.max(np.abs(surface - expected)) <= 0.5
+
+
+def test_find_surface_3d_surface_smoothing_is_optional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = np.zeros((3, 7), dtype=np.float32)
+    cost = _surface_cost(expected, lmin=-2, nu=5)
+
+    def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("surface smoothing should not run")
+
+    monkeypatch.setattr("pyosv.dp.smooth_surface_2d", fail_if_called)
+
+    surface = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+        surface_smoothing1=0.0,
+        surface_smoothing2=0.0,
+    )
+
+    np.testing.assert_allclose(surface, expected, atol=0.01)
+
+
+def test_find_surface_3d_surface_smoothing_reduces_abrupt_changes() -> None:
+    expected = np.zeros((5, 8), dtype=np.float32)
+    expected[:, 4:] = 2.0
+    cost = _surface_cost(expected, lmin=-2, nu=5)
+
+    unsmoothed = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+    smoothed = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+        surface_smoothing1=1.0,
+    )
+
+    assert np.max(np.abs(np.diff(smoothed, axis=1))) < np.max(
+        np.abs(np.diff(unsmoothed, axis=1)),
+    )
+
+
+def test_find_surface_3d_is_deterministic() -> None:
+    expected = np.zeros((4, 9), dtype=np.float32)
+    expected[:, 5:] = 1.0
+    cost = _surface_cost(expected, lmin=-2, nu=5)
+
+    surface1 = find_surface_3d(cost, lmin=-2, bstrain1=2, bstrain2=2)
+    surface2 = find_surface_3d(cost, lmin=-2, bstrain1=2, bstrain2=2)
+
+    np.testing.assert_array_equal(surface1, surface2)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"bstrain1": 0}, "bstrain1"),
+        ({"bstrain2": 0}, "bstrain2"),
+        ({"attribute_smoothing": -1}, "attribute_smoothing"),
+        ({"surface_smoothing1": -1.0}, "surface_smoothing1"),
+        ({"surface_smoothing2": np.nan}, "surface_smoothing2"),
+    ],
+)
+def test_find_surface_3d_rejects_invalid_parameters(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    cost = np.zeros((2, 3, 4), dtype=np.float32)
+    params = {
+        "lmin": -1,
+        "bstrain1": 1,
+        "bstrain2": 1,
+    }
+    params.update(kwargs)
+
+    with pytest.raises(ValueError, match=match):
+        find_surface_3d(cost, **params)
+
+
 def test_smooth_fault_attributes_3d_preserves_constant_volume() -> None:
     cost = np.full((4, 5, 3), 2.5, dtype=np.float32)
 
@@ -434,3 +602,8 @@ def test_find_path_2d_path_smoothing_reduces_abrupt_changes() -> None:
 def _valley_cost(path: np.ndarray, *, lmin: int, nl: int) -> np.ndarray:
     lags = lmin + np.arange(nl, dtype=np.float32)
     return (lags[None, :] - path[:, None]) ** 2
+
+
+def _surface_cost(surface: np.ndarray, *, lmin: int, nu: int) -> np.ndarray:
+    lags = lmin + np.arange(nu, dtype=np.float32)
+    return (lags[None, None, :] - surface[:, :, None]) ** 2
