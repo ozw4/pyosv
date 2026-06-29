@@ -6,7 +6,7 @@ The project uses the local `reference_osv/` directory as a read-only reference i
 
 ## Status
 
-This repository has the package scaffold plus DAT I/O, reference dataset metadata, and the implemented 2D optimal-path voting workflow. Additional voting kernels, scanners, and skinning will be implemented in later issues.
+This repository has the package scaffold plus DAT I/O, reference dataset metadata, the implemented 2D optimal-path voting workflow, and a synthetic-test-covered 3D voting/thinning MVP. Additional scanners and skinning will be implemented in later issues.
 
 ## DAT I/O
 

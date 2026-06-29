@@ -665,6 +665,27 @@ def test_thin_narrows_planar_ridge_along_fault_normal() -> None:
     assert np.count_nonzero(fvt[:, 5:, :]) == 0
 
 
+def test_thin_suppresses_broad_planar_ridge_to_center_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((7, 9, 7), dtype=np.float32)
+    fv[1:6, 2, 1:6] = 0.7
+    fv[1:6, 3:6, 1:6] = 1.0
+    fv[1:6, 6, 1:6] = 0.7
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+
+    fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    assert np.count_nonzero(fvt) < np.count_nonzero(fv)
+    assert np.count_nonzero(fvt[:, 4, :]) == 25
+    assert np.count_nonzero(fvt[:, :4, :]) == 0
+    assert np.count_nonzero(fvt[:, 5:, :]) == 0
+    np.testing.assert_array_equal(fvt[:, 4, :], fv[:, 4, :])
+
+
 def test_thin_returns_zero_for_flat_volume() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     fv = np.full((4, 5, 6), 0.75, dtype=np.float32)
@@ -779,6 +800,32 @@ def test_apply_voting_highlights_simple_fault_like_plane() -> None:
     assert fv.max() > 0.0
     assert fv[plane_mask].mean() > fv[background_mask].mean()
     assert np.count_nonzero(fv[plane_mask]) > 0
+
+
+def test_apply_voting_then_thin_returns_sparse_plane_maxima() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+    plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    plane_mask[3:8, 5, 3:8] = True
+    near_plane_mask = np.zeros_like(ft, dtype=np.bool_)
+    near_plane_mask[:, 4:7, :] = True
+
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == ft.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    assert np.count_nonzero(fvt) < np.count_nonzero(fv)
+    assert np.count_nonzero(fvt[plane_mask]) > 0
+    assert fvt[plane_mask].mean() > fvt[~near_plane_mask].mean()
+    assert np.argwhere(fvt == fvt.max())[:, 1].min() >= 4
+    assert np.argwhere(fvt == fvt.max())[:, 1].max() <= 6
 
 
 def test_apply_voting_is_deterministic_for_same_inputs() -> None:
