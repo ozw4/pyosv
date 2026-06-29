@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from pyosv.cells import FaultCell2
 from pyosv.voting2d import OptimalPathVoter
 
 
@@ -112,3 +113,125 @@ def test_set_path_smoothing_rejects_invalid_values(path_smoothing1: object) -> N
 
     with pytest.raises(ValueError, match="path_smoothing1"):
         voter.set_path_smoothing(path_smoothing1)  # type: ignore[arg-type]
+
+
+def test_pick_seeds_returns_no_seeds_when_no_sample_exceeds_threshold() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+    pt = np.full_like(ft, 45.0)
+
+    seeds = voter.pick_seeds(d=1, fm=0.4, ft=ft, pt=pt)
+
+    assert seeds == []
+
+
+def test_pick_seeds_returns_isolated_peak_with_cell_fields() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.zeros((3, 4), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    ft[1, 2] = 0.75
+    pt[1, 2] = 30.0
+
+    seeds = voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt)
+
+    assert len(seeds) == 1
+    seed = seeds[0]
+    assert seed.i1 == 2
+    assert seed.i2 == 1
+    assert seed.fl == pytest.approx(0.75)
+    assert seed.fp == pytest.approx(30.0)
+
+
+def test_pick_seeds_suppresses_nearby_lower_peak() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.zeros((5, 5), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    ft[2, 2] = 0.9
+    ft[3, 3] = 0.8
+    pt[2, 2] = 20.0
+    pt[3, 3] = 40.0
+
+    seeds = voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt)
+
+    assert [(seed.i1, seed.i2) for seed in seeds] == [(2, 2)]
+    assert seeds[0].fl == pytest.approx(0.9)
+    assert seeds[0].fp == pytest.approx(20.0)
+
+
+def test_pick_seeds_with_zero_distance_returns_all_candidates() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.array(
+        [
+            [0.0, 0.7, 0.0],
+            [0.6, 0.5, 0.8],
+        ],
+        dtype=np.float32,
+    )
+    pt = np.arange(ft.size, dtype=np.float32).reshape(ft.shape)
+
+    seeds = voter.pick_seeds(d=0, fm=0.5, ft=ft, pt=pt)
+
+    assert [(seed.i1, seed.i2) for seed in seeds] == [(2, 1), (1, 0), (0, 1)]
+    assert [seed.fl for seed in seeds] == pytest.approx([0.8, 0.7, 0.6])
+
+
+def test_pick_seeds_rejects_mismatched_shapes() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.zeros((2, 3), dtype=np.float32)
+    pt = np.zeros((3, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt)
+
+
+def test_pick_seeds_does_not_modify_inputs() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.array([[0.9, 0.8], [0.7, 0.6]], dtype=np.float32)
+    pt = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)
+    ft_before = ft.copy()
+    pt_before = pt.copy()
+
+    voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt)
+
+    np.testing.assert_array_equal(ft, ft_before)
+    np.testing.assert_array_equal(pt, pt_before)
+
+
+def test_get_seeds_returns_seed_at_requested_sample() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    ft = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+    pt = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)
+
+    seeds = voter.get_seeds(c1=1, c2=0, ft=ft, pt=pt)
+
+    assert len(seeds) == 1
+    assert seeds[0].i1 == 1
+    assert seeds[0].i2 == 0
+    assert seeds[0].fl == pytest.approx(0.2)
+    assert seeds[0].fp == pytest.approx(20.0)
+
+
+def test_seed_to_image_keeps_seed_values_above_threshold() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    cells = [FaultCell2(1, 0, 0.7, 20.0), FaultCell2(0, 1, 0.8, 30.0)]
+    ep = np.array([[0.1, 0.9], [0.4, 0.0]], dtype=np.float32)
+
+    image = voter.seed_to_image(fmin=0.5, shape=ep.shape, cells=cells, ep=ep)
+
+    expected = np.array([[0.0, 0.9], [0.0, 0.0]], dtype=np.float32)
+    assert image.dtype == np.float32
+    np.testing.assert_array_equal(image, expected)
+
+
+def test_seed_to_points_returns_two_by_seed_count_array() -> None:
+    voter = OptimalPathVoter(ru=3, rv=4)
+    cells = [FaultCell2(3, 4, 0.7, 20.0), FaultCell2(5, 6, 0.8, 30.0)]
+
+    points = voter.seed_to_points(cells)
+
+    assert points.shape == (2, 2)
+    assert points.dtype == np.float32
+    np.testing.assert_array_equal(
+        points,
+        np.array([[3.0, 5.0], [4.0, 6.0]], dtype=np.float32),
+    )

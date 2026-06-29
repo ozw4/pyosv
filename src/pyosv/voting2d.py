@@ -5,9 +5,11 @@ from __future__ import annotations
 import math
 import numbers
 import operator
+from collections.abc import Sequence
 
 import numpy as np
 
+from pyosv.cells import FaultCell2
 from pyosv.dp import shift_range, strain_to_bstrain, update_shift_ranges
 
 __all__ = ["OptimalPathVoter"]
@@ -56,6 +58,93 @@ class OptimalPathVoter:
             bstrain=self.bstrain1,
         )
 
+    def pick_seeds(
+        self,
+        d: int,
+        fm: float,
+        ft: np.ndarray,
+        pt: np.ndarray,
+    ) -> list[FaultCell2]:
+        """Pick 2D seed cells above a fault-likelihood threshold."""
+
+        distance = _validate_nonnegative_int(d, "d")
+        ft_array, pt_array = _validate_matching_2d_arrays(ft, pt, "ft", "pt")
+        threshold = np.float32(fm)
+        n2, n1 = ft_array.shape
+
+        candidates = [
+            FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1])
+            for i2 in range(n2)
+            for i1 in range(n1)
+            if ft_array[i2, i1] > threshold
+        ]
+        candidates.sort(key=operator.attrgetter("fl"))
+
+        mark = np.zeros((n2, n1), dtype=np.bool_)
+        seeds: list[FaultCell2] = []
+        for cell in reversed(candidates):
+            i1 = cell.i1
+            i2 = cell.i2
+            b1 = max(i1 - distance, 0)
+            b2 = max(i2 - distance, 0)
+            e1 = min(i1 + distance, n1 - 1)
+            e2 = min(i2 + distance, n2 - 1)
+            if mark[b2 : e2 + 1, b1 : e1 + 1].any():
+                continue
+
+            seeds.append(cell)
+            mark[i2, i1] = True
+
+        return seeds
+
+    def get_seeds(
+        self,
+        c1: int,
+        c2: int,
+        ft: np.ndarray,
+        pt: np.ndarray,
+    ) -> list[FaultCell2]:
+        """Return the seed at one image sample."""
+
+        ft_array, pt_array = _validate_matching_2d_arrays(ft, pt, "ft", "pt")
+        i1 = _validate_int(c1, "c1")
+        i2 = _validate_int(c2, "c2")
+
+        return [FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1])]
+
+    def seed_to_image(
+        self,
+        fmin: float,
+        shape: tuple[int, int],
+        cells: Sequence[FaultCell2],
+        ep: np.ndarray,
+    ) -> np.ndarray:
+        """Rasterize seed cells whose image value is greater than ``fmin``."""
+
+        n2, n1 = _validate_shape2(shape, "shape")
+        ep_array = np.asarray(ep)
+        if ep_array.shape != (n2, n1):
+            raise ValueError("ep shape must match shape")
+
+        fs = np.zeros((n2, n1), dtype=np.float32)
+        for cell in cells:
+            i1 = cell.i1
+            i2 = cell.i2
+            if ep_array[i2, i1] > fmin:
+                fs[i2, i1] = ep_array[i2, i1]
+
+        return fs
+
+    def seed_to_points(self, cells: Sequence[FaultCell2]) -> np.ndarray:
+        """Convert seed cells to a ``(2, nseed)`` point array."""
+
+        xs = np.empty((2, len(cells)), dtype=np.float32)
+        for ic, cell in enumerate(cells):
+            xs[0, ic] = cell.i1
+            xs[1, ic] = cell.i2
+
+        return xs
+
 
 def _validate_int(value: int, name: str) -> int:
     if isinstance(value, bool):
@@ -89,3 +178,34 @@ def _validate_nonnegative_float(value: float, name: str) -> float:
         raise ValueError(f"{name} must be a finite nonnegative number")
 
     return value_float
+
+
+def _validate_matching_2d_arrays(
+    first: np.ndarray,
+    second: np.ndarray,
+    first_name: str,
+    second_name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    first_array = np.asarray(first)
+    second_array = np.asarray(second)
+
+    if first_array.ndim != 2:
+        raise ValueError(f"{first_name} must be a 2D array")
+
+    if second_array.ndim != 2:
+        raise ValueError(f"{second_name} must be a 2D array")
+
+    if first_array.shape != second_array.shape:
+        raise ValueError(f"{first_name} and {second_name} shapes must match")
+
+    return first_array, second_array
+
+
+def _validate_shape2(shape: tuple[int, int], name: str) -> tuple[int, int]:
+    if len(shape) != 2:
+        raise ValueError(f"{name} must have two dimensions")
+
+    n2 = _validate_nonnegative_int(shape[0], f"{name}[0]")
+    n1 = _validate_nonnegative_int(shape[1], f"{name}[1]")
+
+    return n2, n1
