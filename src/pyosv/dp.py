@@ -7,6 +7,7 @@ import operator
 
 import numpy as np
 
+from pyosv._accel import NUMBA_AVAILABLE, njit
 from pyosv.filters import smooth1d, smooth2d
 
 __all__ = [
@@ -73,19 +74,25 @@ def accumulate_2d(cost: np.ndarray, *, bstrain: int, direction: int = 1) -> np.n
     bstrain_int = _validate_positive_int(bstrain, "bstrain")
     direction_int = _validate_direction(direction)
 
-    ni, nl = cost_array.shape
+    if NUMBA_AVAILABLE:
+        return _accumulate_2d_numba(cost_array, bstrain_int, direction_int)
+    return _accumulate_2d_python(cost_array, bstrain_int, direction_int)
+
+
+def _accumulate_2d_python(cost: np.ndarray, bstrain: int, direction: int) -> np.ndarray:
+    ni, nl = cost.shape
     ni_last = ni - 1
     nl_last = nl - 1
-    start = 0 if direction_int > 0 else ni_last
-    stop = ni if direction_int > 0 else -1
-    step = 1 if direction_int > 0 else -1
+    start = 0 if direction > 0 else ni_last
+    stop = ni if direction > 0 else -1
+    step = 1 if direction > 0 else -1
 
-    accumulated = np.empty_like(cost_array, dtype=np.float32)
-    accumulated[start, :] = cost_array[start, :]
+    accumulated = np.empty_like(cost, dtype=np.float32)
+    accumulated[start, :] = cost[start, :]
 
     for ii in range(start + step, stop, step):
         ji = min(max(ii - step, 0), ni_last)
-        jb = min(max(ii - step * bstrain_int, 0), ni_last)
+        jb = min(max(ii - step * bstrain, 0), ni_last)
 
         for il in range(nl):
             il_minus = max(il - 1, 0)
@@ -96,8 +103,8 @@ def accumulate_2d(cost: np.ndarray, *, bstrain: int, direction: int = 1) -> np.n
             cost_plus = accumulated[jb, il_plus]
 
             for kb in range(ji, jb, -step):
-                cost_minus += cost_array[kb, il_minus]
-                cost_plus += cost_array[kb, il_plus]
+                cost_minus += cost[kb, il_minus]
+                cost_plus += cost[kb, il_plus]
 
             accumulated[ii, il] = (
                 _min3_prefer_center(
@@ -105,7 +112,43 @@ def accumulate_2d(cost: np.ndarray, *, bstrain: int, direction: int = 1) -> np.n
                     cost_same,
                     cost_plus,
                 )
-                + cost_array[ii, il]
+                + cost[ii, il]
+            )
+
+    return accumulated
+
+
+@njit(cache=True)
+def _accumulate_2d_numba(cost: np.ndarray, bstrain: int, direction: int) -> np.ndarray:
+    ni, nl = cost.shape
+    ni_last = ni - 1
+    nl_last = nl - 1
+    start = 0 if direction > 0 else ni_last
+    stop = ni if direction > 0 else -1
+    step = 1 if direction > 0 else -1
+
+    accumulated = np.empty_like(cost, dtype=np.float32)
+    for il in range(nl):
+        accumulated[start, il] = cost[start, il]
+
+    for ii in range(start + step, stop, step):
+        ji = min(max(ii - step, 0), ni_last)
+        jb = min(max(ii - step * bstrain, 0), ni_last)
+
+        for il in range(nl):
+            il_minus = max(il - 1, 0)
+            il_plus = min(il + 1, nl_last)
+
+            cost_minus = accumulated[jb, il_minus]
+            cost_same = accumulated[ji, il]
+            cost_plus = accumulated[jb, il_plus]
+
+            for kb in range(ji, jb, -step):
+                cost_minus += cost[kb, il_minus]
+                cost_plus += cost[kb, il_plus]
+
+            accumulated[ii, il] = (
+                _min3_prefer_center_numba(cost_minus, cost_same, cost_plus) + cost[ii, il]
             )
 
     return accumulated
@@ -383,6 +426,18 @@ def _backtrack_2d(
     bstrain: int,
     direction: int,
 ) -> np.ndarray:
+    if NUMBA_AVAILABLE:
+        return _backtrack_2d_numba(accumulated, cost, lmin, bstrain, direction)
+    return _backtrack_2d_python(accumulated, cost, lmin, bstrain, direction)
+
+
+def _backtrack_2d_python(
+    accumulated: np.ndarray,
+    cost: np.ndarray,
+    lmin: int,
+    bstrain: int,
+    direction: int,
+) -> np.ndarray:
     ni, nl = accumulated.shape
     ni_last = ni - 1
     nl_last = nl - 1
@@ -436,7 +491,79 @@ def _backtrack_2d(
     return path
 
 
+@njit(cache=True)
+def _backtrack_2d_numba(
+    accumulated: np.ndarray,
+    cost: np.ndarray,
+    lmin: int,
+    bstrain: int,
+    direction: int,
+) -> np.ndarray:
+    ni, nl = accumulated.shape
+    ni_last = ni - 1
+    nl_last = nl - 1
+    start = 0 if direction > 0 else ni_last
+    end = ni_last if direction > 0 else 0
+    step = 1 if direction > 0 else -1
+    inverse_bstrain = 1.0 / bstrain
+
+    path = np.empty(ni, dtype=np.float32)
+    ii = start
+    il = min(max(-lmin, 0), nl_last)
+    best_cost = accumulated[ii, il]
+    for lag_index in range(nl):
+        if accumulated[ii, lag_index] < best_cost:
+            il = lag_index
+            best_cost = accumulated[ii, lag_index]
+
+    path[ii] = il + lmin
+    while ii != end:
+        ji = min(max(ii + step, 0), ni_last)
+        jb = min(max(ii + step * bstrain, 0), ni_last)
+        il_minus = max(il - 1, 0)
+        il_plus = min(il + 1, nl_last)
+
+        cost_minus = accumulated[jb, il_minus]
+        cost_same = accumulated[ji, il]
+        cost_plus = accumulated[jb, il_plus]
+        for kb in range(ji, jb, step):
+            cost_minus += cost[kb, il_minus]
+            cost_plus += cost[kb, il_plus]
+
+        lag_changed = False
+        best_cost = _min3_prefer_center_numba(cost_minus, cost_same, cost_plus)
+        if best_cost != cost_same:
+            if best_cost == cost_minus:
+                next_il = il_minus
+            else:
+                next_il = il_plus
+            lag_changed = next_il != il
+            il = next_il
+
+        ii += step
+        path[ii] = il + lmin
+        if lag_changed:
+            du = (path[ii] - path[ii - step]) * inverse_bstrain
+            path[ii] = path[ii - step] + du
+            for _ in range(ji, jb, step):
+                ii += step
+                path[ii] = path[ii - step] + du
+
+    return path
+
+
 def _min3_prefer_center(a: float, b: float, c: float) -> float:
+    if b <= a:
+        if b <= c:
+            return b
+        return c
+    if a <= c:
+        return a
+    return c
+
+
+@njit(cache=True)
+def _min3_prefer_center_numba(a: float, b: float, c: float) -> float:
     if b <= a:
         if b <= c:
             return b
