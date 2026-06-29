@@ -4,6 +4,7 @@ import pytest
 import pyosv
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.orient3d import FaultOrientScanner3
+from pyosv.voting3d import OptimalSurfaceVoter
 
 
 def test_fault_orient_scanner3_import_does_not_change_package_root_api() -> None:
@@ -207,6 +208,75 @@ def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> Non
     theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
     assert float(np.median(phi_error)) <= 20.0
     assert float(np.median(theta_error)) <= 20.0
+
+
+def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((7, 9, 7), dtype=np.float32)
+    ft[1:6, 3, 1:6] = 0.6
+    ft[1:6, 4, 1:6] = 1.0
+    ft[1:6, 5, 1:6] = 0.6
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft_before = ft.copy()
+    pt_before = pt.copy()
+    tt_before = tt.copy()
+
+    thinned_ft, thinned_pt, thinned_tt = scanner.thin(ft, pt, tt)
+
+    for array in (thinned_ft, thinned_pt, thinned_tt):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    np.testing.assert_array_equal(ft, ft_before)
+    np.testing.assert_array_equal(pt, pt_before)
+    np.testing.assert_array_equal(tt, tt_before)
+    assert np.count_nonzero(thinned_ft) == 25
+    np.testing.assert_array_equal(thinned_ft[:, 4, :], ft[:, 4, :])
+    np.testing.assert_array_equal(thinned_ft[:, :4, :], np.zeros_like(thinned_ft[:, :4, :]))
+    np.testing.assert_array_equal(thinned_ft[:, 5:, :], np.zeros_like(thinned_ft[:, 5:, :]))
+    np.testing.assert_array_equal(thinned_pt[thinned_ft > 0.0], pt[thinned_ft > 0.0])
+    np.testing.assert_array_equal(thinned_tt[thinned_ft > 0.0], tt[thinned_ft > 0.0])
+    np.testing.assert_array_equal(thinned_pt[thinned_ft == 0.0], 0.0)
+    np.testing.assert_array_equal(thinned_tt[thinned_ft == 0.0], 0.0)
+
+
+def test_scan_output_feeds_voting_and_thinning_on_small_planar_volume() -> None:
+    true_phi = 0.0
+    true_theta = 90.0
+    image, distance = _planar_gaussian_fault(
+        true_phi,
+        true_theta,
+        shape=(15, 15, 15),
+        width=1.0,
+    )
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+
+    ft, pt, tt = scanner.scan(true_phi, true_phi, true_theta, true_theta, image)
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    fvt = voter.thin(fv, vp, vt)
+    second = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for array in (ft, pt, tt, fv, vp, vt, fvt):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert fv.max() > 0.0
+    assert fvt.max() > 0.0
+
+    near_plane = np.abs(distance) <= 1.0
+    far_from_plane = np.abs(distance) >= 5.0
+    assert float(fv[near_plane].mean()) > float(fv[far_from_plane].mean())
+    max_samples = fvt == fvt.max()
+    assert float(np.mean(np.abs(distance[max_samples]))) <= 1.0
+    assert not np.any(max_samples & far_from_plane)
+    for first_array, second_array in zip((fv, vp, vt), second):
+        np.testing.assert_array_equal(first_array, second_array)
 
 
 def _planar_gaussian_fault(

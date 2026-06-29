@@ -9,6 +9,7 @@ import numpy as np
 from scipy import ndimage
 
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
+from pyosv.interp import sample3
 
 __all__ = ["FaultOrientScanner3"]
 
@@ -92,6 +93,41 @@ class FaultOrientScanner3:
             return ft, pt, tt
 
         return self._scan_orientation_bank(phi_sampling, theta_sampling, image)
+
+    def thin(
+        self,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Keep likelihood maxima along the local fault normal field.
+
+        ``ft``, ``pt``, and ``tt`` must be finite 3D arrays with matching
+        ``(n3, n2, n1)`` shapes. ``pt`` and ``tt`` are interpreted as strike
+        and dip angles in degrees. The returned arrays are float32; retained
+        orientation values match the input, and non-retained samples use zero
+        as the orientation sentinel.
+        """
+
+        ft_array, pt_array, tt_array = _validate_matching_finite_images3(
+            (ft, pt, tt),
+            ("ft", "pt", "tt"),
+        )
+        n3, n2, n1 = ft_array.shape
+        i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
+        w1, w2, w3 = _fault_normal_components_from_strike_and_dip(pt_array, tt_array)
+
+        fp = sample3(ft_array, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
+        fm = sample3(ft_array, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
+        keep = (ft_array > np.float32(0.0)) & (fp < ft_array) & (fm < ft_array)
+
+        thinned_ft = np.zeros((n3, n2, n1), dtype=np.float32)
+        thinned_pt = np.zeros((n3, n2, n1), dtype=np.float32)
+        thinned_tt = np.zeros((n3, n2, n1), dtype=np.float32)
+        thinned_ft[keep] = ft_array[keep]
+        thinned_pt[keep] = pt_array[keep]
+        thinned_tt[keep] = tt_array[keep]
+        return thinned_ft, thinned_pt, thinned_tt
 
     def _scan_orientation_bank(
         self,
@@ -210,6 +246,40 @@ def _validate_finite_image3(image: np.ndarray, name: str) -> np.ndarray:
         raise ValueError(f"{name} must contain only finite values")
 
     return image_float32
+
+
+def _validate_matching_finite_images3(
+    arrays: tuple[np.ndarray, ...],
+    names: tuple[str, ...],
+) -> tuple[np.ndarray, ...]:
+    validated = tuple(_validate_finite_image3(array, name) for array, name in zip(arrays, names))
+    shape = validated[0].shape
+    first_name = names[0]
+    for array, name in zip(validated[1:], names[1:]):
+        if array.shape != shape:
+            raise ValueError(f"{first_name} and {name} shapes must match")
+
+    return validated
+
+
+def _fault_normal_components_from_strike_and_dip(
+    phi: np.ndarray,
+    theta: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    p = np.deg2rad(phi).astype(np.float32, copy=False)
+    t = np.deg2rad(theta).astype(np.float32, copy=False)
+    cp = np.cos(p)
+    sp = np.sin(p)
+    ct = np.cos(t)
+    st = np.sin(t)
+    w1 = -ct
+    w2 = st * cp
+    w3 = -st * sp
+    return (
+        w1.astype(np.float32, copy=False),
+        w2.astype(np.float32, copy=False),
+        w3.astype(np.float32, copy=False),
+    )
 
 
 def _gaussian_derivatives(
