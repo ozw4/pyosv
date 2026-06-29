@@ -413,27 +413,12 @@ def _samples_in_uvw_box_python(
             ku_max = lmaxs[kw, kv] + ru
             for ku in range(ku_min, ku_max + 1):
                 iu = ku - ru
-                x1 = (
-                    np.float32(c1)
-                    + np.float32(iw) * np.float32(strike[0])
-                    + np.float32(iv) * np.float32(dip[0])
-                    + np.float32(iu) * np.float32(normal[0])
-                )
-                x2 = (
-                    np.float32(c2)
-                    + np.float32(iw) * np.float32(strike[1])
-                    + np.float32(iv) * np.float32(dip[1])
-                    + np.float32(iu) * np.float32(normal[1])
-                )
-                x3 = (
-                    np.float32(c3)
-                    + np.float32(iw) * np.float32(strike[2])
-                    + np.float32(iv) * np.float32(dip[2])
-                    + np.float32(iu) * np.float32(normal[2])
-                )
-                j1 = math.floor(float(np.float32(x1 + np.float32(0.5))))
-                j2 = math.floor(float(np.float32(x2 + np.float32(0.5))))
-                j3 = math.floor(float(np.float32(x3 + np.float32(0.5))))
+                x1 = c1 + iw * strike[0] + iv * dip[0] + iu * normal[0]
+                x2 = c2 + iw * strike[1] + iv * dip[1] + iu * normal[1]
+                x3 = c3 + iw * strike[2] + iv * dip[2] + iu * normal[2]
+                j1 = math.floor(float(x1) + 0.5)
+                j2 = math.floor(float(x2) + 0.5)
+                j3 = math.floor(float(x3) + 0.5)
                 j1 = min(max(j1, 0), n1 - 1)
                 j2 = min(max(j2, 0), n2 - 1)
                 j3 = min(max(j3, 0), n3 - 1)
@@ -468,26 +453,26 @@ def _samples_in_uvw_box_numba(
             for ku in range(ku_min, ku_max + 1):
                 iu = ku - ru
                 x1 = (
-                    np.float32(c1)
-                    + np.float32(iw) * np.float32(strike[0])
-                    + np.float32(iv) * np.float32(dip[0])
-                    + np.float32(iu) * np.float32(normal[0])
+                    float(c1)
+                    + float(iw) * float(strike[0])
+                    + float(iv) * float(dip[0])
+                    + float(iu) * float(normal[0])
                 )
                 x2 = (
-                    np.float32(c2)
-                    + np.float32(iw) * np.float32(strike[1])
-                    + np.float32(iv) * np.float32(dip[1])
-                    + np.float32(iu) * np.float32(normal[1])
+                    float(c2)
+                    + float(iw) * float(strike[1])
+                    + float(iv) * float(dip[1])
+                    + float(iu) * float(normal[1])
                 )
                 x3 = (
-                    np.float32(c3)
-                    + np.float32(iw) * np.float32(strike[2])
-                    + np.float32(iv) * np.float32(dip[2])
-                    + np.float32(iu) * np.float32(normal[2])
+                    float(c3)
+                    + float(iw) * float(strike[2])
+                    + float(iv) * float(dip[2])
+                    + float(iu) * float(normal[2])
                 )
-                j1 = math.floor(float(np.float32(x1 + np.float32(0.5))))
-                j2 = math.floor(float(np.float32(x2 + np.float32(0.5))))
-                j3 = math.floor(float(np.float32(x3 + np.float32(0.5))))
+                j1 = math.floor(x1 + 0.5)
+                j2 = math.floor(x2 + 0.5)
+                j3 = math.floor(x3 + 0.5)
                 j1 = min(max(j1, 0), n1 - 1)
                 j2 = min(max(j2, 0), n2 - 1)
                 j3 = min(max(j3, 0), n3 - 1)

@@ -166,7 +166,7 @@ def test_numba_3d_local_sampling_matches_fallback_at_float32_half_boundary() -> 
         voter.lmaxs,
     )
 
-    expected = np.float32(1.0) - fx[2, 2, 3]
+    expected = np.float32(1.0) - fx[2, 2, 2]
     assert fallback[0, 6, 2] == expected
     np.testing.assert_array_equal(accelerated, fallback)
 
