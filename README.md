@@ -30,6 +30,21 @@ The local `reference_osv/` directory is a read-only bind mount and is not commit
 
 See `docs/dat_io.md` for detailed I/O behavior and reference fixture test policy.
 
+## Equivalence Policy
+
+`pyosv` targets practical equivalence for fault interpretation workflows, not
+bit-exact comparison with Java, Jython, or Mines JTK outputs.
+
+Mines JTK `SincInterpolator` behavior is approximated with SciPy interpolation
+primitives such as `scipy.ndimage.map_coordinates`. Mines JTK
+`RecursiveExponentialFilter` and `RecursiveGaussianFilterP` behavior is
+approximated with SciPy Gaussian smoothing. These approximations may differ in
+kernel details, boundary handling, and floating-point accumulation order.
+
+The shape convention is 2D `(n2, n1)` and 3D `(n3, n2, n1)`. The
+`reference_osv/` directory is a read-only bind mount for reference only; it is
+not part of the package and is not distributed.
+
 ## Setup
 
 ```bash
