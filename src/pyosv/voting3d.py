@@ -8,6 +8,7 @@ import operator
 
 import numpy as np
 
+from pyosv._accel import NUMBA_AVAILABLE, njit
 from pyosv.cells import FaultCell
 from pyosv.dp import (
     find_surface_3d,
@@ -250,53 +251,35 @@ class OptimalSurfaceVoter:
         if not 0 <= i3 < n3:
             raise ValueError("c3 must be inside the image bounds")
 
-        normal_map = self.update_vector_map(self.ru, normal)
-        dip_map = self.update_vector_map(self.rv, dip)
-        strike_map = self.update_vector_map(self.rw, strike)
-        x1 = (
-            i1
-            + strike_map[0, :, np.newaxis, np.newaxis]
-            + dip_map[0, np.newaxis, :, np.newaxis]
-            + normal_map[0, np.newaxis, np.newaxis, :]
+        if NUMBA_AVAILABLE:
+            return _samples_in_uvw_box_numba(
+                i1,
+                i2,
+                i3,
+                self.ru,
+                self.rv,
+                self.rw,
+                normal,
+                dip,
+                strike,
+                fx_array,
+                self.lmins,
+                self.lmaxs,
+            )
+        return _samples_in_uvw_box_python(
+            i1,
+            i2,
+            i3,
+            self.ru,
+            self.rv,
+            self.rw,
+            normal,
+            dip,
+            strike,
+            fx_array,
+            self.lmins,
+            self.lmaxs,
         )
-        x2 = (
-            i2
-            + strike_map[1, :, np.newaxis, np.newaxis]
-            + dip_map[1, np.newaxis, :, np.newaxis]
-            + normal_map[1, np.newaxis, np.newaxis, :]
-        )
-        x3 = (
-            i3
-            + strike_map[2, :, np.newaxis, np.newaxis]
-            + dip_map[2, np.newaxis, :, np.newaxis]
-            + normal_map[2, np.newaxis, np.newaxis, :]
-        )
-        j1 = np.floor(x1 + 0.5).astype(np.intp, copy=False)
-        j2 = np.floor(x2 + 0.5).astype(np.intp, copy=False)
-        j3 = np.floor(x3 + 0.5).astype(np.intp, copy=False)
-        np.clip(j1, 0, n1 - 1, out=j1)
-        np.clip(j2, 0, n2 - 1, out=j2)
-        np.clip(j3, 0, n3 - 1, out=j3)
-
-        sampled = (np.float32(1.0) - fx_array[j3, j2, j1]).astype(
-            np.float32,
-            copy=False,
-        )
-        costs = np.ones(
-            (2 * self.rw + 1, 2 * self.rv + 1, 2 * self.ru + 1),
-            dtype=np.float32,
-        )
-        for kw in range(costs.shape[0]):
-            for kv in range(costs.shape[1]):
-                ku_min = self.lmins[kw, kv] + self.ru
-                ku_max = self.lmaxs[kw, kv] + self.ru
-                costs[kw, kv, ku_min : ku_max + 1] = sampled[
-                    kw,
-                    kv,
-                    ku_min : ku_max + 1,
-                ]
-
-        return costs
 
     def _surface_voting(
         self,
@@ -338,32 +321,21 @@ class OptimalSurfaceVoter:
             surface_smoothing2=self.surface_smoothing2,
         )
 
-        valid_surface_samples: list[tuple[int, int, int]] = []
-        fa = np.float32(0.0)
-        for kw in range(surface.shape[0]):
-            iw = kw - self.rw
-            dw1 = c1 + iw * strike[0]
-            dw2 = c2 + iw * strike[1]
-            dw3 = c3 + iw * strike[2]
-            for kv in range(surface.shape[1]):
-                iu = surface[kw, kv]
-                iv = kv - self.rv
-                x1 = iu * normal[0] + iv * dip[0] + dw1
-                x2 = iu * normal[1] + iv * dip[1] + dw2
-                x3 = iu * normal[2] + iv * dip[2] + dw3
-                i1 = math.floor(float(x1) + 0.5)
-                i2 = math.floor(float(x2) + 0.5)
-                i3 = math.floor(float(x3) + 0.5)
-                if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
-                    continue
-
-                fa += ft_array[i3, i2, i1]
-                valid_surface_samples.append((i3, i2, i1))
-
-        if not valid_surface_samples:
+        fa, valid_count = _surface_vote_average(
+            c1,
+            c2,
+            c3,
+            self.rv,
+            self.rw,
+            normal,
+            dip,
+            strike,
+            surface,
+            ft_array,
+        )
+        if valid_count == 0:
             return
 
-        fa /= np.float32(len(valid_surface_samples))
         strike_angle, dip_angle = _surface_strike_and_dip(
             normal,
             dip,
@@ -375,40 +347,25 @@ class OptimalSurfaceVoter:
         vt_value = np.float32(dip_angle)
         align_i3 = abs(normal[2]) > abs(normal[1])
 
-        for i3, i2, i1 in valid_surface_samples:
-            fe_array[i3, i2, i1] += fa
-            _update_orientation_if_stronger(
-                i3,
-                i2,
-                i1,
-                fa,
-                vp_value,
-                vt_value,
-                vp_array,
-                vt_array,
-                vm_array,
-            )
-
-            if align_i3:
-                neighbor_samples = ((i3 - 1, i2, i1), (i3 + 1, i2, i1))
-            else:
-                neighbor_samples = ((i3, i2 - 1, i1), (i3, i2 + 1, i1))
-
-            for j3, j2, j1 in neighbor_samples:
-                if not (0 <= j1 < n1 and 0 <= j2 < n2 and 0 <= j3 < n3):
-                    continue
-                fe_array[j3, j2, j1] += fa
-                _update_orientation_if_stronger(
-                    j3,
-                    j2,
-                    j1,
-                    fa,
-                    vp_value,
-                    vt_value,
-                    vp_array,
-                    vt_array,
-                    vm_array,
-                )
+        _accumulate_surface_votes(
+            c1,
+            c2,
+            c3,
+            self.rv,
+            self.rw,
+            fa,
+            vp_value,
+            vt_value,
+            align_i3,
+            normal,
+            dip,
+            strike,
+            surface,
+            fe_array,
+            vp_array,
+            vt_array,
+            vm_array,
+        )
 
 
 def _normalize_and_power_3d(
@@ -430,6 +387,421 @@ def _normalize_and_power_3d(
     _normalize_unit_range_in_place(x_array)
     enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
     return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _samples_in_uvw_box_python(
+    c1: int,
+    c2: int,
+    c3: int,
+    ru: int,
+    rv: int,
+    rw: int,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    fx: np.ndarray,
+    lmins: np.ndarray,
+    lmaxs: np.ndarray,
+) -> np.ndarray:
+    n3, n2, n1 = fx.shape
+    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
+    for kw in range(costs.shape[0]):
+        iw = kw - rw
+        for kv in range(costs.shape[1]):
+            iv = kv - rv
+            ku_min = lmins[kw, kv] + ru
+            ku_max = lmaxs[kw, kv] + ru
+            for ku in range(ku_min, ku_max + 1):
+                iu = ku - ru
+                x1 = c1 + iw * strike[0] + iv * dip[0] + iu * normal[0]
+                x2 = c2 + iw * strike[1] + iv * dip[1] + iu * normal[1]
+                x3 = c3 + iw * strike[2] + iv * dip[2] + iu * normal[2]
+                j1 = math.floor(float(x1) + 0.5)
+                j2 = math.floor(float(x2) + 0.5)
+                j3 = math.floor(float(x3) + 0.5)
+                j1 = min(max(j1, 0), n1 - 1)
+                j2 = min(max(j2, 0), n2 - 1)
+                j3 = min(max(j3, 0), n3 - 1)
+                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
+
+    return costs
+
+
+@njit(cache=True)
+def _samples_in_uvw_box_numba(
+    c1: int,
+    c2: int,
+    c3: int,
+    ru: int,
+    rv: int,
+    rw: int,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    fx: np.ndarray,
+    lmins: np.ndarray,
+    lmaxs: np.ndarray,
+) -> np.ndarray:
+    n3, n2, n1 = fx.shape
+    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
+    for kw in range(costs.shape[0]):
+        iw = kw - rw
+        for kv in range(costs.shape[1]):
+            iv = kv - rv
+            ku_min = lmins[kw, kv] + ru
+            ku_max = lmaxs[kw, kv] + ru
+            for ku in range(ku_min, ku_max + 1):
+                iu = ku - ru
+                x1 = c1 + iw * strike[0] + iv * dip[0] + iu * normal[0]
+                x2 = c2 + iw * strike[1] + iv * dip[1] + iu * normal[1]
+                x3 = c3 + iw * strike[2] + iv * dip[2] + iu * normal[2]
+                j1 = math.floor(x1 + 0.5)
+                j2 = math.floor(x2 + 0.5)
+                j3 = math.floor(x3 + 0.5)
+                j1 = min(max(j1, 0), n1 - 1)
+                j2 = min(max(j2, 0), n2 - 1)
+                j3 = min(max(j3, 0), n3 - 1)
+                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
+
+    return costs
+
+
+def _surface_vote_average(
+    c1: int,
+    c2: int,
+    c3: int,
+    rv: int,
+    rw: int,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    ft: np.ndarray,
+) -> tuple[np.float32, int]:
+    if NUMBA_AVAILABLE:
+        return _surface_vote_average_numba(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
+    return _surface_vote_average_python(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
+
+
+def _surface_vote_average_python(
+    c1: int,
+    c2: int,
+    c3: int,
+    rv: int,
+    rw: int,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    ft: np.ndarray,
+) -> tuple[np.float32, int]:
+    n3, n2, n1 = ft.shape
+    fa = np.float32(0.0)
+    valid_count = 0
+    for kw in range(surface.shape[0]):
+        iw = kw - rw
+        dw1 = c1 + iw * strike[0]
+        dw2 = c2 + iw * strike[1]
+        dw3 = c3 + iw * strike[2]
+        for kv in range(surface.shape[1]):
+            iu = surface[kw, kv]
+            iv = kv - rv
+            x1 = iu * normal[0] + iv * dip[0] + dw1
+            x2 = iu * normal[1] + iv * dip[1] + dw2
+            x3 = iu * normal[2] + iv * dip[2] + dw3
+            i1 = math.floor(float(x1) + 0.5)
+            i2 = math.floor(float(x2) + 0.5)
+            i3 = math.floor(float(x3) + 0.5)
+            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+                continue
+
+            fa += ft[i3, i2, i1]
+            valid_count += 1
+
+    if valid_count > 0:
+        fa /= np.float32(valid_count)
+    return fa, valid_count
+
+
+@njit(cache=True)
+def _surface_vote_average_numba(
+    c1: int,
+    c2: int,
+    c3: int,
+    rv: int,
+    rw: int,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    ft: np.ndarray,
+) -> tuple[np.float32, int]:
+    n3, n2, n1 = ft.shape
+    fa = np.float32(0.0)
+    valid_count = 0
+    for kw in range(surface.shape[0]):
+        iw = kw - rw
+        dw1 = c1 + iw * strike[0]
+        dw2 = c2 + iw * strike[1]
+        dw3 = c3 + iw * strike[2]
+        for kv in range(surface.shape[1]):
+            iu = surface[kw, kv]
+            iv = kv - rv
+            x1 = iu * normal[0] + iv * dip[0] + dw1
+            x2 = iu * normal[1] + iv * dip[1] + dw2
+            x3 = iu * normal[2] + iv * dip[2] + dw3
+            i1 = math.floor(x1 + 0.5)
+            i2 = math.floor(x2 + 0.5)
+            i3 = math.floor(x3 + 0.5)
+            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+                continue
+
+            fa += ft[i3, i2, i1]
+            valid_count += 1
+
+    if valid_count > 0:
+        fa /= np.float32(valid_count)
+    return fa, valid_count
+
+
+def _accumulate_surface_votes(
+    c1: int,
+    c2: int,
+    c3: int,
+    rv: int,
+    rw: int,
+    fa: np.float32,
+    vp_value: np.float32,
+    vt_value: np.float32,
+    align_i3: bool,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    fe: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    vm: np.ndarray,
+) -> None:
+    if NUMBA_AVAILABLE:
+        _accumulate_surface_votes_numba(
+            c1,
+            c2,
+            c3,
+            rv,
+            rw,
+            fa,
+            vp_value,
+            vt_value,
+            align_i3,
+            normal,
+            dip,
+            strike,
+            surface,
+            fe,
+            vp,
+            vt,
+            vm,
+        )
+        return
+    _accumulate_surface_votes_python(
+        c1,
+        c2,
+        c3,
+        rv,
+        rw,
+        fa,
+        vp_value,
+        vt_value,
+        align_i3,
+        normal,
+        dip,
+        strike,
+        surface,
+        fe,
+        vp,
+        vt,
+        vm,
+    )
+
+
+def _accumulate_surface_votes_python(
+    c1: int,
+    c2: int,
+    c3: int,
+    rv: int,
+    rw: int,
+    fa: np.float32,
+    vp_value: np.float32,
+    vt_value: np.float32,
+    align_i3: bool,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    fe: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    vm: np.ndarray,
+) -> None:
+    n3, n2, n1 = fe.shape
+    for kw in range(surface.shape[0]):
+        iw = kw - rw
+        dw1 = c1 + iw * strike[0]
+        dw2 = c2 + iw * strike[1]
+        dw3 = c3 + iw * strike[2]
+        for kv in range(surface.shape[1]):
+            iu = surface[kw, kv]
+            iv = kv - rv
+            x1 = iu * normal[0] + iv * dip[0] + dw1
+            x2 = iu * normal[1] + iv * dip[1] + dw2
+            x3 = iu * normal[2] + iv * dip[2] + dw3
+            i1 = math.floor(float(x1) + 0.5)
+            i2 = math.floor(float(x2) + 0.5)
+            i3 = math.floor(float(x3) + 0.5)
+            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+                continue
+
+            _add_surface_vote(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
+            if align_i3:
+                _add_surface_vote(i3 - 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
+                _add_surface_vote(i3 + 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
+            else:
+                _add_surface_vote(i3, i2 - 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
+                _add_surface_vote(i3, i2 + 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
+
+
+@njit(cache=True)
+def _accumulate_surface_votes_numba(
+    c1: int,
+    c2: int,
+    c3: int,
+    rv: int,
+    rw: int,
+    fa: np.float32,
+    vp_value: np.float32,
+    vt_value: np.float32,
+    align_i3: bool,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    surface: np.ndarray,
+    fe: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    vm: np.ndarray,
+) -> None:
+    n3, n2, n1 = fe.shape
+    for kw in range(surface.shape[0]):
+        iw = kw - rw
+        dw1 = c1 + iw * strike[0]
+        dw2 = c2 + iw * strike[1]
+        dw3 = c3 + iw * strike[2]
+        for kv in range(surface.shape[1]):
+            iu = surface[kw, kv]
+            iv = kv - rv
+            x1 = iu * normal[0] + iv * dip[0] + dw1
+            x2 = iu * normal[1] + iv * dip[1] + dw2
+            x3 = iu * normal[2] + iv * dip[2] + dw3
+            i1 = math.floor(x1 + 0.5)
+            i2 = math.floor(x2 + 0.5)
+            i3 = math.floor(x3 + 0.5)
+            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+                continue
+
+            _add_surface_vote_numba(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
+            if align_i3:
+                _add_surface_vote_numba(
+                    i3 - 1,
+                    i2,
+                    i1,
+                    fa,
+                    vp_value,
+                    vt_value,
+                    fe,
+                    vp,
+                    vt,
+                    vm,
+                )
+                _add_surface_vote_numba(
+                    i3 + 1,
+                    i2,
+                    i1,
+                    fa,
+                    vp_value,
+                    vt_value,
+                    fe,
+                    vp,
+                    vt,
+                    vm,
+                )
+            else:
+                _add_surface_vote_numba(
+                    i3,
+                    i2 - 1,
+                    i1,
+                    fa,
+                    vp_value,
+                    vt_value,
+                    fe,
+                    vp,
+                    vt,
+                    vm,
+                )
+                _add_surface_vote_numba(
+                    i3,
+                    i2 + 1,
+                    i1,
+                    fa,
+                    vp_value,
+                    vt_value,
+                    fe,
+                    vp,
+                    vt,
+                    vm,
+                )
+
+
+def _add_surface_vote(
+    i3: int,
+    i2: int,
+    i1: int,
+    fa: np.float32,
+    vp_value: np.float32,
+    vt_value: np.float32,
+    fe: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    vm: np.ndarray,
+) -> None:
+    n3, n2, n1 = fe.shape
+    if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+        return
+    fe[i3, i2, i1] += fa
+    _update_orientation_if_stronger(i3, i2, i1, fa, vp_value, vt_value, vp, vt, vm)
+
+
+@njit(cache=True)
+def _add_surface_vote_numba(
+    i3: int,
+    i2: int,
+    i1: int,
+    fa: np.float32,
+    vp_value: np.float32,
+    vt_value: np.float32,
+    fe: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    vm: np.ndarray,
+) -> None:
+    n3, n2, n1 = fe.shape
+    if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+        return
+    fe[i3, i2, i1] += fa
+    if fa > vm[i3, i2, i1]:
+        vm[i3, i2, i1] = fa
+        vp[i3, i2, i1] = vp_value
+        vt[i3, i2, i1] = vt_value
 
 
 def _update_orientation_if_stronger(
