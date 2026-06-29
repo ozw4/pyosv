@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from pyosv.dp import (
+    accumulate_2d,
     accumulate_forward_2d,
     backtrack_reverse_2d,
     find_path_2d,
@@ -91,6 +92,19 @@ def test_accumulate_and_backtrack_follow_straight_valley() -> None:
     assert path.shape == (12,)
     np.testing.assert_allclose(path, 0.0, atol=0.01)
     assert np.isfinite(path).all()
+
+
+@pytest.mark.parametrize(("direction", "start_index"), [(1, 0), (-1, -1)])
+def test_accumulate_2d_preserves_start_row_with_negative_cost(
+    direction: int,
+    start_index: int,
+) -> None:
+    cost = np.zeros((2, 3), dtype=np.float32)
+    cost[start_index, 0] = -5.0
+
+    accumulated = accumulate_2d(cost, bstrain=1, direction=direction)
+
+    np.testing.assert_array_equal(accumulated[start_index], cost[start_index])
 
 
 def test_find_path_2d_horizontal_valley_returns_constant_lag() -> None:

@@ -62,9 +62,9 @@ def accumulate_2d(cost: np.ndarray, *, bstrain: int, direction: int = 1) -> np.n
     step = 1 if direction_int > 0 else -1
 
     accumulated = np.empty_like(cost_array, dtype=np.float32)
-    accumulated[start, :] = 0.0
+    accumulated[start, :] = cost_array[start, :]
 
-    for ii in range(start, stop, step):
+    for ii in range(start + step, stop, step):
         ji = min(max(ii - step, 0), ni_last)
         jb = min(max(ii - step * bstrain_int, 0), ni_last)
 
