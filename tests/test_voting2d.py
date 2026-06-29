@@ -418,6 +418,87 @@ def test_path_voting_is_deterministic_for_same_seed_and_inputs() -> None:
         np.testing.assert_array_equal(first_array, second_array)
 
 
+def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
+    voter = OptimalPathVoter(ru=1, rv=2)
+    ft = np.zeros((7, 8), dtype=np.float32)
+    pt = np.zeros_like(ft)
+
+    fv, w1, w2 = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt)
+
+    for array in (fv, w1, w2):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+        np.testing.assert_array_equal(array, np.zeros_like(ft))
+
+
+def test_apply_voting_rejects_mismatched_shapes() -> None:
+    voter = OptimalPathVoter(ru=1, rv=2)
+    ft = np.zeros((2, 3), dtype=np.float32)
+    pt = np.zeros((3, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt)
+
+
+@pytest.mark.parametrize(
+    ("ft_value", "pt_value", "message"),
+    [(np.nan, 0.0, "ft"), (0.0, np.inf, "pt")],
+)
+def test_apply_voting_rejects_nonfinite_inputs(
+    ft_value: float,
+    pt_value: float,
+    message: str,
+) -> None:
+    voter = OptimalPathVoter(ru=1, rv=2)
+    ft = np.zeros((3, 3), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    ft[1, 1] = ft_value
+    pt[1, 1] = pt_value
+
+    with pytest.raises(ValueError, match=message):
+        voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt)
+
+
+def test_apply_voting_highlights_simple_fault_like_line() -> None:
+    voter = OptimalPathVoter(ru=1, rv=3)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft = np.zeros((15, 15), dtype=np.float64)
+    pt = np.zeros_like(ft)
+    ft[7, 3:12] = 0.9
+
+    fv, w1, w2 = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt)
+
+    assert fv.shape == ft.shape
+    assert w1.shape == ft.shape
+    assert w2.shape == ft.shape
+    assert fv.dtype == np.float32
+    assert w1.dtype == np.float32
+    assert w2.dtype == np.float32
+    assert np.isfinite(fv).all()
+    assert np.isfinite(w1).all()
+    assert np.isfinite(w2).all()
+    assert fv.min() >= -1e-6
+    assert fv.max() <= 1.0 + 1e-6
+    assert fv[7, 4:11].mean() > fv[[3, 11], 4:11].mean()
+
+
+def test_apply_voting_is_deterministic_for_same_inputs() -> None:
+    voter = OptimalPathVoter(ru=1, rv=3)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft = np.zeros((15, 15), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    ft[7, 3:12] = 0.9
+
+    first = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt)
+    second = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
 def test_seed_to_image_keeps_seed_values_above_threshold() -> None:
     voter = OptimalPathVoter(ru=3, rv=4)
     cells = [FaultCell2(1, 0, 0.7, 20.0), FaultCell2(0, 1, 0.8, 30.0)]

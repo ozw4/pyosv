@@ -113,6 +113,29 @@ class OptimalPathVoter:
 
         return [FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1])]
 
+    def apply_voting(
+        self,
+        d: int,
+        fm: float,
+        ft: np.ndarray,
+        pt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run 2D path voting for all selected seeds."""
+
+        ft_array, pt_array = _validate_matching_finite_arrays2(ft, pt, "ft", "pt")
+        seeds = self.pick_seeds(d, fm, ft_array, pt_array)
+
+        fe = np.zeros_like(ft_array, dtype=np.float32)
+        fc = np.zeros_like(ft_array, dtype=np.float32)
+        w1 = np.zeros_like(ft_array, dtype=np.float32)
+        w2 = np.zeros_like(ft_array, dtype=np.float32)
+
+        for seed in seeds:
+            self._path_voting(seed, ft_array, fc, fe, w1, w2)
+
+        fv = _normalize_and_power_2d(fe)
+        return fv, w1, w2
+
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
 
@@ -347,6 +370,35 @@ def _validate_matching_2d_arrays(
         raise ValueError(f"{first_name} and {second_name} shapes must match")
 
     return first_array, second_array
+
+
+def _validate_matching_finite_arrays2(
+    first: np.ndarray,
+    second: np.ndarray,
+    first_name: str,
+    second_name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    first_array, second_array = _validate_matching_2d_arrays(
+        first,
+        second,
+        first_name,
+        second_name,
+    )
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            first_float32 = first_array.astype(np.float32, copy=False)
+            second_float32 = second_array.astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{first_name} and {second_name} must contain numeric finite values",
+        ) from exc
+
+    if not np.isfinite(first_float32).all():
+        raise ValueError(f"{first_name} must contain only finite values")
+    if not np.isfinite(second_float32).all():
+        raise ValueError(f"{second_name} must contain only finite values")
+
+    return first_float32, second_float32
 
 
 def _validate_matching_arrays2(
