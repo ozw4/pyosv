@@ -12,6 +12,7 @@ import numpy as np
 from pyosv.cells import FaultCell2
 from pyosv.dp import find_path_2d, shift_range, strain_to_bstrain, update_shift_ranges
 from pyosv.filters import smooth2d
+from pyosv.interp import sample2
 
 __all__ = ["OptimalPathVoter"]
 
@@ -135,6 +136,24 @@ class OptimalPathVoter:
 
         fv = _normalize_and_power_2d(fe)
         return fv, w1, w2
+
+    def thin(self, f: np.ndarray, w1: np.ndarray, w2: np.ndarray) -> np.ndarray:
+        """Keep 2D voting-score maxima along the local vector field."""
+
+        f_array, w1_array, w2_array = _validate_matching_finite_arrays2_many(
+            (f, w1, w2),
+            ("f", "w1", "w2"),
+        )
+        n2, n1 = f_array.shape
+        i2, i1 = np.indices((n2, n1), dtype=np.float32)
+
+        fp = sample2(f_array, i1 + w1_array, i2 + w2_array)
+        fm = sample2(f_array, i1 - w1_array, i2 - w2_array)
+        keep = (fp < f_array) & (fm < f_array)
+
+        thinned = np.zeros((n2, n1), dtype=np.float32)
+        thinned[keep] = f_array[keep]
+        return thinned
 
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
@@ -399,6 +418,27 @@ def _validate_matching_finite_arrays2(
         raise ValueError(f"{second_name} must contain only finite values")
 
     return first_float32, second_float32
+
+
+def _validate_matching_finite_arrays2_many(
+    arrays: tuple[np.ndarray, ...],
+    names: tuple[str, ...],
+) -> tuple[np.ndarray, ...]:
+    validated = _validate_matching_arrays2(arrays, names)
+    finite_arrays: list[np.ndarray] = []
+    for array, name in zip(validated, names):
+        try:
+            with np.errstate(over="ignore", invalid="ignore"):
+                finite_array = array.astype(np.float32, copy=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must contain numeric finite values") from exc
+
+        if not np.isfinite(finite_array).all():
+            raise ValueError(f"{name} must contain only finite values")
+
+        finite_arrays.append(finite_array)
+
+    return tuple(finite_arrays)
 
 
 def _validate_matching_arrays2(

@@ -460,6 +460,105 @@ def test_apply_voting_rejects_nonfinite_inputs(
         voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt)
 
 
+def test_thin_keeps_horizontal_local_maximum() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((3, 5), dtype=np.float32)
+    f[1] = np.array([0.0, 1.0, 3.0, 1.0, 0.0], dtype=np.float32)
+    w1 = np.ones_like(f)
+    w2 = np.zeros_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    expected = np.zeros_like(f)
+    expected[1, 2] = 3.0
+    assert thinned.shape == f.shape
+    assert thinned.dtype == np.float32
+    assert np.isfinite(thinned).all()
+    np.testing.assert_array_equal(thinned, expected)
+
+
+def test_thin_keeps_vertical_local_maximum() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((5, 3), dtype=np.float32)
+    f[:, 1] = np.array([0.0, 1.0, 4.0, 1.0, 0.0], dtype=np.float32)
+    w1 = np.zeros_like(f)
+    w2 = np.ones_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    expected = np.zeros_like(f)
+    expected[2, 1] = 4.0
+    np.testing.assert_array_equal(thinned, expected)
+
+
+def test_thin_uses_fractional_linear_samples() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((3, 5), dtype=np.float32)
+    f[1] = np.array([0.0, 2.0, 3.0, 2.0, 0.0], dtype=np.float32)
+    w1 = np.full_like(f, 0.5)
+    w2 = np.zeros_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    expected = np.zeros_like(f)
+    expected[1, 2] = 3.0
+    np.testing.assert_array_equal(thinned, expected)
+
+
+def test_thin_zero_vector_field_returns_zero_scores() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.array([[0.0, 2.0, 0.0], [1.0, 5.0, 1.0]], dtype=np.float32)
+    w1 = np.zeros_like(f)
+    w2 = np.zeros_like(f)
+
+    thinned = voter.thin(f, w1, w2)
+
+    np.testing.assert_array_equal(thinned, np.zeros_like(f))
+
+
+def test_thin_rejects_mismatched_shapes() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((2, 3), dtype=np.float32)
+    w1 = np.zeros((3, 2), dtype=np.float32)
+    w2 = np.zeros_like(f)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.thin(f, w1, w2)
+
+
+@pytest.mark.parametrize(
+    ("f_value", "w1_value", "w2_value", "message"),
+    [(np.nan, 0.0, 0.0, "f"), (0.0, np.inf, 0.0, "w1"), (0.0, 0.0, np.nan, "w2")],
+)
+def test_thin_rejects_nonfinite_inputs(
+    f_value: float,
+    w1_value: float,
+    w2_value: float,
+    message: str,
+) -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+    f = np.zeros((3, 3), dtype=np.float32)
+    w1 = np.zeros_like(f)
+    w2 = np.zeros_like(f)
+    f[1, 1] = f_value
+    w1[1, 1] = w1_value
+    w2[1, 1] = w2_value
+
+    with pytest.raises(ValueError, match=message):
+        voter.thin(f, w1, w2)
+
+
+def test_thin_rejects_non_2d_arrays() -> None:
+    voter = OptimalPathVoter(ru=1, rv=1)
+
+    with pytest.raises(ValueError, match="f must be a 2D array"):
+        voter.thin(
+            np.zeros((1, 2, 3), dtype=np.float32),
+            np.zeros((2, 3), dtype=np.float32),
+            np.zeros((2, 3), dtype=np.float32),
+        )
+
+
 def test_apply_voting_highlights_simple_fault_like_line() -> None:
     voter = OptimalPathVoter(ru=1, rv=3)
     voter.set_attribute_smoothing(0)
