@@ -10,7 +10,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from pyosv.cells import FaultCell2
-from pyosv.dp import shift_range, strain_to_bstrain, update_shift_ranges
+from pyosv.dp import find_path_2d, shift_range, strain_to_bstrain, update_shift_ranges
 from pyosv.filters import smooth2d
 
 __all__ = ["OptimalPathVoter"]
@@ -158,6 +158,71 @@ class OptimalPathVoter:
 
         return costs
 
+    def _path_voting(
+        self,
+        cell: FaultCell2,
+        ft: np.ndarray,
+        fc: np.ndarray,
+        fe: np.ndarray,
+        w1: np.ndarray,
+        w2: np.ndarray,
+    ) -> None:
+        """Accumulate one seed cell's 2D optimal-path vote in-place."""
+
+        ft_array, fc_array, fe_array, w1_array, w2_array = _validate_matching_arrays2(
+            (ft, fc, fe, w1, w2),
+            ("ft", "fc", "fe", "w1", "w2"),
+        )
+        n2, n1 = ft_array.shape
+        c1 = cell.i1
+        c2 = cell.i2
+        if not 0 <= c1 < n1:
+            raise ValueError("cell.i1 must be inside the image bounds")
+        if not 0 <= c2 < n2:
+            raise ValueError("cell.i2 must be inside the image bounds")
+
+        normal = cell.fault_normal()
+        strike = cell.fault_strike_vector()
+        costs = self.samples_in_uv_box(c1, c2, normal, strike, ft_array)
+        path = find_path_2d(
+            costs,
+            lmin=self.lmin,
+            bstrain=self.bstrain1,
+            attribute_smoothing=self.attribute_smoothing,
+            path_smoothing=self.path_smoothing1,
+        )
+
+        valid_path_samples: list[tuple[int, int, float, float]] = []
+        fa = np.float32(0.0)
+        for kv, iu in enumerate(path):
+            if kv == 0:
+                p2i = np.float32(path[1] - iu) if path.size > 1 else np.float32(0.0)
+            else:
+                p2i = np.float32(iu - path[kv - 1])
+
+            iv = kv - self.rv
+            x1 = c1 + iu * normal[0] + iv * strike[0]
+            x2 = c2 + iu * normal[1] + iv * strike[1]
+            i1 = math.floor(float(x1) + 0.5)
+            i2 = math.floor(float(x2) + 0.5)
+            if i1 <= 0 or i1 >= n1 - 1 or i2 <= 0 or i2 >= n2 - 1:
+                continue
+
+            fa += ft_array[i2, i1]
+            psi = np.float32(1.0 / math.sqrt(float(p2i * p2i + np.float32(1.0))))
+            valid_path_samples.append((i2, i1, np.float32(-psi), p2i * psi))
+
+        if not valid_path_samples:
+            return
+
+        fa /= np.float32(len(valid_path_samples))
+        for i2, i1, p1i, p2i in valid_path_samples:
+            fe_array[i2, i1] += fa
+            if fa > fc_array[i2, i1]:
+                fc_array[i2, i1] = fa
+                w1_array[i2, i1] = normal[0] * p1i + strike[0] * p2i
+                w2_array[i2, i1] = normal[1] * p1i + strike[1] * p2i
+
     def seed_to_image(
         self,
         fmin: float,
@@ -282,6 +347,25 @@ def _validate_matching_2d_arrays(
         raise ValueError(f"{first_name} and {second_name} shapes must match")
 
     return first_array, second_array
+
+
+def _validate_matching_arrays2(
+    arrays: tuple[np.ndarray, ...],
+    names: tuple[str, ...],
+) -> tuple[np.ndarray, ...]:
+    if len(arrays) != len(names):
+        raise ValueError("arrays and names must have the same length")
+    if not arrays:
+        raise ValueError("at least one array is required")
+
+    validated = tuple(_validate_array2(array, name) for array, name in zip(arrays, names))
+    shape = validated[0].shape
+    first_name = names[0]
+    for array, name in zip(validated[1:], names[1:]):
+        if array.shape != shape:
+            raise ValueError(f"{first_name} and {name} shapes must match")
+
+    return validated
 
 
 def _validate_array2(array: np.ndarray, name: str) -> np.ndarray:

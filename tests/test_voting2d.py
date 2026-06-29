@@ -344,6 +344,80 @@ def test_samples_in_uv_box_rounds_and_clamps_near_image_boundary() -> None:
     assert costs[0, 0] == pytest.approx(1.0 - fx[0, 0])
 
 
+def test_path_voting_adds_votes_on_high_likelihood_path() -> None:
+    voter = OptimalPathVoter(ru=1, rv=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft = np.zeros((11, 11), dtype=np.float32)
+    ft[5, 3:8] = 0.8
+    fc = np.zeros_like(ft)
+    fe = np.zeros_like(ft)
+    w1 = np.zeros_like(ft)
+    w2 = np.zeros_like(ft)
+
+    voter._path_voting(FaultCell2(5, 5, 0.8, 0.0), ft, fc, fe, w1, w2)
+
+    assert fe[5, 3:8].sum() == pytest.approx(4.0)
+    assert np.count_nonzero(fe) == 5
+    np.testing.assert_allclose(fe[5, 3:8], 0.8)
+    np.testing.assert_allclose(fc[5, 3:8], 0.8)
+    np.testing.assert_allclose(w1[5, 3:8], 0.0, atol=1e-7)
+    np.testing.assert_allclose(w2[5, 3:8], -1.0, atol=1e-7)
+
+
+def test_path_voting_keeps_stronger_vector_when_later_vote_is_weaker() -> None:
+    voter = OptimalPathVoter(ru=1, rv=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft_strong = np.zeros((11, 11), dtype=np.float32)
+    ft_strong[5, 3:8] = 0.8
+    ft_weak = np.zeros((11, 11), dtype=np.float32)
+    ft_weak[3:8, 5] = 0.2
+    fc = np.zeros_like(ft_strong)
+    fe = np.zeros_like(ft_strong)
+    w1 = np.zeros_like(ft_strong)
+    w2 = np.zeros_like(ft_strong)
+
+    voter._path_voting(FaultCell2(5, 5, 0.8, 0.0), ft_strong, fc, fe, w1, w2)
+    voter._path_voting(FaultCell2(5, 5, 0.2, 90.0), ft_weak, fc, fe, w1, w2)
+
+    assert fe[5, 5] == pytest.approx(1.0)
+    assert fc[5, 5] == pytest.approx(0.8)
+    assert w1[5, 5] == pytest.approx(0.0, abs=1e-7)
+    assert w2[5, 5] == pytest.approx(-1.0, abs=1e-7)
+
+
+def test_path_voting_skips_seed_with_no_valid_interior_path_samples() -> None:
+    voter = OptimalPathVoter(ru=1, rv=2)
+    ft = np.ones((3, 3), dtype=np.float32)
+    fc = np.zeros_like(ft)
+    fe = np.zeros_like(ft)
+    w1 = np.zeros_like(ft)
+    w2 = np.zeros_like(ft)
+
+    voter._path_voting(FaultCell2(0, 0, 1.0, 0.0), ft, fc, fe, w1, w2)
+
+    for array in (fc, fe, w1, w2):
+        assert np.isfinite(array).all()
+        np.testing.assert_array_equal(array, np.zeros_like(array))
+
+
+def test_path_voting_is_deterministic_for_same_seed_and_inputs() -> None:
+    voter = OptimalPathVoter(ru=1, rv=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft = np.zeros((11, 11), dtype=np.float32)
+    ft[5, 3:8] = 0.8
+    first = tuple(np.zeros_like(ft) for _ in range(4))
+    second = tuple(np.zeros_like(ft) for _ in range(4))
+
+    voter._path_voting(FaultCell2(5, 5, 0.8, 0.0), ft, *first)
+    voter._path_voting(FaultCell2(5, 5, 0.8, 0.0), ft, *second)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
 def test_seed_to_image_keeps_seed_values_above_threshold() -> None:
     voter = OptimalPathVoter(ru=3, rv=4)
     cells = [FaultCell2(1, 0, 0.7, 20.0), FaultCell2(0, 1, 0.8, 30.0)]
