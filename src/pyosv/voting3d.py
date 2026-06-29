@@ -195,6 +195,15 @@ class OptimalSurfaceVoter:
         fv = _normalize_and_power_3d(fe)
         return fv, vp, vt
 
+    def thin(self, fv: np.ndarray, vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
+        """Return a placeholder 3D thinned voting-score volume."""
+
+        (fv_array, _, _) = _validate_matching_finite_arrays3_many(
+            (fv, vp, vt),
+            ("fv", "vp", "vt"),
+        )
+        return np.zeros(fv_array.shape, dtype=np.float32)
+
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
 

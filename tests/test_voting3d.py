@@ -624,6 +624,80 @@ def test_apply_voting_rejects_nonfinite_inputs(
         voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
 
 
+def test_thin_returns_finite_float32_volume_without_modifying_inputs() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    vp = np.full_like(fv, 30.0)
+    vt = np.full_like(fv, 45.0)
+    fv_before = fv.copy()
+    vp_before = vp.copy()
+    vt_before = vt.copy()
+
+    fvt = voter.thin(fv, vp, vt)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    np.testing.assert_array_equal(fvt, np.zeros_like(fv))
+    np.testing.assert_array_equal(fv, fv_before)
+    np.testing.assert_array_equal(vp, vp_before)
+    np.testing.assert_array_equal(vt, vt_before)
+
+
+def test_thin_rejects_mismatched_shapes() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((2, 3, 4), dtype=np.float32)
+    vp = np.zeros((2, 4, 3), dtype=np.float32)
+    vt = np.zeros_like(fv)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.thin(fv, vp, vt)
+
+
+@pytest.mark.parametrize(
+    ("fv_value", "vp_value", "vt_value", "message"),
+    [
+        (np.nan, 0.0, 0.0, "fv"),
+        (0.0, np.inf, 0.0, "vp"),
+        (0.0, 0.0, np.nan, "vt"),
+    ],
+)
+def test_thin_rejects_nonfinite_inputs(
+    fv_value: float,
+    vp_value: float,
+    vt_value: float,
+    message: str,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    fv[1, 1, 1] = fv_value
+    vp[1, 1, 1] = vp_value
+    vt[1, 1, 1] = vt_value
+
+    with pytest.raises(ValueError, match=message):
+        voter.thin(fv, vp, vt)
+
+
+@pytest.mark.parametrize(
+    "fv",
+    [
+        np.zeros((2, 3), dtype=np.float32),
+        np.zeros((1, 2, 3, 4), dtype=np.float32),
+    ],
+)
+def test_thin_rejects_non_3d_arrays(fv: np.ndarray) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="fv must be a 3D array"):
+        voter.thin(
+            fv,
+            np.zeros((2, 3, 4), dtype=np.float32),
+            np.zeros((2, 3, 4), dtype=np.float32),
+        )
+
+
 def test_apply_voting_highlights_simple_fault_like_plane() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     voter.set_attribute_smoothing(0)
