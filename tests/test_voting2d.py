@@ -649,6 +649,25 @@ def test_apply_voting_highlights_simple_fault_like_line() -> None:
     assert fv[7, 4:11].mean() > fv[[3, 11], 4:11].mean()
 
 
+def test_apply_voting_then_thin_returns_sparse_valid_scores() -> None:
+    voter = OptimalPathVoter(ru=1, rv=3)
+    voter.set_attribute_smoothing(0)
+    voter.set_path_smoothing(0.0)
+    ft = np.zeros((15, 15), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    ft[7, 3:12] = 0.9
+
+    fv, w1, w2 = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt)
+    fvt = voter.thin(fv, w1, w2)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    assert np.count_nonzero(fvt) <= np.count_nonzero(fv)
+    assert fvt.max() > 0.0
+    np.testing.assert_array_equal(fvt[fvt > 0.0], fv[fvt > 0.0])
+
+
 def test_apply_voting_highlights_vertical_constant_angle_line() -> None:
     voter = OptimalPathVoter(ru=1, rv=4)
     voter.set_attribute_smoothing(0)

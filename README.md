@@ -60,7 +60,14 @@ components associated with the strongest local vote at each image sample:
 
 ```python
 fv, w1, w2 = voter.apply_voting(d=4, fm=0.3, ft=ft, pt=pt)
+fvt = voter.thin(fv, w1, w2)
 ```
+
+`OptimalPathVoter.thin` keeps local maxima from the vote image along the
+returned vector field and returns a thinned float32 vote image with the same
+shape. The thinning interpolation uses the package SciPy adapter
+(`scipy.ndimage.map_coordinates` through `pyosv.interp.sample2`) rather than
+Mines JTK sinc interpolation.
 
 ## Equivalence Policy
 
