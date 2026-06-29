@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
+
+from run_2d_reference import run_example as run_reference_example
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +30,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for generated DAT outputs such as fv_py.dat and fvt_py.dat.",
     )
     parser.add_argument(
+        "--ru",
+        type=int,
+        default=15,
+        help="Voting half-width in the local normal direction.",
+    )
+    parser.add_argument(
+        "--rv",
+        type=int,
+        default=30,
+        help="Voting half-width in the local strike direction.",
+    )
+    parser.add_argument(
+        "--d",
+        type=int,
+        default=4,
+        help="Seed exclusion distance in samples.",
+    )
+    parser.add_argument(
+        "--fm",
+        type=float,
+        default=0.3,
+        help="Minimum fault-likelihood value for seed picking.",
+    )
+    parser.add_argument(
+        "--strain-max",
+        type=float,
+        default=0.25,
+        help="Maximum fault-curve strain.",
+    )
+    parser.add_argument(
+        "--path-smoothing",
+        type=float,
+        default=2.0,
+        help="Smoothing extent used for extracted fault paths.",
+    )
+    parser.add_argument(
         "--no-thin",
         action="store_true",
         help="Skip the thinning step and only write fv_py.dat.",
@@ -44,9 +81,17 @@ def main(argv: list[str] | None = None) -> int:
         output_paths = run_example(
             reference_root_arg=args.reference_root,
             output_dir=args.output_dir,
+            ru=args.ru,
+            rv=args.rv,
+            d=args.d,
+            fm=args.fm,
+            strain_max=args.strain_max,
+            path_smoothing=args.path_smoothing,
             thin=not args.no_thin,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
+        import sys
+
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -59,63 +104,26 @@ def run_example(
     *,
     reference_root_arg: Path | None,
     output_dir: Path,
-    thin: bool,
+    ru: int = 15,
+    rv: int = 30,
+    d: int = 4,
+    fm: float = 0.3,
+    strain_max: float = 0.25,
+    path_smoothing: float = 2.0,
+    thin: bool = True,
 ) -> list[Path]:
-    from pyosv.io import read_dat, write_dat
-    from pyosv.reference import REFERENCE_DATASETS_2D, reference_root, resolve_reference_file
-    from pyosv.voting2d import OptimalPathVoter
-
-    dataset = REFERENCE_DATASETS_2D["f3d2d"]
-    root = reference_root(reference_root_arg)
-    root_resolved = root.resolve(strict=False)
-    output_dir_resolved = output_dir.resolve(strict=False)
-    if output_dir_resolved == root_resolved or output_dir_resolved.is_relative_to(root_resolved):
-        raise ValueError(f"--output-dir must not be inside reference root: {root}")
-
-    ft_path = _require_file(resolve_reference_file(dataset, "ft.dat", root=root))
-    pt_path = _require_file(resolve_reference_file(dataset, "pt.dat", root=root))
-
-    ft = read_dat(ft_path, dataset.shape, endian=dataset.endian)
-    pt = read_dat(pt_path, dataset.shape, endian=dataset.endian)
-    _require_finite("ft.dat", ft)
-    _require_finite("pt.dat", pt)
-
-    voter = OptimalPathVoter(15, 30)
-    voter.set_strain_max(0.25)
-    voter.set_path_smoothing(2)
-
-    fv, w1, w2 = voter.apply_voting(d=4, fm=0.3, ft=ft, pt=pt)
-    _require_finite("fv_py.dat", fv)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if not output_dir.is_dir():
-        raise NotADirectoryError(f"--output-dir is not a directory: {output_dir}")
-
-    output_paths = [
-        write_dat(output_dir / "fv_py.dat", fv, endian=dataset.endian),
-    ]
-
-    if thin:
-        fvt = voter.thin(fv, w1, w2)
-        _require_finite("fvt_py.dat", fvt)
-        output_paths.append(write_dat(output_dir / "fvt_py.dat", fvt, endian=dataset.endian))
-
-    return output_paths
-
-
-def _require_file(path: Path) -> Path:
-    if not path.exists():
-        raise FileNotFoundError(f"reference file not found: {path}")
-    if not path.is_file():
-        raise FileNotFoundError(f"reference path is not a file: {path}")
-    return path
-
-
-def _require_finite(name: str, array: object) -> None:
-    import numpy as np
-
-    if not np.isfinite(array).all():
-        raise ValueError(f"{name} contains non-finite values")
+    return run_reference_example(
+        dataset_name="f3d2d",
+        reference_root_arg=reference_root_arg,
+        output_dir=output_dir,
+        ru=ru,
+        rv=rv,
+        d=d,
+        fm=fm,
+        strain_max=strain_max,
+        path_smoothing=path_smoothing,
+        thin=thin,
+    )
 
 
 if __name__ == "__main__":

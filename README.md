@@ -6,7 +6,7 @@ The project uses the local `reference_osv/` directory as a read-only reference i
 
 ## Status
 
-This repository has the package scaffold plus the initial DAT I/O, reference dataset metadata, and early 2D voting utilities. Additional voting kernels, scanners, and skinning will be implemented in later issues.
+This repository has the package scaffold plus DAT I/O, reference dataset metadata, and the implemented 2D optimal-path voting workflow. Additional voting kernels, scanners, and skinning will be implemented in later issues.
 
 ## DAT I/O
 
@@ -32,9 +32,15 @@ See `docs/dat_io.md` for detailed I/O behavior and reference fixture test policy
 
 ## 2D Voting
 
-`OptimalPathVoter.pick_seeds` extracts sparse 2D seed cells from fault
-likelihood (`ft`) and fault strike/angle (`pt`) images using the repository
-shape convention `(n2, n1)`:
+Install the package in development mode before running examples:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+The 2D workflow can run from existing reference `ft.dat` and `pt.dat` files.
+`reference_osv/` is a read-only bind mount for reference inputs only; it is
+optional for normal tests and must not be used for generated outputs.
 
 ```python
 from pyosv.io import read_dat
@@ -45,29 +51,40 @@ dataset = REFERENCE_DATASETS_2D["f3d2d"]
 ft = read_dat(resolve_reference_file(dataset, "ft.dat"), dataset.shape, endian=dataset.endian)
 pt = read_dat(resolve_reference_file(dataset, "pt.dat"), dataset.shape, endian=dataset.endian)
 
-voter = OptimalPathVoter(ru=15, rv=30)
-seeds = voter.pick_seeds(d=4, fm=0.3, ft=ft, pt=pt)
+voter = OptimalPathVoter(15, 30)
+voter.set_strain_max(0.25)
+voter.set_path_smoothing(2)
+fv, w1, w2 = voter.apply_voting(d=4, fm=0.3, ft=ft, pt=pt)
+fvt = voter.thin(fv, w1, w2)
 ```
-
-The returned cells use `(i1, i2)` coordinates inside the image, with `fl`
-holding the seed fault likelihood and `fp` holding the corresponding `pt`
-sample.
 
 `OptimalPathVoter.apply_voting` runs deterministic 2D optimal-path voting over
 the selected seeds and returns `(fv, w1, w2)` arrays with the same `(n2, n1)`
 shape. `fv` is the normalized float32 vote image, and `w1`/`w2` are the vector
-components associated with the strongest local vote at each image sample:
-
-```python
-fv, w1, w2 = voter.apply_voting(d=4, fm=0.3, ft=ft, pt=pt)
-fvt = voter.thin(fv, w1, w2)
-```
+components associated with the strongest local vote at each image sample.
 
 `OptimalPathVoter.thin` keeps local maxima from the vote image along the
 returned vector field and returns a thinned float32 vote image with the same
 shape. The thinning interpolation uses the package SciPy adapter
 (`scipy.ndimage.map_coordinates` through `pyosv.interp.sample2`) rather than
 Mines JTK sinc interpolation.
+
+Run the `f3d2d` reference workflow from the command line with an explicit output
+directory:
+
+```bash
+python examples/run_2d_f3d2d.py --output-dir outputs/f3d2d
+```
+
+For other supported 2D reference datasets, use:
+
+```bash
+python examples/run_2d_reference.py --dataset campos --output-dir outputs/campos
+```
+
+The example scripts read `ft.dat` and `pt.dat` from `reference_osv/` or
+`PYOSV_REFERENCE_OSV`, then write generated files such as `fv_py.dat` and
+`fvt_py.dat` under `--output-dir`. Keep that directory outside `reference_osv/`.
 
 ## Equivalence Policy
 
@@ -82,7 +99,8 @@ kernel details, boundary handling, and floating-point accumulation order.
 
 The shape convention is 2D `(n2, n1)` and 3D `(n3, n2, n1)`. The
 `reference_osv/` directory is a read-only bind mount for reference only; it is
-not part of the package and is not distributed.
+not part of the package and is not distributed. Default tests skip optional
+reference cases clearly when the mount or required `.dat` files are absent.
 
 ## Setup
 
