@@ -65,6 +65,6 @@ services:
         read_only: true
     working_dir: /workspace
     ports:
-      - "8000:8000"
+      - "8007:8000"
     stdin_open: true
     tty: true
