@@ -10,6 +10,14 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
+from pyosv.metrics import _dilate_mask as _dilate_ridge_mask
+from pyosv.metrics import top_percentile_mask
+
+_RIDGE_REFERENCE_ONLY_RGB = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+_RIDGE_CANDIDATE_ONLY_RGB = np.array([0.0, 0.25, 1.0], dtype=np.float32)
+_RIDGE_EXACT_OVERLAP_RGB = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+_RIDGE_BUFFERED_MATCH_RGB = np.array([0.0, 1.0, 1.0], dtype=np.float32)
+
 
 def require_matplotlib() -> Any:
     """Return ``matplotlib.pyplot`` or explain how to install it."""
@@ -143,6 +151,106 @@ def save_volume_comparison_slices(
     return written
 
 
+def ridge_mask(
+    volume: ArrayLike,
+    *,
+    percentile: float = 99.0,
+    positive_only: bool = True,
+) -> np.ndarray:
+    """Return a boolean sparse-ridge mask selected by value percentile.
+
+    With ``positive_only=True``, zero and negative values are never selected,
+    which keeps all-zero fault-likelihood volumes from becoming all-ridge masks.
+    """
+    return top_percentile_mask(
+        np.asarray(volume),
+        percentile,
+        positive_only=positive_only,
+    )
+
+
+def save_ridge_overlay_slice(
+    output_path: str | Path,
+    *,
+    reference: ArrayLike,
+    candidate: ArrayLike,
+    axis: str | int,
+    index: int,
+    percentile: float = 99.0,
+    buffer_radius: float = 0.0,
+    title: str | None = None,
+) -> Path:
+    """Save a static RGB ridge-overlap overlay for one 3D slice.
+
+    Color policy is local to this helper: reference-only ridge samples are red,
+    candidate-only samples are blue, exact overlap is white, buffered matches
+    are cyan, and the background is black.
+    """
+    masks = _ridge_overlay_masks(
+        reference,
+        candidate,
+        percentile=percentile,
+        buffer_radius=buffer_radius,
+    )
+    axis_name, _ = _normalize_axis(axis)
+    rgb = _ridge_overlay_rgb(
+        slice_2d(masks["reference"], axis_name, index),
+        slice_2d(masks["candidate"], axis_name, index),
+        reference_buffer=slice_2d(masks["reference_buffer"], axis_name, index),
+        candidate_buffer=slice_2d(masks["candidate_buffer"], axis_name, index),
+        has_buffer=buffer_radius > 0.0,
+    )
+    return _save_ridge_overlay_rgb(
+        output_path,
+        rgb,
+        title=title if title is not None else f"ridge overlay {axis_name}={index}",
+    )
+
+
+def save_buffered_ridge_overlay_slices(
+    output_dir: str | Path,
+    *,
+    reference: ArrayLike,
+    candidate: ArrayLike,
+    name: str,
+    slice_indices: dict[str, int] | None = None,
+    percentile: float = 99.0,
+    buffer_radius: float = 2.0,
+) -> dict[str, Path]:
+    """Save buffered ridge-overlap overlays for the center slice of each axis."""
+    masks = _ridge_overlay_masks(
+        reference,
+        candidate,
+        percentile=percentile,
+        buffer_radius=buffer_radius,
+    )
+    indices = select_center_slices(masks["reference"].shape)
+    if slice_indices is not None:
+        for axis, index in slice_indices.items():
+            axis_name, _ = _normalize_axis(axis)
+            indices[axis_name] = index
+
+    output_path = ensure_output_dir(output_dir)
+    written: dict[str, Path] = {}
+    for axis in ("i3", "i2", "i1"):
+        index = indices[axis]
+        rgb = _ridge_overlay_rgb(
+            slice_2d(masks["reference"], axis, index),
+            slice_2d(masks["candidate"], axis, index),
+            reference_buffer=slice_2d(masks["reference_buffer"], axis, index),
+            candidate_buffer=slice_2d(masks["candidate_buffer"], axis, index),
+            has_buffer=buffer_radius > 0.0,
+        )
+        panel_path = output_path / f"{name}_ridge_overlay_{axis}_{index}.png"
+        written[axis] = _save_ridge_overlay_rgb(
+            panel_path,
+            rgb,
+            title=f"{name} ridge overlay {axis}={index}",
+        )
+
+    return written
+
+
 def safe_percentile_threshold(volume: ArrayLike, percentile: float) -> float:
     """Return a finite percentile threshold for finite values in ``volume``."""
     _validate_percentile(percentile, "percentile")
@@ -221,3 +329,103 @@ def _validate_clip_percentiles(clip_percentiles: tuple[float, float]) -> tuple[f
     if high < low:
         raise ValueError("high clip percentile must be greater than or equal to low")
     return low, high
+
+
+def _ridge_overlay_masks(
+    reference: ArrayLike,
+    candidate: ArrayLike,
+    *,
+    percentile: float,
+    buffer_radius: float,
+) -> dict[str, np.ndarray]:
+    _validate_buffer_radius(buffer_radius)
+    reference_values = np.asarray(reference)
+    candidate_values = np.asarray(candidate)
+    if reference_values.shape != candidate_values.shape:
+        raise ValueError("reference and candidate must have the same shape")
+    if reference_values.ndim != 3:
+        raise ValueError("reference and candidate must be 3D (n3, n2, n1) arrays")
+
+    reference_mask = ridge_mask(reference_values, percentile=percentile)
+    candidate_mask = ridge_mask(candidate_values, percentile=percentile)
+    reference_buffer = _dilate_ridge_mask(reference_mask, buffer_radius)
+    candidate_buffer = _dilate_ridge_mask(candidate_mask, buffer_radius)
+    return {
+        "reference": reference_mask,
+        "candidate": candidate_mask,
+        "reference_buffer": reference_buffer,
+        "candidate_buffer": candidate_buffer,
+    }
+
+
+def _ridge_overlay_rgb(
+    reference_mask: np.ndarray,
+    candidate_mask: np.ndarray,
+    *,
+    reference_buffer: np.ndarray,
+    candidate_buffer: np.ndarray,
+    has_buffer: bool,
+) -> np.ndarray:
+    reference_values = np.asarray(reference_mask, dtype=bool)
+    candidate_values = np.asarray(candidate_mask, dtype=bool)
+    reference_buffer_values = np.asarray(reference_buffer, dtype=bool)
+    candidate_buffer_values = np.asarray(candidate_buffer, dtype=bool)
+    if reference_values.shape != candidate_values.shape:
+        raise ValueError("reference and candidate masks must have the same shape")
+    if reference_values.shape != reference_buffer_values.shape:
+        raise ValueError("reference mask and buffer must have the same shape")
+    if candidate_values.shape != candidate_buffer_values.shape:
+        raise ValueError("candidate mask and buffer must have the same shape")
+    if reference_values.ndim != 2:
+        raise ValueError("ridge overlay masks must be 2D")
+
+    exact_overlap = reference_values & candidate_values
+    buffered_match = np.zeros(reference_values.shape, dtype=bool)
+    if has_buffer:
+        candidate_in_reference_buffer = candidate_values & reference_buffer_values
+        reference_in_candidate_buffer = reference_values & candidate_buffer_values
+        buffered_match = (candidate_in_reference_buffer | reference_in_candidate_buffer) & (
+            ~exact_overlap
+        )
+
+    reference_only = reference_values & (~candidate_values) & (~buffered_match)
+    candidate_only = candidate_values & (~reference_values) & (~buffered_match)
+
+    rgb = np.zeros(reference_values.shape + (3,), dtype=np.float32)
+    rgb[reference_only] = _RIDGE_REFERENCE_ONLY_RGB
+    rgb[candidate_only] = _RIDGE_CANDIDATE_ONLY_RGB
+    rgb[buffered_match] = _RIDGE_BUFFERED_MATCH_RGB
+    rgb[exact_overlap] = _RIDGE_EXACT_OVERLAP_RGB
+    return rgb
+
+
+def _save_ridge_overlay_rgb(
+    output_path: str | Path,
+    rgb: np.ndarray,
+    *,
+    title: str | None,
+) -> Path:
+    output_file = Path(output_path)
+    if output_file.parent != Path(""):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    plt = require_matplotlib()
+    fig, ax = plt.subplots(figsize=(4.0, 4.0), constrained_layout=True)
+    try:
+        if title is not None:
+            ax.set_title(title)
+        ax.imshow(rgb, origin="upper", aspect="auto", interpolation="nearest")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig.savefig(output_file, dpi=150)
+    finally:
+        plt.close(fig)
+
+    return output_file
+
+
+def _validate_buffer_radius(buffer_radius: float) -> None:
+    if not np.isfinite(buffer_radius):
+        raise ValueError("buffer_radius must be finite")
+    if buffer_radius < 0.0:
+        raise ValueError("buffer_radius must be non-negative")
