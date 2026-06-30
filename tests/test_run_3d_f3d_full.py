@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import importlib
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from pyosv.f3d_reference import F3D_ENV_VAR
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES_DIR = REPO_ROOT / "examples"
+
+
+def _import_full_module(monkeypatch: pytest.MonkeyPatch) -> object:
+    monkeypatch.syspath_prepend(str(EXAMPLES_DIR))
+    sys.modules.pop("run_3d_f3d_full", None)
+    importlib.invalidate_caches()
+    return importlib.import_module("run_3d_f3d_full")
+
+
+def _synthetic_outputs(shape: tuple[int, int, int] = (4, 4, 4)) -> dict[str, np.ndarray]:
+    fv = np.zeros(shape, dtype=np.float32)
+    fvt = np.zeros(shape, dtype=np.float32)
+    fv[2, 2, 2] = 1.0
+    fvt[2, 2, 2] = 1.0
+    return {"fv_py.dat": fv, "fvt_py.dat": fvt}
+
+
+def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _import_full_module(monkeypatch)
+
+    args = module.build_parser().parse_args(["--output-dir", str(tmp_path)])
+
+    assert args.output_dir == tmp_path
+    assert args.data_root is None
+    assert args.sigma1 == 8.0
+    assert args.sigma2 == 8.0
+    assert args.phi_min == 0.0
+    assert args.phi_max == 360.0
+    assert args.theta_min == 65.0
+    assert args.theta_max == 80.0
+    assert args.ru == 10
+    assert args.rv == 20
+    assert args.rw == 30
+    assert args.d == 4
+    assert args.fm == 0.3
+    assert args.strain_max1 == 0.25
+    assert args.strain_max2 == 0.25
+    assert args.surface_smoothing1 == 2.0
+    assert args.surface_smoothing2 == 2.0
+    assert args.reuse_existing is False
+    assert args.skip_save_intermediates is False
+
+
+def test_output_dir_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_full_module(monkeypatch)
+
+    with pytest.raises(SystemExit):
+        module.build_parser().parse_args([])
+
+
+def test_ensure_output_not_in_data_root_rejects_equal_and_nested_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+
+    with pytest.raises(ValueError, match="inside the F3 data root"):
+        module.ensure_output_not_in_data_root(data_root, data_root)
+
+    with pytest.raises(ValueError, match="inside the F3 data root"):
+        module.ensure_output_not_in_data_root(data_root / "outputs", data_root)
+
+    assert module.ensure_output_not_in_data_root(tmp_path / "outputs", data_root) == (
+        tmp_path / "outputs"
+    ).resolve(strict=False)
+
+
+def test_build_run_config_is_serializable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _import_full_module(monkeypatch)
+    config = module.build_run_config(
+        data_root=tmp_path / "f3_reference",
+        output_dir=tmp_path / "outputs",
+        sigma1=8.0,
+        sigma2=8.0,
+        phi_min=0.0,
+        phi_max=360.0,
+        theta_min=65.0,
+        theta_max=80.0,
+        ru=10,
+        rv=20,
+        rw=30,
+        d=4,
+        fm=0.3,
+        strain_max1=0.25,
+        strain_max2=0.25,
+        surface_smoothing1=2.0,
+        surface_smoothing2=2.0,
+        reuse_existing=True,
+        skip_save_intermediates=True,
+    )
+
+    loaded = json.loads(module.report_to_json(config))
+
+    assert loaded["format_version"] == 1
+    assert loaded["input"] == "ep.dat"
+    assert loaded["reference"] == ["fv.dat", "fvt.dat"]
+    assert loaded["scanner"]["theta_min"] == 65.0
+    assert loaded["voter"]["ru"] == 10
+    assert loaded["reuse_existing"] is True
+    assert loaded["skip_save_intermediates"] is True
+    assert loaded["outputs"]["final"] == ["fv_py.dat", "fvt_py.dat"]
+    assert loaded["outputs"]["intermediate"] == []
+
+
+def test_should_reuse_outputs_requires_flag_and_all_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    (tmp_path / "ft_py.dat").write_bytes(b"data")
+
+    assert module.should_reuse_outputs(tmp_path, ("ft_py.dat",), reuse_existing=False) is False
+    assert module.should_reuse_outputs(tmp_path, ("ft_py.dat",), reuse_existing=True) is True
+    assert (
+        module.should_reuse_outputs(
+            tmp_path,
+            ("ft_py.dat", "pt_py.dat"),
+            reuse_existing=True,
+        )
+        is False
+    )
+
+
+def test_write_outputs_skip_intermediates_keeps_only_final_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    outputs = {
+        "fv_py.dat": np.zeros((2, 2, 2), dtype=np.float32),
+        "vp_py.dat": np.ones((2, 2, 2), dtype=np.float32),
+        "fvt_py.dat": np.ones((2, 2, 2), dtype=np.float32),
+    }
+
+    module.write_outputs(
+        tmp_path,
+        outputs,
+        ("fv_py.dat", "vp_py.dat", "fvt_py.dat"),
+        skip_intermediates=True,
+    )
+
+    assert (tmp_path / "fv_py.dat").is_file()
+    assert not (tmp_path / "vp_py.dat").exists()
+    assert (tmp_path / "fvt_py.dat").is_file()
+
+
+def test_run_example_writes_config_before_heavy_processing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_dir = tmp_path / "outputs"
+    monkeypatch.setenv(F3D_ENV_VAR, str(data_root))
+
+    def fail_pipeline(**kwargs: object) -> dict[str, np.ndarray]:
+        raise RuntimeError("pipeline should fail after config is written")
+
+    monkeypatch.setattr(module, "run_or_reuse_pipeline", fail_pipeline)
+
+    with pytest.raises(RuntimeError, match="pipeline should fail"):
+        module.run_example(data_root_arg=None, output_dir=output_dir)
+
+    config_path = output_dir / "run_config.json"
+    assert config_path.is_file()
+    with config_path.open(encoding="utf-8") as file:
+        config = json.load(file)
+    assert config["data_root"] == str(data_root)
+    assert config["output_dir"] == str(output_dir.resolve(strict=False))
+
+
+def test_run_example_writes_final_outputs_and_metrics_without_f3_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_dir = tmp_path / "outputs"
+    outputs = _synthetic_outputs()
+
+    monkeypatch.setattr(module, "run_or_reuse_pipeline", lambda **kwargs: outputs)
+    monkeypatch.setattr(
+        module,
+        "read_f3d_file",
+        lambda name, root: outputs["fv_py.dat"] if name == "fv.dat" else outputs["fvt_py.dat"],
+    )
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_dir=output_dir,
+        skip_save_intermediates=True,
+    )
+
+    metrics_path = output_dir / "metrics.json"
+    assert metrics_path.is_file()
+    assert not (data_root / "metrics.json").exists()
+    assert report["normalized_correlation"]["fv"] == pytest.approx(1.0)
+    assert report["top_percentile_overlap"]["fv"]["99"]["jaccard"] == pytest.approx(1.0)
