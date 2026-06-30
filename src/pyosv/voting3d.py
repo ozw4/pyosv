@@ -413,9 +413,24 @@ def _samples_in_uvw_box_python(
             ku_max = lmaxs[kw, kv] + ru
             for ku in range(ku_min, ku_max + 1):
                 iu = ku - ru
-                x1 = np.float32(c1 + iw * strike[0] + iv * dip[0] + iu * normal[0])
-                x2 = np.float32(c2 + iw * strike[1] + iv * dip[1] + iu * normal[1])
-                x3 = np.float32(c3 + iw * strike[2] + iv * dip[2] + iu * normal[2])
+                x1 = np.float32(
+                    float(c1)
+                    + float(iw) * float(strike[0])
+                    + float(iv) * float(dip[0])
+                    + float(iu) * float(normal[0])
+                )
+                x2 = np.float32(
+                    float(c2)
+                    + float(iw) * float(strike[1])
+                    + float(iv) * float(dip[1])
+                    + float(iu) * float(normal[1])
+                )
+                x3 = np.float32(
+                    float(c3)
+                    + float(iw) * float(strike[2])
+                    + float(iv) * float(dip[2])
+                    + float(iu) * float(normal[2])
+                )
                 j1 = math.floor(float(x1) + 0.5)
                 j2 = math.floor(float(x2) + 0.5)
                 j3 = math.floor(float(x3) + 0.5)
@@ -452,9 +467,24 @@ def _samples_in_uvw_box_numba(
             ku_max = lmaxs[kw, kv] + ru
             for ku in range(ku_min, ku_max + 1):
                 iu = ku - ru
-                x1 = np.float32(c1 + iw * strike[0] + iv * dip[0] + iu * normal[0])
-                x2 = np.float32(c2 + iw * strike[1] + iv * dip[1] + iu * normal[1])
-                x3 = np.float32(c3 + iw * strike[2] + iv * dip[2] + iu * normal[2])
+                x1 = np.float32(
+                    float(c1)
+                    + float(iw) * float(strike[0])
+                    + float(iv) * float(dip[0])
+                    + float(iu) * float(normal[0])
+                )
+                x2 = np.float32(
+                    float(c2)
+                    + float(iw) * float(strike[1])
+                    + float(iv) * float(dip[1])
+                    + float(iu) * float(normal[1])
+                )
+                x3 = np.float32(
+                    float(c3)
+                    + float(iw) * float(strike[2])
+                    + float(iv) * float(dip[2])
+                    + float(iu) * float(normal[2])
+                )
                 j1 = math.floor(float(x1) + 0.5)
                 j2 = math.floor(float(x2) + 0.5)
                 j3 = math.floor(float(x3) + 0.5)
