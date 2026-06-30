@@ -52,6 +52,7 @@ CASE_DEFINITIONS: tuple[dict[str, str], ...] = (
     },
 )
 AGGREGATE_ROOTS = (
+    "pyosv",
     "normalized_correlation",
     "top_percentile_overlap",
     "buffered_ridge_overlap",

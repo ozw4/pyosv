@@ -185,6 +185,12 @@ def test_run_example_writes_four_case_json_without_f3_data(
         ]
         is not None
     )
+    assert loaded["aggregate"]["cases"]["case_01_current_current"]["per_metric_mean"][
+        "pyosv.fv.nonzero_fraction"
+    ] == pytest.approx(1.0 / 216.0)
+    assert loaded["aggregate"]["cases"]["case_01_current_current"]["per_metric_median"][
+        "pyosv.fvt.mean"
+    ] == pytest.approx(1.0 / 216.0)
 
 
 def test_case_names_and_thinning_modes_are_recorded_in_config(
