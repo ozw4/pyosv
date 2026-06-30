@@ -27,13 +27,16 @@ def _import_multicrop_module(monkeypatch: pytest.MonkeyPatch) -> object:
 
 def _synthetic_reference_arrays(shape: tuple[int, int, int] = (8, 8, 8)) -> dict[str, np.ndarray]:
     ep = np.zeros(shape, dtype=np.float32)
+    fl = np.zeros(shape, dtype=np.float32)
     fv = np.zeros(shape, dtype=np.float32)
     fvt = np.zeros(shape, dtype=np.float32)
+    fl[2, 2, 2] = 3.0
+    fl[5, 5, 5] = 2.0
     fv[2, 2, 2] = 3.0
     fv[5, 5, 5] = 2.0
     fvt[2, 2, 2] = 3.0
     fvt[5, 5, 5] = 2.0
-    return {"ep.dat": ep, "fv.dat": fv, "fvt.dat": fvt}
+    return {"ep.dat": ep, "fl.dat": fl, "fv.dat": fv, "fvt.dat": fvt}
 
 
 def _synthetic_outputs(shape: tuple[int, int, int]) -> dict[str, np.ndarray]:
@@ -93,6 +96,10 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.data_root is None
     assert defaults.output_json is None
     assert defaults.save_volumes is False
+    assert defaults.save_figures is False
+    assert defaults.figure_percentile == 99.0
+    assert defaults.ridge_buffer_radius == 2.0
+    assert defaults.write_markdown_index is False
     assert defaults.volume_dir is None
     assert defaults.count == 3
     assert defaults.crop_shape == (128, 128, 100)
@@ -249,6 +256,105 @@ def test_save_volumes_writes_crop_outputs(
     crop_dir = output_json.parent / "volumes" / "crop_001"
     for name in module.crop_validation.VOLUME_NAMES:
         assert (crop_dir / name).is_file()
+
+
+def test_visual_report_writes_markdown_pngs_and_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("matplotlib")
+    module = _import_multicrop_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_json = tmp_path / "outputs" / "metrics.json"
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+    monkeypatch.setattr(
+        module.crop_validation,
+        "run_pipeline",
+        lambda ep, **kwargs: _synthetic_outputs(ep.shape),
+    )
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        save_figures=True,
+        figure_percentile=99.0,
+        ridge_buffer_radius=2,
+        write_markdown_index=True,
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+        pretty=True,
+    )
+
+    markdown_path = output_json.parent / "visual_report.md"
+    figures_dir = output_json.parent / "crop_001" / "figures"
+    markdown = markdown_path.read_text(encoding="utf-8")
+    loaded = json.loads(output_json.read_text(encoding="utf-8"))
+
+    assert markdown_path.is_file()
+    assert "crop_001" in markdown
+    assert "normalized_correlation" in markdown
+    assert "](crop_001/figures/" in markdown
+    assert ".png)" in markdown
+    assert (figures_dir / "scanner_fl_vs_ftpy_i3_3.png").is_file()
+    assert (figures_dir / "fv_mip.png").is_file()
+    assert loaded["config"]["visualization"] == {
+        "figure_percentile": 99.0,
+        "figure_slices": "center",
+        "markdown_index": "visual_report.md",
+        "ridge_buffer_radius": 2.0,
+        "save_figures": True,
+        "write_markdown_index": True,
+    }
+    assert loaded["crops"][0]["figures"] == report["crops"][0]["figures"]
+
+
+def test_save_figures_requires_output_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_multicrop_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="requires --output-json"):
+        module.run_example(
+            data_root_arg="/tmp/f3_reference",
+            save_figures=True,
+            crop_shape=(6, 6, 6),
+            interior_margin=1,
+        )
+
+
+def test_main_reports_viz_extra_when_matplotlib_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+
+    def raise_missing_matplotlib() -> None:
+        raise ValueError('matplotlib is required. Install it with `pip install "pyosv[viz]"`.')
+
+    monkeypatch.setattr(module.crop_validation, "require_figure_support", raise_missing_matplotlib)
+
+    exit_code = module.main(
+        [
+            "--data-root",
+            str(tmp_path / "f3_reference"),
+            "--output-json",
+            str(tmp_path / "outputs" / "metrics.json"),
+            "--save-figures",
+            "--crop-shape",
+            "6,6,6",
+            "--interior-margin",
+            "1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "pyosv[viz]" in captured.err
 
 
 def test_output_path_safety(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

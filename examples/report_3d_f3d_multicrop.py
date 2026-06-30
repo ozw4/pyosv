@@ -74,6 +74,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write per-crop pyosv DAT volumes. Requires --volume-dir or --output-json.",
     )
     parser.add_argument(
+        "--save-figures",
+        action="store_true",
+        help="Write per-crop PNG diagnostics under OUTPUT_JSON.parent.",
+    )
+    parser.add_argument(
+        "--figure-percentile",
+        type=float,
+        default=99.0,
+        help="Upper display clipping percentile and ridge percentile for PNG diagnostics.",
+    )
+    parser.add_argument(
+        "--ridge-buffer-radius",
+        type=float,
+        default=2.0,
+        help="Ridge overlay buffer radius for PNG diagnostics.",
+    )
+    parser.add_argument(
+        "--write-markdown-index",
+        action="store_true",
+        help="Write visual_report.md next to the metrics JSON.",
+    )
+    parser.add_argument(
         "--volume-dir",
         type=Path,
         default=None,
@@ -160,6 +182,10 @@ def run_example(
     data_root_arg: str | PathLike[str] | None,
     output_json: str | PathLike[str] | None = None,
     save_volumes: bool = False,
+    save_figures: bool = False,
+    figure_percentile: float = 99.0,
+    ridge_buffer_radius: float = 2.0,
+    write_markdown_index: bool = False,
     volume_dir: str | PathLike[str] | None = None,
     pretty: bool = False,
     count: int = DEFAULT_COUNT,
@@ -187,6 +213,14 @@ def run_example(
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_json is not None:
         ensure_output_not_in_data_root(output_json, data_root, option_name="--output-json")
+    elif save_figures:
+        raise ValueError("--save-figures requires --output-json")
+    elif write_markdown_index:
+        raise ValueError("--write-markdown-index requires --output-json")
+
+    output_base_dir = Path(output_json).parent if output_json is not None else None
+    if save_figures:
+        crop_validation.require_figure_support()
 
     resolved_volume_dir = resolve_volume_dir(
         output_json=output_json,
@@ -219,6 +253,11 @@ def run_example(
         min_separation=min_separation,
         save_volumes=save_volumes,
         volume_dir=resolved_volume_dir,
+        save_figures=save_figures,
+        figure_percentile=figure_percentile,
+        ridge_buffer_radius=ridge_buffer_radius,
+        write_markdown_index=write_markdown_index,
+        visual_report_path=output_base_dir / "visual_report.md" if output_base_dir else None,
         sigma1=sigma1,
         sigma2=sigma2,
         phi_min=phi_min,
@@ -235,6 +274,8 @@ def run_example(
         d=d,
         fm=fm,
     )
+    if save_figures and "fl.dat" not in arrays:
+        arrays["fl.dat"] = crop_validation.read_f3d_file("fl.dat", data_root)
 
     crops = []
     for crop_index, center in enumerate(selected_centers, start=1):
@@ -242,6 +283,7 @@ def run_example(
         ep_crop = _crop(arrays["ep.dat"], slices)
         reference_fv = _crop(arrays["fv.dat"], slices)
         reference_fvt = _crop(arrays["fvt.dat"], slices)
+        reference_fl = _crop(arrays["fl.dat"], slices) if save_figures else None
         outputs = crop_validation.run_pipeline(
             ep_crop,
             sigma1=sigma1,
@@ -267,18 +309,33 @@ def run_example(
                 outputs,
             )
 
-        crops.append(
-            crop_validation.build_crop_report(
-                crop_index=crop_index,
-                center=center,
-                slices=slices,
-                crop_shape=ep_crop.shape,
-                outputs=outputs,
+        crop_report = crop_validation.build_crop_report(
+            crop_index=crop_index,
+            center=center,
+            slices=slices,
+            crop_shape=ep_crop.shape,
+            outputs=outputs,
+            reference_fv=reference_fv,
+            reference_fvt=reference_fvt,
+            interior_margin=interior_margin,
+        )
+        if save_figures:
+            if output_base_dir is None:
+                raise ValueError("--save-figures requires --output-json")
+            if reference_fl is None:
+                raise ValueError("fl.dat is required when --save-figures is passed")
+            crop_report["figures"] = crop_validation.write_crop_figures(
+                output_base_dir / f"crop_{crop_index:03d}" / "figures",
+                metrics_base_dir=output_base_dir,
+                reference_fl=reference_fl,
                 reference_fv=reference_fv,
                 reference_fvt=reference_fvt,
-                interior_margin=interior_margin,
+                outputs=outputs,
+                figure_percentile=figure_percentile,
+                ridge_buffer_radius=ridge_buffer_radius,
+                figure_slices="center",
             )
-        )
+        crops.append(crop_report)
 
     report = _json_compatible(
         {
@@ -292,6 +349,8 @@ def run_example(
 
     if output_json is not None:
         write_report_json(report, output_json, pretty=pretty)
+        if write_markdown_index:
+            write_visual_report_markdown(report, Path(output_json).parent / "visual_report.md")
 
     return report
 
@@ -352,6 +411,11 @@ def build_config(
     min_separation: float,
     save_volumes: bool,
     volume_dir: Path | None,
+    save_figures: bool,
+    figure_percentile: float,
+    ridge_buffer_radius: float,
+    write_markdown_index: bool,
+    visual_report_path: Path | None,
     sigma1: float,
     sigma2: float,
     phi_min: float,
@@ -368,7 +432,7 @@ def build_config(
     d: int,
     fm: float,
 ) -> dict[str, Any]:
-    return {
+    config: dict[str, Any] = {
         "input": "ep.dat",
         "reference": ["fv.dat", "fvt.dat"],
         "comparison": "scan_vote_thin_fv_fvt_multicrop",
@@ -407,6 +471,16 @@ def build_config(
         "save_volumes": bool(save_volumes),
         "volume_dir": str(volume_dir) if volume_dir is not None else None,
     }
+    if save_figures or write_markdown_index:
+        config["visualization"] = {
+            "save_figures": bool(save_figures),
+            "figure_percentile": float(figure_percentile),
+            "ridge_buffer_radius": float(ridge_buffer_radius),
+            "figure_slices": "center",
+            "write_markdown_index": bool(write_markdown_index),
+            "markdown_index": (visual_report_path.name if visual_report_path is not None else None),
+        }
+    return config
 
 
 def aggregate_crop_metrics(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -453,6 +527,154 @@ def write_report_json(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report_to_json(report, pretty=pretty), encoding="utf-8")
     return output_path
+
+
+def write_visual_report_markdown(
+    report: Mapping[str, Any],
+    output_path: str | PathLike[str],
+) -> Path:
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(visual_report_markdown(report), encoding="utf-8")
+    return output_file
+
+
+def visual_report_markdown(report: Mapping[str, Any]) -> str:
+    config = _as_mapping(report.get("config", {}))
+    crop_selection = _as_mapping(config.get("crop_selection", {}))
+    scanner = _as_mapping(config.get("scanner", {}))
+    voter = _as_mapping(config.get("voter", {}))
+    visualization = _as_mapping(config.get("visualization", {}))
+    crops = list(report.get("crops", []))
+    data_root = Path(str(report.get("data_root", "")))
+
+    lines = [
+        "# F3 Multi-Crop Visual Report",
+        "",
+        "## Run Configuration",
+        "",
+        f"- data_root: `{data_root}`",
+        f"- data_root_basename: `{data_root.name}`",
+        f"- comparison: `{config.get('comparison', '')}`",
+        f"- crop_shape: `{crop_selection.get('crop_shape', '')}`",
+        f"- interior_margin: `{config.get('interior_margin', '')}`",
+        f"- crop_selection_source: `{crop_selection.get('source', '')}`",
+        f"- selected_count: `{crop_selection.get('selected_count', len(crops))}`",
+        f"- scanner: `{scanner}`",
+        f"- voter: `{voter}`",
+    ]
+    if visualization:
+        lines.append(f"- visualization: `{visualization}`")
+
+    lines.extend(
+        [
+            "",
+            "## Crop Metrics",
+            "",
+            "| Crop | Center | Slices | normalized_correlation.interior.fv | "
+            "normalized_correlation.interior.fvt | top_percentile_overlap.interior.fvt.99.jaccard | "
+            "buffered_ridge_overlap.interior.fvt.buffered_f1 | "
+            "sparse_ridge_distance_metrics.interior.fvt.candidate_to_reference_median |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for crop in crops:
+        crop_map = _as_mapping(crop)
+        crop_id = f"crop_{int(crop_map.get('index', 0)):03d}"
+        lines.append(
+            "| "
+            f"{crop_id} | "
+            f"`{crop_map.get('crop_center', '')}` | "
+            f"`{_format_slices(crop_map.get('crop_slices', []))}` | "
+            f"{_format_metric(_nested(crop_map, 'normalized_correlation', 'interior', 'fv'))} | "
+            f"{_format_metric(_nested(crop_map, 'normalized_correlation', 'interior', 'fvt'))} | "
+            f"{_format_metric(_nested(crop_map, 'top_percentile_overlap', 'interior', 'fvt', '99', 'jaccard'))} | "
+            f"{_format_metric(_nested(crop_map, 'buffered_ridge_overlap', 'interior', 'fvt', 'buffered_f1'))} | "
+            f"{_format_metric(_nested(crop_map, 'sparse_ridge_distance_metrics', 'interior', 'fvt', 'candidate_to_reference_median'))} |"
+        )
+
+    lines.extend(["", "## Figures", ""])
+    any_figures = False
+    for crop in crops:
+        crop_map = _as_mapping(crop)
+        crop_id = f"crop_{int(crop_map.get('index', 0)):03d}"
+        figure_links = _important_figure_links(crop_map)
+        if not figure_links:
+            continue
+        any_figures = True
+        lines.extend([f"### {crop_id}", ""])
+        for label, path in figure_links:
+            lines.append(f"- [{label}]({path})")
+        lines.append("")
+    if not any_figures:
+        lines.append("No PNG figures were written for this run.")
+
+    lines.extend(
+        [
+            "",
+            "## Interpretation Checklist",
+            "",
+            "- scanner mismatch",
+            "- voting mismatch",
+            "- thinning/ridge shift",
+            "- boundary artifact",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _nested(value: Mapping[str, Any], *keys: str) -> Any:
+    current: Any = value
+    for key in keys:
+        if not isinstance(current, Mapping) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _format_slices(value: Any) -> str:
+    if not isinstance(value, list):
+        return str(value)
+
+    formatted = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            return str(value)
+        formatted.append(f"{item.get('axis')}:{item.get('start')}-{item.get('stop')}")
+    return ", ".join(formatted)
+
+
+def _format_metric(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, int | float | np.generic):
+        numeric_value = float(value)
+        return f"{numeric_value:.4g}" if math.isfinite(numeric_value) else ""
+    return str(value)
+
+
+def _important_figure_links(crop: Mapping[str, Any]) -> list[tuple[str, str]]:
+    figures = _as_mapping(crop.get("figures", {}))
+    files = _as_mapping(figures.get("files", {}))
+    candidates = (
+        ("scanner mismatch", ("scanner_fl_vs_ftpy", "i3")),
+        ("voting mismatch", ("fv_ref_vs_py", "i3")),
+        ("thinning/ridge shift", ("fvt_ridge_overlay", "i3")),
+        ("fv MIP", ("fv", "mip")),
+        ("fvt MIP", ("fvt", "mip")),
+    )
+
+    links: list[tuple[str, str]] = []
+    for label, path_keys in candidates:
+        path = _nested(files, *path_keys)
+        if isinstance(path, str):
+            links.append((label, path))
+    return links
 
 
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
@@ -520,6 +742,10 @@ def main(argv: list[str] | None = None) -> int:
             data_root_arg=args.data_root,
             output_json=args.output_json,
             save_volumes=args.save_volumes,
+            save_figures=args.save_figures,
+            figure_percentile=args.figure_percentile,
+            ridge_buffer_radius=args.ridge_buffer_radius,
+            write_markdown_index=args.write_markdown_index,
             volume_dir=args.volume_dir,
             pretty=args.pretty,
             count=args.count,

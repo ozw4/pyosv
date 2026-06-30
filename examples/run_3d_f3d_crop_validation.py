@@ -75,6 +75,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write crop-level pyosv DAT volumes under --output-dir.",
     )
     parser.add_argument(
+        "--save-figures",
+        action="store_true",
+        help="Write crop-level PNG diagnostics under --output-dir.",
+    )
+    parser.add_argument(
+        "--figure-percentile",
+        type=float,
+        default=99.0,
+        help="Upper display clipping percentile and ridge percentile for PNG diagnostics.",
+    )
+    parser.add_argument(
+        "--ridge-buffer-radius",
+        type=float,
+        default=2.0,
+        help="Ridge overlay buffer radius for PNG diagnostics.",
+    )
+    parser.add_argument(
+        "--figure-slices",
+        choices=("center",),
+        default="center",
+        help="Slice selection mode for PNG diagnostics.",
+    )
+    parser.add_argument(
         "--pretty",
         action="store_true",
         help="Write indented JSON.",
@@ -158,6 +181,10 @@ def run_example(
     data_root_arg: str | PathLike[str] | None,
     output_dir: str | PathLike[str] | None = None,
     save_volumes: bool = False,
+    save_figures: bool = False,
+    figure_percentile: float = 99.0,
+    ridge_buffer_radius: float = 2.0,
+    figure_slices: str = "center",
     pretty: bool = False,
     crop_shape: tuple[int, int, int] | None = None,
     center: tuple[int, int, int] | None = None,
@@ -187,6 +214,10 @@ def run_example(
         ensure_output_not_in_data_root(output_dir, data_root)
     elif save_volumes:
         raise ValueError("--save-volumes requires --output-dir")
+    elif save_figures:
+        raise ValueError("--save-figures requires --output-dir")
+    if save_figures:
+        require_figure_support()
 
     crop_shape, interior_margin = resolve_crop_config(
         crop_shape=crop_shape,
@@ -224,6 +255,12 @@ def run_example(
         "interior_margin": int(interior_margin),
         "overlap_percentiles": [float(p) for p in OVERLAP_PERCENTILES],
     }
+    if save_figures:
+        config["figures"] = {
+            "figure_percentile": float(figure_percentile),
+            "ridge_buffer_radius": float(ridge_buffer_radius),
+            "figure_slices": figure_slices,
+        }
     if center is None:
         centers = pick_reference_centers(
             arrays["fv.dat"],
@@ -234,6 +271,8 @@ def run_example(
         )
     else:
         centers = [center]
+    if save_figures and "fl.dat" not in arrays:
+        arrays["fl.dat"] = read_f3d_file("fl.dat", data_root)
 
     crops = []
     for crop_index, center in enumerate(centers, start=1):
@@ -241,6 +280,7 @@ def run_example(
         ep_crop = _crop(arrays["ep.dat"], slices)
         reference_fv = _crop(arrays["fv.dat"], slices)
         reference_fvt = _crop(arrays["fvt.dat"], slices)
+        reference_fl = _crop(arrays["fl.dat"], slices) if save_figures else None
         outputs = run_pipeline(
             ep_crop,
             sigma1=sigma1,
@@ -263,18 +303,31 @@ def run_example(
         if output_dir is not None and save_volumes:
             write_crop_volumes(Path(output_dir) / f"crop_{crop_index:03d}", outputs)
 
-        crops.append(
-            build_crop_report(
-                crop_index=crop_index,
-                center=center,
-                slices=slices,
-                crop_shape=ep_crop.shape,
-                outputs=outputs,
+        crop_report = build_crop_report(
+            crop_index=crop_index,
+            center=center,
+            slices=slices,
+            crop_shape=ep_crop.shape,
+            outputs=outputs,
+            reference_fv=reference_fv,
+            reference_fvt=reference_fvt,
+            interior_margin=interior_margin,
+        )
+        if output_dir is not None and save_figures:
+            if reference_fl is None:
+                raise ValueError("fl.dat is required when --save-figures is passed")
+            crop_report["figures"] = write_crop_figures(
+                Path(output_dir) / f"crop_{crop_index:03d}" / "figures",
+                metrics_base_dir=Path(output_dir),
+                reference_fl=reference_fl,
                 reference_fv=reference_fv,
                 reference_fvt=reference_fvt,
-                interior_margin=interior_margin,
+                outputs=outputs,
+                figure_percentile=figure_percentile,
+                ridge_buffer_radius=ridge_buffer_radius,
+                figure_slices=figure_slices,
             )
-        )
+        crops.append(crop_report)
 
     report = {
         "format_version": 2,
@@ -524,6 +577,127 @@ def write_crop_volumes(
     return [write_dat(directory / name, outputs[name]) for name in VOLUME_NAMES]
 
 
+def require_figure_support() -> None:
+    from pyosv import viz
+
+    try:
+        viz.require_matplotlib()
+    except ImportError as error:
+        raise ValueError(str(error)) from error
+
+
+def write_crop_figures(
+    output_dir: str | PathLike[str],
+    *,
+    metrics_base_dir: str | PathLike[str],
+    reference_fl: np.ndarray,
+    reference_fv: np.ndarray,
+    reference_fvt: np.ndarray,
+    outputs: Mapping[str, np.ndarray],
+    figure_percentile: float,
+    ridge_buffer_radius: float,
+    figure_slices: str,
+) -> dict[str, Any]:
+    from pyosv import viz
+
+    if figure_slices != "center":
+        raise ValueError('figure_slices must be "center"')
+
+    directory = Path(output_dir)
+    base_dir = Path(metrics_base_dir)
+    slice_indices = viz.select_center_slices(np.asarray(reference_fv).shape)
+    clip_percentiles = (1.0, float(figure_percentile))
+    written: dict[str, Any] = {
+        "directory": path_for_metrics(directory, base_dir),
+        "figure_slices": figure_slices,
+        "slice_indices": {axis: int(index) for axis, index in slice_indices.items()},
+        "figure_percentile": float(figure_percentile),
+        "ridge_buffer_radius": float(ridge_buffer_radius),
+        "files": {},
+    }
+
+    files = written["files"]
+    files["scanner_fl_vs_ftpy"] = paths_for_metrics(
+        viz.save_volume_comparison_slices(
+            directory,
+            reference=reference_fl,
+            candidate=outputs["ft_py.dat"],
+            name="scanner_fl_vs_ftpy",
+            slice_indices=slice_indices,
+            clip_percentiles=clip_percentiles,
+        ),
+        base_dir,
+    )
+    files["fv_ref_vs_py"] = paths_for_metrics(
+        viz.save_volume_comparison_slices(
+            directory,
+            reference=reference_fv,
+            candidate=outputs["fv_py.dat"],
+            name="fv_ref_vs_py",
+            slice_indices=slice_indices,
+            clip_percentiles=clip_percentiles,
+        ),
+        base_dir,
+    )
+    files["fvt_ref_vs_py"] = paths_for_metrics(
+        viz.save_volume_comparison_slices(
+            directory,
+            reference=reference_fvt,
+            candidate=outputs["fvt_py.dat"],
+            name="fvt_ref_vs_py",
+            slice_indices=slice_indices,
+            clip_percentiles=clip_percentiles,
+        ),
+        base_dir,
+    )
+    files["fvt_ridge_overlay"] = paths_for_metrics(
+        viz.save_buffered_ridge_overlay_slices(
+            directory,
+            reference=reference_fvt,
+            candidate=outputs["fvt_py.dat"],
+            name="fvt",
+            slice_indices=slice_indices,
+            percentile=figure_percentile,
+            buffer_radius=ridge_buffer_radius,
+        ),
+        base_dir,
+    )
+    files["fv"] = paths_for_metrics(
+        viz.save_volume_diagnostics(
+            directory,
+            reference=reference_fv,
+            candidate=outputs["fv_py.dat"],
+            name="fv",
+            clip_percentiles=clip_percentiles,
+        ),
+        base_dir,
+    )
+    files["fvt"] = paths_for_metrics(
+        viz.save_volume_diagnostics(
+            directory,
+            reference=reference_fvt,
+            candidate=outputs["fvt_py.dat"],
+            name="fvt",
+            clip_percentiles=clip_percentiles,
+        ),
+        base_dir,
+    )
+    return written
+
+
+def paths_for_metrics(paths: Mapping[str, Path], base_dir: Path) -> dict[str, str]:
+    return {key: path_for_metrics(path, base_dir) for key, path in paths.items()}
+
+
+def path_for_metrics(path: str | PathLike[str], base_dir: str | PathLike[str]) -> str:
+    output_path = Path(path)
+    resolved_base = Path(base_dir).resolve(strict=False)
+    try:
+        return output_path.resolve(strict=False).relative_to(resolved_base).as_posix()
+    except ValueError:
+        return output_path.as_posix()
+
+
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
     indent = 2 if pretty else None
     return json.dumps(_json_compatible(report), indent=indent, sort_keys=True) + "\n"
@@ -577,6 +751,10 @@ def main(argv: list[str] | None = None) -> int:
             data_root_arg=args.data_root,
             output_dir=args.output_dir,
             save_volumes=args.save_volumes,
+            save_figures=args.save_figures,
+            figure_percentile=args.figure_percentile,
+            ridge_buffer_radius=args.ridge_buffer_radius,
+            figure_slices=args.figure_slices,
             pretty=args.pretty,
             crop_shape=args.crop_shape,
             center=args.center,

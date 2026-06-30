@@ -159,4 +159,8 @@ Reference comparisons should use practical metrics and visual review:
 - sparsity checks
 - visual checks of fault ridges and thinned volumes
 
+For an operational figure-first workflow, including crop PNGs, ridge overlays,
+MIPs, histograms, and multi-crop markdown indexes, see
+`docs/f3d_visual_diagnostics.md`.
+
 No bitwise equality with Java, Jython, or Mines JTK output is expected.
