@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
+import time
 from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
@@ -13,10 +15,19 @@ from typing import Any
 import numpy as np
 
 from pyosv.f3d_reference import F3D_ENV_VAR, F3D_SHAPE, read_f3d_file, resolve_f3d_data_root
-from pyosv.metrics import finite_value_report, normalized_correlation, top_percentile_overlap
+from pyosv.metrics import (
+    buffered_ridge_overlap,
+    finite_value_report,
+    normalized_correlation,
+    sparse_ridge_distance_metrics,
+    top_percentile_overlap,
+)
 
 NONZERO_EPSILON = 1.0e-6
 OVERLAP_PERCENTILES = (95.0, 99.0, 99.5)
+RIDGE_PERCENTILE = 99.0
+RIDGE_BUFFER_RADIUS = 2.0
+REPORT_OUTPUT_NAMES = ("ft_py.dat", "fv_py.dat", "fvt_py.dat")
 SCANNER_OUTPUT_NAMES = ("ft_py.dat", "pt_py.dat", "tt_py.dat")
 SCANNER_THIN_OUTPUT_NAMES = ("fet_py.dat", "fpt_py.dat", "ftt_py.dat")
 VOTING_OUTPUT_NAMES = ("fv_py.dat", "vp_py.dat", "vt_py.dat")
@@ -53,17 +64,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--output-dir",
-        type=Path,
-        required=True,
-        help="Directory for run_config.json, metrics.json, and generated DAT outputs.",
-    )
-    parser.add_argument(
         "--data-root",
         type=Path,
         default=None,
         help=f"Path to the F3 reference data root. Defaults to {F3D_ENV_VAR}.",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for run_config.json and reusable/generated DAT outputs.",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        default=None,
+        help="Optional metrics JSON path. Defaults to OUTPUT_DIR/metrics.json.",
+    )
+    parser.add_argument("--pretty", action="store_true", help="Write indented JSON.")
     parser.add_argument("--sigma1", type=float, default=8.0, help="Scanner sigma1.")
     parser.add_argument("--sigma2", type=float, default=8.0, help="Scanner sigma2.")
     parser.add_argument("--phi-min", type=float, default=0.0, help="Minimum strike angle.")
@@ -107,7 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-save-intermediates",
         action="store_true",
-        help="Write only fv_py.dat, fvt_py.dat, metrics.json, and run_config.json.",
+        help="With --save-volumes, write only fv_py.dat and fvt_py.dat.",
+    )
+    parser.add_argument(
+        "--save-volumes",
+        action="store_true",
+        help="Write generated pyosv DAT outputs under --output-dir.",
     )
     return parser
 
@@ -116,6 +139,8 @@ def run_example(
     *,
     data_root_arg: str | PathLike[str] | None,
     output_dir: str | PathLike[str],
+    output_json: str | PathLike[str] | None = None,
+    pretty: bool = False,
     sigma1: float = 8.0,
     sigma2: float = 8.0,
     phi_min: float = 0.0,
@@ -133,9 +158,12 @@ def run_example(
     surface_smoothing2: float = 2.0,
     reuse_existing: bool = False,
     skip_save_intermediates: bool = False,
+    save_volumes: bool = False,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     output_path = ensure_output_not_in_data_root(output_dir, data_root)
+    metrics_path = resolve_metrics_path(output_json, output_path)
+    ensure_output_not_in_data_root(metrics_path, data_root, option_name="--output-json")
     output_path.mkdir(parents=True, exist_ok=True)
 
     config = build_run_config(
@@ -158,10 +186,13 @@ def run_example(
         surface_smoothing2=surface_smoothing2,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
+        save_volumes=save_volumes,
+        output_json=metrics_path,
     )
-    write_json(output_path / "run_config.json", config)
+    write_json(output_path / "run_config.json", config, pretty=pretty)
 
-    outputs = run_or_reuse_pipeline(
+    start_time = time.perf_counter()
+    outputs, runtime = run_or_reuse_pipeline(
         data_root=data_root,
         output_dir=output_path,
         sigma1=sigma1,
@@ -181,19 +212,25 @@ def run_example(
         surface_smoothing2=surface_smoothing2,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
+        save_volumes=save_volumes,
     )
+    runtime["total_elapsed_seconds"] = float(time.perf_counter() - start_time)
 
+    reference_fl = read_f3d_file("fl.dat", data_root)
     reference_fv = read_f3d_file("fv.dat", data_root)
     reference_fvt = read_f3d_file("fvt.dat", data_root)
     metrics = build_metrics_report(
         data_root=data_root,
         config=config,
+        pyosv_ft=outputs["ft_py.dat"],
         pyosv_fv=outputs["fv_py.dat"],
         pyosv_fvt=outputs["fvt_py.dat"],
+        reference_fl=reference_fl,
         reference_fv=reference_fv,
         reference_fvt=reference_fvt,
+        runtime=runtime,
     )
-    write_json(output_path / "metrics.json", metrics)
+    write_json(metrics_path, metrics, pretty=pretty)
     return metrics
 
 
@@ -218,13 +255,16 @@ def build_run_config(
     surface_smoothing2: float,
     reuse_existing: bool,
     skip_save_intermediates: bool,
+    save_volumes: bool,
+    output_json: str | PathLike[str],
 ) -> dict[str, Any]:
     return {
         "format_version": 1,
         "data_root": str(Path(data_root)),
         "output_dir": str(Path(output_dir)),
+        "output_json": str(Path(output_json)),
         "input": "ep.dat",
-        "reference": ["fv.dat", "fvt.dat"],
+        "reference": ["fl.dat", "fv.dat", "fvt.dat"],
         "shape": [int(size) for size in F3D_SHAPE],
         "scanner": {
             "sigma1": float(sigma1),
@@ -247,6 +287,7 @@ def build_run_config(
         },
         "reuse_existing": bool(reuse_existing),
         "skip_save_intermediates": bool(skip_save_intermediates),
+        "save_volumes": bool(save_volumes),
         "outputs": {
             "final": list(FINAL_OUTPUT_NAMES),
             "intermediate": [] if skip_save_intermediates else list(INTERMEDIATE_OUTPUT_NAMES),
@@ -275,41 +316,48 @@ def run_or_reuse_pipeline(
     surface_smoothing2: float,
     reuse_existing: bool,
     skip_save_intermediates: bool,
-) -> dict[str, np.ndarray]:
+    save_volumes: bool,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     output_path = Path(output_dir)
-    if skip_save_intermediates and should_reuse_outputs(
-        output_path, FINAL_OUTPUT_NAMES, reuse_existing
-    ):
-        return read_outputs(output_path, FINAL_OUTPUT_NAMES)
+    if reuse_existing:
+        require_existing_outputs(output_path, OUTPUT_NAMES)
+        return read_outputs(output_path, OUTPUT_NAMES), {
+            "mode": "reuse_existing",
+            "scanner_elapsed_seconds": 0.0,
+            "scanner_thin_elapsed_seconds": 0.0,
+            "voting_elapsed_seconds": 0.0,
+            "voter_thin_elapsed_seconds": 0.0,
+        }
 
     from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
 
     outputs: dict[str, np.ndarray] = {}
+    runtime: dict[str, Any] = {"mode": "computed"}
     scanner = FaultOrientScanner3(sigma1=sigma1, sigma2=sigma2)
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
 
-    if should_reuse_outputs(output_path, SCANNER_OUTPUT_NAMES, reuse_existing):
-        outputs.update(read_outputs(output_path, SCANNER_OUTPUT_NAMES))
-    else:
-        ep = read_f3d_file("ep.dat", data_root)
-        ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
-        outputs.update(dict(zip(SCANNER_OUTPUT_NAMES, (ft, pt, tt), strict=True)))
+    stage_start = time.perf_counter()
+    ep = read_f3d_file("ep.dat", data_root)
+    ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
+    outputs.update(dict(zip(SCANNER_OUTPUT_NAMES, (ft, pt, tt), strict=True)))
+    runtime["scanner_elapsed_seconds"] = float(time.perf_counter() - stage_start)
+    if save_volumes:
         write_outputs(
             output_path, outputs, SCANNER_OUTPUT_NAMES, skip_intermediates=skip_save_intermediates
         )
 
-    if should_reuse_outputs(output_path, SCANNER_THIN_OUTPUT_NAMES, reuse_existing):
-        outputs.update(read_outputs(output_path, SCANNER_THIN_OUTPUT_NAMES))
-    else:
-        fet, fpt, ftt = scanner.thin(
-            outputs["ft_py.dat"],
-            outputs["pt_py.dat"],
-            outputs["tt_py.dat"],
-        )
-        outputs.update(dict(zip(SCANNER_THIN_OUTPUT_NAMES, (fet, fpt, ftt), strict=True)))
+    stage_start = time.perf_counter()
+    fet, fpt, ftt = scanner.thin(
+        outputs["ft_py.dat"],
+        outputs["pt_py.dat"],
+        outputs["tt_py.dat"],
+    )
+    outputs.update(dict(zip(SCANNER_THIN_OUTPUT_NAMES, (fet, fpt, ftt), strict=True)))
+    runtime["scanner_thin_elapsed_seconds"] = float(time.perf_counter() - stage_start)
+    if save_volumes:
         write_outputs(
             output_path,
             outputs,
@@ -317,34 +365,34 @@ def run_or_reuse_pipeline(
             skip_intermediates=skip_save_intermediates,
         )
 
-    if should_reuse_outputs(output_path, VOTING_OUTPUT_NAMES, reuse_existing):
-        outputs.update(read_outputs(output_path, VOTING_OUTPUT_NAMES))
-    else:
-        fv, vp, vt = voter.apply_voting(
-            d=d,
-            fm=fm,
-            ft=outputs["fet_py.dat"],
-            pt=outputs["fpt_py.dat"],
-            tt=outputs["ftt_py.dat"],
-        )
-        outputs.update(dict(zip(VOTING_OUTPUT_NAMES, (fv, vp, vt), strict=True)))
+    stage_start = time.perf_counter()
+    fv, vp, vt = voter.apply_voting(
+        d=d,
+        fm=fm,
+        ft=outputs["fet_py.dat"],
+        pt=outputs["fpt_py.dat"],
+        tt=outputs["ftt_py.dat"],
+    )
+    outputs.update(dict(zip(VOTING_OUTPUT_NAMES, (fv, vp, vt), strict=True)))
+    runtime["voting_elapsed_seconds"] = float(time.perf_counter() - stage_start)
+    if save_volumes:
         write_outputs(
             output_path, outputs, VOTING_OUTPUT_NAMES, skip_intermediates=skip_save_intermediates
         )
 
-    if should_reuse_outputs(output_path, ("fvt_py.dat",), reuse_existing):
-        outputs.update(read_outputs(output_path, ("fvt_py.dat",)))
-    else:
-        outputs["fvt_py.dat"] = voter.thin(
-            outputs["fv_py.dat"],
-            outputs["vp_py.dat"],
-            outputs["vt_py.dat"],
-        )
+    stage_start = time.perf_counter()
+    outputs["fvt_py.dat"] = voter.thin(
+        outputs["fv_py.dat"],
+        outputs["vp_py.dat"],
+        outputs["vt_py.dat"],
+    )
+    runtime["voter_thin_elapsed_seconds"] = float(time.perf_counter() - stage_start)
+    if save_volumes:
         write_outputs(
             output_path, outputs, ("fvt_py.dat",), skip_intermediates=skip_save_intermediates
         )
 
-    return {name: outputs[name] for name in FINAL_OUTPUT_NAMES}
+    return {name: outputs[name] for name in OUTPUT_NAMES}, runtime
 
 
 def should_reuse_outputs(
@@ -366,6 +414,14 @@ def read_outputs(
 
     directory = Path(output_dir)
     return {name: read_dat(directory / name, F3D_SHAPE) for name in names}
+
+
+def require_existing_outputs(output_dir: str | PathLike[str], names: tuple[str, ...]) -> None:
+    directory = Path(output_dir)
+    missing = [name for name in names if not (directory / name).is_file()]
+    if missing:
+        joined = ", ".join(missing)
+        raise FileNotFoundError(f"--reuse-existing requires existing output files: {joined}")
 
 
 def write_outputs(
@@ -390,42 +446,104 @@ def build_metrics_report(
     *,
     data_root: str | PathLike[str],
     config: Mapping[str, Any],
+    pyosv_ft: np.ndarray,
     pyosv_fv: np.ndarray,
     pyosv_fvt: np.ndarray,
+    reference_fl: np.ndarray,
     reference_fv: np.ndarray,
     reference_fvt: np.ndarray,
+    runtime: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "format_version": 1,
-        "data_root": str(Path(data_root)),
         "config": config,
+        "data": {
+            "shape": [int(size) for size in F3D_SHAPE],
+            "data_root": str(Path(data_root)),
+            "files": data_file_report(data_root, ("ep.dat", "fl.dat", "fv.dat", "fvt.dat")),
+        },
+        "scanner": {
+            "parameters": config["scanner"],
+            "ft_py_vs_fl": comparison_metrics(pyosv_ft, reference_fl),
+        },
+        "voting": {
+            "parameters": config["voter"],
+            "fv_py_vs_fv": {
+                **comparison_metrics(pyosv_fv, reference_fv),
+                "nonzero_fraction_ratio": nonzero_fraction_ratio(pyosv_fv, reference_fv),
+            },
+        },
+        "thinning": {
+            "fvt_py_vs_fvt": {
+                **comparison_metrics(pyosv_fvt, reference_fvt),
+                "buffered_ridge_overlap": buffered_ridge_overlap(
+                    reference_fvt,
+                    pyosv_fvt,
+                    percentile=RIDGE_PERCENTILE,
+                    radius=RIDGE_BUFFER_RADIUS,
+                ),
+                "sparse_ridge_distance_metrics": sparse_ridge_distance_metrics(
+                    reference_fvt,
+                    pyosv_fvt,
+                    percentile=RIDGE_PERCENTILE,
+                ),
+                "nonzero_fraction_ratio": nonzero_fraction_ratio(pyosv_fvt, reference_fvt),
+            },
+        },
+        "runtime": dict(runtime),
         "pyosv": {
+            "ft": summarize_array(pyosv_ft),
             "fv": summarize_array(pyosv_fv),
             "fvt": summarize_array(pyosv_fvt),
         },
         "reference": {
+            "fl": summarize_array(reference_fl),
             "fv": summarize_array(reference_fv),
             "fvt": summarize_array(reference_fvt),
         },
-        "normalized_correlation": {
-            "fv": float(normalized_correlation(pyosv_fv, reference_fv)),
-            "fvt": float(normalized_correlation(pyosv_fvt, reference_fvt)),
-        },
-        "top_percentile_overlap": {
-            "fv": _overlaps(pyosv_fv, reference_fv),
-            "fvt": _overlaps(pyosv_fvt, reference_fvt),
-        },
         "finite_checks": {
             "pyosv": {
+                "ft_py": finite_report(pyosv_ft),
                 "fv_py": finite_report(pyosv_fv),
                 "fvt_py": finite_report(pyosv_fvt),
             },
             "reference": {
+                "fl": finite_report(reference_fl),
                 "fv": finite_report(reference_fv),
                 "fvt": finite_report(reference_fvt),
             },
         },
     }
+
+
+def comparison_metrics(candidate: np.ndarray, reference: np.ndarray) -> dict[str, Any]:
+    return {
+        "normalized_correlation": float(normalized_correlation(candidate, reference)),
+        "top_percentile_overlap": _overlaps(candidate, reference),
+    }
+
+
+def nonzero_fraction_ratio(candidate: np.ndarray, reference: np.ndarray) -> float:
+    candidate_fraction = summarize_array(candidate)["nonzero_fraction"]
+    reference_fraction = summarize_array(reference)["nonzero_fraction"]
+    if reference_fraction == 0.0:
+        return 0.0
+    return float(candidate_fraction / reference_fraction)
+
+
+def data_file_report(
+    data_root: str | PathLike[str], names: tuple[str, ...]
+) -> dict[str, dict[str, Any]]:
+    root = Path(data_root)
+    report = {}
+    for name in names:
+        path = root / name
+        report[name] = {
+            "path": str(path),
+            "exists": bool(path.is_file()),
+            "size_bytes": int(path.stat().st_size) if path.is_file() else None,
+        }
+    return report
 
 
 def finite_report(array: np.ndarray) -> dict[str, Any]:
@@ -454,20 +572,34 @@ def summarize_array(array: np.ndarray) -> dict[str, float]:
     }
 
 
-def write_json(path: str | PathLike[str], report: Mapping[str, Any]) -> Path:
+def write_json(
+    path: str | PathLike[str], report: Mapping[str, Any], *, pretty: bool = False
+) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report_to_json(report), encoding="utf-8")
+    output_path.write_text(report_to_json(report, pretty=pretty), encoding="utf-8")
     return output_path
 
 
-def report_to_json(report: Mapping[str, Any]) -> str:
-    return json.dumps(_json_compatible(report), indent=2, sort_keys=True) + "\n"
+def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
+    indent = 2 if pretty else None
+    return json.dumps(_json_compatible(report), indent=indent, sort_keys=True) + "\n"
+
+
+def resolve_metrics_path(
+    output_json: str | PathLike[str] | None,
+    output_dir: str | PathLike[str],
+) -> Path:
+    if output_json is not None:
+        return Path(output_json)
+    return Path(output_dir) / "metrics.json"
 
 
 def ensure_output_not_in_data_root(
     output_dir: str | PathLike[str],
     data_root: str | PathLike[str],
+    *,
+    option_name: str = "--output-dir",
 ) -> Path:
     output_path = Path(output_dir).resolve(strict=False)
     data_root_path = Path(data_root).resolve(strict=False)
@@ -475,7 +607,7 @@ def ensure_output_not_in_data_root(
         output_path.relative_to(data_root_path)
     except ValueError:
         return output_path
-    raise ValueError(f"--output-dir must not be inside the F3 data root: {output_path}")
+    raise ValueError(f"{option_name} must not be inside the F3 data root: {output_path}")
 
 
 def _overlaps(a: np.ndarray, b: np.ndarray) -> dict[str, dict[str, float]]:
@@ -489,14 +621,16 @@ def percentile_key(percentile: float) -> str:
 
 
 def _json_compatible(value: Any) -> Any:
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {str(key): _json_compatible(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_json_compatible(item) for item in value]
     if isinstance(value, np.generic):
-        return value.item()
+        return _json_compatible(value.item())
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        return _json_compatible(value.tolist())
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     return value
 
 
@@ -508,6 +642,8 @@ def main(argv: list[str] | None = None) -> int:
         run_example(
             data_root_arg=args.data_root,
             output_dir=args.output_dir,
+            output_json=args.output_json,
+            pretty=args.pretty,
             sigma1=args.sigma1,
             sigma2=args.sigma2,
             phi_min=args.phi_min,
@@ -525,12 +661,13 @@ def main(argv: list[str] | None = None) -> int:
             surface_smoothing2=args.surface_smoothing2,
             reuse_existing=args.reuse_existing,
             skip_save_intermediates=args.skip_save_intermediates,
+            save_volumes=args.save_volumes,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
-    print(Path(args.output_dir) / "metrics.json")
+    print(resolve_metrics_path(args.output_json, args.output_dir))
     return 0
 
 
