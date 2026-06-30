@@ -58,6 +58,15 @@ def _validate_shape3(name: str, value: tuple[int, int, int]) -> tuple[int, int, 
     )
 
 
+def _validate_margin3(name: str, value: tuple[int, int, int]) -> tuple[int, int, int]:
+    if len(value) != 3:
+        raise ValueError(f"{name} must contain exactly 3 dimensions")
+
+    return tuple(
+        _validate_int(f"{name}[{axis}]", size, minimum=0) for axis, size in enumerate(value)
+    )
+
+
 def _validate_center3(
     center: tuple[int, int, int], full_shape: tuple[int, int, int]
 ) -> tuple[int, int, int]:
@@ -95,12 +104,14 @@ def pick_reference_centers(
     count: int = 3,
     percentile: float = 99.9,
     min_separation: float = 48.0,
+    min_margin: tuple[int, int, int] | None = None,
+    crop_shape: tuple[int, int, int] | None = None,
 ) -> list[tuple[int, int, int]]:
     """Pick deterministic high-value ``fv`` centers in ``(i3, i2, i1)`` order."""
     fv = np.asarray(fv)
     if fv.ndim != 3:
         raise ValueError("fv must be a 3D array with shape (n3, n2, n1)")
-    _validate_shape3("fv.shape", fv.shape)
+    full_shape = _validate_shape3("fv.shape", fv.shape)
     count = _validate_int("count", count, minimum=0)
 
     if not isinstance(percentile, Real) or isinstance(percentile, bool):
@@ -120,8 +131,27 @@ def pick_reference_centers(
     if not np.isfinite(fv).all():
         raise ValueError("fv must contain only finite values")
 
-    threshold = float(np.percentile(fv, percentile))
-    candidates = np.argwhere(fv >= threshold)
+    margins = _resolve_center_margins(
+        full_shape=full_shape,
+        min_margin=min_margin,
+        crop_shape=crop_shape,
+    )
+    if margins is not None:
+        eligible = _center_margin_mask(full_shape=full_shape, margins=margins)
+        if not eligible.any():
+            raise ValueError(
+                "no eligible reference centers remain after applying the requested boundary margin"
+            )
+        threshold = float(np.percentile(fv[eligible], percentile))
+        candidates = np.argwhere((fv >= threshold) & eligible)
+        if candidates.size == 0:
+            raise ValueError(
+                "no eligible reference centers remain after applying the requested boundary margin"
+            )
+    else:
+        threshold = float(np.percentile(fv, percentile))
+        candidates = np.argwhere(fv >= threshold)
+
     values = fv[tuple(candidates.T)]
     order = np.lexsort((candidates[:, 2], candidates[:, 1], candidates[:, 0], -values))
 
@@ -138,6 +168,53 @@ def pick_reference_centers(
                 break
 
     return selected
+
+
+def _resolve_center_margins(
+    *,
+    full_shape: tuple[int, int, int],
+    min_margin: tuple[int, int, int] | None,
+    crop_shape: tuple[int, int, int] | None,
+) -> tuple[int, int, int] | None:
+    if min_margin is not None and crop_shape is not None:
+        raise ValueError("pass either min_margin or crop_shape, not both")
+
+    if min_margin is not None:
+        margins = _validate_margin3("min_margin", min_margin)
+    elif crop_shape is not None:
+        crop_shape = _validate_shape3("crop_shape", crop_shape)
+        for axis, (crop_size, full_size) in enumerate(zip(crop_shape, full_shape, strict=True)):
+            if crop_size > full_size:
+                raise ValueError(f"crop_shape[{axis}] must be <= fv.shape[{axis}]")
+        margins = tuple(
+            crop_size // 2 if crop_size < full_size else 0
+            for crop_size, full_size in zip(crop_shape, full_shape, strict=True)
+        )
+    else:
+        return None
+
+    for axis, (margin, full_size) in enumerate(zip(margins, full_shape, strict=True)):
+        if 2 * margin >= full_size:
+            raise ValueError(f"min_margin[{axis}] leaves no eligible centers")
+
+    return margins
+
+
+def _center_margin_mask(
+    *,
+    full_shape: tuple[int, int, int],
+    margins: tuple[int, int, int],
+) -> np.ndarray:
+    eligible = np.ones(full_shape, dtype=bool)
+    for axis, (margin, full_size) in enumerate(zip(margins, full_shape, strict=True)):
+        if margin == 0:
+            continue
+        axis_indices = np.arange(full_size)
+        axis_eligible = (axis_indices >= margin) & (axis_indices < full_size - margin)
+        shape = [1, 1, 1]
+        shape[axis] = full_size
+        eligible &= axis_eligible.reshape(shape)
+    return eligible
 
 
 def crop_slices(

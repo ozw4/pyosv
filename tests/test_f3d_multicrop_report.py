@@ -170,8 +170,9 @@ def test_deterministic_center_selection_order(monkeypatch: pytest.MonkeyPatch) -
         fv,
         count=3,
         centers=None,
-        percentile=99.0,
+        percentile=0.0,
         min_separation=0.0,
+        crop_shape=(4, 4, 4),
     )
 
     assert centers == [(2, 2, 2), (3, 3, 3), (5, 5, 5)]

@@ -223,6 +223,7 @@ def test_f3d_scanner_comparison_one_crop(
         count=1,
         percentile=99.9,
         min_separation=48.0,
+        crop_shape=crop_shape,
     )
     assert len(centers) == 1
 

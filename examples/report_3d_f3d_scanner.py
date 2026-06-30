@@ -134,6 +134,7 @@ def run_example(
         count=max_crops,
         percentile=percentile,
         min_separation=min_separation,
+        crop_shape=crop_shape,
     )
 
     crops = []
@@ -201,6 +202,7 @@ def build_config(
             "max_crops": int(max_crops),
             "percentile": float(percentile),
             "min_separation": float(min_separation),
+            "boundary_margin": "crop_shape",
         },
         "scanner": {
             "sigma1": float(sigma1),
