@@ -106,6 +106,9 @@ Public F3 3D reference-data validation is documented in
 `docs/f3d_validation.md`, including the external data layout, smoke checks,
 crop validation, and the manual full-volume pipeline.
 
+F3 figure-based diagnostics and interpretation order are documented in
+`docs/f3d_visual_diagnostics.md`.
+
 Optional static visualization helpers are documented in `docs/visualization.md`.
 Install `pyosv[viz]` only when PNG diagnostics such as slice panels, ridge
 overlays, MIPs, or value histograms are needed.
