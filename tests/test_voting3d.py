@@ -646,6 +646,75 @@ def test_thin_returns_finite_float32_volume_without_modifying_inputs() -> None:
     np.testing.assert_array_equal(vt, vt_before)
 
 
+def test_thin_normal_mode_matches_default_behavior() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[:, 1, :] = 0.5
+    fv[:, 2, :] = 1.0
+    fv[:, 3, :] = 0.5
+    vp = np.full_like(fv, 30.0)
+    vt = np.full_like(fv, 45.0)
+
+    default = voter.thin(fv, vp, vt)
+    normal = voter.thin(fv, vp, vt, mode="normal")
+
+    np.testing.assert_array_equal(normal, default)
+
+
+def test_thin_reference_mode_returns_float32_shape_and_original_values() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 2), dtype=np.float32)
+    fv[2, 1, :] = 0.25
+    fv[2, 2, :] = [0.75, 1.0]
+    fv[2, 3, :] = 0.5
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv_before = fv.copy()
+    vp_before = vp.copy()
+    vt_before = vt.copy()
+
+    fvt = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    retained = fvt != 0.0
+    assert retained.any()
+    np.testing.assert_array_equal(fvt[retained], fv[retained])
+    np.testing.assert_array_equal(fv, fv_before)
+    np.testing.assert_array_equal(vp, vp_before)
+    np.testing.assert_array_equal(vt, vt_before)
+
+
+def test_thin_rejects_invalid_mode() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    with pytest.raises(ValueError, match="mode"):
+        voter.thin(fv, vp, vt, mode="nearest")
+
+
+def test_thin_reference_mode_uses_strike_bin_nms_in_i2_i3_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    normal = voter.thin(fv, vp, vt)
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+
+    assert np.count_nonzero(reference) > 0
+    assert np.count_nonzero(normal) > 0
+    assert np.count_nonzero(reference[:, 2, :]) == np.count_nonzero(reference)
+    assert np.count_nonzero(normal[:, :, 2]) == np.count_nonzero(normal)
+    assert np.count_nonzero(reference != normal) > 0
+
+
 def test_thin_narrows_planar_ridge_along_fault_normal() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     fv = np.zeros((7, 9, 7), dtype=np.float32)

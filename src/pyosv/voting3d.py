@@ -20,6 +20,7 @@ from pyosv.dp import (
 from pyosv.filters import smooth3d
 from pyosv.geometry import range360
 from pyosv.interp import sample3
+from pyosv.thinning3d import reference_like_3d_nms_mask
 
 __all__ = ["OptimalSurfaceVoter"]
 
@@ -197,13 +198,31 @@ class OptimalSurfaceVoter:
         fv = _normalize_and_power_3d(fe)
         return fv, vp, vt
 
-    def thin(self, fv: np.ndarray, vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
+    def thin(
+        self,
+        fv: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        *,
+        mode: str = "normal",
+        reference_sigma: float = 1.0,
+    ) -> np.ndarray:
         """Keep 3D voting-score maxima along the local fault-normal field."""
 
         fv_array, vp_array, vt_array = _validate_matching_finite_arrays3_many(
             (fv, vp, vt),
             ("fv", "vp", "vt"),
         )
+        if mode == "reference":
+            thinned, _ = _thin_reference_like_3d(
+                fv_array,
+                vp_array,
+                reference_sigma=reference_sigma,
+            )
+            return thinned
+        if mode != "normal":
+            raise ValueError("mode must be 'normal' or 'reference'")
+
         n3, n2, n1 = fv_array.shape
         thinned = np.zeros((n3, n2, n1), dtype=np.float32)
         if fv_array.size == 0:
@@ -869,6 +888,18 @@ def _fault_normal_components_from_strike_and_dip(
         w2.astype(np.float32, copy=False),
         w3.astype(np.float32, copy=False),
     )
+
+
+def _thin_reference_like_3d(
+    fv: np.ndarray,
+    vp: np.ndarray,
+    *,
+    reference_sigma: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    keep = reference_like_3d_nms_mask(fv, vp, sigma=reference_sigma)
+    thinned = np.zeros(fv.shape, dtype=np.float32)
+    thinned[keep] = fv[keep]
+    return thinned, keep
 
 
 def _smooth_fault_likelihood_3d(
