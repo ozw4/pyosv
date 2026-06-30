@@ -24,11 +24,13 @@ def _import_validation_module(monkeypatch: pytest.MonkeyPatch) -> object:
 
 def _synthetic_reference_arrays(shape: tuple[int, int, int] = (6, 6, 6)) -> dict[str, np.ndarray]:
     ep = np.zeros(shape, dtype=np.float32)
+    fl = np.zeros(shape, dtype=np.float32)
     fv = np.zeros(shape, dtype=np.float32)
     fvt = np.zeros(shape, dtype=np.float32)
+    fl[3, 3, 3] = 1.0
     fv[3, 3, 3] = 1.0
     fvt[3, 3, 3] = 1.0
-    return {"ep.dat": ep, "fv.dat": fv, "fvt.dat": fvt}
+    return {"ep.dat": ep, "fl.dat": fl, "fv.dat": fv, "fvt.dat": fvt}
 
 
 def _synthetic_outputs(shape: tuple[int, int, int] = (6, 6, 6)) -> dict[str, np.ndarray]:
@@ -54,6 +56,10 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.data_root is None
     assert args.output_dir is None
     assert args.save_volumes is False
+    assert args.save_figures is False
+    assert args.figure_percentile == 99.0
+    assert args.ridge_buffer_radius == 2.0
+    assert args.figure_slices == "center"
     assert args.crop_shape is None
     assert args.center is None
     assert args.large_crop_preset is False
@@ -194,6 +200,7 @@ def test_run_example_writes_metrics_json_to_output_dir(
     assert loaded["data_root"] == str(data_root)
     assert loaded["crops"][0]["crop_center"] == [3, 3, 3]
     assert report["config"]["crop_shape"] == [6, 6, 6]
+    assert not (output_dir / "crop_001" / "figures").exists()
 
 
 def test_save_volumes_writes_crop_outputs(
@@ -248,6 +255,110 @@ def test_save_volumes_requires_output_dir(monkeypatch: pytest.MonkeyPatch) -> No
             crop_shape=(6, 6, 6),
             interior_margin=1,
         )
+
+
+def test_save_figures_requires_output_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_validation_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="requires --output-dir"):
+        module.run_example(
+            data_root_arg="/tmp/f3_reference",
+            save_figures=True,
+            crop_shape=(6, 6, 6),
+            interior_margin=1,
+        )
+
+
+def test_save_figures_writes_expected_pngs_and_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("matplotlib")
+    module = _import_validation_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_dir = tmp_path / "outputs"
+    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    monkeypatch.setattr(module, "run_pipeline", lambda ep, **kwargs: _synthetic_outputs(ep.shape))
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_dir=output_dir,
+        save_figures=True,
+        crop_shape=(6, 6, 6),
+        max_crops=1,
+        percentile=99.0,
+        min_separation=1.0,
+        interior_margin=1,
+        pretty=True,
+    )
+
+    figures_dir = output_dir / "crop_001" / "figures"
+    expected_names = {
+        "scanner_fl_vs_ftpy_i3_3.png",
+        "scanner_fl_vs_ftpy_i2_3.png",
+        "scanner_fl_vs_ftpy_i1_3.png",
+        "fv_ref_vs_py_i3_3.png",
+        "fv_ref_vs_py_i2_3.png",
+        "fv_ref_vs_py_i1_3.png",
+        "fvt_ref_vs_py_i3_3.png",
+        "fvt_ref_vs_py_i2_3.png",
+        "fvt_ref_vs_py_i1_3.png",
+        "fvt_ridge_overlay_i3_3.png",
+        "fvt_ridge_overlay_i2_3.png",
+        "fvt_ridge_overlay_i1_3.png",
+        "fv_mip.png",
+        "fvt_mip.png",
+        "fv_hist.png",
+        "fvt_hist.png",
+    }
+
+    assert {path.name for path in figures_dir.iterdir()} == expected_names
+    for name in expected_names:
+        assert (figures_dir / name).stat().st_size > 0
+
+    metrics_path = output_dir / "metrics.json"
+    with metrics_path.open(encoding="utf-8") as file:
+        loaded = json.load(file)
+    figures = loaded["crops"][0]["figures"]
+    assert figures == report["crops"][0]["figures"]
+    assert figures["directory"] == "crop_001/figures"
+    assert figures["figure_slices"] == "center"
+    assert figures["slice_indices"] == {"i1": 3, "i2": 3, "i3": 3}
+    assert figures["files"]["scanner_fl_vs_ftpy"]["i3"] == (
+        "crop_001/figures/scanner_fl_vs_ftpy_i3_3.png"
+    )
+
+
+def test_main_reports_viz_extra_when_matplotlib_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _import_validation_module(monkeypatch)
+    from pyosv import viz
+
+    def raise_missing_matplotlib() -> None:
+        raise ImportError('matplotlib is required. Install it with `pip install "pyosv[viz]"`.')
+
+    monkeypatch.setattr(viz, "require_matplotlib", raise_missing_matplotlib)
+
+    exit_code = module.main(
+        [
+            "--data-root",
+            str(tmp_path / "f3_reference"),
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--save-figures",
+            "--crop-shape",
+            "6,6,6",
+            "--interior-margin",
+            "1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "pyosv[viz]" in captured.err
 
 
 def test_import_does_not_run_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
