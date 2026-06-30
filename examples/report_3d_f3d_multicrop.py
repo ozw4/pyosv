@@ -207,6 +207,7 @@ def run_example(
         centers=centers,
         percentile=percentile,
         min_separation=min_separation,
+        crop_shape=crop_shape,
     )
     config = build_config(
         crop_shape=crop_shape,
@@ -302,6 +303,7 @@ def select_centers(
     centers: Iterable[tuple[int, int, int]] | None,
     percentile: float,
     min_separation: float,
+    crop_shape: tuple[int, int, int],
 ) -> list[tuple[int, int, int]]:
     if centers is not None:
         return [tuple(int(index) for index in center) for center in centers]
@@ -310,6 +312,7 @@ def select_centers(
         count=count,
         percentile=percentile,
         min_separation=min_separation,
+        crop_shape=crop_shape,
     )
 
 
@@ -377,6 +380,7 @@ def build_config(
             "centers": [[int(index) for index in center] for center in centers],
             "percentile": float(percentile),
             "min_separation": float(min_separation),
+            "boundary_margin": "crop_shape" if not explicit_centers else None,
         },
         "interior_margin": int(interior_margin),
         "scanner": {

@@ -105,6 +105,52 @@ def test_pick_reference_centers_is_deterministic_and_enforces_separation() -> No
     assert centers == [(3, 3, 3), (1, 1, 1), (4, 0, 0)]
 
 
+def test_pick_reference_centers_skips_boundary_candidate_when_margin_requested() -> None:
+    fv = np.zeros((8, 8, 8), dtype=np.float32)
+    fv[0, 7, 0] = 2.0
+    fv[3, 3, 3] = 1.0
+
+    centers = pick_reference_centers(
+        fv,
+        count=1,
+        percentile=0.0,
+        min_separation=0.0,
+        crop_shape=(4, 4, 4),
+    )
+
+    assert centers == [(3, 3, 3)]
+
+
+def test_pick_reference_centers_thresholds_after_margin_filtering() -> None:
+    fv = np.zeros((8, 8, 8), dtype=np.float32)
+    fv[0, 0, 0] = 2.0
+    fv[7, 7, 7] = 1.5
+    fv[3, 3, 3] = 1.0
+
+    centers = pick_reference_centers(
+        fv,
+        count=1,
+        percentile=100.0,
+        min_separation=0.0,
+        min_margin=(2, 2, 2),
+    )
+
+    assert centers == [(3, 3, 3)]
+
+
+def test_pick_reference_centers_raises_when_margin_leaves_no_eligible_centers() -> None:
+    fv = np.zeros((4, 4, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="leaves no eligible centers"):
+        pick_reference_centers(
+            fv,
+            count=1,
+            percentile=100.0,
+            min_separation=0.0,
+            min_margin=(2, 2, 2),
+        )
+
+
 def test_pick_reference_centers_validates_inputs() -> None:
     with pytest.raises(ValueError, match="3D"):
         pick_reference_centers(np.zeros((4, 4), dtype=np.float32))
@@ -112,6 +158,12 @@ def test_pick_reference_centers_validates_inputs() -> None:
         pick_reference_centers(np.zeros((4, 4, 4), dtype=np.float32), percentile=101.0)
     with pytest.raises(ValueError, match="finite"):
         pick_reference_centers(np.full((4, 4, 4), np.nan, dtype=np.float32))
+    with pytest.raises(ValueError, match="either min_margin or crop_shape"):
+        pick_reference_centers(
+            np.zeros((4, 4, 4), dtype=np.float32),
+            min_margin=(1, 1, 1),
+            crop_shape=(2, 2, 2),
+        )
 
 
 def test_crop_slices_clamps_to_full_shape_bounds() -> None:

@@ -197,6 +197,7 @@ def run_example(
     config = {
         "crop_shape": list(crop_shape),
         "crop_center": list(center) if center is not None else None,
+        "crop_selection_boundary_margin": "crop_shape" if center is None else None,
         "large_crop_preset": bool(large_crop_preset),
         "max_crops": int(max_crops),
         "percentile": float(percentile),
@@ -229,6 +230,7 @@ def run_example(
             count=max_crops,
             percentile=percentile,
             min_separation=min_separation,
+            crop_shape=crop_shape,
         )
     else:
         centers = [center]
