@@ -67,15 +67,17 @@ whether a difference is local or systematic:
 ```bash
 PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
 python examples/report_3d_f3d_multicrop.py \
-  --output-dir outputs/3d/f3d/multicrop_visual_001 \
+  --output-json outputs/3d/f3d/multicrop_visual_001/metrics.json \
   --save-figures \
   --write-markdown-index \
   --pretty
 ```
 
-The multi-crop script writes PNGs next to `metrics.json` and writes
-`visual_report.md` when `--write-markdown-index` is set. Use the markdown index
-as the first browsing surface, then open individual PNGs for detail.
+The multi-crop script requires `--output-json` when figure or markdown output
+is requested. It writes metrics to that JSON path, writes per-crop PNGs under
+`OUTPUT_JSON.parent/crop_###/figures/`, and writes `visual_report.md` next to
+the metrics JSON when `--write-markdown-index` is set. Use the markdown index as
+the first browsing surface, then open individual PNGs for detail.
 
 ## Figure Interpretation
 
