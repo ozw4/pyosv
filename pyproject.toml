@@ -42,5 +42,6 @@ indent-style = "space"
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
+    "f3d_reference: explicitly gated F3 3D reference-data validation requiring PYOSV_F3D_DATA_ROOT",
     "slow_reference_voting: explicitly gated reference voting reports requiring PYOSV_REFERENCE_OSV and PYOSV_RUN_SLOW_REFERENCE_VOTING=1",
 ]

@@ -102,6 +102,10 @@ self-contained example:
 python examples/run_3d_synthetic_scan_vote.py
 ```
 
+Public F3 3D reference-data validation is documented in
+`docs/f3d_validation.md`, including the external data layout, smoke checks,
+crop validation, and the manual full-volume pipeline.
+
 Minimal connected-component skinning is documented in `docs/skinning.md`, with
 a small self-contained example:
 
