@@ -12,7 +12,7 @@ import pytest
 from pyosv.f3d_reference import (
     F3D_ENV_VAR,
     crop_slices,
-    interior_mask,
+    interior_slices,
     pick_reference_centers,
 )
 
@@ -131,14 +131,14 @@ def test_f3d_reference_one_crop_pipeline(
     assert float(fvt_py.max()) > 0.0
     assert _nonzero_count(fvt_py) < _nonzero_count(fv_py)
 
-    mask = interior_mask(crop_shape, margin=interior_margin)
+    slices_in_crop = interior_slices(crop_shape, margin=interior_margin)
     reference_interiors = {
-        "fv": reference_fv[mask],
-        "fvt": reference_fvt[mask],
+        "fv": reference_fv[slices_in_crop],
+        "fvt": reference_fvt[slices_in_crop],
     }
     for name, reference_interior in reference_interiors.items():
         if np.ptp(reference_interior) <= 0.0:
             continue
 
-        assert np.isfinite(report["normalized_correlation"][name])
-        _assert_finite_metric_values(report["top_percentile_overlap"][name])
+        assert np.isfinite(report["normalized_correlation"]["interior"][name])
+        _assert_finite_metric_values(report["top_percentile_overlap"]["interior"][name])

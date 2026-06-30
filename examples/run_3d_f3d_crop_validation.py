@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Mapping
 from os import PathLike
@@ -15,16 +16,28 @@ import numpy as np
 from pyosv.f3d_reference import (
     F3D_ENV_VAR,
     crop_slices,
-    interior_mask,
+    interior_slices,
     parse_shape3,
     pick_reference_centers,
     read_f3d_file,
     resolve_f3d_data_root,
 )
-from pyosv.metrics import finite_value_report, normalized_correlation, top_percentile_overlap
+from pyosv.metrics import (
+    buffered_ridge_overlap,
+    finite_value_report,
+    normalized_correlation,
+    sparse_ridge_distance_metrics,
+    top_percentile_overlap,
+)
 
+SMOKE_CROP_SHAPE = (64, 64, 64)
+SMOKE_INTERIOR_MARGIN = 16
+LARGE_CROP_SHAPE = (128, 128, 100)
+LARGE_INTERIOR_MARGIN = 40
 NONZERO_EPSILON = 1.0e-6
 OVERLAP_PERCENTILES = (95.0, 99.0, 99.5)
+RIDGE_PERCENTILE = 99.0
+RIDGE_BUFFER_RADIUS = 2.0
 VOLUME_NAMES = (
     "ft_py.dat",
     "pt_py.dat",
@@ -69,8 +82,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--crop-shape",
         type=parse_shape3,
-        default=(64, 64, 64),
+        default=None,
         help="Crop shape in n3,n2,n1 order.",
+    )
+    parser.add_argument(
+        "--center",
+        type=parse_index3,
+        default=None,
+        help="Optional crop center in i3,i2,i1 order. When omitted, centers are picked from fv.dat.",
+    )
+    parser.add_argument(
+        "--large-crop-preset",
+        action="store_true",
+        help="Use crop shape 128,128,100 and interior margin 40 unless explicitly overridden.",
     )
     parser.add_argument("--max-crops", type=int, default=1, help="Maximum number of crops.")
     parser.add_argument(
@@ -123,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--interior-margin",
         type=int,
-        default=16,
+        default=None,
         help="Boundary margin excluded from reference metrics.",
     )
     return parser
@@ -135,7 +159,9 @@ def run_example(
     output_dir: str | PathLike[str] | None = None,
     save_volumes: bool = False,
     pretty: bool = False,
-    crop_shape: tuple[int, int, int] = (64, 64, 64),
+    crop_shape: tuple[int, int, int] | None = None,
+    center: tuple[int, int, int] | None = None,
+    large_crop_preset: bool = False,
     max_crops: int = 1,
     percentile: float = 99.9,
     min_separation: float = 48.0,
@@ -154,7 +180,7 @@ def run_example(
     surface_smoothing2: float = 2.0,
     d: int = 4,
     fm: float = 0.3,
-    interior_margin: int = 16,
+    interior_margin: int | None = None,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_dir is not None:
@@ -162,9 +188,16 @@ def run_example(
     elif save_volumes:
         raise ValueError("--save-volumes requires --output-dir")
 
+    crop_shape, interior_margin = resolve_crop_config(
+        crop_shape=crop_shape,
+        interior_margin=interior_margin,
+        large_crop_preset=large_crop_preset,
+    )
     arrays = read_reference_arrays(data_root)
     config = {
         "crop_shape": list(crop_shape),
+        "crop_center": list(center) if center is not None else None,
+        "large_crop_preset": bool(large_crop_preset),
         "max_crops": int(max_crops),
         "percentile": float(percentile),
         "min_separation": float(min_separation),
@@ -190,12 +223,15 @@ def run_example(
         "interior_margin": int(interior_margin),
         "overlap_percentiles": [float(p) for p in OVERLAP_PERCENTILES],
     }
-    centers = pick_reference_centers(
-        arrays["fv.dat"],
-        count=max_crops,
-        percentile=percentile,
-        min_separation=min_separation,
-    )
+    if center is None:
+        centers = pick_reference_centers(
+            arrays["fv.dat"],
+            count=max_crops,
+            percentile=percentile,
+            min_separation=min_separation,
+        )
+    else:
+        centers = [center]
 
     crops = []
     for crop_index, center in enumerate(centers, start=1):
@@ -239,7 +275,7 @@ def run_example(
         )
 
     report = {
-        "format_version": 1,
+        "format_version": 2,
         "data_root": str(data_root),
         "config": config,
         "crops": crops,
@@ -257,6 +293,44 @@ def read_reference_arrays(data_root: str | PathLike[str]) -> dict[str, np.ndarra
         "fv.dat": read_f3d_file("fv.dat", data_root),
         "fvt.dat": read_f3d_file("fvt.dat", data_root),
     }
+
+
+def parse_index3(text: str) -> tuple[int, int, int]:
+    """Parse a 3D index string as ``(i3, i2, i1)``."""
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+
+    parts = [part for part in re.split(r"[\s, xX]+", text.strip()) if part]
+    if len(parts) != 3:
+        raise ValueError("index must contain exactly 3 coordinates")
+
+    try:
+        center = tuple(int(part) for part in parts)
+    except ValueError as error:
+        raise ValueError("index coordinates must be integers") from error
+
+    if any(index < 0 for index in center):
+        raise ValueError("index coordinates must be >= 0")
+    return center
+
+
+def resolve_crop_config(
+    *,
+    crop_shape: tuple[int, int, int] | None,
+    interior_margin: int | None,
+    large_crop_preset: bool,
+) -> tuple[tuple[int, int, int], int]:
+    if large_crop_preset:
+        resolved_shape = LARGE_CROP_SHAPE if crop_shape is None else crop_shape
+        resolved_margin = LARGE_INTERIOR_MARGIN if interior_margin is None else interior_margin
+    else:
+        resolved_shape = SMOKE_CROP_SHAPE if crop_shape is None else crop_shape
+        resolved_margin = SMOKE_INTERIOR_MARGIN if interior_margin is None else interior_margin
+
+    if resolved_margin < 0:
+        raise ValueError("interior_margin must be >= 0")
+    interior_slices(resolved_shape, margin=resolved_margin)
+    return resolved_shape, int(resolved_margin)
 
 
 def run_pipeline(
@@ -314,16 +388,25 @@ def build_crop_report(
     reference_fvt: np.ndarray,
     interior_margin: int,
 ) -> dict[str, Any]:
-    mask = interior_mask(crop_shape, margin=interior_margin)
+    local_interior_slices = interior_slices(crop_shape, margin=interior_margin)
+    global_interior_slices = tuple(
+        slice(crop_slice.start + local_slice.start, crop_slice.start + local_slice.stop)
+        for crop_slice, local_slice in zip(slices, local_interior_slices, strict=True)
+    )
     py_fv = np.asarray(outputs["fv_py.dat"])
     py_fvt = np.asarray(outputs["fvt_py.dat"])
+    py_fv_interior = py_fv[local_interior_slices]
+    py_fvt_interior = py_fvt[local_interior_slices]
+    reference_fv_interior = reference_fv[local_interior_slices]
+    reference_fvt_interior = reference_fvt[local_interior_slices]
 
     return {
         "index": int(crop_index),
-        "center": [int(value) for value in center],
-        "slices": [
-            {"start": int(crop_slice.start), "stop": int(crop_slice.stop)} for crop_slice in slices
-        ],
+        "crop_center": [int(value) for value in center],
+        "crop_slices": slices_to_json(slices),
+        "interior_margin": int(interior_margin),
+        "interior_slices": slices_to_json(global_interior_slices),
+        "interior_slices_in_crop": slices_to_json(local_interior_slices),
         "crop_shape": [int(size) for size in crop_shape],
         "pyosv": {
             "fv": summarize_array(py_fv),
@@ -334,12 +417,43 @@ def build_crop_report(
             "fvt": summarize_array(reference_fvt),
         },
         "normalized_correlation": {
-            "fv": float(normalized_correlation(py_fv[mask], reference_fv[mask])),
-            "fvt": float(normalized_correlation(py_fvt[mask], reference_fvt[mask])),
+            "full_crop": {
+                "fv": float(normalized_correlation(py_fv, reference_fv)),
+                "fvt": float(normalized_correlation(py_fvt, reference_fvt)),
+            },
+            "interior": {
+                "fv": float(normalized_correlation(py_fv_interior, reference_fv_interior)),
+                "fvt": float(normalized_correlation(py_fvt_interior, reference_fvt_interior)),
+            },
         },
         "top_percentile_overlap": {
-            "fv": _overlaps(py_fv[mask], reference_fv[mask]),
-            "fvt": _overlaps(py_fvt[mask], reference_fvt[mask]),
+            "full_crop": {
+                "fv": _overlaps(py_fv, reference_fv),
+                "fvt": _overlaps(py_fvt, reference_fvt),
+            },
+            "interior": {
+                "fv": _overlaps(py_fv_interior, reference_fv_interior),
+                "fvt": _overlaps(py_fvt_interior, reference_fvt_interior),
+            },
+        },
+        "buffered_ridge_overlap": {
+            "interior": {
+                "fvt": buffered_ridge_overlap(
+                    reference_fvt_interior,
+                    py_fvt_interior,
+                    percentile=RIDGE_PERCENTILE,
+                    radius=RIDGE_BUFFER_RADIUS,
+                ),
+            },
+        },
+        "sparse_ridge_distance_metrics": {
+            "interior": {
+                "fvt": sparse_ridge_distance_metrics(
+                    reference_fvt_interior,
+                    py_fvt_interior,
+                    percentile=RIDGE_PERCENTILE,
+                ),
+            },
         },
         "finite_checks": {
             "pyosv": {
@@ -351,6 +465,13 @@ def build_crop_report(
             },
         },
     }
+
+
+def slices_to_json(slices: tuple[slice, slice, slice]) -> list[dict[str, int | str]]:
+    return [
+        {"axis": axis, "start": int(crop_slice.start), "stop": int(crop_slice.stop)}
+        for axis, crop_slice in zip(("i3", "i2", "i1"), slices, strict=True)
+    ]
 
 
 def finite_report(array: np.ndarray) -> dict[str, Any]:
@@ -456,6 +577,8 @@ def main(argv: list[str] | None = None) -> int:
             save_volumes=args.save_volumes,
             pretty=args.pretty,
             crop_shape=args.crop_shape,
+            center=args.center,
+            large_crop_preset=args.large_crop_preset,
             max_crops=args.max_crops,
             percentile=args.percentile,
             min_separation=args.min_separation,

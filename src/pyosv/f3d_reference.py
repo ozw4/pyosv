@@ -166,18 +166,22 @@ def crop_slices(
 
 def interior_mask(shape: tuple[int, int, int], margin: int = 16) -> np.ndarray:
     """Return a boolean mask that excludes ``margin`` samples from each boundary."""
+    slices = interior_slices(shape, margin=margin)
+    mask = np.zeros(shape, dtype=bool)
+    mask[slices] = True
+    return mask
+
+
+def interior_slices(shape: tuple[int, int, int], margin: int = 16) -> tuple[slice, slice, slice]:
+    """Return crop-local interior slices excluding ``margin`` samples at each boundary."""
     shape = _validate_shape3("shape", shape)
     margin = _validate_int("margin", margin, minimum=0)
     if any(2 * margin >= size for size in shape):
         raise ValueError("margin is too large for shape")
 
-    mask = np.zeros(shape, dtype=bool)
     if margin == 0:
-        mask[...] = True
-    else:
-        mask[margin:-margin, margin:-margin, margin:-margin] = True
-
-    return mask
+        return tuple(slice(0, size) for size in shape)
+    return tuple(slice(margin, size - margin) for size in shape)
 
 
 def resolve_f3d_data_root(data_root: str | PathLike[str] | None = None) -> Path:

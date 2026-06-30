@@ -13,6 +13,7 @@ from pyosv.f3d_reference import (
     f3d_file_paths,
     f3d_file_specs,
     interior_mask,
+    interior_slices,
     parse_shape3,
     pick_reference_centers,
     read_f3d_file,
@@ -138,10 +139,25 @@ def test_interior_mask_excludes_boundary_margin() -> None:
     assert mask[1:-1, 1:-1, 1:-1].all()
 
 
+def test_interior_slices_excludes_boundary_margin() -> None:
+    assert interior_slices((5, 6, 7), margin=1) == (
+        slice(1, 4),
+        slice(1, 5),
+        slice(1, 6),
+    )
+
+
 def test_interior_mask_margin_zero_returns_all_true() -> None:
     assert interior_mask((2, 3, 4), margin=0).all()
+    assert interior_slices((2, 3, 4), margin=0) == (
+        slice(0, 2),
+        slice(0, 3),
+        slice(0, 4),
+    )
 
 
 def test_interior_mask_rejects_empty_interior() -> None:
     with pytest.raises(ValueError, match="too large"):
         interior_mask((4, 5, 6), margin=2)
+    with pytest.raises(ValueError, match="too large"):
+        interior_slices((4, 5, 6), margin=2)
