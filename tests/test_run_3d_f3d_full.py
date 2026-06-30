@@ -181,19 +181,7 @@ def test_output_json_safety_rejects_path_under_data_root(
         )
 
 
-def test_reuse_mode_reports_missing_report_outputs_clearly(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = _import_full_module(monkeypatch)
-    (tmp_path / "fv_py.dat").write_bytes(b"data")
-    (tmp_path / "fvt_py.dat").write_bytes(b"data")
-
-    with pytest.raises(FileNotFoundError, match="ft_py.dat"):
-        module.require_existing_outputs(tmp_path, module.REPORT_OUTPUT_NAMES)
-
-
-def test_reuse_mode_requires_and_reads_only_report_outputs(
+def test_reuse_mode_reports_missing_intermediate_outputs_clearly(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -201,12 +189,25 @@ def test_reuse_mode_requires_and_reads_only_report_outputs(
     for name in module.REPORT_OUTPUT_NAMES:
         (tmp_path / name).write_bytes(b"data")
 
+    with pytest.raises(FileNotFoundError, match="pt_py.dat"):
+        module.require_existing_outputs(tmp_path, module.OUTPUT_NAMES)
+
+
+def test_reuse_mode_requires_and_reads_full_output_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    for name in module.OUTPUT_NAMES:
+        (tmp_path / name).write_bytes(b"data")
+
     read_names = None
 
     def fake_read_outputs(output_dir: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
         nonlocal read_names
         read_names = names
-        return _synthetic_outputs()
+        full_outputs = _full_synthetic_outputs()
+        return {name: full_outputs[name] for name in names}
 
     monkeypatch.setattr(module, "read_outputs", fake_read_outputs)
 
@@ -233,8 +234,8 @@ def test_reuse_mode_requires_and_reads_only_report_outputs(
         save_volumes=False,
     )
 
-    assert read_names == module.REPORT_OUTPUT_NAMES
-    assert tuple(outputs) == module.REPORT_OUTPUT_NAMES
+    assert read_names == module.OUTPUT_NAMES
+    assert tuple(outputs) == module.OUTPUT_NAMES
     assert runtime["mode"] == "reuse_existing"
 
 
@@ -409,7 +410,7 @@ def test_gated_real_data_reuse_report_if_outputs_exist(
         pytest.skip(f"set {OUTPUT_ENV_VAR} to an output directory with full F3 pyosv outputs")
     output_dir = Path(output_dir_text)
 
-    if not all((output_dir / name).is_file() for name in module.REPORT_OUTPUT_NAMES):
+    if not all((output_dir / name).is_file() for name in module.OUTPUT_NAMES):
         pytest.skip("full F3 pyosv outputs are not present for reuse-only report assembly")
 
     report = module.run_example(

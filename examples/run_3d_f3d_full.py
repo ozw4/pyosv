@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reuse-existing",
         action="store_true",
-        help="Reuse existing ft_py.dat, fv_py.dat, and fvt_py.dat in --output-dir.",
+        help="Reuse the full existing pyosv DAT output set in --output-dir.",
     )
     parser.add_argument(
         "--skip-save-intermediates",
@@ -321,8 +321,8 @@ def run_or_reuse_pipeline(
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     output_path = Path(output_dir)
     if reuse_existing:
-        require_existing_outputs(output_path, REPORT_OUTPUT_NAMES)
-        return read_outputs(output_path, REPORT_OUTPUT_NAMES), {
+        require_existing_outputs(output_path, OUTPUT_NAMES)
+        return read_outputs(output_path, OUTPUT_NAMES), {
             "mode": "reuse_existing",
             "scanner_elapsed_seconds": 0.0,
             "scanner_thin_elapsed_seconds": 0.0,
@@ -393,7 +393,7 @@ def run_or_reuse_pipeline(
             output_path, outputs, ("fvt_py.dat",), skip_intermediates=skip_save_intermediates
         )
 
-    return {name: outputs[name] for name in REPORT_OUTPUT_NAMES}, runtime
+    return {name: outputs[name] for name in OUTPUT_NAMES}, runtime
 
 
 def should_reuse_outputs(
