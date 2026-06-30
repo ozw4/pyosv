@@ -30,10 +30,27 @@ def _synthetic_outputs(shape: tuple[int, int, int] = (4, 4, 4)) -> dict[str, np.
     ft = np.zeros(shape, dtype=np.float32)
     fv = np.zeros(shape, dtype=np.float32)
     fvt = np.zeros(shape, dtype=np.float32)
-    ft[2, 2, 2] = 1.0
-    fv[2, 2, 2] = 1.0
-    fvt[2, 2, 2] = 1.0
+    center = tuple(size // 2 for size in shape)
+    ft[center] = 1.0
+    fv[center] = 1.0
+    fvt[center] = 1.0
     return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}
+
+
+def _full_synthetic_outputs(shape: tuple[int, int, int] = (4, 4, 4)) -> dict[str, np.ndarray]:
+    outputs = _synthetic_outputs(shape)
+    outputs.update(
+        {
+            "pt_py.dat": np.full(shape, 10.0, dtype=np.float32),
+            "tt_py.dat": np.full(shape, 70.0, dtype=np.float32),
+            "fet_py.dat": outputs["ft_py.dat"].copy(),
+            "fpt_py.dat": np.full(shape, 10.0, dtype=np.float32),
+            "ftt_py.dat": np.full(shape, 70.0, dtype=np.float32),
+            "vp_py.dat": np.full(shape, 10.0, dtype=np.float32),
+            "vt_py.dat": np.full(shape, 70.0, dtype=np.float32),
+        }
+    )
+    return outputs
 
 
 def _gated_data_root() -> Path:
@@ -165,19 +182,7 @@ def test_output_json_safety_rejects_path_under_data_root(
         )
 
 
-def test_reuse_mode_reports_missing_report_outputs_clearly(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = _import_full_module(monkeypatch)
-    for name in ("ft_py.dat", "fv_py.dat"):
-        (tmp_path / name).write_bytes(b"data")
-
-    with pytest.raises(FileNotFoundError, match="fvt_py.dat"):
-        module.require_existing_outputs(tmp_path, module.REPORT_OUTPUT_NAMES)
-
-
-def test_reuse_mode_requires_and_reads_report_output_set(
+def test_reuse_mode_reports_missing_intermediate_outputs_clearly(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -185,13 +190,45 @@ def test_reuse_mode_requires_and_reads_report_output_set(
     for name in module.REPORT_OUTPUT_NAMES:
         (tmp_path / name).write_bytes(b"data")
 
-    read_names = None
+    with pytest.raises(FileNotFoundError, match="pt_py.dat"):
+        module.run_or_reuse_pipeline(
+            data_root=tmp_path / "f3_reference",
+            output_dir=tmp_path,
+            sigma1=8.0,
+            sigma2=8.0,
+            phi_min=0.0,
+            phi_max=360.0,
+            theta_min=65.0,
+            theta_max=80.0,
+            ru=10,
+            rv=20,
+            rw=30,
+            d=4,
+            fm=0.3,
+            strain_max1=0.25,
+            strain_max2=0.25,
+            surface_smoothing1=2.0,
+            surface_smoothing2=2.0,
+            reuse_existing=True,
+            skip_save_intermediates=False,
+            save_volumes=False,
+        )
+
+
+def test_reuse_mode_reads_each_full_stage_output_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    for name in module.OUTPUT_NAMES:
+        (tmp_path / name).write_bytes(b"data")
+
+    read_names: list[tuple[str, ...]] = []
 
     def fake_read_outputs(output_dir: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
-        nonlocal read_names
-        read_names = names
-        report_outputs = _synthetic_outputs()
-        return {name: report_outputs[name] for name in names}
+        read_names.append(names)
+        full_outputs = _full_synthetic_outputs()
+        return {name: full_outputs[name] for name in names}
 
     monkeypatch.setattr(module, "read_outputs", fake_read_outputs)
 
@@ -218,9 +255,131 @@ def test_reuse_mode_requires_and_reads_report_output_set(
         save_volumes=False,
     )
 
-    assert read_names == module.REPORT_OUTPUT_NAMES
+    assert read_names == [
+        module.SCANNER_OUTPUT_NAMES,
+        module.SCANNER_THIN_OUTPUT_NAMES,
+        module.VOTING_OUTPUT_NAMES,
+        ("fvt_py.dat",),
+    ]
     assert tuple(outputs) == module.REPORT_OUTPUT_NAMES
     assert runtime["mode"] == "reuse_existing"
+    assert runtime["reused_stages"] == ["scanner", "scanner_thin", "voting", "voter_thin"]
+    assert runtime["computed_stages"] == []
+
+
+def test_reuse_mode_resumes_from_completed_scanner_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    full_outputs = _full_synthetic_outputs((2, 2, 2))
+    for name in module.SCANNER_OUTPUT_NAMES:
+        (tmp_path / name).write_bytes(b"data")
+
+    read_names: list[tuple[str, ...]] = []
+
+    def fake_read_outputs(output_dir: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
+        read_names.append(names)
+        return {name: full_outputs[name] for name in names}
+
+    class FakeScanner:
+        def __init__(self, sigma1: float, sigma2: float) -> None:
+            self.sigma1 = sigma1
+            self.sigma2 = sigma2
+
+        def scan(
+            self,
+            phi_min: float,
+            phi_max: float,
+            theta_min: float,
+            theta_max: float,
+            g: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            raise AssertionError("scanner.scan should not run for a reused scanner stage")
+
+        def thin(
+            self,
+            ft: np.ndarray,
+            pt: np.ndarray,
+            tt: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            return (
+                ft + np.float32(1.0),
+                pt + np.float32(1.0),
+                tt + np.float32(1.0),
+            )
+
+    class FakeVoter:
+        def __init__(self, ru: int, rv: int, rw: int) -> None:
+            self.ru = ru
+            self.rv = rv
+            self.rw = rw
+
+        def set_strain_max(self, strain_max1: float, strain_max2: float) -> None:
+            return None
+
+        def set_surface_smoothing(
+            self,
+            surface_smoothing1: float,
+            surface_smoothing2: float,
+        ) -> None:
+            return None
+
+        def apply_voting(
+            self,
+            d: int,
+            fm: float,
+            ft: np.ndarray,
+            pt: np.ndarray,
+            tt: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            return (
+                ft + np.float32(2.0),
+                pt + np.float32(2.0),
+                tt + np.float32(2.0),
+            )
+
+        def thin(self, fv: np.ndarray, vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
+            return fv + np.float32(3.0)
+
+    import pyosv.orient3d
+    import pyosv.voting3d
+
+    monkeypatch.setattr(module, "read_outputs", fake_read_outputs)
+    monkeypatch.setattr(module, "read_f3d_file", lambda name, root: pytest.fail(name))
+    monkeypatch.setattr(pyosv.orient3d, "FaultOrientScanner3", FakeScanner)
+    monkeypatch.setattr(pyosv.voting3d, "OptimalSurfaceVoter", FakeVoter)
+
+    outputs, runtime = module.run_or_reuse_pipeline(
+        data_root=tmp_path / "f3_reference",
+        output_dir=tmp_path,
+        sigma1=8.0,
+        sigma2=8.0,
+        phi_min=0.0,
+        phi_max=360.0,
+        theta_min=65.0,
+        theta_max=80.0,
+        ru=10,
+        rv=20,
+        rw=30,
+        d=4,
+        fm=0.3,
+        strain_max1=0.25,
+        strain_max2=0.25,
+        surface_smoothing1=2.0,
+        surface_smoothing2=2.0,
+        reuse_existing=True,
+        skip_save_intermediates=False,
+        save_volumes=False,
+    )
+
+    assert read_names == [module.SCANNER_OUTPUT_NAMES]
+    assert outputs["ft_py.dat"] is full_outputs["ft_py.dat"]
+    assert outputs["fv_py.dat"] is not full_outputs["fv_py.dat"]
+    assert outputs["fvt_py.dat"] is not full_outputs["fvt_py.dat"]
+    assert runtime["mode"] == "partial_reuse"
+    assert runtime["reused_stages"] == ["scanner"]
+    assert runtime["computed_stages"] == ["scanner_thin", "voting", "voter_thin"]
 
 
 def test_should_reuse_outputs_requires_flag_and_all_files(
@@ -394,8 +553,8 @@ def test_gated_real_data_reuse_report_if_outputs_exist(
         pytest.skip(f"set {OUTPUT_ENV_VAR} to an output directory with full F3 pyosv outputs")
     output_dir = Path(output_dir_text)
 
-    if not all((output_dir / name).is_file() for name in module.REPORT_OUTPUT_NAMES):
-        pytest.skip("full F3 pyosv outputs are not present for reuse-only report assembly")
+    if not all((output_dir / name).is_file() for name in module.OUTPUT_NAMES):
+        pytest.skip("full F3 pyosv output set is not present for reuse-only report assembly")
 
     report = module.run_example(
         data_root_arg=data_root,

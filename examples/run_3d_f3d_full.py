@@ -320,81 +320,179 @@ def run_or_reuse_pipeline(
     save_volumes: bool,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     output_path = Path(output_dir)
-    if reuse_existing:
-        require_existing_outputs(output_path, REPORT_OUTPUT_NAMES)
-        return read_outputs(output_path, REPORT_OUTPUT_NAMES), {
-            "mode": "reuse_existing",
-            "scanner_elapsed_seconds": 0.0,
-            "scanner_thin_elapsed_seconds": 0.0,
-            "voting_elapsed_seconds": 0.0,
-            "voter_thin_elapsed_seconds": 0.0,
-        }
+    if reuse_existing and not any_existing_outputs(output_path, OUTPUT_NAMES):
+        require_existing_outputs(output_path, OUTPUT_NAMES)
 
     from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
 
-    runtime: dict[str, Any] = {"mode": "computed"}
+    runtime: dict[str, Any] = {
+        "mode": "computed",
+        "reused_stages": [],
+        "computed_stages": [],
+    }
     scanner = FaultOrientScanner3(sigma1=sigma1, sigma2=sigma2)
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
 
-    stage_start = time.perf_counter()
-    ep = read_f3d_file("ep.dat", data_root)
-    ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
-    del ep
-    runtime["scanner_elapsed_seconds"] = float(time.perf_counter() - stage_start)
-    if save_volumes:
-        write_outputs(
-            output_path,
-            dict(zip(SCANNER_OUTPUT_NAMES, (ft, pt, tt), strict=True)),
-            SCANNER_OUTPUT_NAMES,
-            skip_intermediates=skip_save_intermediates,
+    if should_reuse_stage_outputs(output_path, SCANNER_OUTPUT_NAMES, reuse_existing, "scanner"):
+        scanner_outputs = read_outputs(output_path, SCANNER_OUTPUT_NAMES)
+        ft = scanner_outputs["ft_py.dat"]
+        pt = scanner_outputs["pt_py.dat"]
+        tt = scanner_outputs["tt_py.dat"]
+        record_reused_stage(runtime, "scanner", "scanner_elapsed_seconds")
+    else:
+        stage_start = time.perf_counter()
+        ep = read_f3d_file("ep.dat", data_root)
+        ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
+        del ep
+        record_computed_stage(
+            runtime,
+            "scanner",
+            "scanner_elapsed_seconds",
+            time.perf_counter() - stage_start,
         )
+        if save_volumes:
+            write_outputs(
+                output_path,
+                dict(zip(SCANNER_OUTPUT_NAMES, (ft, pt, tt), strict=True)),
+                SCANNER_OUTPUT_NAMES,
+                skip_intermediates=skip_save_intermediates,
+            )
 
-    stage_start = time.perf_counter()
-    fet, fpt, ftt = scanner.thin(ft, pt, tt)
+    if should_reuse_stage_outputs(
+        output_path,
+        SCANNER_THIN_OUTPUT_NAMES,
+        reuse_existing,
+        "scanner_thin",
+    ):
+        scanner_thin_outputs = read_outputs(output_path, SCANNER_THIN_OUTPUT_NAMES)
+        fet = scanner_thin_outputs["fet_py.dat"]
+        fpt = scanner_thin_outputs["fpt_py.dat"]
+        ftt = scanner_thin_outputs["ftt_py.dat"]
+        record_reused_stage(runtime, "scanner_thin", "scanner_thin_elapsed_seconds")
+    else:
+        stage_start = time.perf_counter()
+        fet, fpt, ftt = scanner.thin(ft, pt, tt)
+        record_computed_stage(
+            runtime,
+            "scanner_thin",
+            "scanner_thin_elapsed_seconds",
+            time.perf_counter() - stage_start,
+        )
+        if save_volumes:
+            write_outputs(
+                output_path,
+                dict(zip(SCANNER_THIN_OUTPUT_NAMES, (fet, fpt, ftt), strict=True)),
+                SCANNER_THIN_OUTPUT_NAMES,
+                skip_intermediates=skip_save_intermediates,
+            )
     del pt, tt
-    runtime["scanner_thin_elapsed_seconds"] = float(time.perf_counter() - stage_start)
-    if save_volumes:
-        write_outputs(
-            output_path,
-            dict(zip(SCANNER_THIN_OUTPUT_NAMES, (fet, fpt, ftt), strict=True)),
-            SCANNER_THIN_OUTPUT_NAMES,
-            skip_intermediates=skip_save_intermediates,
-        )
 
-    stage_start = time.perf_counter()
-    fv, vp, vt = voter.apply_voting(
-        d=d,
-        fm=fm,
-        ft=fet,
-        pt=fpt,
-        tt=ftt,
-    )
+    if should_reuse_stage_outputs(output_path, VOTING_OUTPUT_NAMES, reuse_existing, "voting"):
+        voting_outputs = read_outputs(output_path, VOTING_OUTPUT_NAMES)
+        fv = voting_outputs["fv_py.dat"]
+        vp = voting_outputs["vp_py.dat"]
+        vt = voting_outputs["vt_py.dat"]
+        record_reused_stage(runtime, "voting", "voting_elapsed_seconds")
+    else:
+        stage_start = time.perf_counter()
+        fv, vp, vt = voter.apply_voting(
+            d=d,
+            fm=fm,
+            ft=fet,
+            pt=fpt,
+            tt=ftt,
+        )
+        record_computed_stage(
+            runtime,
+            "voting",
+            "voting_elapsed_seconds",
+            time.perf_counter() - stage_start,
+        )
+        if save_volumes:
+            write_outputs(
+                output_path,
+                dict(zip(VOTING_OUTPUT_NAMES, (fv, vp, vt), strict=True)),
+                VOTING_OUTPUT_NAMES,
+                skip_intermediates=skip_save_intermediates,
+            )
     del fet, fpt, ftt
-    runtime["voting_elapsed_seconds"] = float(time.perf_counter() - stage_start)
-    if save_volumes:
-        write_outputs(
-            output_path,
-            dict(zip(VOTING_OUTPUT_NAMES, (fv, vp, vt), strict=True)),
-            VOTING_OUTPUT_NAMES,
-            skip_intermediates=skip_save_intermediates,
-        )
 
-    stage_start = time.perf_counter()
-    fvt = voter.thin(fv, vp, vt)
-    del vp, vt
-    runtime["voter_thin_elapsed_seconds"] = float(time.perf_counter() - stage_start)
-    if save_volumes:
-        write_outputs(
-            output_path,
-            {"fvt_py.dat": fvt},
-            ("fvt_py.dat",),
-            skip_intermediates=skip_save_intermediates,
+    if should_reuse_stage_outputs(output_path, ("fvt_py.dat",), reuse_existing, "voter_thin"):
+        fvt = read_outputs(output_path, ("fvt_py.dat",))["fvt_py.dat"]
+        record_reused_stage(runtime, "voter_thin", "voter_thin_elapsed_seconds")
+    else:
+        stage_start = time.perf_counter()
+        fvt = voter.thin(fv, vp, vt)
+        record_computed_stage(
+            runtime,
+            "voter_thin",
+            "voter_thin_elapsed_seconds",
+            time.perf_counter() - stage_start,
         )
+        if save_volumes:
+            write_outputs(
+                output_path,
+                {"fvt_py.dat": fvt},
+                ("fvt_py.dat",),
+                skip_intermediates=skip_save_intermediates,
+            )
+    del vp, vt
+    finalize_runtime_mode(runtime, reuse_existing)
 
     return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}, runtime
+
+
+def any_existing_outputs(output_dir: str | PathLike[str], names: tuple[str, ...]) -> bool:
+    directory = Path(output_dir)
+    return any((directory / name).is_file() for name in names)
+
+
+def should_reuse_stage_outputs(
+    output_dir: str | PathLike[str],
+    names: tuple[str, ...],
+    reuse_existing: bool,
+    stage_name: str,
+) -> bool:
+    if not reuse_existing:
+        return False
+    directory = Path(output_dir)
+    existing = [name for name in names if (directory / name).is_file()]
+    if not existing:
+        return False
+    missing = [name for name in names if name not in existing]
+    if missing:
+        joined = ", ".join(missing)
+        raise FileNotFoundError(
+            f"--reuse-existing found incomplete {stage_name} output files; missing: {joined}"
+        )
+    return True
+
+
+def record_reused_stage(runtime: dict[str, Any], stage_name: str, elapsed_key: str) -> None:
+    runtime["reused_stages"].append(stage_name)
+    runtime[elapsed_key] = 0.0
+
+
+def record_computed_stage(
+    runtime: dict[str, Any],
+    stage_name: str,
+    elapsed_key: str,
+    elapsed_seconds: float,
+) -> None:
+    runtime["computed_stages"].append(stage_name)
+    runtime[elapsed_key] = float(elapsed_seconds)
+
+
+def finalize_runtime_mode(runtime: dict[str, Any], reuse_existing: bool) -> None:
+    if not reuse_existing:
+        runtime["mode"] = "computed"
+    elif runtime["computed_stages"]:
+        runtime["mode"] = "partial_reuse" if runtime["reused_stages"] else "computed"
+    else:
+        runtime["mode"] = "reuse_existing"
 
 
 def should_reuse_outputs(
