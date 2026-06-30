@@ -54,6 +54,28 @@ OUTPUT_NAMES = (
     "vt_py.dat",
     "fvt_py.dat",
 )
+THIN_MODES = ("normal", "reference")
+
+
+def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--scanner-thin-mode",
+        choices=THIN_MODES,
+        default="normal",
+        help="Scanner thinning mode.",
+    )
+    parser.add_argument(
+        "--voter-thin-mode",
+        choices=THIN_MODES,
+        default="normal",
+        help="Voter thinning mode.",
+    )
+    parser.add_argument(
+        "--reference-thin-sigma",
+        type=float,
+        default=1.0,
+        help="Smoothing sigma used by reference-like thinning.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -141,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Write reports without generated pyosv DAT outputs.",
     )
+    add_thinning_arguments(parser)
     return parser
 
 
@@ -168,6 +191,9 @@ def run_example(
     reuse_existing: bool = False,
     skip_save_intermediates: bool = False,
     save_volumes: bool = True,
+    scanner_thin_mode: str = "normal",
+    voter_thin_mode: str = "normal",
+    reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     output_path = ensure_output_not_in_data_root(output_dir, data_root)
@@ -197,6 +223,9 @@ def run_example(
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
         output_json=metrics_path,
+        scanner_thin_mode=scanner_thin_mode,
+        voter_thin_mode=voter_thin_mode,
+        reference_thin_sigma=reference_thin_sigma,
     )
     write_json(output_path / "run_config.json", config, pretty=pretty)
 
@@ -222,6 +251,9 @@ def run_example(
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
+        scanner_thin_mode=scanner_thin_mode,
+        voter_thin_mode=voter_thin_mode,
+        reference_thin_sigma=reference_thin_sigma,
     )
     runtime["total_elapsed_seconds"] = float(time.perf_counter() - start_time)
 
@@ -266,6 +298,9 @@ def build_run_config(
     skip_save_intermediates: bool,
     save_volumes: bool,
     output_json: str | PathLike[str],
+    scanner_thin_mode: str = "normal",
+    voter_thin_mode: str = "normal",
+    reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     return {
         "format_version": 1,
@@ -282,6 +317,8 @@ def build_run_config(
             "phi_max": float(phi_max),
             "theta_min": float(theta_min),
             "theta_max": float(theta_max),
+            "thin_mode": scanner_thin_mode,
+            "reference_thin_sigma": float(reference_thin_sigma),
         },
         "voter": {
             "ru": int(ru),
@@ -293,6 +330,8 @@ def build_run_config(
             "strain_max2": float(strain_max2),
             "surface_smoothing1": float(surface_smoothing1),
             "surface_smoothing2": float(surface_smoothing2),
+            "thin_mode": voter_thin_mode,
+            "reference_thin_sigma": float(reference_thin_sigma),
         },
         "reuse_existing": bool(reuse_existing),
         "skip_save_intermediates": bool(skip_save_intermediates),
@@ -327,6 +366,9 @@ def run_or_reuse_pipeline(
     reuse_existing: bool,
     skip_save_intermediates: bool,
     save_volumes: bool,
+    scanner_thin_mode: str = "normal",
+    voter_thin_mode: str = "normal",
+    reference_thin_sigma: float = 1.0,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     output_path = Path(output_dir)
     if reuse_existing:
@@ -383,7 +425,13 @@ def run_or_reuse_pipeline(
         record_reused_stage(runtime, "scanner_thin", "scanner_thin_elapsed_seconds")
     else:
         stage_start = time.perf_counter()
-        fet, fpt, ftt = scanner.thin(ft, pt, tt)
+        fet, fpt, ftt = scanner.thin(
+            ft,
+            pt,
+            tt,
+            mode=scanner_thin_mode,
+            reference_sigma=reference_thin_sigma,
+        )
         record_computed_stage(
             runtime,
             "scanner_thin",
@@ -434,7 +482,13 @@ def run_or_reuse_pipeline(
         record_reused_stage(runtime, "voter_thin", "voter_thin_elapsed_seconds")
     else:
         stage_start = time.perf_counter()
-        fvt = voter.thin(fv, vp, vt)
+        fvt = voter.thin(
+            fv,
+            vp,
+            vt,
+            mode=voter_thin_mode,
+            reference_sigma=reference_thin_sigma,
+        )
         record_computed_stage(
             runtime,
             "voter_thin",
@@ -766,6 +820,9 @@ def main(argv: list[str] | None = None) -> int:
             reuse_existing=args.reuse_existing,
             skip_save_intermediates=args.skip_save_intermediates,
             save_volumes=args.save_volumes,
+            scanner_thin_mode=args.scanner_thin_mode,
+            voter_thin_mode=args.voter_thin_mode,
+            reference_thin_sigma=args.reference_thin_sigma,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

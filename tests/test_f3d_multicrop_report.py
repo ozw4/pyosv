@@ -105,6 +105,9 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.crop_shape == (128, 128, 100)
     assert defaults.interior_margin == 40
     assert defaults.center is None
+    assert defaults.scanner_thin_mode == "normal"
+    assert defaults.voter_thin_mode == "normal"
+    assert defaults.reference_thin_sigma == 1.0
 
     args = module.build_parser().parse_args(
         [
@@ -118,12 +121,23 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
             "2",
             "--interior-margin",
             "3",
+            "--scanner-thin-mode",
+            "reference",
+            "--voter-thin-mode",
+            "reference",
+            "--reference-thin-sigma",
+            "1.5",
         ]
     )
     assert args.crop_shape == (16, 14, 12)
     assert args.center == [(2, 3, 4), (5, 6, 7)]
     assert args.count == 2
     assert args.interior_margin == 3
+    assert args.scanner_thin_mode == "reference"
+    assert args.voter_thin_mode == "reference"
+    assert args.reference_thin_sigma == 1.5
+    with pytest.raises(SystemExit):
+        module.build_parser().parse_args(["--voter-thin-mode", "bad"])
 
 
 def test_aggregate_reducer_on_synthetic_metric_dicts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -218,11 +232,56 @@ def test_run_example_writes_json_and_uses_explicit_centers(
     assert loaded["format_version"] == 1
     assert loaded["config"]["crop_selection"]["source"] == "explicit_centers"
     assert loaded["config"]["crop_selection"]["selected_count"] == 2
+    assert loaded["config"]["scanner"]["thin_mode"] == "normal"
+    assert loaded["config"]["voter"]["thin_mode"] == "normal"
+    assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
     assert [crop["crop_center"] for crop in loaded["crops"]] == [[2, 2, 2], [5, 5, 5]]
     assert loaded["aggregate"]["crop_count"] == 2
     assert report == loaded
     assert not (data_root / "metrics.json").exists()
     _assert_finite_or_none(loaded)
+
+
+def test_run_example_records_selected_thinning_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_json = tmp_path / "outputs" / "metrics.json"
+    received_kwargs = {}
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+
+    def fake_run_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
+        received_kwargs.update(kwargs)
+        return _synthetic_outputs(ep.shape)
+
+    monkeypatch.setattr(module.crop_validation, "run_pipeline", fake_run_pipeline)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+        scanner_thin_mode="reference",
+        voter_thin_mode="reference",
+        reference_thin_sigma=1.25,
+    )
+
+    assert report["config"]["scanner"]["thin_mode"] == "reference"
+    assert report["config"]["voter"]["thin_mode"] == "reference"
+    assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
+    assert received_kwargs["scanner_thin_mode"] == "reference"
+    assert received_kwargs["voter_thin_mode"] == "reference"
+    assert received_kwargs["reference_thin_sigma"] == 1.25
 
 
 def test_save_volumes_writes_crop_outputs(
@@ -299,6 +358,9 @@ def test_visual_report_writes_markdown_pngs_and_metrics(
     assert markdown_path.is_file()
     assert "crop_001" in markdown
     assert "normalized_correlation" in markdown
+    assert "scanner_thin_mode: `normal`" in markdown
+    assert "voter_thin_mode: `normal`" in markdown
+    assert "reference_thin_sigma: `1.0`" in markdown
     assert "](crop_001/figures/" in markdown
     assert ".png)" in markdown
     assert (figures_dir / "scanner_fl_vs_ftpy_i3_3.png").is_file()
