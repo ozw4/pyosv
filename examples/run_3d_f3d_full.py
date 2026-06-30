@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run the manual full-volume F3 3D scan/vote workflow and report "
-            "metrics against reference fv.dat and fvt.dat."
+            "metrics against reference fl.dat, fv.dat, and fvt.dat."
         ),
     )
     parser.add_argument(
@@ -120,12 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reuse-existing",
         action="store_true",
-        help="Reuse existing stage outputs in --output-dir when all files for a stage are present.",
+        help="Reuse existing ft_py.dat, fv_py.dat, and fvt_py.dat in --output-dir.",
     )
     parser.add_argument(
         "--skip-save-intermediates",
         action="store_true",
-        help="With --save-volumes, write only fv_py.dat and fvt_py.dat.",
+        help="With --save-volumes, write only ft_py.dat, fv_py.dat, and fvt_py.dat.",
     )
     parser.add_argument(
         "--save-volumes",
@@ -289,6 +289,7 @@ def build_run_config(
         "skip_save_intermediates": bool(skip_save_intermediates),
         "save_volumes": bool(save_volumes),
         "outputs": {
+            "report": list(REPORT_OUTPUT_NAMES),
             "final": list(FINAL_OUTPUT_NAMES),
             "intermediate": [] if skip_save_intermediates else list(INTERMEDIATE_OUTPUT_NAMES),
         },
@@ -320,8 +321,8 @@ def run_or_reuse_pipeline(
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     output_path = Path(output_dir)
     if reuse_existing:
-        require_existing_outputs(output_path, OUTPUT_NAMES)
-        return read_outputs(output_path, OUTPUT_NAMES), {
+        require_existing_outputs(output_path, REPORT_OUTPUT_NAMES)
+        return read_outputs(output_path, REPORT_OUTPUT_NAMES), {
             "mode": "reuse_existing",
             "scanner_elapsed_seconds": 0.0,
             "scanner_thin_elapsed_seconds": 0.0,
@@ -392,7 +393,7 @@ def run_or_reuse_pipeline(
             output_path, outputs, ("fvt_py.dat",), skip_intermediates=skip_save_intermediates
         )
 
-    return {name: outputs[name] for name in OUTPUT_NAMES}, runtime
+    return {name: outputs[name] for name in REPORT_OUTPUT_NAMES}, runtime
 
 
 def should_reuse_outputs(
@@ -436,7 +437,7 @@ def write_outputs(
     directory = Path(output_dir)
     paths = []
     for name in names:
-        if skip_intermediates and name not in FINAL_OUTPUT_NAMES:
+        if skip_intermediates and name not in REPORT_OUTPUT_NAMES:
             continue
         paths.append(write_dat(directory / name, outputs[name]))
     return paths

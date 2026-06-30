@@ -15,6 +15,7 @@ from pyosv.f3d_reference import F3D_ENV_VAR
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
 RUN_ENV_VAR = "PYOSV_RUN_F3D_FULL_COMPARISON"
+OUTPUT_ENV_VAR = "PYOSV_F3D_FULL_COMPARISON_OUTPUT_DIR"
 REQUIRED_FILES = ("ep.dat", "fl.dat", "fv.dat", "fvt.dat")
 
 
@@ -160,6 +161,7 @@ def test_build_run_config_is_serializable(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert loaded["reuse_existing"] is True
     assert loaded["skip_save_intermediates"] is True
     assert loaded["save_volumes"] is True
+    assert loaded["outputs"]["report"] == ["ft_py.dat", "fv_py.dat", "fvt_py.dat"]
     assert loaded["outputs"]["final"] == ["fv_py.dat", "fvt_py.dat"]
     assert loaded["outputs"]["intermediate"] == []
 
@@ -179,7 +181,7 @@ def test_output_json_safety_rejects_path_under_data_root(
         )
 
 
-def test_reuse_mode_reports_missing_intermediates_clearly(
+def test_reuse_mode_reports_missing_report_outputs_clearly(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -188,7 +190,52 @@ def test_reuse_mode_reports_missing_intermediates_clearly(
     (tmp_path / "fvt_py.dat").write_bytes(b"data")
 
     with pytest.raises(FileNotFoundError, match="ft_py.dat"):
-        module.require_existing_outputs(tmp_path, module.OUTPUT_NAMES)
+        module.require_existing_outputs(tmp_path, module.REPORT_OUTPUT_NAMES)
+
+
+def test_reuse_mode_requires_and_reads_only_report_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    for name in module.REPORT_OUTPUT_NAMES:
+        (tmp_path / name).write_bytes(b"data")
+
+    read_names = None
+
+    def fake_read_outputs(output_dir: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
+        nonlocal read_names
+        read_names = names
+        return _synthetic_outputs()
+
+    monkeypatch.setattr(module, "read_outputs", fake_read_outputs)
+
+    outputs, runtime = module.run_or_reuse_pipeline(
+        data_root=tmp_path / "f3_reference",
+        output_dir=tmp_path,
+        sigma1=8.0,
+        sigma2=8.0,
+        phi_min=0.0,
+        phi_max=360.0,
+        theta_min=65.0,
+        theta_max=80.0,
+        ru=10,
+        rv=20,
+        rw=30,
+        d=4,
+        fm=0.3,
+        strain_max1=0.25,
+        strain_max2=0.25,
+        surface_smoothing1=2.0,
+        surface_smoothing2=2.0,
+        reuse_existing=True,
+        skip_save_intermediates=False,
+        save_volumes=False,
+    )
+
+    assert read_names == module.REPORT_OUTPUT_NAMES
+    assert tuple(outputs) == module.REPORT_OUTPUT_NAMES
+    assert runtime["mode"] == "reuse_existing"
 
 
 def test_should_reuse_outputs_requires_flag_and_all_files(
@@ -210,12 +257,13 @@ def test_should_reuse_outputs_requires_flag_and_all_files(
     )
 
 
-def test_write_outputs_skip_intermediates_keeps_only_final_files(
+def test_write_outputs_skip_intermediates_keeps_only_report_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     module = _import_full_module(monkeypatch)
     outputs = {
+        "ft_py.dat": np.full((2, 2, 2), 2.0, dtype=np.float32),
         "fv_py.dat": np.zeros((2, 2, 2), dtype=np.float32),
         "vp_py.dat": np.ones((2, 2, 2), dtype=np.float32),
         "fvt_py.dat": np.ones((2, 2, 2), dtype=np.float32),
@@ -224,10 +272,11 @@ def test_write_outputs_skip_intermediates_keeps_only_final_files(
     module.write_outputs(
         tmp_path,
         outputs,
-        ("fv_py.dat", "vp_py.dat", "fvt_py.dat"),
+        ("ft_py.dat", "fv_py.dat", "vp_py.dat", "fvt_py.dat"),
         skip_intermediates=True,
     )
 
+    assert (tmp_path / "ft_py.dat").is_file()
     assert (tmp_path / "fv_py.dat").is_file()
     assert not (tmp_path / "vp_py.dat").exists()
     assert (tmp_path / "fvt_py.dat").is_file()
@@ -355,14 +404,18 @@ def test_gated_real_data_reuse_report_if_outputs_exist(
 ) -> None:
     data_root = _gated_data_root()
     module = _import_full_module(monkeypatch)
-    output_dir = tmp_path / "outputs"
+    output_dir_text = os.environ.get(OUTPUT_ENV_VAR)
+    if output_dir_text is None:
+        pytest.skip(f"set {OUTPUT_ENV_VAR} to an output directory with full F3 pyosv outputs")
+    output_dir = Path(output_dir_text)
 
-    if not all((output_dir / name).is_file() for name in module.OUTPUT_NAMES):
+    if not all((output_dir / name).is_file() for name in module.REPORT_OUTPUT_NAMES):
         pytest.skip("full F3 pyosv outputs are not present for reuse-only report assembly")
 
     report = module.run_example(
         data_root_arg=data_root,
         output_dir=output_dir,
+        output_json=tmp_path / "metrics.json",
         reuse_existing=True,
     )
 
