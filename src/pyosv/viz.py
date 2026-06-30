@@ -151,6 +151,154 @@ def save_volume_comparison_slices(
     return written
 
 
+def maximum_intensity_projection(volume: ArrayLike, axis: str | int) -> np.ndarray:
+    """Return the maximum-intensity projection of a 3D ``(n3, n2, n1)`` volume."""
+    values = np.asarray(volume, dtype=np.float32)
+    if values.ndim != 3:
+        raise ValueError("volume must be a 3D (n3, n2, n1) array")
+    if any(size <= 0 for size in values.shape):
+        raise ValueError("volume dimensions must be positive")
+
+    _, axis_number = _normalize_axis(axis)
+    return np.max(values, axis=axis_number).astype(np.float32, copy=False)
+
+
+def save_mip_comparison(
+    output_path: str | Path,
+    *,
+    reference: ArrayLike,
+    candidate: ArrayLike,
+    name: str,
+    clip_percentiles: tuple[float, float] = (1.0, 99.0),
+) -> Path:
+    """Save reference/candidate/difference MIP panels for all three axes."""
+    reference_values, candidate_values = _validate_volume_pair(reference, candidate)
+    _validate_clip_percentiles(clip_percentiles)
+
+    output_file = Path(output_path)
+    if output_file.parent != Path(""):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    plt = require_matplotlib()
+    fig, axes = plt.subplots(
+        3,
+        3,
+        figsize=(9.0, 9.0),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    try:
+        fig.suptitle(f"{name} maximum-intensity projections")
+        for row, axis in enumerate(("i3", "i2", "i1")):
+            reference_mip = maximum_intensity_projection(reference_values, axis)
+            candidate_mip = maximum_intensity_projection(candidate_values, axis)
+            difference = np.abs(candidate_mip - reference_mip)
+            panels = (
+                ("reference", reference_mip),
+                ("candidate", candidate_mip),
+                ("absolute difference", difference),
+            )
+            for col, (panel_title, panel_values) in enumerate(panels):
+                display = normalize_for_display(
+                    panel_values,
+                    clip_percentiles=clip_percentiles,
+                )
+                ax = axes[row, col]
+                ax.imshow(display, cmap="gray", vmin=0.0, vmax=1.0, origin="upper", aspect="auto")
+                ax.set_title(f"{axis} {panel_title}")
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+        fig.savefig(output_file, dpi=150)
+    finally:
+        plt.close(fig)
+
+    return output_file
+
+
+def save_histogram_comparison(
+    output_path: str | Path,
+    *,
+    reference: ArrayLike,
+    candidate: ArrayLike,
+    name: str,
+    bins: int = 100,
+    value_range: tuple[float, float] | None = None,
+    log_count: bool = True,
+) -> Path:
+    """Save an overlaid histogram comparison for two volumes."""
+    reference_values, candidate_values = _validate_volume_pair(reference, candidate)
+    if bins <= 0:
+        raise ValueError("bins must be positive")
+    if value_range is not None:
+        _validate_value_range(value_range)
+
+    output_file = Path(output_path)
+    if output_file.parent != Path(""):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    reference_finite = _finite_values(reference_values)
+    candidate_finite = _finite_values(candidate_values)
+
+    plt = require_matplotlib()
+    fig, ax = plt.subplots(figsize=(6.0, 4.0), constrained_layout=True)
+    try:
+        ax.hist(
+            reference_finite,
+            bins=bins,
+            range=value_range,
+            histtype="step",
+            linewidth=1.5,
+            label="reference",
+        )
+        ax.hist(
+            candidate_finite,
+            bins=bins,
+            range=value_range,
+            histtype="step",
+            linewidth=1.5,
+            label="candidate",
+        )
+        ax.set_title(f"{name} value histogram")
+        ax.set_xlabel("value")
+        ax.set_ylabel("count")
+        if log_count:
+            ax.set_yscale("log")
+        ax.legend()
+        fig.savefig(output_file, dpi=150)
+    finally:
+        plt.close(fig)
+
+    return output_file
+
+
+def save_volume_diagnostics(
+    output_dir: str | Path,
+    *,
+    reference: ArrayLike,
+    candidate: ArrayLike,
+    name: str,
+    clip_percentiles: tuple[float, float] = (1.0, 99.0),
+) -> dict[str, Path]:
+    """Save deterministic MIP and histogram diagnostics for a volume pair."""
+    output_path = ensure_output_dir(output_dir)
+    return {
+        "mip": save_mip_comparison(
+            output_path / f"{name}_mip.png",
+            reference=reference,
+            candidate=candidate,
+            name=name,
+            clip_percentiles=clip_percentiles,
+        ),
+        "hist": save_histogram_comparison(
+            output_path / f"{name}_hist.png",
+            reference=reference,
+            candidate=candidate,
+            name=name,
+        ),
+    }
+
+
 def ridge_mask(
     volume: ArrayLike,
     *,
@@ -329,6 +477,35 @@ def _validate_clip_percentiles(clip_percentiles: tuple[float, float]) -> tuple[f
     if high < low:
         raise ValueError("high clip percentile must be greater than or equal to low")
     return low, high
+
+
+def _validate_volume_pair(
+    reference: ArrayLike, candidate: ArrayLike
+) -> tuple[np.ndarray, np.ndarray]:
+    reference_values = np.asarray(reference, dtype=np.float32)
+    candidate_values = np.asarray(candidate, dtype=np.float32)
+    if reference_values.shape != candidate_values.shape:
+        raise ValueError("reference and candidate must have the same shape")
+    if reference_values.ndim != 3:
+        raise ValueError("reference and candidate must be 3D (n3, n2, n1) arrays")
+    if any(size <= 0 for size in reference_values.shape):
+        raise ValueError("reference and candidate dimensions must be positive")
+    return reference_values, candidate_values
+
+
+def _finite_values(values: np.ndarray) -> np.ndarray:
+    finite = values[np.isfinite(values)]
+    return finite.astype(np.float32, copy=False)
+
+
+def _validate_value_range(value_range: tuple[float, float]) -> None:
+    if len(value_range) != 2:
+        raise ValueError("value_range must contain two values")
+    low, high = value_range
+    if not np.isfinite(low) or not np.isfinite(high):
+        raise ValueError("value_range values must be finite")
+    if high <= low:
+        raise ValueError("value_range high value must be greater than low value")
 
 
 def _ridge_overlay_masks(
