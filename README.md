@@ -106,6 +106,10 @@ Public F3 3D reference-data validation is documented in
 `docs/f3d_validation.md`, including the external data layout, smoke checks,
 crop validation, and the manual full-volume pipeline.
 
+Optional static visualization helpers are documented in `docs/visualization.md`.
+Install `pyosv[viz]` only when PNG diagnostics such as slice panels, ridge
+overlays, MIPs, or value histograms are needed.
+
 Minimal connected-component skinning is documented in `docs/skinning.md`, with
 a small self-contained example:
 
@@ -139,6 +143,13 @@ reference cases clearly when the mount or required `.dat` files are absent.
 python -m pip install -e ".[dev]"
 ```
 
+Visualization dependencies are optional and are not required for the core
+package or default tests:
+
+```bash
+python -m pip install -e ".[dev,viz]"
+```
+
 Verify the package import:
 
 ```bash
@@ -163,7 +174,7 @@ python -m ruff format --check src tests examples
 
 ## Development Notes
 
-- Runtime dependencies are limited to NumPy and SciPy at this stage.
+- Core runtime dependencies are limited to NumPy and SciPy at this stage.
 - Runtime must not depend on JVM, Jython, Mines JTK, or Gradle.
 - Practical equivalence with `reference_osv` is the goal; bitwise equivalence is not.
 - `vendor/issue_forge` is an external symlink or bind mount and must not be committed.
