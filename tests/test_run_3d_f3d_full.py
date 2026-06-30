@@ -98,7 +98,12 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert args.surface_smoothing2 == 2.0
     assert args.reuse_existing is False
     assert args.skip_save_intermediates is False
-    assert args.save_volumes is False
+    assert args.save_volumes is True
+
+    no_save_args = module.build_parser().parse_args(
+        ["--output-dir", str(tmp_path), "--no-save-volumes"]
+    )
+    assert no_save_args.save_volumes is False
 
 
 def test_output_dir_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,119 +272,43 @@ def test_reuse_mode_reads_each_full_stage_output_set(
     assert runtime["computed_stages"] == []
 
 
-def test_reuse_mode_resumes_from_completed_scanner_stage(
+def test_reuse_mode_rejects_completed_scanner_stage_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     module = _import_full_module(monkeypatch)
-    full_outputs = _full_synthetic_outputs((2, 2, 2))
     for name in module.SCANNER_OUTPUT_NAMES:
         (tmp_path / name).write_bytes(b"data")
 
-    read_names: list[tuple[str, ...]] = []
-
     def fake_read_outputs(output_dir: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
-        read_names.append(names)
-        return {name: full_outputs[name] for name in names}
-
-    class FakeScanner:
-        def __init__(self, sigma1: float, sigma2: float) -> None:
-            self.sigma1 = sigma1
-            self.sigma2 = sigma2
-
-        def scan(
-            self,
-            phi_min: float,
-            phi_max: float,
-            theta_min: float,
-            theta_max: float,
-            g: np.ndarray,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            raise AssertionError("scanner.scan should not run for a reused scanner stage")
-
-        def thin(
-            self,
-            ft: np.ndarray,
-            pt: np.ndarray,
-            tt: np.ndarray,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            return (
-                ft + np.float32(1.0),
-                pt + np.float32(1.0),
-                tt + np.float32(1.0),
-            )
-
-    class FakeVoter:
-        def __init__(self, ru: int, rv: int, rw: int) -> None:
-            self.ru = ru
-            self.rv = rv
-            self.rw = rw
-
-        def set_strain_max(self, strain_max1: float, strain_max2: float) -> None:
-            return None
-
-        def set_surface_smoothing(
-            self,
-            surface_smoothing1: float,
-            surface_smoothing2: float,
-        ) -> None:
-            return None
-
-        def apply_voting(
-            self,
-            d: int,
-            fm: float,
-            ft: np.ndarray,
-            pt: np.ndarray,
-            tt: np.ndarray,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            return (
-                ft + np.float32(2.0),
-                pt + np.float32(2.0),
-                tt + np.float32(2.0),
-            )
-
-        def thin(self, fv: np.ndarray, vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
-            return fv + np.float32(3.0)
-
-    import pyosv.orient3d
-    import pyosv.voting3d
+        raise AssertionError(f"reuse should fail before reading {names}")
 
     monkeypatch.setattr(module, "read_outputs", fake_read_outputs)
     monkeypatch.setattr(module, "read_f3d_file", lambda name, root: pytest.fail(name))
-    monkeypatch.setattr(pyosv.orient3d, "FaultOrientScanner3", FakeScanner)
-    monkeypatch.setattr(pyosv.voting3d, "OptimalSurfaceVoter", FakeVoter)
 
-    outputs, runtime = module.run_or_reuse_pipeline(
-        data_root=tmp_path / "f3_reference",
-        output_dir=tmp_path,
-        sigma1=8.0,
-        sigma2=8.0,
-        phi_min=0.0,
-        phi_max=360.0,
-        theta_min=65.0,
-        theta_max=80.0,
-        ru=10,
-        rv=20,
-        rw=30,
-        d=4,
-        fm=0.3,
-        strain_max1=0.25,
-        strain_max2=0.25,
-        surface_smoothing1=2.0,
-        surface_smoothing2=2.0,
-        reuse_existing=True,
-        skip_save_intermediates=False,
-        save_volumes=False,
-    )
-
-    assert read_names == [module.SCANNER_OUTPUT_NAMES]
-    assert outputs["ft_py.dat"] is full_outputs["ft_py.dat"]
-    assert outputs["fv_py.dat"] is not full_outputs["fv_py.dat"]
-    assert outputs["fvt_py.dat"] is not full_outputs["fvt_py.dat"]
-    assert runtime["mode"] == "partial_reuse"
-    assert runtime["reused_stages"] == ["scanner"]
-    assert runtime["computed_stages"] == ["scanner_thin", "voting", "voter_thin"]
+    with pytest.raises(FileNotFoundError, match="fet_py.dat"):
+        module.run_or_reuse_pipeline(
+            data_root=tmp_path / "f3_reference",
+            output_dir=tmp_path,
+            sigma1=8.0,
+            sigma2=8.0,
+            phi_min=0.0,
+            phi_max=360.0,
+            theta_min=65.0,
+            theta_max=80.0,
+            ru=10,
+            rv=20,
+            rw=30,
+            d=4,
+            fm=0.3,
+            strain_max1=0.25,
+            strain_max2=0.25,
+            surface_smoothing1=2.0,
+            surface_smoothing2=2.0,
+            reuse_existing=True,
+            skip_save_intermediates=False,
+            save_volumes=False,
+        )
 
 
 def test_should_reuse_outputs_requires_flag_and_all_files(

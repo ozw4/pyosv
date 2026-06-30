@@ -125,12 +125,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-save-intermediates",
         action="store_true",
-        help="With --save-volumes, write only ft_py.dat, fv_py.dat, and fvt_py.dat.",
+        help="When saving volumes, write only ft_py.dat, fv_py.dat, and fvt_py.dat.",
     )
-    parser.add_argument(
+    volume_group = parser.add_mutually_exclusive_group()
+    volume_group.add_argument(
         "--save-volumes",
+        dest="save_volumes",
         action="store_true",
-        help="Write generated pyosv DAT outputs under --output-dir.",
+        default=True,
+        help="Write generated pyosv DAT outputs under --output-dir (default).",
+    )
+    volume_group.add_argument(
+        "--no-save-volumes",
+        dest="save_volumes",
+        action="store_false",
+        help="Write reports without generated pyosv DAT outputs.",
     )
     return parser
 
@@ -158,7 +167,7 @@ def run_example(
     surface_smoothing2: float = 2.0,
     reuse_existing: bool = False,
     skip_save_intermediates: bool = False,
-    save_volumes: bool = False,
+    save_volumes: bool = True,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     output_path = ensure_output_not_in_data_root(output_dir, data_root)
@@ -320,7 +329,7 @@ def run_or_reuse_pipeline(
     save_volumes: bool,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     output_path = Path(output_dir)
-    if reuse_existing and not any_existing_outputs(output_path, OUTPUT_NAMES):
+    if reuse_existing:
         require_existing_outputs(output_path, OUTPUT_NAMES)
 
     from pyosv.orient3d import FaultOrientScanner3
@@ -445,11 +454,6 @@ def run_or_reuse_pipeline(
     return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}, runtime
 
 
-def any_existing_outputs(output_dir: str | PathLike[str], names: tuple[str, ...]) -> bool:
-    directory = Path(output_dir)
-    return any((directory / name).is_file() for name in names)
-
-
 def should_reuse_stage_outputs(
     output_dir: str | PathLike[str],
     names: tuple[str, ...],
@@ -490,7 +494,7 @@ def finalize_runtime_mode(runtime: dict[str, Any], reuse_existing: bool) -> None
     if not reuse_existing:
         runtime["mode"] = "computed"
     elif runtime["computed_stages"]:
-        runtime["mode"] = "partial_reuse" if runtime["reused_stages"] else "computed"
+        runtime["mode"] = "computed"
     else:
         runtime["mode"] = "reuse_existing"
 
