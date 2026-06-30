@@ -321,8 +321,8 @@ def run_or_reuse_pipeline(
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     output_path = Path(output_dir)
     if reuse_existing:
-        require_existing_outputs(output_path, OUTPUT_NAMES)
-        return read_outputs(output_path, OUTPUT_NAMES), {
+        require_existing_outputs(output_path, REPORT_OUTPUT_NAMES)
+        return read_outputs(output_path, REPORT_OUTPUT_NAMES), {
             "mode": "reuse_existing",
             "scanner_elapsed_seconds": 0.0,
             "scanner_thin_elapsed_seconds": 0.0,
@@ -333,7 +333,6 @@ def run_or_reuse_pipeline(
     from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
 
-    outputs: dict[str, np.ndarray] = {}
     runtime: dict[str, Any] = {"mode": "computed"}
     scanner = FaultOrientScanner3(sigma1=sigma1, sigma2=sigma2)
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
@@ -343,25 +342,24 @@ def run_or_reuse_pipeline(
     stage_start = time.perf_counter()
     ep = read_f3d_file("ep.dat", data_root)
     ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
-    outputs.update(dict(zip(SCANNER_OUTPUT_NAMES, (ft, pt, tt), strict=True)))
+    del ep
     runtime["scanner_elapsed_seconds"] = float(time.perf_counter() - stage_start)
     if save_volumes:
         write_outputs(
-            output_path, outputs, SCANNER_OUTPUT_NAMES, skip_intermediates=skip_save_intermediates
+            output_path,
+            dict(zip(SCANNER_OUTPUT_NAMES, (ft, pt, tt), strict=True)),
+            SCANNER_OUTPUT_NAMES,
+            skip_intermediates=skip_save_intermediates,
         )
 
     stage_start = time.perf_counter()
-    fet, fpt, ftt = scanner.thin(
-        outputs["ft_py.dat"],
-        outputs["pt_py.dat"],
-        outputs["tt_py.dat"],
-    )
-    outputs.update(dict(zip(SCANNER_THIN_OUTPUT_NAMES, (fet, fpt, ftt), strict=True)))
+    fet, fpt, ftt = scanner.thin(ft, pt, tt)
+    del pt, tt
     runtime["scanner_thin_elapsed_seconds"] = float(time.perf_counter() - stage_start)
     if save_volumes:
         write_outputs(
             output_path,
-            outputs,
+            dict(zip(SCANNER_THIN_OUTPUT_NAMES, (fet, fpt, ftt), strict=True)),
             SCANNER_THIN_OUTPUT_NAMES,
             skip_intermediates=skip_save_intermediates,
         )
@@ -370,30 +368,33 @@ def run_or_reuse_pipeline(
     fv, vp, vt = voter.apply_voting(
         d=d,
         fm=fm,
-        ft=outputs["fet_py.dat"],
-        pt=outputs["fpt_py.dat"],
-        tt=outputs["ftt_py.dat"],
+        ft=fet,
+        pt=fpt,
+        tt=ftt,
     )
-    outputs.update(dict(zip(VOTING_OUTPUT_NAMES, (fv, vp, vt), strict=True)))
+    del fet, fpt, ftt
     runtime["voting_elapsed_seconds"] = float(time.perf_counter() - stage_start)
     if save_volumes:
         write_outputs(
-            output_path, outputs, VOTING_OUTPUT_NAMES, skip_intermediates=skip_save_intermediates
+            output_path,
+            dict(zip(VOTING_OUTPUT_NAMES, (fv, vp, vt), strict=True)),
+            VOTING_OUTPUT_NAMES,
+            skip_intermediates=skip_save_intermediates,
         )
 
     stage_start = time.perf_counter()
-    outputs["fvt_py.dat"] = voter.thin(
-        outputs["fv_py.dat"],
-        outputs["vp_py.dat"],
-        outputs["vt_py.dat"],
-    )
+    fvt = voter.thin(fv, vp, vt)
+    del vp, vt
     runtime["voter_thin_elapsed_seconds"] = float(time.perf_counter() - stage_start)
     if save_volumes:
         write_outputs(
-            output_path, outputs, ("fvt_py.dat",), skip_intermediates=skip_save_intermediates
+            output_path,
+            {"fvt_py.dat": fvt},
+            ("fvt_py.dat",),
+            skip_intermediates=skip_save_intermediates,
         )
 
-    return {name: outputs[name] for name in OUTPUT_NAMES}, runtime
+    return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}, runtime
 
 
 def should_reuse_outputs(
