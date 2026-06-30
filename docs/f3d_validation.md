@@ -91,6 +91,70 @@ centers, candidates too close to the volume boundary are skipped instead of
 being silently shifted by `crop_slices()`. Pass `--center i3,i2,i1` to validate
 a specific manual crop.
 
+## Reference-Like Thinning Validation
+
+The 3D scanner and voter thinning steps support two modes:
+
+- `normal`: existing pyosv behavior. It uses 3D normal-vector interpolation for
+  non-maximum suppression and remains the default.
+- `reference`: opt-in reference-like behavior. It smooths the comparison volume,
+  bins samples by strike angle, and compares local maxima in the `i2-i3` plane.
+
+Use `reference` mode only when running diagnostics against reference-style
+outputs. It is closer to the Java thinning workflow, but it is still Pythonic
+and not bit-exact Mines JTK. Existing pyosv behavior and tests remain unchanged
+unless the mode is selected explicitly. See `docs/reference_like_thinning.md`
+for the API-level details.
+
+Run one crop with reference-like scanner and voter thinning:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/run_3d_f3d_crop_validation.py \
+  --output-dir outputs/3d/f3d/crop_reference_thin_001 \
+  --scanner-thin-mode reference \
+  --voter-thin-mode reference \
+  --reference-thin-sigma 1.0 \
+  --pretty \
+  --save-figures
+```
+
+Run a multi-crop report with reference-like thinning:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/report_3d_f3d_multicrop.py \
+  --output-json outputs/3d/f3d/multicrop_reference_thin_001/metrics.json \
+  --count 3 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --scanner-thin-mode reference \
+  --voter-thin-mode reference \
+  --reference-thin-sigma 1.0 \
+  --pretty \
+  --save-figures \
+  --write-markdown-index
+```
+
+Run the thinning ablation report to compare current/current, mixed, and
+reference/reference thinning cases:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/report_3d_f3d_thinning_ablation.py \
+  --output-json outputs/3d/f3d/thinning_ablation_001/metrics.json \
+  --count 3 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --pretty \
+  --save-figures \
+  --write-markdown-index
+```
+
+Do not document generated report outputs as committed artifacts. Generated
+JSON, PNG, markdown, and `.dat` outputs belong under `outputs/` or another
+ignored working directory.
+
 ## Large Crop Manual Validation
 
 The `(128, 128, 100)` crop preset is an explicit long-running manual validation,
@@ -162,5 +226,24 @@ Reference comparisons should use practical metrics and visual review:
 For an operational figure-first workflow, including crop PNGs, ridge overlays,
 MIPs, histograms, and multi-crop markdown indexes, see
 `docs/f3d_visual_diagnostics.md`.
+
+For reference-like thinning runs, the first expected improvements are not
+necessarily high voxel-wise correlation. The main checks are:
+
+- `fvt` `nonzero_fraction` moving closer to the reference.
+- `buffered_ridge_overlap.interior.fvt.buffered_f1` improving.
+- sparse ridge distance medians decreasing.
+- ridge overlay figures showing fewer far-away candidate-only ridges.
+- exact overlap remaining interpretable even when it is low for sparse ridges.
+
+Previous current/current baseline context:
+
+```text
+normalized_correlation.interior.fvt.mean ~= 0.224
+buffered_ridge_overlap.interior.fvt.buffered_f1.mean ~= 0.075
+exact fvt ridge overlap F1/Jaccard = 0.0
+```
+
+Do not claim success until actual ablation results are generated and reviewed.
 
 No bitwise equality with Java, Jython, or Mines JTK output is expected.

@@ -82,6 +82,30 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.d == 4
     assert args.fm == 0.3
     assert args.interior_margin is None
+    assert args.scanner_thin_mode == "normal"
+    assert args.voter_thin_mode == "normal"
+    assert args.reference_thin_sigma == 1.0
+
+
+def test_parser_accepts_and_rejects_thinning_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_validation_module(monkeypatch)
+
+    args = module.build_parser().parse_args(
+        [
+            "--scanner-thin-mode",
+            "reference",
+            "--voter-thin-mode",
+            "reference",
+            "--reference-thin-sigma",
+            "1.5",
+        ]
+    )
+
+    assert args.scanner_thin_mode == "reference"
+    assert args.voter_thin_mode == "reference"
+    assert args.reference_thin_sigma == 1.5
+    with pytest.raises(SystemExit):
+        module.build_parser().parse_args(["--scanner-thin-mode", "bad"])
 
 
 def test_crop_shape_center_and_large_preset_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,7 +224,78 @@ def test_run_example_writes_metrics_json_to_output_dir(
     assert loaded["data_root"] == str(data_root)
     assert loaded["crops"][0]["crop_center"] == [3, 3, 3]
     assert report["config"]["crop_shape"] == [6, 6, 6]
+    assert loaded["config"]["scanner"]["thin_mode"] == "normal"
+    assert loaded["config"]["voter"]["thin_mode"] == "normal"
+    assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
     assert not (output_dir / "crop_001" / "figures").exists()
+
+
+def test_run_example_records_selected_thinning_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_dir = tmp_path / "outputs"
+    received_kwargs = {}
+    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+
+    def fake_run_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
+        received_kwargs.update(kwargs)
+        return _synthetic_outputs(ep.shape)
+
+    monkeypatch.setattr(module, "run_pipeline", fake_run_pipeline)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_dir=output_dir,
+        crop_shape=(6, 6, 6),
+        max_crops=1,
+        percentile=99.0,
+        min_separation=1.0,
+        interior_margin=1,
+        scanner_thin_mode="reference",
+        voter_thin_mode="reference",
+        reference_thin_sigma=1.25,
+    )
+
+    assert report["config"]["scanner"]["thin_mode"] == "reference"
+    assert report["config"]["voter"]["thin_mode"] == "reference"
+    assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
+    assert received_kwargs["scanner_thin_mode"] == "reference"
+    assert received_kwargs["voter_thin_mode"] == "reference"
+    assert received_kwargs["reference_thin_sigma"] == 1.25
+
+
+def test_small_pipeline_accepts_reference_thinning(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_validation_module(monkeypatch)
+
+    outputs = module.run_pipeline(
+        np.zeros((4, 4, 4), dtype=np.float32),
+        sigma1=1.0,
+        sigma2=1.0,
+        phi_min=0.0,
+        phi_max=0.0,
+        theta_min=70.0,
+        theta_max=70.0,
+        ru=1,
+        rv=1,
+        rw=1,
+        strain_max1=0.25,
+        strain_max2=0.25,
+        surface_smoothing1=1.0,
+        surface_smoothing2=1.0,
+        d=1,
+        fm=0.3,
+        scanner_thin_mode="reference",
+        voter_thin_mode="reference",
+        reference_thin_sigma=1.0,
+    )
+
+    assert outputs["fet_py.dat"].shape == (4, 4, 4)
+    assert outputs["fvt_py.dat"].shape == (4, 4, 4)
 
 
 def test_save_volumes_writes_crop_outputs(

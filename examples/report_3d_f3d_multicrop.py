@@ -174,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
+    crop_validation.add_thinning_arguments(parser)
     return parser
 
 
@@ -209,6 +210,9 @@ def run_example(
     surface_smoothing2: float = 2.0,
     d: int = 4,
     fm: float = 0.3,
+    scanner_thin_mode: str = "normal",
+    voter_thin_mode: str = "normal",
+    reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_json is not None:
@@ -273,6 +277,9 @@ def run_example(
         surface_smoothing2=surface_smoothing2,
         d=d,
         fm=fm,
+        scanner_thin_mode=scanner_thin_mode,
+        voter_thin_mode=voter_thin_mode,
+        reference_thin_sigma=reference_thin_sigma,
     )
     if save_figures and "fl.dat" not in arrays:
         arrays["fl.dat"] = crop_validation.read_f3d_file("fl.dat", data_root)
@@ -301,6 +308,9 @@ def run_example(
             surface_smoothing2=surface_smoothing2,
             d=d,
             fm=fm,
+            scanner_thin_mode=scanner_thin_mode,
+            voter_thin_mode=voter_thin_mode,
+            reference_thin_sigma=reference_thin_sigma,
         )
 
         if resolved_volume_dir is not None:
@@ -431,6 +441,9 @@ def build_config(
     surface_smoothing2: float,
     d: int,
     fm: float,
+    scanner_thin_mode: str = "normal",
+    voter_thin_mode: str = "normal",
+    reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     config: dict[str, Any] = {
         "input": "ep.dat",
@@ -454,6 +467,8 @@ def build_config(
             "phi_max": float(phi_max),
             "theta_min": float(theta_min),
             "theta_max": float(theta_max),
+            "thin_mode": scanner_thin_mode,
+            "reference_thin_sigma": float(reference_thin_sigma),
         },
         "voter": {
             "ru": int(ru),
@@ -465,6 +480,8 @@ def build_config(
             "surface_smoothing2": float(surface_smoothing2),
             "d": int(d),
             "fm": float(fm),
+            "thin_mode": voter_thin_mode,
+            "reference_thin_sigma": float(reference_thin_sigma),
         },
         "overlap_percentiles": [float(p) for p in crop_validation.OVERLAP_PERCENTILES],
         "aggregate_metric_roots": list(AGGREGATE_ROOTS),
@@ -560,6 +577,9 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
         f"- interior_margin: `{config.get('interior_margin', '')}`",
         f"- crop_selection_source: `{crop_selection.get('source', '')}`",
         f"- selected_count: `{crop_selection.get('selected_count', len(crops))}`",
+        f"- scanner_thin_mode: `{scanner.get('thin_mode', '')}`",
+        f"- voter_thin_mode: `{voter.get('thin_mode', '')}`",
+        f"- reference_thin_sigma: `{scanner.get('reference_thin_sigma', '')}`",
         f"- scanner: `{scanner}`",
         f"- voter: `{voter}`",
     ]
@@ -769,6 +789,9 @@ def main(argv: list[str] | None = None) -> int:
             surface_smoothing2=args.surface_smoothing2,
             d=args.d,
             fm=args.fm,
+            scanner_thin_mode=args.scanner_thin_mode,
+            voter_thin_mode=args.voter_thin_mode,
+            reference_thin_sigma=args.reference_thin_sigma,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

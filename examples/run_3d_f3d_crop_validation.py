@@ -48,6 +48,28 @@ VOLUME_NAMES = (
     "fv_py.dat",
     "fvt_py.dat",
 )
+THIN_MODES = ("normal", "reference")
+
+
+def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--scanner-thin-mode",
+        choices=THIN_MODES,
+        default="normal",
+        help="Scanner thinning mode.",
+    )
+    parser.add_argument(
+        "--voter-thin-mode",
+        choices=THIN_MODES,
+        default="normal",
+        help="Voter thinning mode.",
+    )
+    parser.add_argument(
+        "--reference-thin-sigma",
+        type=float,
+        default=1.0,
+        help="Smoothing sigma used by reference-like thinning.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -173,6 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Boundary margin excluded from reference metrics.",
     )
+    add_thinning_arguments(parser)
     return parser
 
 
@@ -208,6 +231,9 @@ def run_example(
     d: int = 4,
     fm: float = 0.3,
     interior_margin: int | None = None,
+    scanner_thin_mode: str = "normal",
+    voter_thin_mode: str = "normal",
+    reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_dir is not None:
@@ -240,6 +266,8 @@ def run_example(
             "phi_max": float(phi_max),
             "theta_min": float(theta_min),
             "theta_max": float(theta_max),
+            "thin_mode": scanner_thin_mode,
+            "reference_thin_sigma": float(reference_thin_sigma),
         },
         "voter": {
             "ru": int(ru),
@@ -251,6 +279,8 @@ def run_example(
             "surface_smoothing2": float(surface_smoothing2),
             "d": int(d),
             "fm": float(fm),
+            "thin_mode": voter_thin_mode,
+            "reference_thin_sigma": float(reference_thin_sigma),
         },
         "interior_margin": int(interior_margin),
         "overlap_percentiles": [float(p) for p in OVERLAP_PERCENTILES],
@@ -298,6 +328,9 @@ def run_example(
             surface_smoothing2=surface_smoothing2,
             d=d,
             fm=fm,
+            scanner_thin_mode=scanner_thin_mode,
+            voter_thin_mode=voter_thin_mode,
+            reference_thin_sigma=reference_thin_sigma,
         )
 
         if output_dir is not None and save_volumes:
@@ -406,19 +439,34 @@ def run_pipeline(
     surface_smoothing2: float,
     d: int,
     fm: float,
+    scanner_thin_mode: str = "normal",
+    voter_thin_mode: str = "normal",
+    reference_thin_sigma: float = 1.0,
 ) -> dict[str, np.ndarray]:
     from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
 
     scanner = FaultOrientScanner3(sigma1=sigma1, sigma2=sigma2)
     ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
-    fet, fpt, ftt = scanner.thin(ft, pt, tt)
+    fet, fpt, ftt = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode=scanner_thin_mode,
+        reference_sigma=reference_thin_sigma,
+    )
 
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
     fv, vp, vt = voter.apply_voting(d=d, fm=fm, ft=fet, pt=fpt, tt=ftt)
-    fvt = voter.thin(fv, vp, vt)
+    fvt = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode=voter_thin_mode,
+        reference_sigma=reference_thin_sigma,
+    )
 
     return {
         "ft_py.dat": ft,
@@ -778,6 +826,9 @@ def main(argv: list[str] | None = None) -> int:
             d=args.d,
             fm=args.fm,
             interior_margin=args.interior_margin,
+            scanner_thin_mode=args.scanner_thin_mode,
+            voter_thin_mode=args.voter_thin_mode,
+            reference_thin_sigma=args.reference_thin_sigma,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

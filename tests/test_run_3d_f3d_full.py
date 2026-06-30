@@ -99,11 +99,34 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert args.reuse_existing is False
     assert args.skip_save_intermediates is False
     assert args.save_volumes is True
+    assert args.scanner_thin_mode == "normal"
+    assert args.voter_thin_mode == "normal"
+    assert args.reference_thin_sigma == 1.0
 
     no_save_args = module.build_parser().parse_args(
         ["--output-dir", str(tmp_path), "--no-save-volumes"]
     )
     assert no_save_args.save_volumes is False
+
+    reference_args = module.build_parser().parse_args(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--scanner-thin-mode",
+            "reference",
+            "--voter-thin-mode",
+            "reference",
+            "--reference-thin-sigma",
+            "1.5",
+        ]
+    )
+    assert reference_args.scanner_thin_mode == "reference"
+    assert reference_args.voter_thin_mode == "reference"
+    assert reference_args.reference_thin_sigma == 1.5
+    with pytest.raises(SystemExit):
+        module.build_parser().parse_args(
+            ["--output-dir", str(tmp_path), "--scanner-thin-mode", "bad"]
+        )
 
 
 def test_output_dir_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,6 +187,10 @@ def test_build_run_config_is_serializable(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert loaded["reference"] == ["fl.dat", "fv.dat", "fvt.dat"]
     assert loaded["scanner"]["theta_min"] == 65.0
     assert loaded["voter"]["ru"] == 10
+    assert loaded["scanner"]["thin_mode"] == "normal"
+    assert loaded["voter"]["thin_mode"] == "normal"
+    assert loaded["scanner"]["reference_thin_sigma"] == 1.0
+    assert loaded["voter"]["reference_thin_sigma"] == 1.0
     assert loaded["reuse_existing"] is True
     assert loaded["skip_save_intermediates"] is True
     assert loaded["save_volumes"] is True
@@ -378,6 +405,52 @@ def test_run_example_writes_config_before_heavy_processing(
         config = json.load(file)
     assert config["data_root"] == str(data_root)
     assert config["output_dir"] == str(output_dir.resolve(strict=False))
+    assert config["scanner"]["thin_mode"] == "normal"
+    assert config["voter"]["thin_mode"] == "normal"
+
+
+def test_run_example_records_selected_thinning_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_full_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_dir = tmp_path / "outputs"
+    outputs = _synthetic_outputs()
+    received_kwargs = {}
+
+    def fake_run_or_reuse_pipeline(
+        **kwargs: object,
+    ) -> tuple[dict[str, np.ndarray], dict[str, str]]:
+        received_kwargs.update(kwargs)
+        return outputs, {"mode": "test"}
+
+    monkeypatch.setattr(module, "run_or_reuse_pipeline", fake_run_or_reuse_pipeline)
+    monkeypatch.setattr(
+        module,
+        "read_f3d_file",
+        lambda name, root: {
+            "fl.dat": outputs["ft_py.dat"],
+            "fv.dat": outputs["fv_py.dat"],
+            "fvt.dat": outputs["fvt_py.dat"],
+        }[name],
+    )
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_dir=output_dir,
+        scanner_thin_mode="reference",
+        voter_thin_mode="reference",
+        reference_thin_sigma=1.25,
+    )
+
+    assert report["config"]["scanner"]["thin_mode"] == "reference"
+    assert report["config"]["voter"]["thin_mode"] == "reference"
+    assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
+    assert received_kwargs["scanner_thin_mode"] == "reference"
+    assert received_kwargs["voter_thin_mode"] == "reference"
+    assert received_kwargs["reference_thin_sigma"] == 1.25
 
 
 def test_run_example_writes_final_outputs_and_metrics_without_f3_data(
