@@ -106,6 +106,11 @@ Public F3 3D reference-data validation is documented in
 `docs/f3d_validation.md`, including the external data layout, smoke checks,
 crop validation, and the manual full-volume pipeline.
 
+Reference-like 3D thinning is documented in
+`docs/reference_like_thinning.md`. It explains the default `normal` thinning
+mode, the opt-in `reference` mode, and the F3 crop, multi-crop, and ablation
+validation workflow.
+
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.
 

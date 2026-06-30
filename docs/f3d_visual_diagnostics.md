@@ -79,6 +79,12 @@ is requested. It writes metrics to that JSON path, writes per-crop PNGs under
 the metrics JSON when `--write-markdown-index` is set. Use the markdown index as
 the first browsing surface, then open individual PNGs for detail.
 
+For reference-like thinning diagnostics, run the same visual reports with
+`--scanner-thin-mode reference` and `--voter-thin-mode reference`, or run the
+dedicated ablation report. Copy-pastable commands are in
+`docs/f3d_validation.md#reference-like-thinning-validation`, and the thinning
+mode behavior is summarized in `docs/reference_like_thinning.md`.
+
 ## Figure Interpretation
 
 Use the figures to localize the mismatch before comparing scalar summary
@@ -112,6 +118,12 @@ statistics look less alarming while ridge placement is still wrong.
 For `fvt`, always inspect ridge overlays and sparse-ridge metrics such as
 buffered overlap and ridge-distance summaries. Treat correlation as one signal,
 not as the tuning target.
+
+For reference-like thinning experiments, first look for `fvt` sparsity moving
+closer to the reference, better buffered ridge overlap, smaller sparse-ridge
+distance medians, and fewer far-away candidate-only ridges. Exact overlap may
+remain low for sparse ridges, so do not claim success until the ablation report
+has been generated and reviewed.
 
 ## Recommended Diagnostic Order
 
