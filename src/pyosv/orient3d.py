@@ -10,6 +10,7 @@ from scipy import ndimage
 
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.interp import sample3
+from pyosv.thinning3d import reference_like_3d_nms_mask
 
 __all__ = ["FaultOrientScanner3"]
 
@@ -99,14 +100,22 @@ class FaultOrientScanner3:
         ft: np.ndarray,
         pt: np.ndarray,
         tt: np.ndarray,
+        *,
+        mode: str = "normal",
+        reference_sigma: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Keep likelihood maxima along the local fault normal field.
+        """Keep likelihood maxima using the selected 3D thinning mode.
 
         ``ft``, ``pt``, and ``tt`` must be finite 3D arrays with matching
         ``(n3, n2, n1)`` shapes. ``pt`` and ``tt`` are interpreted as strike
         and dip angles in degrees. The returned arrays are float32; retained
         orientation values match the input, and non-retained samples use zero
         as the orientation sentinel.
+
+        ``mode="normal"`` preserves the default local fault-normal thinning.
+        ``mode="reference"`` applies reference-like strike-binned local-maximum
+        suppression in the ``i2-i3`` plane, using ``reference_sigma`` for
+        smoothing inside the shared helper.
         """
 
         ft_array, pt_array, tt_array = _validate_matching_finite_images3(
@@ -114,12 +123,17 @@ class FaultOrientScanner3:
             ("ft", "pt", "tt"),
         )
         n3, n2, n1 = ft_array.shape
-        i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
-        w1, w2, w3 = _fault_normal_components_from_strike_and_dip(pt_array, tt_array)
+        if mode == "normal":
+            i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
+            w1, w2, w3 = _fault_normal_components_from_strike_and_dip(pt_array, tt_array)
 
-        fp = sample3(ft_array, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
-        fm = sample3(ft_array, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
-        keep = (ft_array > np.float32(0.0)) & (fp < ft_array) & (fm < ft_array)
+            fp = sample3(ft_array, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
+            fm = sample3(ft_array, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
+            keep = (ft_array > np.float32(0.0)) & (fp < ft_array) & (fm < ft_array)
+        elif mode == "reference":
+            keep = reference_like_3d_nms_mask(ft_array, pt_array, sigma=reference_sigma)
+        else:
+            raise ValueError("mode must be 'normal' or 'reference'")
 
         thinned_ft = np.zeros((n3, n2, n1), dtype=np.float32)
         thinned_pt = np.zeros((n3, n2, n1), dtype=np.float32)

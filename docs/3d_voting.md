@@ -53,6 +53,19 @@ vote volume with the same shape. The thinning interpolation and smoothing use
 SciPy adapters, so this is a practical approximation of the reference workflow
 rather than a bit-exact Mines JTK implementation.
 
+The default `voter.thin(fv, vp, vt, mode="normal")` preserves that fault-normal
+path. For F3 diagnostics and other reference-style comparisons, use the opt-in
+strike-bin mode:
+
+```python
+fvt = voter.thin(fv, vp, vt, mode="reference", reference_sigma=1.0)
+```
+
+Reference-like thinning uses `fv` for values and `vp` for strike-angle bins,
+compares local maxima in the `i2-i3` plane, and copies original unsmoothed `fv`
+values to retained samples. `reference_sigma` controls smoothing inside the
+comparison helper only.
+
 ## MVP Limitations
 
 This is the 3D voting MVP, not the complete Java 3D fault interpretation
