@@ -54,7 +54,9 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.data_root is None
     assert args.output_dir is None
     assert args.save_volumes is False
-    assert args.crop_shape == (64, 64, 64)
+    assert args.crop_shape is None
+    assert args.center is None
+    assert args.large_crop_preset is False
     assert args.max_crops == 1
     assert args.percentile == 99.9
     assert args.min_separation == 48.0
@@ -73,7 +75,47 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.surface_smoothing2 == 2.0
     assert args.d == 4
     assert args.fm == 0.3
-    assert args.interior_margin == 16
+    assert args.interior_margin is None
+
+
+def test_crop_shape_center_and_large_preset_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_validation_module(monkeypatch)
+
+    args = module.build_parser().parse_args(
+        ["--crop-shape", "128,128,100", "--center", "210,200,50", "--large-crop-preset"]
+    )
+
+    assert args.crop_shape == (128, 128, 100)
+    assert args.center == (210, 200, 50)
+    assert args.large_crop_preset is True
+
+
+def test_large_crop_preset_resolves_default_shape_and_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+
+    crop_shape, interior_margin = module.resolve_crop_config(
+        crop_shape=None,
+        interior_margin=None,
+        large_crop_preset=True,
+    )
+
+    assert crop_shape == (128, 128, 100)
+    assert interior_margin == 40
+
+
+def test_interior_margin_rejects_impossible_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="too large"):
+        module.resolve_crop_config(
+            crop_shape=(8, 8, 8),
+            interior_margin=4,
+            large_crop_preset=False,
+        )
 
 
 def test_metrics_helper_on_synthetic_arrays(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,13 +134,32 @@ def test_metrics_helper_on_synthetic_arrays(monkeypatch: pytest.MonkeyPatch) -> 
         interior_margin=1,
     )
 
-    assert report["center"] == [3, 3, 3]
+    assert report["crop_center"] == [3, 3, 3]
     assert report["crop_shape"] == [6, 6, 6]
+    assert report["crop_slices"] == [
+        {"axis": "i3", "start": 0, "stop": 6},
+        {"axis": "i2", "start": 0, "stop": 6},
+        {"axis": "i1", "start": 0, "stop": 6},
+    ]
+    assert report["interior_slices"] == [
+        {"axis": "i3", "start": 1, "stop": 5},
+        {"axis": "i2", "start": 1, "stop": 5},
+        {"axis": "i1", "start": 1, "stop": 5},
+    ]
     assert report["pyosv"]["fv"]["max"] == 1.0
     assert report["reference"]["fvt"]["nonzero_fraction"] == pytest.approx(1.0 / 216.0)
-    assert report["normalized_correlation"]["fv"] == pytest.approx(1.0)
-    assert report["normalized_correlation"]["fvt"] == pytest.approx(1.0)
-    assert report["top_percentile_overlap"]["fv"]["99"]["jaccard"] == pytest.approx(1.0)
+    assert report["normalized_correlation"]["full_crop"]["fv"] == pytest.approx(1.0)
+    assert report["normalized_correlation"]["interior"]["fvt"] == pytest.approx(1.0)
+    assert report["top_percentile_overlap"]["full_crop"]["fv"]["99"]["jaccard"] == pytest.approx(
+        1.0
+    )
+    assert report["top_percentile_overlap"]["interior"]["fvt"]["99"]["jaccard"] == pytest.approx(
+        1.0
+    )
+    assert report["buffered_ridge_overlap"]["interior"]["fvt"]["buffered_f1"] == pytest.approx(1.0)
+    assert report["sparse_ridge_distance_metrics"]["interior"]["fvt"][
+        "candidate_to_reference_mean"
+    ] == pytest.approx(0.0)
     assert report["finite_checks"]["pyosv"]["fv_py"]["finite_fraction"] == 1.0
 
 
@@ -129,9 +190,9 @@ def test_run_example_writes_metrics_json_to_output_dir(
     assert not (data_root / "metrics.json").exists()
     with metrics_path.open(encoding="utf-8") as file:
         loaded = json.load(file)
-    assert loaded["format_version"] == 1
+    assert loaded["format_version"] == 2
     assert loaded["data_root"] == str(data_root)
-    assert loaded["crops"][0]["center"] == [3, 3, 3]
+    assert loaded["crops"][0]["crop_center"] == [3, 3, 3]
     assert report["config"]["crop_shape"] == [6, 6, 6]
 
 

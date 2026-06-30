@@ -54,7 +54,7 @@ def test_example_help_exits_successfully(script_path: Path) -> None:
     assert result.returncode == 0
     assert "usage:" in result.stdout
     expected_output_arg = (
-        "--output-json" if script_path.name == "report_3d_f3d_reference.py" else "--output-dir"
+        "--output-json" if script_path.name.startswith("report_") else "--output-dir"
     )
     assert expected_output_arg in result.stdout
 

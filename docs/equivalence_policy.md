@@ -50,17 +50,31 @@ values raise `ValueError`. Empty arrays raise `ValueError`. If either centered
 array is constant and has zero norm, the function returns `0.0` because the
 correlation is undefined and carries no localization signal.
 
-`top_percentile_mask(x, percentile)` returns a boolean mask for finite values at
-or above the requested percentile threshold. Percentiles must be finite and in
-the inclusive range `[0, 100]`; empty arrays and arrays containing non-finite
-values raise `ValueError`.
+`top_percentile_mask(x, percentile, positive_only=True)` returns a boolean mask
+for finite values at or above the requested percentile threshold. When
+`positive_only` is true, values less than or equal to zero are excluded before
+the percentile threshold is computed; arrays with no positive samples return an
+empty mask. Percentiles must be finite and in the inclusive range `[0, 100]`;
+empty arrays and arrays containing non-finite values raise `ValueError`.
 
-`top_percentile_overlap(a, b, percentile=95.0)` compares the high-value masks
-from two same-shape finite arrays. The report includes `percentile`, `a_count`,
-`b_count`, `overlap_count`, `union_count`, `a_fraction`, `b_fraction`,
-`overlap_fraction`, `overlap_over_a`, `overlap_over_b`, and `jaccard`. This is
-the current ridge-overlap metric for 2D voting outputs, where high-percentile
-vote samples approximate the strongest interpreted fault ridges.
+`top_percentile_overlap(a, b, percentile=95.0, positive_only=False)` compares
+the high-value masks from two same-shape finite arrays. The report includes
+`percentile`, `a_count`, `b_count`, `overlap_count`, `union_count`,
+`a_fraction`, `b_fraction`, `overlap_fraction`, `overlap_over_a`,
+`overlap_over_b`, and `jaccard`.
+
+`buffered_ridge_overlap(reference, candidate, percentile=99.0, radius=2.0,
+positive_only=True)` compares sparse ridge masks with exact precision, recall,
+F1, and Jaccard metrics plus buffered precision, recall, and F1. Buffered
+precision counts candidate ridge samples inside the dilated reference ridge
+mask, while buffered recall counts reference ridge samples inside the dilated
+candidate ridge mask. Empty masks produce zero counts and zero-valued ratios.
+
+`sparse_ridge_distance_metrics(reference, candidate, percentile=99.0,
+positive_only=True)` compares sparse ridge masks with symmetric Euclidean
+distance-transform summaries: mean, median, p90, and p95 in each direction. If
+either ridge mask is empty, all distance values are `None` rather than infinite
+or volume-size-dependent placeholders.
 
 ## Threshold Policy
 
