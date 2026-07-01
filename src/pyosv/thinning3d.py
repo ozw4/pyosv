@@ -63,7 +63,13 @@ def reference_like_3d_thin_values(
     thinned[keep] = smoothed[keep]
 
     if reinforce_vertical and keep.any():
-        reinforced = keep & (strike_array > np.float32(60.0)) & (strike_array < np.float32(120.0))
+        strike360 = np.mod(strike_array, np.float32(360.0))
+        folded = np.where(
+            strike360 > np.float32(180.0),
+            np.float32(360.0) - strike360,
+            strike360,
+        )
+        reinforced = keep & (folded > np.float32(60.0)) & (folded < np.float32(120.0))
         if reinforced.any():
             i3, i2, i1 = np.nonzero(reinforced)
             thinned[np.maximum(i3 - 1, 0), i2, i1] = smoothed[i3, i2, i1]

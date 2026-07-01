@@ -2,7 +2,9 @@ import numpy as np
 import pytest
 from scipy import ndimage
 
+from pyosv.orient3d import FaultOrientScanner3
 from pyosv.thinning3d import reference_like_3d_nms_mask, reference_like_3d_thin_values
+from pyosv.voting3d import OptimalSurfaceVoter
 
 
 def test_reference_like_3d_nms_mask_validates_matching_3d_shapes() -> None:
@@ -192,12 +194,13 @@ def test_reference_like_3d_thin_values_writes_smoothed_retained_values() -> None
     assert thinned[3, 3, 0] != np.float32(10.0)
 
 
-def test_reference_like_3d_thin_values_reinforces_vertical_strike_neighbor() -> None:
+@pytest.mark.parametrize("strike_value", [90.0, 270.0])
+def test_reference_like_3d_thin_values_reinforces_folded_vertical_strike_neighbor(
+    strike_value: float,
+) -> None:
     values = np.zeros((5, 5, 1), dtype=np.float32)
-    strike = np.full_like(values, 90.0)
+    strike = np.full_like(values, strike_value)
     values[2, 2, 0] = 3.0
-    values[1, 2, 0] = 1.0
-    values[3, 2, 0] = 2.0
 
     thinned, keep = reference_like_3d_thin_values(
         values,
@@ -211,12 +214,13 @@ def test_reference_like_3d_thin_values_reinforces_vertical_strike_neighbor() -> 
     assert thinned[1, 2, 0] == np.float32(3.0)
 
 
-def test_reference_like_3d_thin_values_reinforcement_uses_raw_strike_interval() -> None:
+@pytest.mark.parametrize("strike_value", [60.0, 120.0, 240.0, 300.0])
+def test_reference_like_3d_thin_values_reinforcement_uses_strict_folded_boundaries(
+    strike_value: float,
+) -> None:
     values = np.zeros((5, 5, 1), dtype=np.float32)
-    strike = np.full_like(values, 270.0)
+    strike = np.full_like(values, strike_value)
     values[2, 2, 0] = 3.0
-    values[1, 2, 0] = 1.0
-    values[3, 2, 0] = 2.0
 
     thinned, keep = reference_like_3d_thin_values(
         values,
@@ -230,12 +234,13 @@ def test_reference_like_3d_thin_values_reinforcement_uses_raw_strike_interval() 
     assert thinned[1, 2, 0] == np.float32(0.0)
 
 
-def test_reference_like_3d_thin_values_without_reinforcement_keeps_only_mask() -> None:
+@pytest.mark.parametrize("strike_value", [90.0, 270.0])
+def test_reference_like_3d_thin_values_without_reinforcement_keeps_only_mask(
+    strike_value: float,
+) -> None:
     values = np.zeros((5, 5, 1), dtype=np.float32)
-    strike = np.full_like(values, 90.0)
+    strike = np.full_like(values, strike_value)
     values[2, 2, 0] = 3.0
-    values[1, 2, 0] = 1.0
-    values[3, 2, 0] = 2.0
 
     thinned, keep = reference_like_3d_thin_values(
         values,
@@ -247,3 +252,41 @@ def test_reference_like_3d_thin_values_without_reinforcement_keeps_only_mask() -
     assert keep[2, 2, 0]
     assert thinned[2, 2, 0] == np.float32(3.0)
     assert thinned[1, 2, 0] == np.float32(0.0)
+
+
+def test_optimal_surface_voter_reference_thin_reinforces_folded_vertical_strike() -> None:
+    values = np.zeros((5, 5, 1), dtype=np.float32)
+    strike = np.full_like(values, 270.0)
+    dip = np.zeros_like(values)
+    values[2, 2, 0] = 3.0
+
+    thinned = OptimalSurfaceVoter(1, 1, 1).thin(
+        values,
+        strike,
+        dip,
+        mode="reference",
+        reference_sigma=0.0,
+    )
+
+    assert thinned[2, 2, 0] == np.float32(3.0)
+    assert thinned[1, 2, 0] == np.float32(3.0)
+
+
+def test_fault_orient_scanner_reference_thin_does_not_reinforce_folded_vertical_strike() -> None:
+    values = np.zeros((5, 5, 1), dtype=np.float32)
+    strike = np.full_like(values, 270.0)
+    dip = np.zeros_like(values)
+    values[2, 2, 0] = 3.0
+
+    thinned, thinned_strike, thinned_dip = FaultOrientScanner3(1.0, 1.0).thin(
+        values,
+        strike,
+        dip,
+        mode="reference",
+        reference_sigma=0.0,
+    )
+
+    assert thinned[2, 2, 0] == np.float32(3.0)
+    assert thinned[1, 2, 0] == np.float32(0.0)
+    assert thinned_strike[1, 2, 0] == np.float32(0.0)
+    assert thinned_dip[1, 2, 0] == np.float32(0.0)
