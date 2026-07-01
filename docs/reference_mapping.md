@@ -12,7 +12,7 @@ This table records the initial target modules for the Python reimplementation. I
 | `FaultOrientScanner2.java` | `pyosv.orient2d` | medium |
 | `FaultOrientScanner3.java` | `pyosv.orient3d` | later |
 | `FaultSkin.java` | `pyosv.skin` | minimal |
-| `FaultSkinner.java` | `pyosv.skinner` | minimal connected components |
+| `FaultSkinner.java` | `pyosv.skinner` | current minimal connected components; target reference-like growth |
 | `SincInterpolator` use sites | `pyosv.interp` | approximate |
 | `RecursiveExponentialFilter` use sites | `pyosv.filters` | approximate |
 | `RecursiveGaussianFilterP.java` | `pyosv.filters` | approximate/later |
@@ -36,11 +36,12 @@ lag values.
 
 ## Approximation policy
 
-`pyosv` does not attempt bit-exact reproduction of Mines JTK interpolation or
-recursive filters. Reference uses of `SincInterpolator` in scanner and voting
-code are mapped to SciPy interpolation primitives, typically
-`scipy.ndimage.map_coordinates`. Reference uses of `RecursiveExponentialFilter`
-and `RecursiveGaussianFilterP` are mapped to SciPy Gaussian smoothing or explicit
+`pyosv` follows a reference-first implementation policy, but it does not attempt
+bit-exact reproduction of Mines JTK interpolation or recursive filters.
+Reference uses of `SincInterpolator` in scanner and voting code are mapped to
+SciPy interpolation primitives, typically `scipy.ndimage.map_coordinates`.
+Reference uses of `RecursiveExponentialFilter` and
+`RecursiveGaussianFilterP` are mapped to SciPy Gaussian smoothing or explicit
 separable smoothing in `pyosv.filters`.
 
 `reference_osv/` remains a read-only bind mount used for comparison and

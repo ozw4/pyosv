@@ -131,14 +131,18 @@ or `PYOSV_REFERENCE_OSV`, then write generated files such as `fv_py.dat` and
 
 ## Equivalence Policy
 
-`pyosv` targets practical equivalence for fault interpretation workflows, not
-bit-exact comparison with Java, Jython, or Mines JTK outputs.
+`pyosv` follows a reference-first policy for fault interpretation workflows:
+Python implementations should preserve the reference control flow and geometric
+semantics where practical. Bit-exact comparison with Java, Jython, or Mines JTK
+outputs is not a goal.
 
 Mines JTK `SincInterpolator` behavior is approximated with SciPy interpolation
 primitives such as `scipy.ndimage.map_coordinates`. Mines JTK
 `RecursiveExponentialFilter` and `RecursiveGaussianFilterP` behavior is
 approximated with SciPy Gaussian smoothing. These approximations may differ in
 kernel details, boundary handling, and floating-point accumulation order.
+Faster, simpler, or more robust variants should be explicit opt-in modes rather
+than silent replacements for reference-like defaults.
 
 The shape convention is 2D `(n2, n1)` and 3D `(n3, n2, n1)`. The
 `reference_osv/` directory is a read-only bind mount for reference only; it is
@@ -184,7 +188,7 @@ python -m ruff format --check src tests examples
 
 - Core runtime dependencies are limited to NumPy and SciPy at this stage.
 - Runtime must not depend on JVM, Jython, Mines JTK, or Gradle.
-- Practical equivalence with `reference_osv` is the goal; bitwise equivalence is not.
+- Reference-first alignment with `reference_osv` is the goal; bitwise equivalence is not.
 - `vendor/issue_forge` is an external symlink or bind mount and must not be committed.
 
 ## ライセンス
