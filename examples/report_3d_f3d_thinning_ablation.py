@@ -28,6 +28,8 @@ DEFAULT_INTERIOR_MARGIN = 16
 DEFAULT_PERCENTILE = 99.9
 DEFAULT_MIN_SEPARATION = 48.0
 REFERENCE_OSV_DIR = Path(__file__).resolve().parents[1] / "reference_osv"
+DEFAULT_SCANNER_BACKENDS = ("current",)
+SUPPORTED_SCANNER_BACKENDS = ("current", "reference-like")
 
 CASE_DEFINITIONS: tuple[dict[str, str], ...] = (
     {
@@ -121,6 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Boundary margin excluded from interior metrics.",
     )
     parser.add_argument(
+        "--scanner-backends",
+        "--scanner-backend",
+        dest="scanner_backends",
+        type=parse_scanner_backends,
+        default=DEFAULT_SCANNER_BACKENDS,
+        help="Comma-separated scanner backends: current,reference-like.",
+    )
+    parser.add_argument(
         "--center",
         action="append",
         type=crop_validation.parse_index3,
@@ -192,6 +202,7 @@ def run_example(
     centers: Iterable[tuple[int, int, int]] | None = None,
     percentile: float = DEFAULT_PERCENTILE,
     min_separation: float = DEFAULT_MIN_SEPARATION,
+    scanner_backends: Iterable[str] = DEFAULT_SCANNER_BACKENDS,
     sigma1: float = 8.0,
     sigma2: float = 8.0,
     phi_min: float = 0.0,
@@ -220,6 +231,7 @@ def run_example(
     if count < 0:
         raise ValueError("count must be >= 0")
     crop_shape, interior_margin = validate_crop_config(crop_shape, interior_margin)
+    backend_names = validate_scanner_backends(scanner_backends)
 
     output_base_dir = Path(output_json).parent if output_json is not None else None
     arrays = crop_validation.read_reference_arrays(data_root)
@@ -239,6 +251,7 @@ def run_example(
         explicit_centers=centers is not None,
         percentile=percentile,
         min_separation=min_separation,
+        scanner_backends=backend_names,
         save_figures=save_figures,
         figure_percentile=figure_percentile,
         ridge_buffer_radius=ridge_buffer_radius,
@@ -267,71 +280,86 @@ def run_example(
         ep_crop = _crop(arrays["ep.dat"], slices)
         reference_fv = _crop(arrays["fv.dat"], slices)
         reference_fvt = _crop(arrays["fvt.dat"], slices)
-        case_outputs = run_ablation_pipeline(
-            ep_crop,
-            sigma1=sigma1,
-            sigma2=sigma2,
-            phi_min=phi_min,
-            phi_max=phi_max,
-            theta_min=theta_min,
-            theta_max=theta_max,
-            ru=ru,
-            rv=rv,
-            rw=rw,
-            strain_max1=strain_max1,
-            strain_max2=strain_max2,
-            surface_smoothing1=surface_smoothing1,
-            surface_smoothing2=surface_smoothing2,
-            d=d,
-            fm=fm,
-        )
-
-        case_reports: dict[str, Any] = {}
-        for case in CASE_DEFINITIONS:
-            case_name = case["name"]
-            outputs = case_outputs[case_name]
-            case_report = crop_validation.build_crop_report(
-                crop_index=crop_index,
-                center=center,
-                slices=slices,
-                crop_shape=ep_crop.shape,
-                outputs=outputs,
-                reference_fv=reference_fv,
-                reference_fvt=reference_fvt,
-                interior_margin=interior_margin,
+        backend_reports: dict[str, Any] = {}
+        for backend_name in backend_names:
+            case_outputs = run_ablation_pipeline(
+                ep_crop,
+                scanner_backend=backend_name,
+                sigma1=sigma1,
+                sigma2=sigma2,
+                phi_min=phi_min,
+                phi_max=phi_max,
+                theta_min=theta_min,
+                theta_max=theta_max,
+                ru=ru,
+                rv=rv,
+                rw=rw,
+                strain_max1=strain_max1,
+                strain_max2=strain_max2,
+                surface_smoothing1=surface_smoothing1,
+                surface_smoothing2=surface_smoothing2,
+                d=d,
+                fm=fm,
             )
-            case_report["case"] = dict(case)
-            if save_figures:
-                if output_base_dir is None:
-                    raise ValueError("--save-figures requires --output-json")
-                case_report["figures"] = write_case_figures(
-                    output_base_dir / f"crop_{crop_index:03d}" / case_name / "figures",
-                    metrics_base_dir=output_base_dir,
-                    reference_fvt=reference_fvt,
+
+            case_reports: dict[str, Any] = {}
+            for case in CASE_DEFINITIONS:
+                case_name = case["name"]
+                outputs = case_outputs[case_name]
+                case_report = crop_validation.build_crop_report(
+                    crop_index=crop_index,
+                    center=center,
+                    slices=slices,
+                    crop_shape=ep_crop.shape,
                     outputs=outputs,
-                    figure_percentile=figure_percentile,
-                    ridge_buffer_radius=ridge_buffer_radius,
+                    reference_fv=reference_fv,
+                    reference_fvt=reference_fvt,
+                    interior_margin=interior_margin,
                 )
-            case_reports[case_name] = case_report
+                case_report["case"] = dict(case)
+                case_report["scanner_backend"] = backend_name
+                if save_figures:
+                    if output_base_dir is None:
+                        raise ValueError("--save-figures requires --output-json")
+                    case_report["figures"] = write_case_figures(
+                        figure_output_dir(
+                            output_base_dir,
+                            crop_index=crop_index,
+                            backend=backend_name,
+                            case_name=case_name,
+                            backend_count=len(backend_names),
+                        ),
+                        metrics_base_dir=output_base_dir,
+                        reference_fvt=reference_fvt,
+                        outputs=outputs,
+                        figure_percentile=figure_percentile,
+                        ridge_buffer_radius=ridge_buffer_radius,
+                    )
+                case_reports[case_name] = case_report
+            backend_reports[backend_name] = {"cases": case_reports}
 
-        crops.append(
-            {
-                "index": int(crop_index),
-                "crop_center": [int(value) for value in center],
-                "crop_slices": crop_validation.slices_to_json(slices),
-                "crop_shape": [int(size) for size in ep_crop.shape],
-                "interior_margin": int(interior_margin),
-                "cases": case_reports,
-            }
-        )
+        crop_report = {
+            "index": int(crop_index),
+            "crop_center": [int(value) for value in center],
+            "crop_slices": crop_validation.slices_to_json(slices),
+            "crop_shape": [int(size) for size in ep_crop.shape],
+            "interior_margin": int(interior_margin),
+            "backends": backend_reports,
+        }
+        if backend_names == ("current",):
+            crop_report["cases"] = backend_reports["current"]["cases"]
+        crops.append(crop_report)
 
+    aggregate = aggregate_backend_case_metrics(crops, scanner_backends=backend_names)
+    if backend_names == ("current",):
+        aggregate["cases"] = aggregate["backends"]["current"]["cases"]
     report = _json_compatible(
         {
             "format_version": 1,
             "data_root": str(data_root),
             "config": config,
             "crops": crops,
-            "aggregate": aggregate_case_metrics(crops),
+            "aggregate": aggregate,
         }
     )
 
@@ -346,6 +374,7 @@ def run_example(
 def run_ablation_pipeline(
     ep: np.ndarray,
     *,
+    scanner_backend: str = "current",
     sigma1: float,
     sigma2: float,
     phi_min: float,
@@ -366,7 +395,15 @@ def run_ablation_pipeline(
     from pyosv.voting3d import OptimalSurfaceVoter
 
     scanner = FaultOrientScanner3(sigma1=sigma1, sigma2=sigma2)
-    ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
+    ft, pt, tt = _scan_backend(
+        scanner,
+        backend=scanner_backend,
+        phi_min=phi_min,
+        phi_max=phi_max,
+        theta_min=theta_min,
+        theta_max=theta_max,
+        ep=ep,
+    )
 
     thinned_by_scanner_mode: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for mode in ("normal", "reference"):
@@ -432,6 +469,45 @@ def validate_crop_config(
     return crop_shape, int(interior_margin)
 
 
+def parse_scanner_backends(text: str) -> tuple[str, ...]:
+    backends = tuple(part.strip() for part in text.split(",") if part.strip())
+    try:
+        return validate_scanner_backends(backends)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def validate_scanner_backends(backends: Iterable[str]) -> tuple[str, ...]:
+    backend_tuple = tuple(backends)
+    if not backend_tuple:
+        raise ValueError("scanner_backends must contain at least one backend")
+    unknown = [name for name in backend_tuple if name not in SUPPORTED_SCANNER_BACKENDS]
+    if unknown:
+        supported = ", ".join(SUPPORTED_SCANNER_BACKENDS)
+        raise ValueError(f"unknown scanner backend: {unknown[0]} (supported: {supported})")
+    return backend_tuple
+
+
+def _scan_backend(
+    scanner: Any,
+    *,
+    backend: str,
+    phi_min: float,
+    phi_max: float,
+    theta_min: float,
+    theta_max: float,
+    ep: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if backend == "current":
+        return scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
+    if backend == "reference-like":
+        scan_reference_like = getattr(scanner, "scan_reference_like", None)
+        if not callable(scan_reference_like):
+            raise ValueError("reference-like scanner backend is unavailable")
+        return scan_reference_like(phi_min, phi_max, theta_min, theta_max, ep)
+    raise ValueError(f"unknown scanner backend: {backend}")
+
+
 def build_config(
     *,
     crop_shape: tuple[int, int, int],
@@ -441,6 +517,7 @@ def build_config(
     explicit_centers: bool,
     percentile: float,
     min_separation: float,
+    scanner_backends: tuple[str, ...],
     save_figures: bool,
     figure_percentile: float,
     ridge_buffer_radius: float,
@@ -466,6 +543,7 @@ def build_config(
         "input": "ep.dat",
         "reference": ["fv.dat", "fvt.dat"],
         "comparison": "f3d_thinning_ablation",
+        "scanner_backends": list(scanner_backends),
         "cases": [dict(case) for case in CASE_DEFINITIONS],
         "crop_selection": {
             "source": "explicit_centers" if explicit_centers else "fv.dat",
@@ -514,20 +592,40 @@ def build_config(
     }
 
 
-def aggregate_case_metrics(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def aggregate_backend_case_metrics(
+    crops: Iterable[Mapping[str, Any]],
+    *,
+    scanner_backends: Iterable[str],
+) -> dict[str, Any]:
     crop_list = list(crops)
     aggregate = {
         "crop_count": len(crop_list),
-        "cases": {},
+        "backends": {},
     }
-    for case in CASE_DEFINITIONS:
-        case_name = case["name"]
-        case_reports = [
-            _as_mapping(_as_mapping(crop).get("cases", {})).get(case_name) for crop in crop_list
-        ]
-        aggregate["cases"][case_name] = aggregate_crop_metrics(
-            report for report in case_reports if isinstance(report, Mapping)
-        )
+    for backend in scanner_backends:
+        backend_aggregate = {"crop_count": len(crop_list), "cases": {}}
+        for case in CASE_DEFINITIONS:
+            case_name = case["name"]
+            case_reports = []
+            for crop in crop_list:
+                crop_map = _as_mapping(crop)
+                backend_report = _as_mapping(crop_map.get("backends", {})).get(backend)
+                if backend_report is None and backend == "current":
+                    case_report = _as_mapping(crop_map.get("cases", {})).get(case_name)
+                else:
+                    case_report = _as_mapping(_as_mapping(backend_report).get("cases", {})).get(
+                        case_name
+                    )
+                if isinstance(case_report, Mapping):
+                    case_reports.append(case_report)
+            backend_aggregate["cases"][case_name] = aggregate_crop_metrics(case_reports)
+        aggregate["backends"][backend] = backend_aggregate
+    return aggregate
+
+
+def aggregate_case_metrics(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    aggregate = aggregate_backend_case_metrics(crops, scanner_backends=DEFAULT_SCANNER_BACKENDS)
+    aggregate["cases"] = aggregate["backends"]["current"]["cases"]
     return aggregate
 
 
@@ -625,6 +723,20 @@ def write_case_figures(
     }
 
 
+def figure_output_dir(
+    output_base_dir: str | PathLike[str],
+    *,
+    crop_index: int,
+    backend: str,
+    case_name: str,
+    backend_count: int,
+) -> Path:
+    crop_dir = Path(output_base_dir) / f"crop_{crop_index:03d}"
+    if backend_count > 1:
+        crop_dir /= backend
+    return crop_dir / case_name / "figures"
+
+
 def write_report_json(
     report: Mapping[str, Any],
     output_json: str | PathLike[str],
@@ -649,13 +761,30 @@ def write_visual_report_markdown(
 
 def visual_report_markdown(report: Mapping[str, Any]) -> str:
     config = _as_mapping(report.get("config", {}))
+    aggregate = _as_mapping(report.get("aggregate", {}))
+    aggregate_backends = _as_mapping(aggregate.get("backends", {}))
+    if not aggregate_backends and "cases" in aggregate:
+        aggregate_backends = {"current": {"cases": aggregate.get("cases", {})}}
+    backend_names = list(config.get("scanner_backends", aggregate_backends.keys()))
+    if not backend_names:
+        backend_names = ["current"]
     crops = list(report.get("crops", []))
     lines = [
         "# F3 Thinning Ablation Visual Report",
         "",
-        "## Cases",
+        "## Scanner Backends",
         "",
     ]
+    for backend in backend_names:
+        lines.append(f"- `{backend}`")
+
+    lines.extend(
+        [
+            "",
+            "## Cases",
+            "",
+        ]
+    )
     for case in config.get("cases", []):
         case_map = _as_mapping(case)
         lines.append(
@@ -668,39 +797,90 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Aggregate Metrics",
+            "",
+            "| Backend | Case | fvt interior corr mean | fvt buffered F1 mean/median | "
+            "candidate_to_reference_median mean | reference_to_candidate_median mean | "
+            "candidate_count mean |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for backend in backend_names:
+        backend_aggregate = _as_mapping(aggregate_backends.get(backend, {}))
+        cases = _as_mapping(backend_aggregate.get("cases", {}))
+        for case_name in sorted(cases):
+            case_aggregate = _as_mapping(cases[case_name])
+            means = _as_mapping(case_aggregate.get("per_metric_mean", {}))
+            medians = _as_mapping(case_aggregate.get("per_metric_median", {}))
+            f1_mean = means.get("buffered_ridge_overlap.interior.fvt.buffered_f1")
+            f1_median = medians.get("buffered_ridge_overlap.interior.fvt.buffered_f1")
+            lines.append(
+                "| "
+                f"`{backend}` | "
+                f"`{case_name}` | "
+                f"{_format_metric(means.get('normalized_correlation.interior.fvt'))} | "
+                f"{_format_metric(f1_mean)} / {_format_metric(f1_median)} | "
+                f"{_format_metric(means.get(_candidate_to_reference_path()))} | "
+                f"{_format_metric(means.get(_reference_to_candidate_path()))} | "
+                f"{_format_metric(means.get(_candidate_count_path()))} |"
+            )
+
+    lines.extend(
+        [
+            "",
             "## Crop Case Metrics",
             "",
-            "| Crop | Center | Case | scanner thin | voter thin | interior fvt corr | "
+            "| Crop | Center | Backend | Case | scanner thin | voter thin | interior fvt corr | "
             "buffered F1 | reference ridges | candidate ridges | Key figures |",
-            "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+            "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     for crop in crops:
         crop_map = _as_mapping(crop)
         crop_id = f"crop_{int(crop_map.get('index', 0)):03d}"
-        cases = _as_mapping(crop_map.get("cases", {}))
-        for case_name in sorted(cases):
-            case_report = _as_mapping(cases[case_name])
-            case_config = _as_mapping(case_report.get("case", {}))
-            overlap = _as_mapping(_nested(case_report, "buffered_ridge_overlap", "interior", "fvt"))
-            links = ", ".join(
-                f"[{label}]({path})" for label, path in _important_figure_links(case_report)
-            )
-            lines.append(
-                "| "
-                f"{crop_id} | "
-                f"`{crop_map.get('crop_center', '')}` | "
-                f"`{case_name}` | "
-                f"`{case_config.get('scanner_thin_mode', '')}` | "
-                f"`{case_config.get('voter_thin_mode', '')}` | "
-                f"{_format_metric(_nested(case_report, 'normalized_correlation', 'interior', 'fvt'))} | "
-                f"{_format_metric(overlap.get('buffered_f1'))} | "
-                f"{_format_metric(overlap.get('reference_count'))} | "
-                f"{_format_metric(overlap.get('candidate_count'))} | "
-                f"{links} |"
-            )
+        crop_backends = _as_mapping(crop_map.get("backends", {}))
+        if not crop_backends and "cases" in crop_map:
+            crop_backends = {"current": {"cases": crop_map.get("cases", {})}}
+        for backend in backend_names:
+            backend_report = _as_mapping(crop_backends.get(backend, {}))
+            cases = _as_mapping(backend_report.get("cases", {}))
+            for case_name in sorted(cases):
+                case_report = _as_mapping(cases[case_name])
+                case_config = _as_mapping(case_report.get("case", {}))
+                overlap = _as_mapping(
+                    _nested(case_report, "buffered_ridge_overlap", "interior", "fvt")
+                )
+                links = ", ".join(
+                    f"[{label}]({path})" for label, path in _important_figure_links(case_report)
+                )
+                lines.append(
+                    "| "
+                    f"{crop_id} | "
+                    f"`{crop_map.get('crop_center', '')}` | "
+                    f"`{backend}` | "
+                    f"`{case_name}` | "
+                    f"`{case_config.get('scanner_thin_mode', '')}` | "
+                    f"`{case_config.get('voter_thin_mode', '')}` | "
+                    f"{_format_metric(_nested(case_report, 'normalized_correlation', 'interior', 'fvt'))} | "
+                    f"{_format_metric(overlap.get('buffered_f1'))} | "
+                    f"{_format_metric(overlap.get('reference_count'))} | "
+                    f"{_format_metric(overlap.get('candidate_count'))} | "
+                    f"{links} |"
+                )
 
     return "\n".join(lines) + "\n"
+
+
+def _candidate_to_reference_path() -> str:
+    return "sparse_ridge_distance_metrics.interior.fvt.candidate_to_reference_median"
+
+
+def _reference_to_candidate_path() -> str:
+    return "sparse_ridge_distance_metrics.interior.fvt.reference_to_candidate_median"
+
+
+def _candidate_count_path() -> str:
+    return "sparse_ridge_distance_metrics.interior.fvt.candidate_count"
 
 
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
@@ -819,6 +999,7 @@ def main(argv: list[str] | None = None) -> int:
             centers=args.center,
             percentile=args.percentile,
             min_separation=args.min_separation,
+            scanner_backends=args.scanner_backends,
             sigma1=args.sigma1,
             sigma2=args.sigma2,
             phi_min=args.phi_min,
