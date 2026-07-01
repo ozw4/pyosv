@@ -531,3 +531,92 @@ def test_find_skins_groups_thinned_apply_voting_plane_as_one_dominant_skin() -> 
     assert indices.dtype == np.int32
     assert np.count_nonzero(indices[:, 1] == 5) > 0.75 * len(skin)
     assert skin.likelihoods().min() >= 0.7
+
+
+def test_reference_like_find_skin_grows_dominant_planar_seed_skin() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:10, 6, 3:10] = 0.9
+    seed = FaultCell(6.0, 6.0, 6.0, 0.9, 0.0, 90.0)
+
+    skin = FaultSkinner().find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=6,
+        rw=6,
+        max_steps=6,
+    )
+
+    indices = set(map(tuple, skin.indices()))
+    expected = {(i1, 6, i3) for i1 in range(3, 10) for i3 in range(3, 10)}
+    assert indices == expected
+    assert len(skin) == 49
+    assert skin.likelihoods().min() >= 0.5
+
+
+def test_reference_like_find_skin_separates_corner_connected_crossing_patch() -> None:
+    fv = np.zeros((15, 15, 15), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:9, 5, 3:9] = 0.9
+    vp[9, 6:12, 8:13] = 90.0
+    fv[9, 6:12, 8:13] = 0.95
+    seed = FaultCell(5.0, 5.0, 5.0, 0.9, 0.0, 90.0)
+
+    connected = FaultSkinner(connectivity="corner").find_skins(fv, vp, vt, min_likelihood=0.5)
+    reference_like = FaultSkinner().find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=7,
+        rw=7,
+        max_steps=7,
+        max_delta_strike=20.0,
+    )
+
+    assert [len(skin) for skin in connected] == [66]
+    reference_indices = set(map(tuple, reference_like.indices()))
+    assert reference_indices == {(i1, 5, i3) for i1 in range(3, 9) for i3 in range(3, 9)}
+    assert all(index[2] != 9 or index[1] == 5 for index in reference_indices)
+
+
+def test_reference_like_find_skin_is_deterministic_for_tied_likelihoods() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[4:9, 6, 4:9] = 0.8
+    seed = FaultCell(6.0, 6.0, 6.0, 0.8, 0.0, 90.0)
+    skinner = FaultSkinner()
+
+    first = skinner.find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=6,
+        rw=6,
+        max_steps=6,
+    )
+    second = skinner.find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=6,
+        rw=6,
+        max_steps=6,
+    )
+
+    assert [cell.index for cell in first] == [cell.index for cell in second]
