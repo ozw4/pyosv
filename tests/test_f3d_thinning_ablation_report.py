@@ -90,6 +90,7 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
     assert defaults.count == 3
     assert defaults.crop_shape == (64, 64, 64)
     assert defaults.interior_margin == 16
+    assert defaults.scanner_backends == ("current",)
     assert defaults.center is None
 
     args = module.build_parser().parse_args(
@@ -102,6 +103,8 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
             "64,64,64",
             "--interior-margin",
             "16",
+            "--scanner-backends",
+            "current,reference-like",
             "--pretty",
             "--save-figures",
             "--write-markdown-index",
@@ -113,10 +116,14 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
     assert args.count == 3
     assert args.crop_shape == (64, 64, 64)
     assert args.interior_margin == 16
+    assert args.scanner_backends == ("current", "reference-like")
     assert args.pretty is True
     assert args.save_figures is True
     assert args.write_markdown_index is True
     assert args.center == [(2, 3, 4)]
+
+    singular = module.build_parser().parse_args(["--scanner-backend", "reference-like"])
+    assert singular.scanner_backends == ("reference-like",)
 
 
 def test_output_path_safety_rejects_data_root_and_reference_osv(
@@ -176,9 +183,13 @@ def test_run_example_writes_four_case_json_without_f3_data(
     assert report == loaded
     assert loaded["format_version"] == 1
     assert loaded["config"]["comparison"] == "f3d_thinning_ablation"
+    assert loaded["config"]["scanner_backends"] == ["current"]
     assert [case["name"] for case in loaded["config"]["cases"]] == expected_case_names
     assert set(loaded["crops"][0]["cases"]) == set(expected_case_names)
+    assert set(loaded["crops"][0]["backends"]) == {"current"}
+    assert set(loaded["crops"][0]["backends"]["current"]["cases"]) == set(expected_case_names)
     assert set(loaded["aggregate"]["cases"]) == set(expected_case_names)
+    assert set(loaded["aggregate"]["backends"]) == {"current"}
     assert (
         loaded["aggregate"]["cases"]["case_01_current_current"]["per_metric_mean"][
             "normalized_correlation.interior.fvt"
@@ -191,6 +202,59 @@ def test_run_example_writes_four_case_json_without_f3_data(
     assert loaded["aggregate"]["cases"]["case_01_current_current"]["per_metric_median"][
         "pyosv.fvt.mean"
     ] == pytest.approx(1.0 / 216.0)
+
+
+def test_run_example_writes_backend_separated_json_without_f3_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_ablation_module(monkeypatch)
+    output_json = tmp_path / "outputs" / "metrics.json"
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+
+    def fake_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, dict[str, np.ndarray]]:
+        outputs = _case_outputs(module, ep.shape)
+        if kwargs["scanner_backend"] == "reference-like":
+            for case_outputs in outputs.values():
+                case_outputs["fv_py.dat"] = case_outputs["fv_py.dat"] * np.float32(10.0)
+                case_outputs["fvt_py.dat"] = case_outputs["fvt_py.dat"] * np.float32(10.0)
+        return outputs
+
+    monkeypatch.setattr(module, "run_ablation_pipeline", fake_pipeline)
+
+    report = module.run_example(
+        data_root_arg=tmp_path / "f3_reference",
+        output_json=output_json,
+        pretty=True,
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+        scanner_backends=("current", "reference-like"),
+    )
+
+    loaded = json.loads(output_json.read_text(encoding="utf-8"))
+    expected_case_names = {case["name"] for case in module.CASE_DEFINITIONS}
+    assert report == loaded
+    assert loaded["config"]["scanner_backends"] == ["current", "reference-like"]
+    assert set(loaded["crops"][0]["backends"]) == {"current", "reference-like"}
+    assert set(loaded["crops"][0]["backends"]["current"]["cases"]) == expected_case_names
+    assert set(loaded["crops"][0]["backends"]["reference-like"]["cases"]) == expected_case_names
+    assert "cases" not in loaded["crops"][0]
+    assert set(loaded["aggregate"]["backends"]) == {"current", "reference-like"}
+    assert set(loaded["aggregate"]["backends"]["current"]["cases"]) == expected_case_names
+    assert set(loaded["aggregate"]["backends"]["reference-like"]["cases"]) == expected_case_names
+    assert "cases" not in loaded["aggregate"]
+    assert loaded["aggregate"]["backends"]["current"]["cases"]["case_01_current_current"][
+        "per_metric_mean"
+    ]["pyosv.fvt.mean"] == pytest.approx(1.0 / 216.0)
+    assert loaded["aggregate"]["backends"]["reference-like"]["cases"]["case_01_current_current"][
+        "per_metric_mean"
+    ]["pyosv.fvt.mean"] == pytest.approx(10.0 / 216.0)
 
 
 def test_case_names_and_thinning_modes_are_recorded_in_config(
@@ -269,6 +333,88 @@ def test_visual_report_writes_markdown_and_minimum_png_set(
     assert "case_01_current_current" in markdown
     assert "buffered F1" in markdown
     assert "crop_001/case_01_current_current/figures/fvt_mip.png" in markdown
+
+
+def test_visual_report_uses_backend_case_nesting_for_multiple_backends(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_ablation_module(monkeypatch)
+    output_json = tmp_path / "outputs" / "metrics.json"
+    monkeypatch.setattr(module.crop_validation, "require_figure_support", lambda: None)
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+    monkeypatch.setattr(
+        module,
+        "run_ablation_pipeline",
+        lambda ep, **kwargs: _case_outputs(module, ep.shape),
+    )
+    figure_dirs: list[Path] = []
+
+    def fake_write_case_figures(output_dir: Path, **kwargs: object) -> dict[str, object]:
+        figure_dirs.append(Path(output_dir))
+        directory = Path(output_dir).relative_to(output_json.parent).as_posix()
+        return {
+            "directory": directory,
+            "files": {
+                "fvt": {"mip": f"{directory}/fvt_mip.png"},
+                "fvt_ref_vs_py": {"i3": f"{directory}/fvt_ref_vs_py_i3_3.png"},
+                "fvt_ridge_overlay": {"i3": f"{directory}/fvt_ridge_overlay_i3_3.png"},
+            },
+        }
+
+    monkeypatch.setattr(module, "write_case_figures", fake_write_case_figures)
+
+    module.run_example(
+        data_root_arg=tmp_path / "f3_reference",
+        output_json=output_json,
+        save_figures=True,
+        write_markdown_index=True,
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+        scanner_backends=("current", "reference-like"),
+    )
+
+    markdown = (output_json.parent / "visual_report.md").read_text(encoding="utf-8")
+    assert output_json.parent / "crop_001" / "current" / "case_01_current_current" / "figures" in (
+        figure_dirs
+    )
+    assert (
+        output_json.parent / "crop_001" / "reference-like" / "case_01_current_current" / "figures"
+        in figure_dirs
+    )
+    assert "| Backend | Case | fvt interior corr mean |" in markdown
+    assert "`current` | `case_01_current_current`" in markdown
+    assert "`reference-like` | `case_01_current_current`" in markdown
+    assert "crop_001/current/case_01_current_current/figures/fvt_mip.png" in markdown
+    assert "crop_001/reference-like/case_01_current_current/figures/fvt_mip.png" in markdown
+
+
+def test_reference_like_scanner_backend_unavailable_fails_clearly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_ablation_module(monkeypatch)
+
+    class CurrentOnlyScanner:
+        def scan(self, *args: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            values = np.zeros((2, 2, 2), dtype=np.float32)
+            return values, values, values
+
+    with pytest.raises(ValueError, match="reference-like scanner backend is unavailable"):
+        module._scan_backend(
+            CurrentOnlyScanner(),
+            backend="reference-like",
+            phi_min=0.0,
+            phi_max=1.0,
+            theta_min=2.0,
+            theta_max=3.0,
+            ep=np.zeros((2, 2, 2), dtype=np.float32),
+        )
 
 
 def test_import_does_not_run_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:

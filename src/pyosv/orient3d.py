@@ -8,7 +8,11 @@ import numbers
 import numpy as np
 from scipy import ndimage
 
-from pyosv.geometry import fault_normal_vector_from_strike_and_dip
+from pyosv.geometry import (
+    fault_dip_vector_from_strike_and_dip,
+    fault_normal_vector_from_strike_and_dip,
+    fault_strike_vector_from_strike_and_dip,
+)
 from pyosv.interp import sample3
 from pyosv.thinning3d import reference_like_3d_thin_values
 
@@ -104,31 +108,41 @@ class FaultOrientScanner3:
         g: np.ndarray,
         *,
         interpolation_order: int = 1,
-        smoothing_mode: str = "gaussian",
+        smoothing_sigma: float | None = None,
+        normalize: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Validate inputs for a future reference-like scan implementation.
+        """Scan using an opt-in approximate Java reference-like orientation sweep.
 
-        This opt-in entry point is intentionally a skeleton. It prepares the
-        same sampling and image-validation state as ``scan()`` plus explicit
-        interpolation/smoothing options, then raises ``NotImplementedError``
-        until the rotate-shear-smooth orientation sweep is implemented.
+        This backend is not a bit-exact Mines JTK port. It uses SciPy
+        interpolation to sample in each candidate strike/dip coordinate system,
+        smooths along candidate fault-parallel directions, scores ridge/contrast
+        across the candidate normal, and keeps the best orientation. The default
+        ``scan()`` derivative-bank backend is unchanged.
         """
 
         phi_sampling = self.strike_sampling(phi_min, phi_max)
         theta_sampling = self.dip_sampling(theta_min, theta_max)
         image = self.validate_image(g, "g")
         order = _validate_interpolation_order(interpolation_order)
-        mode = _validate_smoothing_mode(smoothing_mode)
-        self._reference_like_scan_config = {
-            "phi_sampling": phi_sampling,
-            "theta_sampling": theta_sampling,
-            "interpolation_order": order,
-            "smoothing_mode": mode,
-            "input_shape": image.shape,
-        }
-        raise NotImplementedError(
-            "reference-like FaultOrientScanner3 scan skeleton is present but "
-            "the orientation sweep is not implemented yet"
+        sigma = _validate_optional_nonnegative_float(
+            smoothing_sigma,
+            "smoothing_sigma",
+            default=max(1.0, 0.5 * (self.sigma1 + self.sigma2)),
+        )
+        normalize_output = _validate_bool(normalize, "normalize")
+        if float(np.max(image) - np.min(image)) == 0.0:
+            ft = np.zeros_like(image, dtype=np.float32)
+            pt = np.full_like(image, phi_sampling[0], dtype=np.float32)
+            tt = np.full_like(image, theta_sampling[0], dtype=np.float32)
+            return ft, pt, tt
+
+        return self._scan_reference_like_orientation_sweep(
+            phi_sampling,
+            theta_sampling,
+            image,
+            interpolation_order=order,
+            smoothing_sigma=sigma,
+            normalize=normalize_output,
         )
 
     def thin(
@@ -229,6 +243,51 @@ class FaultOrientScanner3:
             best_theta.astype(np.float32, copy=False),
         )
 
+    def _scan_reference_like_orientation_sweep(
+        self,
+        phi_sampling: np.ndarray,
+        theta_sampling: np.ndarray,
+        image: np.ndarray,
+        *,
+        interpolation_order: int,
+        smoothing_sigma: float,
+        normalize: bool,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        best_score = np.zeros_like(image, dtype=np.float32)
+        best_phi = np.full_like(image, phi_sampling[0], dtype=np.float32)
+        best_theta = np.full_like(image, theta_sampling[0], dtype=np.float32)
+        grids = _coordinate_grids3(image.shape)
+
+        for phi in phi_sampling:
+            for theta in theta_sampling:
+                normal, strike, dip = _orientation_basis_from_strike_and_dip(
+                    float(phi),
+                    float(theta),
+                )
+                score = _reference_like_orientation_score(
+                    image,
+                    normal=normal,
+                    strike=strike,
+                    dip=dip,
+                    grids=grids,
+                    interpolation_order=interpolation_order,
+                    smoothing_sigma=smoothing_sigma,
+                )
+                better = score > best_score
+                best_score[better] = score[better]
+                best_phi[better] = phi
+                best_theta[better] = theta
+
+        if normalize:
+            ft = _normalize_reference_like_likelihood(best_score)
+        else:
+            ft = np.maximum(best_score, np.float32(0.0)).astype(np.float32, copy=False)
+        return (
+            ft,
+            best_phi.astype(np.float32, copy=False),
+            best_theta.astype(np.float32, copy=False),
+        )
+
 
 def _angle_sampling(
     angle_min: float,
@@ -297,11 +356,30 @@ def _validate_interpolation_order(order: int) -> int:
     return order_int
 
 
-def _validate_smoothing_mode(mode: str) -> str:
-    if mode != "gaussian":
-        raise ValueError("smoothing_mode must be 'gaussian'")
+def _validate_optional_nonnegative_float(
+    value: float | None,
+    name: str,
+    *,
+    default: float,
+) -> float:
+    if value is None:
+        return float(default)
 
-    return mode
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a finite nonnegative number or None")
+
+    value_float = float(value)
+    if not math.isfinite(value_float) or value_float < 0.0:
+        raise ValueError(f"{name} must be a finite nonnegative number or None")
+
+    return value_float
+
+
+def _validate_bool(value: bool, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a bool")
+
+    return value
 
 
 def _validate_finite_image3(image: np.ndarray, name: str) -> np.ndarray:
@@ -389,6 +467,140 @@ def _gaussian_derivatives(
         d13.astype(np.float32, copy=False),
         d23.astype(np.float32, copy=False),
     )
+
+
+def _coordinate_grids3(
+    shape: tuple[int, int, int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    i3, i2, i1 = np.indices(shape, dtype=np.float32)
+    return i1, i2, i3
+
+
+def _orientation_basis_from_strike_and_dip(
+    phi: float,
+    theta: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    normal = fault_normal_vector_from_strike_and_dip(phi, theta)
+    strike = fault_strike_vector_from_strike_and_dip(phi, theta)
+    dip = fault_dip_vector_from_strike_and_dip(phi, theta)
+    return normal, strike, dip
+
+
+def _reference_like_orientation_score(
+    image: np.ndarray,
+    *,
+    normal: np.ndarray,
+    strike: np.ndarray,
+    dip: np.ndarray,
+    grids: tuple[np.ndarray, np.ndarray, np.ndarray],
+    interpolation_order: int,
+    smoothing_sigma: float,
+) -> np.ndarray:
+    fault_parallel = _smooth_oriented_response(
+        image,
+        strike=strike,
+        dip=dip,
+        grids=grids,
+        interpolation_order=interpolation_order,
+        smoothing_sigma=smoothing_sigma,
+    )
+    plus = _sample_oriented_volume(
+        fault_parallel,
+        direction=normal,
+        offset=1.0,
+        grids=grids,
+        interpolation_order=interpolation_order,
+    )
+    minus = _sample_oriented_volume(
+        fault_parallel,
+        direction=normal,
+        offset=-1.0,
+        grids=grids,
+        interpolation_order=interpolation_order,
+    )
+    ridge = fault_parallel - np.float32(0.5) * (plus + minus)
+    contrast = np.abs(plus - minus)
+    score = np.maximum(ridge, np.float32(0.0)) + np.float32(0.25) * contrast
+    return score.astype(np.float32, copy=False)
+
+
+def _sample_oriented_volume(
+    volume: np.ndarray,
+    *,
+    direction: np.ndarray,
+    offset: float,
+    grids: tuple[np.ndarray, np.ndarray, np.ndarray],
+    interpolation_order: int,
+) -> np.ndarray:
+    i1, i2, i3 = grids
+    d1, d2, d3 = direction.astype(np.float32, copy=False)
+    sampled = sample3(
+        volume,
+        i1 + np.float32(offset) * d1,
+        i2 + np.float32(offset) * d2,
+        i3 + np.float32(offset) * d3,
+        order=interpolation_order,
+        mode="nearest",
+    )
+    return np.asarray(sampled, dtype=np.float32)
+
+
+def _smooth_oriented_response(
+    image: np.ndarray,
+    *,
+    strike: np.ndarray,
+    dip: np.ndarray,
+    grids: tuple[np.ndarray, np.ndarray, np.ndarray],
+    interpolation_order: int,
+    smoothing_sigma: float,
+) -> np.ndarray:
+    if smoothing_sigma <= 0.0:
+        return image.astype(np.float32, copy=True)
+
+    smoothed = _directional_gaussian_smooth(
+        image,
+        direction=strike,
+        sigma=smoothing_sigma,
+        grids=grids,
+        interpolation_order=interpolation_order,
+    )
+    smoothed = _directional_gaussian_smooth(
+        smoothed,
+        direction=dip,
+        sigma=smoothing_sigma,
+        grids=grids,
+        interpolation_order=interpolation_order,
+    )
+    return smoothed.astype(np.float32, copy=False)
+
+
+def _directional_gaussian_smooth(
+    volume: np.ndarray,
+    *,
+    direction: np.ndarray,
+    sigma: float,
+    grids: tuple[np.ndarray, np.ndarray, np.ndarray],
+    interpolation_order: int,
+) -> np.ndarray:
+    radius = math.ceil(3.0 * sigma)
+    offsets = np.arange(-radius, radius + 1, dtype=np.float32)
+    weights = np.exp(-0.5 * (offsets.astype(np.float64) / sigma) ** 2).astype(np.float32)
+    weights /= np.sum(weights, dtype=np.float32)
+
+    smoothed = np.zeros_like(volume, dtype=np.float32)
+    for offset, weight in zip(offsets, weights):
+        smoothed += weight * _sample_oriented_volume(
+            volume,
+            direction=direction,
+            offset=float(offset),
+            grids=grids,
+            interpolation_order=interpolation_order,
+        )
+    return smoothed
+
+
+def _normalize_reference_like_likelihood(score: np.ndarray) -> np.ndarray:
+    return _normalize_likelihood(score)
 
 
 def _normalize_likelihood(score: np.ndarray) -> np.ndarray:

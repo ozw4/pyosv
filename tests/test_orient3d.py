@@ -205,7 +205,7 @@ def test_scan_reference_like_validates_angle_ranges(
         (np.array([[[0.0, np.inf]]], dtype=np.float32), "finite"),
     ],
 )
-def test_scan_reference_like_validates_image_before_not_implemented(
+def test_scan_reference_like_validates_image(
     image: object,
     message: str,
 ) -> None:
@@ -233,43 +233,160 @@ def test_scan_reference_like_validates_interpolation_order(
         )
 
 
-@pytest.mark.parametrize("smoothing_mode", ["recursive", "separable", 1])
-def test_scan_reference_like_validates_smoothing_mode(smoothing_mode: object) -> None:
+@pytest.mark.parametrize("smoothing_sigma", [-1.0, np.nan, np.inf, True, "1.0"])
+def test_scan_reference_like_validates_smoothing_sigma(smoothing_sigma: object) -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     image = np.zeros((2, 3, 4), dtype=np.float32)
 
-    with pytest.raises(ValueError, match="smoothing_mode"):
+    with pytest.raises(ValueError, match="smoothing_sigma"):
         scanner.scan_reference_like(
             0.0,
             90.0,
             35.0,
             85.0,
             image,
-            smoothing_mode=smoothing_mode,  # type: ignore[arg-type]
+            smoothing_sigma=smoothing_sigma,  # type: ignore[arg-type]
         )
 
 
-def test_scan_reference_like_valid_inputs_raise_not_implemented_after_config() -> None:
+def test_scan_reference_like_validates_normalize() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
-    image = np.zeros((2, 3, 4), dtype=np.float64)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
 
-    with pytest.raises(NotImplementedError, match="orientation sweep is not implemented"):
+    with pytest.raises(ValueError, match="normalize"):
         scanner.scan_reference_like(
             0.0,
             90.0,
             35.0,
             85.0,
             image,
-            interpolation_order=1,
-            smoothing_mode="gaussian",
+            normalize=1,  # type: ignore[arg-type]
         )
 
-    config = scanner._reference_like_scan_config
-    assert config["input_shape"] == image.shape
-    assert config["interpolation_order"] == 1
-    assert config["smoothing_mode"] == "gaussian"
-    np.testing.assert_array_equal(config["phi_sampling"], scanner.strike_sampling(0.0, 90.0))
-    np.testing.assert_array_equal(config["theta_sampling"], scanner.dip_sampling(35.0, 85.0))
+
+def test_scan_reference_like_constant_input_returns_zero_likelihood_and_finite_angles() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.full((5, 6, 7), 3.0, dtype=np.float64)
+
+    ft, pt, tt = scanner.scan_reference_like(10.0, 40.0, 30.0, 60.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert tt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert tt.dtype == np.float32
+    np.testing.assert_array_equal(ft, np.zeros(image.shape, dtype=np.float32))
+    np.testing.assert_array_equal(pt, np.full(image.shape, 10.0, dtype=np.float32))
+    np.testing.assert_array_equal(tt, np.full(image.shape, 30.0, dtype=np.float32))
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert np.isfinite(tt).all()
+
+
+def test_scan_reference_like_returns_float32_normalized_outputs() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _planar_gaussian_fault(60.0, 60.0, shape=(15, 16, 17), width=1.0)
+
+    ft, pt, tt = scanner.scan_reference_like(
+        0.0,
+        90.0,
+        30.0,
+        90.0,
+        image,
+        smoothing_sigma=1.0,
+    )
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert tt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert tt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert np.isfinite(tt).all()
+    assert float(ft.min()) >= 0.0
+    assert float(ft.max()) <= 1.0
+
+
+def test_scan_reference_like_is_deterministic() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _planar_gaussian_fault(60.0, 60.0, shape=(13, 14, 15), width=1.0)
+
+    first = scanner.scan_reference_like(
+        0.0,
+        90.0,
+        30.0,
+        90.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    second = scanner.scan_reference_like(
+        0.0,
+        90.0,
+        30.0,
+        90.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
+def test_scan_reference_like_localizes_synthetic_planar_fault_orientation() -> None:
+    true_phi = 60.0
+    true_theta = 60.0
+    image, distance = _planar_gaussian_fault(
+        true_phi,
+        true_theta,
+        shape=(21, 22, 23),
+        width=1.0,
+    )
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+
+    ft, pt, tt = scanner.scan_reference_like(
+        0.0,
+        90.0,
+        30.0,
+        90.0,
+        image,
+        smoothing_sigma=1.5,
+    )
+
+    near_plane = np.abs(distance) <= 1.0
+    far_from_plane = np.abs(distance) >= 5.0
+    assert float(np.mean(ft[near_plane])) > 2.0 * float(np.mean(ft[far_from_plane]))
+
+    high_likelihood = ft >= np.percentile(ft, 98.0)
+    phi_error = _periodic_angle_error(pt[high_likelihood], true_phi, period=180.0)
+    theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
+    assert float(np.median(phi_error)) <= 31.0
+    assert float(np.median(theta_error)) <= 31.0
+
+
+def test_scan_reference_like_does_not_call_default_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_scan(*args: object, **kwargs: object) -> None:
+        raise AssertionError("scan() must not be called")
+
+    monkeypatch.setattr(FaultOrientScanner3, "scan", fail_scan)
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _planar_gaussian_fault(60.0, 60.0, shape=(9, 10, 11), width=1.0)
+
+    ft, pt, tt = scanner.scan_reference_like(
+        60.0,
+        60.0,
+        60.0,
+        60.0,
+        image,
+        smoothing_sigma=0.5,
+    )
+
+    for array in (ft, pt, tt):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
 
 
 def test_f3_validation_examples_use_current_scan_by_default() -> None:

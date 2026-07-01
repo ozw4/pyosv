@@ -83,9 +83,14 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.output_json is None
     assert args.output_dir is None
     assert args.save_volumes is False
+    assert args.save_figures is False
+    assert args.figure_percentile == 99.0
+    assert args.write_markdown_index is False
     assert args.pretty is False
     assert args.crop_shape == (64, 64, 64)
     assert args.max_crops == 1
+    assert args.interior_margin == 0
+    assert args.scanner_backends == ["current"]
     assert args.percentile == 99.9
     assert args.min_separation == 48.0
     assert args.sigma1 == 8.0
@@ -94,6 +99,25 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.phi_max == 360.0
     assert args.theta_min == 65.0
     assert args.theta_max == 80.0
+
+
+def test_parser_accepts_scanner_backend_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_scanner_module(monkeypatch)
+
+    args = module.build_parser().parse_args(
+        [
+            "--scanner-backends",
+            "current,reference-like",
+            "--count",
+            "3",
+            "--interior-margin",
+            "16",
+        ]
+    )
+
+    assert args.scanner_backends == ["current", "reference-like"]
+    assert args.max_crops == 3
+    assert args.interior_margin == 16
 
 
 def test_build_report_is_json_serializable_for_synthetic_arrays(
@@ -128,7 +152,8 @@ def test_build_report_is_json_serializable_for_synthetic_arrays(
     loaded = json.loads(module.report_to_json(report, pretty=True))
 
     assert loaded["comparison"] == "scanner-only ft_py.dat versus public fl.dat"
-    assert loaded["config"]["comparison"] == "scanner_only_ft_py_vs_fl_dat"
+    assert loaded["config"]["comparison"] == "f3d_scanner_backend_comparison"
+    assert loaded["config"]["scanner_backends"] == ["current"]
     assert loaded["crops"][0]["pyosv"]["ft_py"]["shape"] == [6, 6, 6]
     assert loaded["crops"][0]["reference"]["fl"]["max"] == 1.0
     assert loaded["crops"][0]["normalized_correlation"]["ft_py_vs_fl"] == pytest.approx(1.0)
@@ -195,6 +220,86 @@ def test_run_example_writes_json_and_optional_volumes_without_f3_data(
     crop_dir = output_dir / "crop_001"
     for name in module.VOLUME_NAMES:
         assert (crop_dir / name).is_file()
+
+
+def test_run_example_writes_multiple_backend_schema_without_f3_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_scanner_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_json = tmp_path / "reports" / "scanner.json"
+
+    def fake_run_scanner(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
+        outputs = _synthetic_outputs(ep.shape)
+        if kwargs["backend"] == "reference-like":
+            outputs["ft_py.dat"] = outputs["ft_py.dat"] * np.float32(0.5)
+        return outputs
+
+    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    monkeypatch.setattr(module, "run_scanner", fake_run_scanner)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        pretty=True,
+        crop_shape=(6, 6, 6),
+        max_crops=1,
+        interior_margin=1,
+        percentile=99.0,
+        min_separation=1.0,
+        scanner_backends=["current", "reference-like"],
+    )
+
+    crop = report["crops"][0]
+    assert report["config"]["scanner_backends"] == ["current", "reference-like"]
+    assert set(crop["backends"]) == {"current", "reference-like"}
+    assert report["aggregate"]["backends"]["current"]["crop_count"] == 1
+    assert crop["backends"]["current"]["normalized_correlation"]["full_crop"][
+        "ft_vs_fl"
+    ] == pytest.approx(1.0)
+    assert "finite_value_report" in crop["backends"]["reference-like"]
+    assert (
+        "top_percentile_overlap.interior.ft_vs_fl.99.jaccard"
+        in (report["aggregate"]["backends"]["current"]["metric_paths"])
+    )
+
+
+def test_unknown_scanner_backend_fails_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_scanner_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="unknown scanner backend"):
+        module.run_example(
+            data_root_arg="/tmp/f3_reference",
+            crop_shape=(6, 6, 6),
+            scanner_backends=["missing"],
+        )
+
+    with pytest.raises(SystemExit):
+        module.build_parser().parse_args(["--scanner-backends", "missing"])
+
+
+def test_crop_selection_is_deterministic_for_same_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_scanner_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    monkeypatch.setattr(module, "run_scanner", lambda ep, **kwargs: _synthetic_outputs(ep.shape))
+
+    kwargs = {
+        "data_root_arg": data_root,
+        "crop_shape": (6, 6, 6),
+        "max_crops": 1,
+        "percentile": 99.0,
+        "min_separation": 1.0,
+    }
+
+    first = module.run_example(**kwargs)
+    second = module.run_example(**kwargs)
+
+    assert first["crops"][0]["center"] == second["crops"][0]["center"]
 
 
 def test_save_volumes_requires_output_dir(monkeypatch: pytest.MonkeyPatch) -> None:
