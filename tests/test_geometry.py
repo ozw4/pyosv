@@ -85,11 +85,19 @@ def test_fault_vectors_match_reference_formulas() -> None:
 
 
 @pytest.mark.parametrize("phi", [0.0, 90.0, 180.0, 270.0])
-@pytest.mark.parametrize("theta", [30.0, 60.0, 90.0])
+@pytest.mark.parametrize("theta", [30.0, 60.0, 65.0, 80.0, 90.0])
 def test_fault_vectors_are_unit_orthogonal_and_cross_related(phi: float, theta: float) -> None:
+    # Vector components are ordered by image axes as (i1, i2, i3).
     u = fault_dip_vector_from_strike_and_dip(phi, theta)
     v = fault_strike_vector_from_strike_and_dip(phi, theta)
     w = fault_normal_vector_from_strike_and_dip(phi, theta)
+
+    assert u.dtype == np.float32
+    assert v.dtype == np.float32
+    assert w.dtype == np.float32
+    assert np.isfinite(u).all()
+    assert np.isfinite(v).all()
+    assert np.isfinite(w).all()
 
     np.testing.assert_allclose(np.linalg.norm(u), 1.0, atol=1e-6)
     np.testing.assert_allclose(np.linalg.norm(v), 1.0, atol=1e-6)
@@ -104,8 +112,35 @@ def test_fault_vectors_are_unit_orthogonal_and_cross_related(phi: float, theta: 
     np.testing.assert_allclose(cross_product(u, v), w, atol=1e-6)
 
 
+@pytest.mark.parametrize(
+    ("phi", "expected_dip", "expected_strike", "expected_normal"),
+    [
+        (0.0, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        (90.0, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]),
+        (180.0, [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, -1.0, 0.0]),
+        (270.0, [1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]),
+    ],
+)
+def test_fault_vectors_cardinal_vertical_dip_sign_convention(
+    phi: float,
+    expected_dip: list[float],
+    expected_strike: list[float],
+    expected_normal: list[float],
+) -> None:
+    # Vector components are ordered by image axes as (i1, i2, i3).
+    theta = 90.0
+
+    dip = fault_dip_vector_from_strike_and_dip(phi, theta)
+    strike = fault_strike_vector_from_strike_and_dip(phi, theta)
+    normal = fault_normal_vector_from_strike_and_dip(phi, theta)
+
+    np.testing.assert_allclose(dip, np.array(expected_dip, dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(strike, np.array(expected_strike, dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(normal, np.array(expected_normal, dtype=np.float32), atol=1e-6)
+
+
 @pytest.mark.parametrize("phi", [0.0, 90.0, 180.0, 270.0])
-@pytest.mark.parametrize("theta", [30.0, 60.0, 90.0])
+@pytest.mark.parametrize("theta", [30.0, 60.0, 65.0, 80.0, 90.0])
 def test_fault_angle_recovery_from_vectors(phi: float, theta: float) -> None:
     u = fault_dip_vector_from_strike_and_dip(phi, theta)
     v = fault_strike_vector_from_strike_and_dip(phi, theta)
@@ -120,6 +155,32 @@ def test_fault_angle_recovery_from_vectors(phi: float, theta: float) -> None:
     recovered_w = fault_normal_vector_from_strike_and_dip(phi_from_w, theta_from_w)
 
     np.testing.assert_allclose(recovered_w, w, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("phi", "theta"),
+    [
+        (15.0, 65.0),
+        (135.0, 80.0),
+        (225.0, 65.0),
+        (315.0, 80.0),
+    ],
+)
+def test_normal_vector_round_trip_allows_reference_sign_flip(phi: float, theta: float) -> None:
+    # Vector components are ordered by image axes as (i1, i2, i3).
+    normal = fault_normal_vector_from_strike_and_dip(phi, theta)
+    reversed_normal = -normal
+
+    recovered_phi = fault_strike_from_normal_vector(normal)
+    recovered_theta = fault_dip_from_normal_vector(normal)
+    recovered_normal = fault_normal_vector_from_strike_and_dip(recovered_phi, recovered_theta)
+
+    flipped_phi = fault_strike_from_normal_vector(reversed_normal)
+    flipped_theta = fault_dip_from_normal_vector(reversed_normal)
+    recovered_flipped_normal = fault_normal_vector_from_strike_and_dip(flipped_phi, flipped_theta)
+
+    np.testing.assert_allclose(recovered_normal, normal, atol=1e-5)
+    np.testing.assert_allclose(np.abs(np.dot(recovered_flipped_normal, normal)), 1.0, atol=1e-5)
 
 
 def test_invalid_dip_and_normal_vectors_raise_value_error() -> None:
@@ -159,6 +220,7 @@ def test_strike_and_dip_from_normal_returns_float32_angle_volumes() -> None:
 
 
 def test_strike_and_dip_from_normal_matches_scalar_geometry_helpers() -> None:
+    # Volumes are stored as (n3, n2, n1), with vector components (i1, i2, i3).
     normal = fault_normal_vector_from_strike_and_dip(270.0, 30.0)
     u1 = np.full((2, 1, 3), normal[0], dtype=np.float32)
     u2 = np.full_like(u1, normal[1])
@@ -168,6 +230,46 @@ def test_strike_and_dip_from_normal_matches_scalar_geometry_helpers() -> None:
 
     np.testing.assert_allclose(fp, np.full_like(u1, 270.0), atol=1e-5)
     np.testing.assert_allclose(ft, np.full_like(u1, 30.0), atol=1e-5)
+
+
+def test_strike_and_dip_from_normal_round_trips_small_volume_with_sign_flip() -> None:
+    # Volumes are stored as (n3, n2, n1), with vector components (i1, i2, i3).
+    shape = (2, 2, 3)
+    phi = np.array(
+        [
+            [[0.0, 90.0, 180.0], [270.0, 15.0, 135.0]],
+            [[225.0, 315.0, 45.0], [120.0, 240.0, 300.0]],
+        ],
+        dtype=np.float32,
+    )
+    theta = np.array(
+        [
+            [[65.0, 80.0, 90.0], [65.0, 80.0, 90.0]],
+            [[65.0, 80.0, 90.0], [65.0, 80.0, 90.0]],
+        ],
+        dtype=np.float32,
+    )
+    u1 = np.empty(shape, dtype=np.float32)
+    u2 = np.empty(shape, dtype=np.float32)
+    u3 = np.empty(shape, dtype=np.float32)
+    for index in np.ndindex(shape):
+        normal = fault_normal_vector_from_strike_and_dip(float(phi[index]), float(theta[index]))
+        if index[0] == 1:
+            normal = -normal
+        u1[index], u2[index], u3[index] = normal
+
+    fp, ft = strike_and_dip_from_normal(u1, u2, u3)
+
+    assert fp.shape == shape
+    assert ft.shape == shape
+    assert fp.dtype == np.float32
+    assert ft.dtype == np.float32
+    for index in np.ndindex(shape):
+        recovered_normal = fault_normal_vector_from_strike_and_dip(
+            float(fp[index]), float(ft[index])
+        )
+        input_normal = np.array([u1[index], u2[index], u3[index]], dtype=np.float32)
+        np.testing.assert_allclose(np.abs(np.dot(recovered_normal, input_normal)), 1.0, atol=1e-5)
 
 
 def test_strike_and_dip_from_normal_rejects_shape_mismatch() -> None:
