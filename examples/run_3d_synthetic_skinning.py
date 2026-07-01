@@ -11,7 +11,7 @@ import numpy as np
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run pyosv 3D optimal-surface voting, thinning, and connected-component "
+            "Run pyosv 3D optimal-surface voting, thinning, and reference-like "
             "skinning on a small synthetic planar fault."
         ),
     )
@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-skin-size",
         type=int,
         default=20,
-        help="Minimum connected-component size kept as a skin.",
+        help="Minimum skin size kept after reference-like growth.",
     )
     return parser
 
@@ -80,11 +80,12 @@ def run_example(
     fvt = voter.thin(fv, vp, vt)
 
     skinner = FaultSkinner(
+        method="reference",
         min_likelihood=min_likelihood,
         min_skin_size=min_skin_size,
         connectivity="corner",
     )
-    skins = skinner.find_skins(fvt, vp, vt)
+    skins = skinner.find_skins(fvt, vp, vt, ep=fvt, ft=fvt, pt=vp, tt=vt)
     largest_skin_size = max((len(skin) for skin in skins), default=0)
 
     summary: dict[str, float | int] = {

@@ -24,6 +24,7 @@ def test_constructor_stores_configuration_for_later_grouping() -> None:
     assert skinner.min_likelihood == pytest.approx(0.35)
     assert skinner.min_skin_size == 4
     assert skinner.connectivity == "corner"
+    assert skinner.method == "reference"
 
 
 def test_connected_component_skinner_stores_fallback_configuration() -> None:
@@ -44,10 +45,12 @@ def test_fault_skinner_configuration_remains_mutable() -> None:
     skinner.min_likelihood = np.float32(0.35)
     skinner.min_skin_size = np.int32(4)
     skinner.connectivity = "face"
+    skinner.method = "connected_component"
 
     assert skinner.min_likelihood == pytest.approx(0.35)
     assert skinner.min_skin_size == 4
     assert skinner.connectivity == "face"
+    assert skinner.method == "connected_component"
 
 
 @pytest.mark.parametrize("min_likelihood", [-0.1, np.nan, np.inf, True, "0.5"])
@@ -65,6 +68,11 @@ def test_constructor_rejects_invalid_min_skin_size(min_skin_size: object) -> Non
 def test_constructor_rejects_unknown_connectivity() -> None:
     with pytest.raises(ValueError, match="connectivity"):
         FaultSkinner(connectivity="diagonal")
+
+
+def test_constructor_rejects_unknown_method() -> None:
+    with pytest.raises(ValueError, match="method"):
+        FaultSkinner(method="fast")
 
 
 def test_cells_from_votes_extracts_thresholded_fault_cells_in_volume_order() -> None:
@@ -444,8 +452,18 @@ def test_find_skins_groups_adjacent_voxels_with_configured_connectivity() -> Non
     fv[0, 0, 0] = 0.7
     fv[1, 1, 1] = 0.8
 
-    face_skins = FaultSkinner(connectivity="face").find_skins(fv, vp, vt, min_likelihood=0.5)
-    corner_skins = FaultSkinner(connectivity="corner").find_skins(fv, vp, vt, min_likelihood=0.5)
+    face_skins = FaultSkinner(method="connected_component", connectivity="face").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
+    corner_skins = FaultSkinner(method="connected_component", connectivity="corner").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
 
     assert [len(skin) for skin in face_skins] == [1, 1]
     assert [skin.cells[0].index for skin in face_skins] == [(0, 0, 0), (1, 1, 1)]
@@ -460,8 +478,18 @@ def test_find_skins_uses_edge_connectivity_for_edge_adjacent_voxels() -> None:
     fv[0, 0, 0] = 0.7
     fv[0, 1, 1] = 0.8
 
-    face_skins = FaultSkinner(connectivity="face").find_skins(fv, vp, vt, min_likelihood=0.5)
-    edge_skins = FaultSkinner(connectivity="edge").find_skins(fv, vp, vt, min_likelihood=0.5)
+    face_skins = FaultSkinner(method="connected_component", connectivity="face").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
+    edge_skins = FaultSkinner(method="connected_component", connectivity="edge").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
 
     assert [len(skin) for skin in face_skins] == [1, 1]
     assert [len(skin) for skin in edge_skins] == [2]
@@ -481,7 +509,12 @@ def test_fault_skinner_matches_connected_component_fallback() -> None:
         vt,
         min_likelihood=0.5,
     )
-    default = FaultSkinner(connectivity="edge").find_skins(fv, vp, vt, min_likelihood=0.5)
+    default = FaultSkinner(method="connected_component", connectivity="edge").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
 
     assert [[cell.index for cell in skin] for skin in default] == [
         [cell.index for cell in skin] for skin in fallback
@@ -496,7 +529,11 @@ def test_find_skins_filters_small_components_and_orders_remaining_skins() -> Non
     fv[0, 1, 0:2] = 0.8
     fv[0, 3, 4:7] = 0.7
 
-    skins = FaultSkinner(min_skin_size=2, connectivity="face").find_skins(
+    skins = FaultSkinner(
+        method="connected_component",
+        min_skin_size=2,
+        connectivity="face",
+    ).find_skins(
         fv,
         vp,
         vt,
@@ -507,7 +544,37 @@ def test_find_skins_filters_small_components_and_orders_remaining_skins() -> Non
     assert [skin.cells[0].index for skin in skins] == [(4, 3, 0), (0, 1, 0)]
 
 
-def test_find_skins_groups_thinned_apply_voting_plane_as_one_dominant_skin() -> None:
+def test_reference_find_skins_groups_thinned_apply_voting_plane_as_one_dominant_skin() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[3:8, 5, 3:8] = 0.9
+
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+    fvt = voter.thin(fv, vp, vt)
+    skinner = FaultSkinner(
+        method="reference",
+        min_likelihood=0.7,
+        min_skin_size=20,
+        connectivity="corner",
+    )
+    skins = skinner.find_skins(fvt, vp, vt)
+    second = skinner.find_skins(fvt, vp, vt)
+
+    assert len(skins) == 1
+    skin = skins[0]
+    indices = skin.indices()
+    assert [cell.index for cell in skins[0]] == [cell.index for cell in second[0]]
+    assert len(skin) == 49
+    assert indices.dtype == np.int32
+    assert np.count_nonzero(indices[:, 1] == 5) == len(skin)
+    assert skin.likelihoods().min() >= 0.7
+
+
+def test_connected_component_find_skins_keeps_legacy_voting_plane_component() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     voter.set_attribute_smoothing(0)
     voter.set_surface_smoothing(0.0, 0.0)
@@ -519,18 +586,13 @@ def test_find_skins_groups_thinned_apply_voting_plane_as_one_dominant_skin() -> 
     fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
     fvt = voter.thin(fv, vp, vt)
     skins = FaultSkinner(
+        method="connected_component",
         min_likelihood=0.7,
         min_skin_size=20,
         connectivity="corner",
     ).find_skins(fvt, vp, vt)
 
-    assert len(skins) == 1
-    skin = skins[0]
-    indices = skin.indices()
-    assert len(skin) == 105
-    assert indices.dtype == np.int32
-    assert np.count_nonzero(indices[:, 1] == 5) > 0.75 * len(skin)
-    assert skin.likelihoods().min() >= 0.7
+    assert [len(skin) for skin in skins] == [105]
 
 
 def test_reference_like_find_skin_grows_dominant_planar_seed_skin() -> None:
@@ -568,7 +630,12 @@ def test_reference_like_find_skin_separates_corner_connected_crossing_patch() ->
     fv[9, 6:12, 8:13] = 0.95
     seed = FaultCell(5.0, 5.0, 5.0, 0.9, 0.0, 90.0)
 
-    connected = FaultSkinner(connectivity="corner").find_skins(fv, vp, vt, min_likelihood=0.5)
+    connected = FaultSkinner(method="connected_component", connectivity="corner").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
     reference_like = FaultSkinner().find_skin(
         seed,
         fv,

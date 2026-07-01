@@ -247,10 +247,9 @@ class ConnectedComponentSkinner:
 class FaultSkinner:
     """Default fault skinner facade.
 
-    The current implementation delegates to ``ConnectedComponentSkinner`` as a
-    fallback. It preserves the existing public behavior while keeping an API
-    boundary for a future reference-like grower based on seed selection,
-    neighbor links, surface smoothing, and reskinning.
+    ``method="reference"`` uses reference-like seed selection and local
+    geometry-aware growth. ``method="connected_component"`` explicitly selects
+    the legacy connected-component fallback.
     """
 
     def __init__(
@@ -258,12 +257,22 @@ class FaultSkinner:
         min_likelihood: float = 0.0,
         min_skin_size: int | None = None,
         connectivity: str = "corner",
+        method: str = "reference",
     ) -> None:
         self._fallback = ConnectedComponentSkinner(
             min_likelihood=min_likelihood,
             min_skin_size=min_skin_size,
             connectivity=connectivity,
         )
+        self._method = _validate_skinner_method(method)
+
+    @property
+    def method(self) -> str:
+        return self._method
+
+    @method.setter
+    def method(self, value: str) -> None:
+        self._method = _validate_skinner_method(value)
 
     @property
     def min_likelihood(self) -> float:
@@ -335,10 +344,47 @@ class FaultSkinner:
         vp: np.ndarray,
         vt: np.ndarray,
         min_likelihood: float | None = None,
+        *,
+        ep: np.ndarray | None = None,
+        ft: np.ndarray | None = None,
+        pt: np.ndarray | None = None,
+        tt: np.ndarray | None = None,
+        d: int = 1,
+        ru: int = 150,
+        rv: int | None = None,
+        rw: int | None = None,
+        max_steps: int = 10,
+        du: float = 5.0,
+        max_delta_strike: float = 30.0,
     ) -> list[FaultSkin]:
-        """Find skins with the current connected-component fallback."""
+        """Find skins with the configured backend."""
 
-        return self._fallback.find_skins(fv, vp, vt, min_likelihood=min_likelihood)
+        if self.method == "connected_component":
+            return self._fallback.find_skins(fv, vp, vt, min_likelihood=min_likelihood)
+
+        threshold = (
+            self.min_likelihood
+            if min_likelihood is None
+            else _validate_nonnegative_finite_float(min_likelihood, "min_likelihood")
+        )
+        return _find_reference_skins(
+            fv=fv,
+            vp=vp,
+            vt=vt,
+            ep=fv if ep is None else ep,
+            ft=fv if ft is None else ft,
+            pt=vp if pt is None else pt,
+            tt=vt if tt is None else tt,
+            d=d,
+            fm=threshold,
+            min_skin_size=self.min_skin_size,
+            ru=ru,
+            rv=rv,
+            rw=rw,
+            max_steps=max_steps,
+            du=du,
+            max_delta_strike=max_delta_strike,
+        )
 
     def find_skin(
         self,
@@ -379,9 +425,75 @@ def find_skins(
     vt: np.ndarray,
     min_likelihood: float | None = None,
 ) -> list[FaultSkin]:
-    """Group thresholded 3D voting outputs with default ``FaultSkinner`` settings."""
+    """Group thresholded 3D voting outputs with the compatibility fallback."""
 
-    return FaultSkinner().find_skins(fv, vp, vt, min_likelihood=min_likelihood)
+    return FaultSkinner(method="connected_component").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=min_likelihood,
+    )
+
+
+def _find_reference_skins(
+    *,
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    ep: np.ndarray,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+    d: int,
+    fm: float,
+    min_skin_size: int | None,
+    ru: int,
+    rv: int | None,
+    rw: int | None,
+    max_steps: int,
+    du: float,
+    max_delta_strike: float,
+) -> list[FaultSkin]:
+    threshold = _validate_nonnegative_finite_float(fm, "fm")
+    fv_array, vp_array, vt_array = _validate_matching_finite_arrays3_many(
+        (fv, vp, vt),
+        ("fv", "vp", "vt"),
+    )
+    seeds = _find_reference_seeds(d=d, fm=threshold, ep=ep, ft=ft, pt=pt, tt=tt)
+    skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
+    occupied = _SkinCellGrid()
+    skins: list[FaultSkin] = []
+
+    for seed in seeds:
+        if occupied.find_cells_in_box(seed.i1, seed.i2, seed.i3, 2, 2, 2):
+            continue
+
+        skin = _grow_reference_skin(
+            seed,
+            fv_array,
+            vp_array,
+            vt_array,
+            fmin=threshold,
+            ru=ru,
+            rv=rv,
+            rw=rw,
+            max_steps=max_steps,
+            du=du,
+            max_delta_strike=max_delta_strike,
+            collision_grid=occupied,
+        )
+        if skin_size is not None and len(skin) < skin_size:
+            continue
+
+        skins.append(skin)
+        _mark_occupied_skin(occupied, skin)
+
+    return skins
+
+
+def _mark_occupied_skin(occupied: _SkinCellGrid, skin: FaultSkin) -> None:
+    for cell in skin:
+        occupied.set(_SkinCell(cell.x1, cell.x2, cell.x3, cell.fl, cell.fp, cell.ft))
 
 
 def _find_reference_seeds(
@@ -1169,6 +1281,13 @@ def _validate_connectivity(connectivity: str) -> str:
         raise ValueError("connectivity must be 'face', 'edge', or 'corner'")
 
     return connectivity
+
+
+def _validate_skinner_method(method: str) -> str:
+    if not isinstance(method, str) or method not in {"reference", "connected_component"}:
+        raise ValueError("method must be 'reference' or 'connected_component'")
+
+    return method
 
 
 def _validate_matching_finite_arrays3_many(
