@@ -1,9 +1,11 @@
-# Minimal Skinning
+# Skinning
 
 `pyosv.skin` and `pyosv.skinner` provide a minimal Python skinning layer for
 3D voting outputs. `ConnectedComponentSkinner` is the explicit fallback
-connected-component implementation. The current `FaultSkinner` delegates to
-that fallback; it is not the full Java `FaultSkinner` algorithm.
+connected-component implementation. `FaultSkinner.find_skins` delegates to
+that fallback so the default grouping behavior is unchanged, while
+`FaultSkinner.find_seeds` and `FaultSkinner.find_skin` expose opt-in
+reference-like seed selection and single-seed growth helpers.
 
 ## Scope
 
@@ -31,6 +33,23 @@ ordered by descending size, then by the first cell index in each component.
 `FaultSkinner.find_skins` currently preserves the same public behavior by
 delegating to `ConnectedComponentSkinner`.
 
+`FaultSkinner.find_seeds(d, fm, ep, ft, pt, tt)` selects starting cells from
+thinned 3D volumes. All arrays use shape `(n3, n2, n1)` and must have matching
+finite values. Candidates must satisfy `ep > 0.8` and `ft > fm`; they are
+processed by descending `ft`, with deterministic index ordering for ties. A
+candidate is skipped when an already accepted seed falls inside its `d`-sample
+axis-aligned exclusion box. Returned seeds are public `FaultCell` objects.
+
+`FaultSkinner.find_skin(seed, fv, vp, vt, ...)` grows one opt-in,
+reference-like `FaultSkin` from a seed without changing `find_skins`. The
+grower builds a seed-local `(u, v, w)` coordinate frame where `u` follows the
+fault normal, `v` follows the dip vector, and `w` follows the strike vector.
+It samples candidate slices with Java-style nearest rounding, uses a priority
+queue ordered by likelihood, explores above/below and left/right local
+directions, and applies deterministic geometry gates such as minimum
+likelihood, local `u` continuity, interior bounds, and accepted-cell collision
+avoidance.
+
 ## Minimal Usage
 
 ```python
@@ -56,9 +75,9 @@ summary should be written.
 
 ## Limitations
 
-This implementation does not reproduce the Java linked-cell topology,
-neighbor-link growth rules, skin smoothing, or real-data workflow helpers. It
-is intended as a practical fallback for extracting connected components from
-thinned 3D vote volumes. The long-term `FaultSkinner` direction is a
-reference-like grower, while `ConnectedComponentSkinner` remains available for
+This implementation does not reproduce the full Java skinning workflow,
+including reskin smoothing, throw/slip estimation, or real-data workflow
+helpers. `find_skin` is a focused single-seed, reference-like grower with
+simplified candidate picking and geometry gates; `find_skins` remains the
+connected-component fallback. `ConnectedComponentSkinner` remains available for
 explicit fallback use.
