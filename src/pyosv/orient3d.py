@@ -65,6 +65,26 @@ class FaultOrientScanner3:
             sigma_name="sigma1",
         )
 
+    def reference_like_strike_sampling(self, phi_min: float, phi_max: float) -> np.ndarray:
+        """Return Java-inspired strike samples for ``scan_reference_like``.
+
+        Reference-like mode uses the Java scanner's fixed 18-sample strike grid
+        at 20 degree spacing from 0 degrees, clipped to the requested range.
+        Narrow ranges with no fixed-grid sample return the lower endpoint so
+        explicit valid ranges remain callable.
+        """
+
+        return _reference_like_strike_sampling(phi_min, phi_max)
+
+    def reference_like_dip_sampling(self, theta_min: float, theta_max: float) -> np.ndarray:
+        """Return Java-inspired dip samples for ``scan_reference_like``.
+
+        Reference-like mode uses approximately 5 degree dip spacing while
+        preserving the requested endpoints.
+        """
+
+        return _reference_like_dip_sampling(theta_min, theta_max)
+
     def validate_image(self, image: np.ndarray, name: str = "image") -> np.ndarray:
         """Return a finite global 3D image volume as a float32 array.
 
@@ -115,13 +135,14 @@ class FaultOrientScanner3:
 
         This backend is not a bit-exact Mines JTK port. It uses SciPy
         interpolation to sample in each candidate strike/dip coordinate system,
-        smooths along candidate fault-parallel directions, scores ridge/contrast
-        across the candidate normal, and keeps the best orientation. The default
-        ``scan()`` derivative-bank backend is unchanged.
+        smooths planarity values along candidate fault-parallel directions,
+        converts the smoothed response to likelihood with ``1 - smoothed**4``,
+        and keeps the best orientation. The default ``scan()`` derivative-bank
+        backend is unchanged.
         """
 
-        phi_sampling = self.strike_sampling(phi_min, phi_max)
-        theta_sampling = self.dip_sampling(theta_min, theta_max)
+        phi_sampling = self.reference_like_strike_sampling(phi_min, phi_max)
+        theta_sampling = self.reference_like_dip_sampling(theta_min, theta_max)
         image = self.validate_image(g, "g")
         order = _validate_interpolation_order(interpolation_order)
         sigma = _validate_optional_nonnegative_float(
@@ -260,13 +281,12 @@ class FaultOrientScanner3:
 
         for phi in phi_sampling:
             for theta in theta_sampling:
-                normal, strike, dip = _orientation_basis_from_strike_and_dip(
+                _, strike, dip = _orientation_basis_from_strike_and_dip(
                     float(phi),
                     float(theta),
                 )
                 score = _reference_like_orientation_score(
                     image,
-                    normal=normal,
                     strike=strike,
                     dip=dip,
                     grids=grids,
@@ -321,6 +341,43 @@ def _angle_sampling(
 
     count = max(2, int(count_float))
     return np.linspace(amin, amax, count, dtype=np.float32)
+
+
+def _reference_like_strike_sampling(phi_min: float, phi_max: float) -> np.ndarray:
+    pmin = _validate_angle(phi_min, "phi_min")
+    pmax = _validate_angle(phi_max, "phi_max")
+    if pmax < pmin:
+        raise ValueError("phi_max must be greater than or equal to phi_min")
+
+    pmin32 = np.float32(pmin)
+    pmax32 = np.float32(pmax)
+    if not np.isfinite(pmin32) or not np.isfinite(pmax32):
+        raise ValueError("phi_min and phi_max must be finite float32 values")
+    if pmin == pmax:
+        return np.array([pmin32], dtype=np.float32)
+
+    java_grid = np.arange(18, dtype=np.float32) * np.float32(20.0)
+    samples = java_grid[(java_grid >= pmin32) & (java_grid <= pmax32)]
+    if samples.size == 0:
+        return np.array([pmin32], dtype=np.float32)
+    return samples.astype(np.float32, copy=False)
+
+
+def _reference_like_dip_sampling(theta_min: float, theta_max: float) -> np.ndarray:
+    tmin = _validate_angle(theta_min, "theta_min")
+    tmax = _validate_angle(theta_max, "theta_max")
+    if tmax < tmin:
+        raise ValueError("theta_max must be greater than or equal to theta_min")
+
+    tmin32 = np.float32(tmin)
+    tmax32 = np.float32(tmax)
+    if not np.isfinite(tmin32) or not np.isfinite(tmax32):
+        raise ValueError("theta_min and theta_max must be finite float32 values")
+    if tmin == tmax:
+        return np.array([tmin32], dtype=np.float32)
+
+    count = max(2, int(round((tmax - tmin) / 5.0)) + 1)
+    return np.linspace(tmin, tmax, count, dtype=np.float32)
 
 
 def _validate_positive_float(value: float, name: str) -> float:
@@ -489,14 +546,13 @@ def _orientation_basis_from_strike_and_dip(
 def _reference_like_orientation_score(
     image: np.ndarray,
     *,
-    normal: np.ndarray,
     strike: np.ndarray,
     dip: np.ndarray,
     grids: tuple[np.ndarray, np.ndarray, np.ndarray],
     interpolation_order: int,
     smoothing_sigma: float,
 ) -> np.ndarray:
-    fault_parallel = _smooth_oriented_response(
+    smoothed = _smooth_oriented_response(
         image,
         strike=strike,
         dip=dip,
@@ -504,23 +560,8 @@ def _reference_like_orientation_score(
         interpolation_order=interpolation_order,
         smoothing_sigma=smoothing_sigma,
     )
-    plus = _sample_oriented_volume(
-        fault_parallel,
-        direction=normal,
-        offset=1.0,
-        grids=grids,
-        interpolation_order=interpolation_order,
-    )
-    minus = _sample_oriented_volume(
-        fault_parallel,
-        direction=normal,
-        offset=-1.0,
-        grids=grids,
-        interpolation_order=interpolation_order,
-    )
-    ridge = fault_parallel - np.float32(0.5) * (plus + minus)
-    contrast = np.abs(plus - minus)
-    score = np.maximum(ridge, np.float32(0.0)) + np.float32(0.25) * contrast
+    smoothed = np.clip(smoothed, np.float32(0.0), np.float32(1.0))
+    score = np.float32(1.0) - smoothed ** np.float32(4.0)
     return score.astype(np.float32, copy=False)
 
 
@@ -600,7 +641,10 @@ def _directional_gaussian_smooth(
 
 
 def _normalize_reference_like_likelihood(score: np.ndarray) -> np.ndarray:
-    return _normalize_likelihood(score)
+    return np.clip(score.astype(np.float32, copy=False), 0.0, 1.0).astype(
+        np.float32,
+        copy=False,
+    )
 
 
 def _normalize_likelihood(score: np.ndarray) -> np.ndarray:

@@ -60,11 +60,19 @@ validates angle ranges, finite 3D input volumes, interpolation order, optional
 smoothing sigma, and normalization mode, then runs a deterministic strike/dip
 orientation sweep.
 
+Reference-like mode does not reuse the default derivative-bank scanner's
+sigma-derived dense sampling. Strike samples follow the Java scanner's fixed
+18-sample grid at 20 degree spacing from 0 degrees, clipped to the requested
+range. Dip samples use approximately 5 degree spacing while preserving the
+requested endpoints.
+
 For each candidate orientation, it samples in an orientation-dependent coordinate
-system, smooths along candidate fault-parallel directions, evaluates a
-ridge/contrast response across the candidate normal, and keeps the strongest
-orientation. This remains a Pythonic SciPy approximation, not a bit-exact Mines
-JTK port.
+system, smooths the input planarity values along candidate fault-parallel
+directions, clips the smoothed response to `[0, 1]`, and converts it to
+likelihood with `1 - smoothed**4`. This matches the Java scanner's smooth-then
+semblance-power likelihood semantics more closely than the older Python
+ridge/contrast score. It remains a Pythonic SciPy approximation, not a
+bit-exact Mines JTK port.
 
 The reference-like backend is not used by default. Existing examples and F3
 validation scripts continue to call `FaultOrientScanner3.scan(...)`.
