@@ -132,6 +132,26 @@ def test_synthetic_scan_vote_example_output_dir_is_optional(
     assert output_dir_actions[0].required is False
 
 
+def test_3d_synthetic_skinning_parser_defaults_to_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_example_module("run_3d_synthetic_skinning", monkeypatch)
+
+    args = module.build_parser().parse_args([])
+
+    assert args.method == "reference"
+
+
+def test_3d_synthetic_skinning_parser_accepts_connected_component(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_example_module("run_3d_synthetic_skinning", monkeypatch)
+
+    args = module.build_parser().parse_args(["--method", "connected_component"])
+
+    assert args.method == "connected_component"
+
+
 @pytest.mark.parametrize(
     ("script_name", "args"),
     (
@@ -176,6 +196,23 @@ def test_3d_synthetic_scan_vote_without_output_dir_does_not_write_to_repository_
     assert result.returncode == 0
     assert "fv_nonzero=" in result.stdout
     assert "fvt_max=" in result.stdout
+    assert after == before
+
+
+@pytest.mark.parametrize("method", ("reference", "connected_component"))
+def test_3d_synthetic_skinning_without_output_dir_supports_backends(method: str) -> None:
+    output_paths = [REPO_ROOT / name for name in (*SYNTHETIC_OUTPUTS, "skins.txt")]
+    before = {path: _path_signature(path) for path in output_paths}
+
+    result = _run_example(EXAMPLES_DIR / "run_3d_synthetic_skinning.py", "--method", method)
+
+    after = {path: _path_signature(path) for path in output_paths}
+    assert result.returncode == 0
+    assert f"method={method}" in result.stdout
+    assert "skin_count=" in result.stdout
+    assert "connected_component_skin_count=" in result.stdout
+    assert "orientation_jitter_degrees=" in result.stdout
+    assert "buffered_ridge_f1=" in result.stdout
     assert after == before
 
 

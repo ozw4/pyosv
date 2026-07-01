@@ -73,4 +73,5 @@ pipeline. The implementation is sequential and currently covered by synthetic
 regression tests only.
 
 See `docs/orient3d.md` for the approximate 3D orientation scanner. See
-`docs/skinning.md` for the current minimal connected-component skinning layer.
+`docs/skinning.md` for the reference-like 3D skinning layer and explicit
+connected-component fallback.

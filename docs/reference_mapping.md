@@ -12,7 +12,7 @@ This table records the initial target modules for the Python reimplementation. I
 | `FaultOrientScanner2.java` | `pyosv.orient2d` | medium |
 | `FaultOrientScanner3.java` | `pyosv.orient3d` | later |
 | `FaultSkin.java` | `pyosv.skin` | minimal |
-| `FaultSkinner.java` | `pyosv.skinner` | current minimal connected components; target reference-like growth |
+| `FaultSkinner.java` | `pyosv.skinner` | reference-like growth default; connected-component fallback |
 | `SincInterpolator` use sites | `pyosv.interp` | approximate |
 | `RecursiveExponentialFilter` use sites | `pyosv.filters` | approximate |
 | `RecursiveGaussianFilterP.java` | `pyosv.filters` | approximate/later |

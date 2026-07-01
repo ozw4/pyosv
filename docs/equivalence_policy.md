@@ -37,11 +37,10 @@ They do not justify changing the surrounding algorithm structure by default.
 
 ## FaultSkinner Direction
 
-The current connected-component grouping in `pyosv.skinner` is a temporary
-minimal implementation and may remain available as an explicit fallback or
-opt-in mode. The default long-term direction for `FaultSkinner` is
-geometry-aware, reference-like growth aligned with the reference `findSeeds`,
-`findSkin`, and `reskin` semantics.
+`FaultSkinner` defaults to geometry-aware, reference-like growth aligned with
+the reference `findSeeds`, `findSkin`, and `reskin` semantics. Generic
+connected-component grouping remains available as an explicit fallback or
+diagnostic opt-in mode.
 
 Future skinning changes should prefer reference-like seed selection, neighbor
 growth, linking, pruning, and reskinning behavior over generic connected
