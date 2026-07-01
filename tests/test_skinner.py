@@ -3,7 +3,18 @@ import pytest
 
 from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
-from pyosv.skinner import ConnectedComponentSkinner, FaultSkinner, find_skins
+from pyosv.skinner import (
+    ConnectedComponentSkinner,
+    FaultSkinner,
+    _candidate_slice_above_below,
+    _candidate_slice_left_right,
+    _find_reference_seeds,
+    _local_index_to_world,
+    _pick_candidate_us,
+    _sample_volume_nearest_java_round,
+    _update_transform_map,
+    find_skins,
+)
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -181,6 +192,219 @@ def test_cells_from_votes_includes_samples_equal_to_positive_threshold() -> None
     assert [cell.fl for cell in cells] == pytest.approx([0.5, 0.75])
 
 
+def test_find_reference_seeds_uses_planarity_and_thinned_likelihood_thresholds() -> None:
+    ep = np.array([[[0.81, 0.80, 0.90, 0.95]]], dtype=np.float32)
+    ft = np.array([[[0.60, 0.70, 0.50, 0.51]]], dtype=np.float32)
+    pt = np.array([[[10.0, 20.0, 30.0, 40.0]]], dtype=np.float32)
+    tt = np.array([[[50.0, 60.0, 70.0, 80.0]]], dtype=np.float32)
+
+    seeds = _find_reference_seeds(d=0, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert [seed.index for seed in seeds] == [(0, 0, 0), (3, 0, 0)]
+    assert [seed.fl for seed in seeds] == pytest.approx([0.60, 0.51])
+    assert [seed.fp for seed in seeds] == pytest.approx([10.0, 40.0])
+    assert [seed.ft for seed in seeds] == pytest.approx([50.0, 80.0])
+
+
+def test_find_reference_seeds_orders_candidates_by_likelihood_with_deterministic_ties() -> None:
+    ep = np.ones((2, 2, 3), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+    ft[1, 1, 2] = 0.8
+    ft[0, 1, 0] = 0.7
+    ft[0, 0, 1] = 0.7
+
+    seeds = _find_reference_seeds(d=0, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert [seed.index for seed in seeds] == [(2, 1, 1), (1, 0, 0), (0, 1, 0)]
+    assert [seed.fl for seed in seeds] == pytest.approx([0.8, 0.7, 0.7])
+
+
+def test_find_reference_seeds_excludes_candidates_within_marked_box() -> None:
+    ep = np.ones((5, 5, 5), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+    ft[2, 2, 2] = 0.9
+    ft[2, 3, 2] = 0.8
+    ft[4, 2, 2] = 0.7
+
+    seeds = _find_reference_seeds(d=1, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert [seed.index for seed in seeds] == [(2, 2, 2), (2, 2, 4)]
+
+
+def test_fault_skinner_find_seeds_returns_public_fault_cells() -> None:
+    ep = np.ones((1, 1, 1), dtype=np.float32)
+    ft = np.array([[[0.9]]], dtype=np.float32)
+    pt = np.array([[[20.0]]], dtype=np.float32)
+    tt = np.array([[[45.0]]], dtype=np.float32)
+
+    seeds = FaultSkinner().find_seeds(d=0, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert len(seeds) == 1
+    assert isinstance(seeds[0], FaultCell)
+    assert seeds[0].index == (0, 0, 0)
+    assert seeds[0].fl == pytest.approx(0.9)
+    assert seeds[0].fp == pytest.approx(20.0)
+    assert seeds[0].ft == pytest.approx(45.0)
+
+
+def test_find_reference_seeds_rejects_mismatched_shapes() -> None:
+    ep = np.zeros((2, 3, 4), dtype=np.float32)
+    ft = np.zeros((2, 4, 3), dtype=np.float32)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        _find_reference_seeds(d=1, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+
+@pytest.mark.parametrize("name", ["ep", "ft", "pt", "tt"])
+def test_find_reference_seeds_rejects_non_finite_inputs(name: str) -> None:
+    arrays = {
+        "ep": np.zeros((1, 2, 3), dtype=np.float32),
+        "ft": np.zeros((1, 2, 3), dtype=np.float32),
+        "pt": np.zeros((1, 2, 3), dtype=np.float32),
+        "tt": np.zeros((1, 2, 3), dtype=np.float32),
+    }
+    arrays[name][0, 0, 0] = np.nan
+
+    with pytest.raises(ValueError, match=f"{name} must contain only finite values"):
+        _find_reference_seeds(
+            d=1,
+            fm=0.5,
+            ep=arrays["ep"],
+            ft=arrays["ft"],
+            pt=arrays["pt"],
+            tt=arrays["tt"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("d", "fm", "match"),
+    [(-1, 0.5, "d"), (1, np.nan, "fm"), (1, True, "fm")],
+)
+def test_find_reference_seeds_rejects_invalid_parameters(
+    d: object,
+    fm: object,
+    match: str,
+) -> None:
+    ep = np.zeros((1, 1, 1), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+
+    with pytest.raises(ValueError, match=match):
+        _find_reference_seeds(
+            d=d,  # type: ignore[arg-type]
+            fm=fm,  # type: ignore[arg-type]
+            ep=ep,
+            ft=ft,
+            pt=pt,
+            tt=tt,
+        )
+
+
+def test_local_transform_maps_horizontal_plane_indices_to_expected_world_coordinates() -> None:
+    transform_map = _update_transform_map(
+        ru=2,
+        rv=2,
+        rw=2,
+        normal=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        dip=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        strike=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+    )
+
+    center = _local_index_to_world(2, 2, 2, (10.0, 20.0, 30.0), transform_map)
+    shifted = _local_index_to_world(3, 4, 0, (10.0, 20.0, 30.0), transform_map)
+
+    assert center == pytest.approx((10.0, 20.0, 30.0))
+    assert shifted == pytest.approx((8.0, 22.0, 31.0))
+
+
+def test_local_transform_maps_vertical_plane_indices_to_expected_world_coordinates() -> None:
+    transform_map = _update_transform_map(
+        ru=2,
+        rv=2,
+        rw=2,
+        normal=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        strike=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+    )
+
+    shifted = _local_index_to_world(0, 4, 3, (10.0, 20.0, 30.0), transform_map)
+
+    assert shifted == pytest.approx((8.0, 21.0, 32.0))
+
+
+def test_sample_volume_nearest_java_round_returns_zero_outside_volume() -> None:
+    i3, i2, i1 = np.indices((3, 4, 5), dtype=np.float32)
+    fv = 100.0 * i3 + 10.0 * i2 + i1
+
+    assert _sample_volume_nearest_java_round(fv, 1.5, 2.49, 1.5) == pytest.approx(
+        fv[2, 2, 2],
+    )
+    assert _sample_volume_nearest_java_round(fv, -0.51, 2.0, 1.0) == pytest.approx(0.0)
+    assert _sample_volume_nearest_java_round(fv, 4.51, 2.0, 1.0) == pytest.approx(0.0)
+
+
+def test_candidate_slices_sample_above_below_and_left_right_directions() -> None:
+    i3, i2, i1 = np.indices((7, 7, 7), dtype=np.float32)
+    fv = 100.0 * i3 + 10.0 * i2 + i1
+    transform_map = _update_transform_map(
+        ru=2,
+        rv=2,
+        rw=2,
+        normal=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+    )
+    origin = (3.0, 3.0, 3.0)
+
+    above = _candidate_slice_above_below(
+        fv,
+        transform_map,
+        origin,
+        ub=1,
+        ue=3,
+        vc=2,
+        wc=2,
+        direction=-1,
+        max_steps=1,
+    )
+    right = _candidate_slice_left_right(
+        fv,
+        transform_map,
+        origin,
+        ub=1,
+        ue=3,
+        vc=2,
+        wc=2,
+        direction=1,
+        max_steps=1,
+    )
+
+    np.testing.assert_allclose(above, np.array([[332.0, 333.0, 334.0], [322.0, 323.0, 324.0]]))
+    np.testing.assert_allclose(right, np.array([[332.0, 333.0, 334.0], [432.0, 433.0, 434.0]]))
+
+
+def test_pick_candidate_us_follows_maximum_likelihood_ridge() -> None:
+    candidate_slice = np.array(
+        [
+            [0.1, 0.2, 0.9, 0.4],
+            [0.1, 0.8, 0.3, 0.2],
+            [0.7, 0.5, 0.4, 0.3],
+        ],
+        dtype=np.float32,
+    )
+
+    picked = _pick_candidate_us(ub=4, candidate_slice=candidate_slice)
+
+    np.testing.assert_array_equal(picked, np.array([6, 5, 4], dtype=np.int32))
+
+
 def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
     fv = np.zeros((2, 3, 4), dtype=np.float32)
     vp = np.full_like(fv, 25.0)
@@ -307,3 +531,92 @@ def test_find_skins_groups_thinned_apply_voting_plane_as_one_dominant_skin() -> 
     assert indices.dtype == np.int32
     assert np.count_nonzero(indices[:, 1] == 5) > 0.75 * len(skin)
     assert skin.likelihoods().min() >= 0.7
+
+
+def test_reference_like_find_skin_grows_dominant_planar_seed_skin() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:10, 6, 3:10] = 0.9
+    seed = FaultCell(6.0, 6.0, 6.0, 0.9, 0.0, 90.0)
+
+    skin = FaultSkinner().find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=6,
+        rw=6,
+        max_steps=6,
+    )
+
+    indices = set(map(tuple, skin.indices()))
+    expected = {(i1, 6, i3) for i1 in range(3, 10) for i3 in range(3, 10)}
+    assert indices == expected
+    assert len(skin) == 49
+    assert skin.likelihoods().min() >= 0.5
+
+
+def test_reference_like_find_skin_separates_corner_connected_crossing_patch() -> None:
+    fv = np.zeros((15, 15, 15), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:9, 5, 3:9] = 0.9
+    vp[9, 6:12, 8:13] = 90.0
+    fv[9, 6:12, 8:13] = 0.95
+    seed = FaultCell(5.0, 5.0, 5.0, 0.9, 0.0, 90.0)
+
+    connected = FaultSkinner(connectivity="corner").find_skins(fv, vp, vt, min_likelihood=0.5)
+    reference_like = FaultSkinner().find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=7,
+        rw=7,
+        max_steps=7,
+        max_delta_strike=20.0,
+    )
+
+    assert [len(skin) for skin in connected] == [66]
+    reference_indices = set(map(tuple, reference_like.indices()))
+    assert reference_indices == {(i1, 5, i3) for i1 in range(3, 9) for i3 in range(3, 9)}
+    assert all(index[2] != 9 or index[1] == 5 for index in reference_indices)
+
+
+def test_reference_like_find_skin_is_deterministic_for_tied_likelihoods() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[4:9, 6, 4:9] = 0.8
+    seed = FaultCell(6.0, 6.0, 6.0, 0.8, 0.0, 90.0)
+    skinner = FaultSkinner()
+
+    first = skinner.find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=6,
+        rw=6,
+        max_steps=6,
+    )
+    second = skinner.find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=6,
+        rw=6,
+        max_steps=6,
+    )
+
+    assert [cell.index for cell in first] == [cell.index for cell in second]
