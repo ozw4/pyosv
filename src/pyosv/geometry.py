@@ -125,6 +125,34 @@ def strike_and_dip_from_normal(
     return fp, ft
 
 
+def strike_and_dip_from_local_surface_derivatives(
+    normal,
+    dip,
+    strike,
+    du_dv: float,
+    du_dw: float,
+) -> tuple[float, float]:
+    """Return strike/dip from local ``u(v,w)`` surface derivatives."""
+
+    normal_array = _vector3(normal)
+    dip_array = _vector3(dip)
+    strike_array = _vector3(strike)
+    global_normal = (
+        normal_array - np.float32(du_dv) * dip_array - np.float32(du_dw) * strike_array
+    ).astype(np.float32, copy=False)
+    normal_norm = np.linalg.norm(global_normal)
+    if normal_norm == 0.0:
+        msg = "surface basis vectors must produce a nonzero normal"
+        raise ValueError(msg)
+    global_normal /= normal_norm
+    if global_normal[0] > 0.0:
+        global_normal = -global_normal
+
+    dip_angle = float(np.rad2deg(np.arccos(np.clip(-global_normal[0], -1.0, 1.0))))
+    strike_angle = range360(np.rad2deg(np.arctan2(-global_normal[2], global_normal[1])))
+    return strike_angle, dip_angle
+
+
 def cross_product(u, v) -> np.ndarray:
     """Return the OSV cross product of two 3-component vectors."""
     u1, u2, u3 = _vector3(u)

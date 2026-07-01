@@ -1,11 +1,10 @@
 # Skinning
 
-`pyosv.skin` and `pyosv.skinner` provide a minimal Python skinning layer for
-3D voting outputs. `ConnectedComponentSkinner` is the explicit fallback
-connected-component implementation. `FaultSkinner.find_skins` delegates to
-that fallback so the default grouping behavior is unchanged, while
-`FaultSkinner.find_seeds` and `FaultSkinner.find_skin` expose opt-in
-reference-like seed selection and single-seed growth helpers.
+`pyosv.skin` and `pyosv.skinner` provide the Python skinning layer for 3D
+voting outputs. `FaultSkinner` defaults to `method="reference"`, the
+reference-like primary path for skinning. Use
+`method="connected_component"` or `ConnectedComponentSkinner` only when an
+explicit fallback or diagnostic connected-component grouping is needed.
 
 ## Scope
 
@@ -14,6 +13,12 @@ cell order, supports iteration and `len()`, and exposes helper arrays:
 
 - `indices()` returns an `(n, 3)` `int32` array in `(i1, i2, i3)` order.
 - `likelihoods()` returns an `(n,)` `float32` array of fault likelihood values.
+
+`FaultSkinner(method="reference")` is the default and should be used for normal
+fault-interpretation workflows. The module-level
+`pyosv.skinner.find_skins(fv, vp, vt, min_likelihood=None)` function is a
+compatibility wrapper around the connected-component fallback and is not the
+reference-first API.
 
 `ConnectedComponentSkinner.cells_from_votes` extracts one `FaultCell` for
 positive `fv` samples where `fv >= min_likelihood`. Zero-valued background
@@ -30,8 +35,6 @@ connected components. Connectivity is configured as:
 
 Small components can be filtered with `min_skin_size`. Returned skins are
 ordered by descending size, then by the first cell index in each component.
-`FaultSkinner.find_skins` currently preserves the same public behavior by
-delegating to `ConnectedComponentSkinner`.
 
 `FaultSkinner.find_seeds(d, fm, ep, ft, pt, tt)` selects starting cells from
 thinned 3D volumes. All arrays use shape `(n3, n2, n1)` and must have matching
@@ -40,28 +43,70 @@ processed by descending `ft`, with deterministic index ordering for ties. A
 candidate is skipped when an already accepted seed falls inside its `d`-sample
 axis-aligned exclusion box. Returned seeds are public `FaultCell` objects.
 
-`FaultSkinner.find_skin(seed, fv, vp, vt, ...)` grows one opt-in,
-reference-like `FaultSkin` from a seed without changing `find_skins`. The
+This corresponds to the reference `FaultSkinner.findSeeds(...)` stage. The
+Python implementation keeps the same high-level seed-selection role but uses
+repository shape conventions and explicit validation.
+
+`FaultSkinner.find_skins` with `method="reference"` runs `find_seeds`, processes
+seeds by descending likelihood, skips seeds already occupied by an accepted
+skin, grows each candidate with `find_skin`-style local geometry, filters by
+`min_skin_size`, and marks accepted skin cells as occupied before continuing.
+When `ep`, `ft`, `pt`, and `tt` are not supplied, the compatibility mapping is
+`ep=fv`, `ft=fv`, `pt=vp`, and `tt=vt`.
+
+This is the multi-skin driver corresponding to the reference sequence of
+`findSeeds(...)`, repeated `findSkin(...)` growth, accepted-cell occupancy, and
+final `reskin(...)` smoothing.
+
+After growth, the reference backend reskins each accepted skin by projecting
+cells to a seed-local `(v, w)` surface, smoothing local `u` offsets with
+likelihood weights, recomputing strike/dip from the smoothed surface
+derivatives, and rebuilding local above/below and left/right links. This is a
+practical approximation of the Java reference weighted smoothing phase, not the
+original conjugate-gradient smoother. Returned `FaultCell` objects expose these
+links as `ca`/`cb` for above/below and `cl`/`cr` for left/right neighbors. Pass
+`reskin=False` to `find_skins` or `find_skin` to keep the grow-only result.
+
+`FaultSkinner.find_skin(seed, fv, vp, vt, ...)` grows one reference-like
+`FaultSkin` from a seed and applies the same reskin phase by default. The
 grower builds a seed-local `(u, v, w)` coordinate frame where `u` follows the
-fault normal, `v` follows the dip vector, and `w` follows the strike vector.
-It samples candidate slices with Java-style nearest rounding, uses a priority
-queue ordered by likelihood, explores above/below and left/right local
-directions, and applies deterministic geometry gates such as minimum
-likelihood, local `u` continuity, interior bounds, and accepted-cell collision
-avoidance.
+fault normal, `v` follows the dip vector, and `w` follows the strike vector. It
+samples candidate slices with Java-style nearest rounding, uses a priority queue
+ordered by likelihood, explores above/below and left/right local directions,
+and applies deterministic geometry gates such as minimum likelihood, local `u`
+continuity, interior bounds, and accepted-cell collision avoidance.
+
+This corresponds to one reference `findSkin(...)` call. The Python grower is
+reference-like, but not a bit-exact Java port.
+
+## Validation Metrics
+
+Default tests should stay small and synthetic. Heavy F3 or full-reference
+validation belongs in optional reports, not default CI. Useful skinning
+validation summaries are:
+
+- skin count
+- largest skin size
+- difference from the connected-component fallback
+- orientation jitter within accepted skins
+- ridge overlap and buffered ridge overlap between expected ridges and skin
+  occupancy or thinned likelihood ridges
+
+These metrics are practical-regression signals. They should be interpreted with
+the repository equivalence policy, not as exact Java equality checks.
 
 ## Minimal Usage
 
 ```python
-from pyosv.skinner import ConnectedComponentSkinner
+from pyosv.skinner import FaultSkinner
 from pyosv.voting3d import OptimalSurfaceVoter
 
 voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
 fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
 fvt = voter.thin(fv, vp, vt)
 
-skinner = ConnectedComponentSkinner(min_likelihood=0.7, min_skin_size=20)
-skins = skinner.find_skins(fvt, vp, vt)
+skinner = FaultSkinner(method="reference", min_likelihood=0.7, min_skin_size=20)
+skins = skinner.find_skins(fvt, vp, vt, ep=fvt, ft=fvt, pt=vp, tt=vt)
 ```
 
 The self-contained example can be run without external data:
@@ -70,14 +115,21 @@ The self-contained example can be run without external data:
 python examples/run_3d_synthetic_skinning.py
 ```
 
+The example defaults to the reference-like backend. Select the diagnostic
+fallback explicitly when comparing behavior:
+
+```bash
+python examples/run_3d_synthetic_skinning.py --method connected_component
+```
+
 Pass `--output-dir` only when generated DAT outputs and a small text skin
 summary should be written.
 
 ## Limitations
 
 This implementation does not reproduce the full Java skinning workflow,
-including reskin smoothing, throw/slip estimation, or real-data workflow
-helpers. `find_skin` is a focused single-seed, reference-like grower with
-simplified candidate picking and geometry gates; `find_skins` remains the
-connected-component fallback. `ConnectedComponentSkinner` remains available for
-explicit fallback use.
+including throw/slip estimation, skin clean-up helpers, full Java pruning
+behavior, or real-data workflow helpers. The reference backend is a practical
+approximation with simplified candidate picking, geometry gates, and weighted
+reskin smoothing instead of the original conjugate-gradient smoother.
+`ConnectedComponentSkinner` remains available for explicit fallback use.

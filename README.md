@@ -9,8 +9,9 @@ The project uses the local `reference_osv/` directory as a read-only reference i
 This repository has the package scaffold plus DAT I/O, reference dataset
 metadata, the implemented 2D orientation scanner and optimal-path voting
 workflow, an approximate 3D orientation scanner, and a synthetic-test-covered
-3D voting/thinning MVP. A minimal connected-component skinning layer is also
-available for thinned 3D vote volumes.
+3D voting/thinning MVP. Reference-like skinning is the default for thinned 3D
+vote volumes, with connected-component grouping available as an explicit
+fallback.
 
 ## DAT I/O
 
@@ -118,8 +119,8 @@ Optional static visualization helpers are documented in `docs/visualization.md`.
 Install `pyosv[viz]` only when PNG diagnostics such as slice panels, ridge
 overlays, MIPs, or value histograms are needed.
 
-Minimal connected-component skinning is documented in `docs/skinning.md`, with
-a small self-contained example:
+Reference-like skinning is documented in `docs/skinning.md`, with a small
+self-contained example:
 
 ```bash
 python examples/run_3d_synthetic_skinning.py
