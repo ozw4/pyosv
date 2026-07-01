@@ -3,7 +3,12 @@ import pytest
 
 from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
-from pyosv.skinner import ConnectedComponentSkinner, FaultSkinner, find_skins
+from pyosv.skinner import (
+    ConnectedComponentSkinner,
+    FaultSkinner,
+    _find_reference_seeds,
+    find_skins,
+)
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -179,6 +184,121 @@ def test_cells_from_votes_includes_samples_equal_to_positive_threshold() -> None
 
     assert [cell.index for cell in cells] == [(2, 0, 0), (3, 0, 0)]
     assert [cell.fl for cell in cells] == pytest.approx([0.5, 0.75])
+
+
+def test_find_reference_seeds_uses_planarity_and_thinned_likelihood_thresholds() -> None:
+    ep = np.array([[[0.81, 0.80, 0.90, 0.95]]], dtype=np.float32)
+    ft = np.array([[[0.60, 0.70, 0.50, 0.51]]], dtype=np.float32)
+    pt = np.array([[[10.0, 20.0, 30.0, 40.0]]], dtype=np.float32)
+    tt = np.array([[[50.0, 60.0, 70.0, 80.0]]], dtype=np.float32)
+
+    seeds = _find_reference_seeds(d=0, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert [seed.index for seed in seeds] == [(0, 0, 0), (3, 0, 0)]
+    assert [seed.fl for seed in seeds] == pytest.approx([0.60, 0.51])
+    assert [seed.fp for seed in seeds] == pytest.approx([10.0, 40.0])
+    assert [seed.ft for seed in seeds] == pytest.approx([50.0, 80.0])
+
+
+def test_find_reference_seeds_orders_candidates_by_likelihood_with_deterministic_ties() -> None:
+    ep = np.ones((2, 2, 3), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+    ft[1, 1, 2] = 0.8
+    ft[0, 1, 0] = 0.7
+    ft[0, 0, 1] = 0.7
+
+    seeds = _find_reference_seeds(d=0, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert [seed.index for seed in seeds] == [(2, 1, 1), (1, 0, 0), (0, 1, 0)]
+    assert [seed.fl for seed in seeds] == pytest.approx([0.8, 0.7, 0.7])
+
+
+def test_find_reference_seeds_excludes_candidates_within_marked_box() -> None:
+    ep = np.ones((5, 5, 5), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+    ft[2, 2, 2] = 0.9
+    ft[2, 3, 2] = 0.8
+    ft[4, 2, 2] = 0.7
+
+    seeds = _find_reference_seeds(d=1, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert [seed.index for seed in seeds] == [(2, 2, 2), (2, 2, 4)]
+
+
+def test_fault_skinner_find_seeds_returns_public_fault_cells() -> None:
+    ep = np.ones((1, 1, 1), dtype=np.float32)
+    ft = np.array([[[0.9]]], dtype=np.float32)
+    pt = np.array([[[20.0]]], dtype=np.float32)
+    tt = np.array([[[45.0]]], dtype=np.float32)
+
+    seeds = FaultSkinner().find_seeds(d=0, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+    assert len(seeds) == 1
+    assert isinstance(seeds[0], FaultCell)
+    assert seeds[0].index == (0, 0, 0)
+    assert seeds[0].fl == pytest.approx(0.9)
+    assert seeds[0].fp == pytest.approx(20.0)
+    assert seeds[0].ft == pytest.approx(45.0)
+
+
+def test_find_reference_seeds_rejects_mismatched_shapes() -> None:
+    ep = np.zeros((2, 3, 4), dtype=np.float32)
+    ft = np.zeros((2, 4, 3), dtype=np.float32)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        _find_reference_seeds(d=1, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+
+
+@pytest.mark.parametrize("name", ["ep", "ft", "pt", "tt"])
+def test_find_reference_seeds_rejects_non_finite_inputs(name: str) -> None:
+    arrays = {
+        "ep": np.zeros((1, 2, 3), dtype=np.float32),
+        "ft": np.zeros((1, 2, 3), dtype=np.float32),
+        "pt": np.zeros((1, 2, 3), dtype=np.float32),
+        "tt": np.zeros((1, 2, 3), dtype=np.float32),
+    }
+    arrays[name][0, 0, 0] = np.nan
+
+    with pytest.raises(ValueError, match=f"{name} must contain only finite values"):
+        _find_reference_seeds(
+            d=1,
+            fm=0.5,
+            ep=arrays["ep"],
+            ft=arrays["ft"],
+            pt=arrays["pt"],
+            tt=arrays["tt"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("d", "fm", "match"),
+    [(-1, 0.5, "d"), (1, np.nan, "fm"), (1, True, "fm")],
+)
+def test_find_reference_seeds_rejects_invalid_parameters(
+    d: object,
+    fm: object,
+    match: str,
+) -> None:
+    ep = np.zeros((1, 1, 1), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+
+    with pytest.raises(ValueError, match=match):
+        _find_reference_seeds(
+            d=d,  # type: ignore[arg-type]
+            fm=fm,  # type: ignore[arg-type]
+            ep=ep,
+            ft=ft,
+            pt=pt,
+            tt=tt,
+        )
 
 
 def test_find_skins_default_groups_only_sparse_positive_samples() -> None:

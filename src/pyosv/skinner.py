@@ -296,6 +296,29 @@ class FaultSkinner:
 
         return self._fallback.cells_from_votes(fv, vp, vt, min_likelihood=min_likelihood)
 
+    def find_seeds(
+        self,
+        d: int,
+        fm: float,
+        ep: np.ndarray,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> list[FaultCell]:
+        """Find reference-like seed cells from thinned likelihood volumes."""
+
+        return [
+            cell.to_fault_cell()
+            for cell in _find_reference_seeds(
+                d=d,
+                fm=fm,
+                ep=ep,
+                ft=ft,
+                pt=pt,
+                tt=tt,
+            )
+        ]
+
     def find_skins(
         self,
         fv: np.ndarray,
@@ -317,6 +340,67 @@ def find_skins(
     """Group thresholded 3D voting outputs with default ``FaultSkinner`` settings."""
 
     return FaultSkinner().find_skins(fv, vp, vt, min_likelihood=min_likelihood)
+
+
+def _find_reference_seeds(
+    d: int,
+    fm: float,
+    ep: np.ndarray,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+) -> list[_SkinCell]:
+    """Select reference-like starting cells for future skin growth."""
+
+    distance = _validate_nonnegative_int(d, "d")
+    threshold = _validate_nonnegative_finite_float(fm, "fm")
+    ep_array, ft_array, pt_array, tt_array = _validate_matching_finite_arrays3_many(
+        (ep, ft, pt, tt),
+        ("ep", "ft", "pt", "tt"),
+    )
+    n3, n2, n1 = ft_array.shape
+
+    candidates: list[tuple[float, int, int, int]] = []
+    candidate_mask = (ep_array > np.float32(0.8)) & (ft_array > np.float32(threshold))
+    for i3, i2, i1 in np.argwhere(candidate_mask):
+        candidates.append(
+            (
+                float(ft_array[i3, i2, i1]),
+                operator.index(i3),
+                operator.index(i2),
+                operator.index(i1),
+            ),
+        )
+
+    candidates.sort(
+        key=lambda candidate: (-candidate[0], candidate[1], candidate[2], candidate[3]),
+    )
+
+    mark = np.zeros((n3, n2, n1), dtype=np.bool_)
+    seeds: list[_SkinCell] = []
+    for _, i3, i2, i1 in candidates:
+        b1 = max(i1 - distance, 0)
+        b2 = max(i2 - distance, 0)
+        b3 = max(i3 - distance, 0)
+        e1 = min(i1 + distance, n1 - 1)
+        e2 = min(i2 + distance, n2 - 1)
+        e3 = min(i3 + distance, n3 - 1)
+        if mark[b3 : e3 + 1, b2 : e2 + 1, b1 : e1 + 1].any():
+            continue
+
+        seeds.append(
+            _SkinCell(
+                i1,
+                i2,
+                i3,
+                ft_array[i3, i2, i1],
+                pt_array[i3, i2, i1],
+                tt_array[i3, i2, i1],
+            ),
+        )
+        mark[i3, i2, i1] = True
+
+    return seeds
 
 
 def _collect_component_indices(
