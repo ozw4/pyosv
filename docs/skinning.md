@@ -44,14 +44,23 @@ skin, grows each candidate with `find_skin`-style local geometry, filters by
 When `ep`, `ft`, `pt`, and `tt` are not supplied, the compatibility mapping is
 `ep=fv`, `ft=fv`, `pt=vp`, and `tt=vt`.
 
+After growth, the reference backend reskins each accepted skin by projecting
+cells to a seed-local `(v, w)` surface, smoothing local `u` offsets with
+likelihood weights, recomputing strike/dip from the smoothed surface
+derivatives, and rebuilding local above/below and left/right links. This is a
+practical approximation of the Java reference weighted smoothing phase, not the
+original conjugate-gradient smoother. Returned `FaultCell` objects expose these
+links as `ca`/`cb` for above/below and `cl`/`cr` for left/right neighbors. Pass
+`reskin=False` to `find_skins` or `find_skin` to keep the grow-only result.
+
 `FaultSkinner.find_skin(seed, fv, vp, vt, ...)` grows one reference-like
-`FaultSkin` from a seed. The grower builds a seed-local `(u, v, w)` coordinate
-frame where `u` follows the fault normal, `v` follows the dip vector, and `w`
-follows the strike vector. It samples candidate slices with Java-style nearest
-rounding, uses a priority queue ordered by likelihood, explores above/below and
-left/right local directions, and applies deterministic geometry gates such as
-minimum likelihood, local `u` continuity, interior bounds, and accepted-cell
-collision avoidance.
+`FaultSkin` from a seed and applies the same reskin phase by default. The
+grower builds a seed-local `(u, v, w)` coordinate frame where `u` follows the
+fault normal, `v` follows the dip vector, and `w` follows the strike vector. It
+samples candidate slices with Java-style nearest rounding, uses a priority queue
+ordered by likelihood, explores above/below and left/right local directions,
+and applies deterministic geometry gates such as minimum likelihood, local `u`
+continuity, interior bounds, and accepted-cell collision avoidance.
 
 ## Minimal Usage
 
@@ -84,7 +93,7 @@ summary should be written.
 ## Limitations
 
 This implementation does not reproduce the full Java skinning workflow,
-including reskin smoothing, throw/slip estimation, or real-data workflow
-helpers. The reference backend is a practical approximation with simplified
-candidate picking and geometry gates. `ConnectedComponentSkinner` remains
-available for explicit fallback use.
+including throw/slip estimation or real-data workflow helpers. The reference
+backend is a practical approximation with simplified candidate picking,
+geometry gates, and weighted reskin smoothing. `ConnectedComponentSkinner`
+remains available for explicit fallback use.

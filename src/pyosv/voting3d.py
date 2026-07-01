@@ -18,7 +18,7 @@ from pyosv.dp import (
     update_shift_ranges_3d,
 )
 from pyosv.filters import smooth3d
-from pyosv.geometry import range360
+from pyosv.geometry import strike_and_dip_from_local_surface_derivatives
 from pyosv.interp import sample3
 from pyosv.thinning3d import reference_like_3d_thin_values
 
@@ -951,34 +951,15 @@ def _surface_strike_and_dip(
 
     iw = surface_array.shape[0] // 2
     iv = surface_array.shape[1] // 2
-    local_normal = np.array(
-        [
-            1.0,
-            -0.5 * (surface_array[iw, iv + 1] - surface_array[iw, iv - 1]),
-            -0.5 * (surface_array[iw + 1, iv] - surface_array[iw - 1, iv]),
-        ],
-        dtype=np.float32,
+    du_dv = float(0.5 * (surface_array[iw, iv + 1] - surface_array[iw, iv - 1]))
+    du_dw = float(0.5 * (surface_array[iw + 1, iv] - surface_array[iw - 1, iv]))
+    return strike_and_dip_from_local_surface_derivatives(
+        normal_array,
+        dip_array,
+        strike_array,
+        du_dv,
+        du_dw,
     )
-    local_normal /= np.linalg.norm(local_normal)
-
-    global_normal = (
-        normal_array * local_normal[0]
-        + dip_array * local_normal[1]
-        + strike_array * local_normal[2]
-    ).astype(np.float32, copy=False)
-    normal_norm = np.linalg.norm(global_normal)
-    if normal_norm == 0.0:
-        raise ValueError("surface basis vectors must produce a nonzero normal")
-    global_normal /= normal_norm
-
-    if global_normal[0] > 0.0:
-        global_normal = -global_normal
-
-    dip_angle = float(np.rad2deg(np.arccos(np.clip(-global_normal[0], -1.0, 1.0))))
-    strike_angle = range360(
-        np.rad2deg(np.arctan2(-global_normal[2], global_normal[1])),
-    )
-    return strike_angle, dip_angle
 
 
 def _normalize_unit_range_in_place(x: np.ndarray) -> None:

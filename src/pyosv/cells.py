@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 
 import numpy as np
@@ -56,6 +56,10 @@ class FaultCell:
     fl: float
     fp: float
     ft: float
+    ca: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
+    cb: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
+    cl: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
+    cr: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "x1", float(self.x1))

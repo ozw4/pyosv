@@ -11,6 +11,7 @@ from pyosv.skinner import (
     _find_reference_seeds,
     _local_index_to_world,
     _pick_candidate_us,
+    _reskin_reference,
     _sample_volume_nearest_java_round,
     _update_transform_map,
     find_skins,
@@ -687,3 +688,83 @@ def test_reference_like_find_skin_is_deterministic_for_tied_likelihoods() -> Non
     )
 
     assert [cell.index for cell in first] == [cell.index for cell in second]
+
+
+def test_reference_like_find_skin_reskin_false_preserves_grow_indices() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:10, 6, 3:10] = 0.9
+    seed = FaultCell(6.0, 6.0, 6.0, 0.9, 0.0, 90.0)
+
+    skin = FaultSkinner().find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=5,
+        rv=6,
+        rw=6,
+        max_steps=6,
+        reskin=False,
+    )
+
+    assert set(map(tuple, skin.indices())) == {
+        (i1, 6, i3) for i1 in range(3, 10) for i3 in range(3, 10)
+    }
+
+
+def test_reskin_reference_smooths_synthetic_noisy_plane_surface() -> None:
+    cells = []
+    for i3 in range(7):
+        for i2 in range(7):
+            jitter = -0.45 if (i2 + i3) % 2 == 0 else 0.45
+            cells.append(
+                FaultCell(
+                    20.0 + jitter,
+                    10.0 + i2,
+                    30.0 + i3,
+                    1.0,
+                    0.0,
+                    0.0,
+                ),
+            )
+    before_variance = np.var([cell.x1 for cell in cells])
+
+    reskinned = _reskin_reference(FaultSkin.from_cells(cells), smoothing_sigma=1.0)
+
+    after_variance = np.var([cell.x1 for cell in reskinned])
+    assert len(reskinned) == len(cells)
+    assert after_variance < before_variance
+    assert np.std([cell.ft for cell in reskinned]) < 5.0
+
+
+def test_reskin_reference_rebuilds_links_on_returned_fault_cells() -> None:
+    cells = [
+        FaultCell(20.0, 10.0 + i2, 30.0 + i3, 1.0, 0.0, 0.0) for i3 in range(2) for i2 in range(2)
+    ]
+
+    reskinned = _reskin_reference(FaultSkin.from_cells(cells), smoothing_sigma=0.0)
+
+    by_grid = {(cell.i2, cell.i3): cell for cell in reskinned}
+    upper_left = by_grid[(10, 30)]
+    lower_left = by_grid[(11, 30)]
+    upper_right = by_grid[(10, 31)]
+
+    assert upper_left.cb is lower_left
+    assert lower_left.ca is upper_left
+    assert upper_left.cr is upper_right
+    assert upper_right.cl is upper_left
+    assert upper_left.ca is None
+    assert upper_left.cl is None
+
+
+def test_reskin_reference_handles_empty_and_single_cell_skins() -> None:
+    assert len(_reskin_reference(FaultSkin())) == 0
+
+    cell = FaultCell(1.0, 2.0, 3.0, 0.8, 20.0, 60.0)
+    reskinned = _reskin_reference(FaultSkin.from_cells([cell]))
+
+    assert len(reskinned) == 1
+    assert reskinned.cells[0] == cell
