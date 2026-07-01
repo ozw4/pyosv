@@ -363,3 +363,36 @@ def test_f3d_scanner_comparison_one_crop(
     assert np.isfinite(report["normalized_correlation"]["ft_py_vs_fl"])
     _assert_finite_metric_values(report["top_percentile_overlap"]["ft_py_vs_fl"])
     _assert_finite_metric_values(report["slice_correlation"]["ft_py_vs_fl_i3"])
+
+
+@pytest.mark.f3d_reference
+def test_f3d_scanner_comparison_reference_like_backend_small_crop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = _gated_data_root()
+    module = _import_scanner_module(monkeypatch)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        crop_shape=(8, 8, 8),
+        max_crops=1,
+        interior_margin=1,
+        scanner_backends=["current", "reference-like"],
+        percentile=99.9,
+        min_separation=1.0,
+        sigma1=1.0,
+        sigma2=1.0,
+        phi_min=0.0,
+        phi_max=360.0,
+        theta_min=65.0,
+        theta_max=80.0,
+    )
+
+    crop = report["crops"][0]
+    assert report["config"]["scanner_backends"] == ["current", "reference-like"]
+    assert set(crop["backends"]) == {"current", "reference-like"}
+    for backend in ("current", "reference-like"):
+        metrics = crop["backends"][backend]
+        assert metrics["pyosv"]["ft_py"]["shape"] == [8, 8, 8]
+        assert metrics["pyosv"]["ft_py"]["dtype"] == "float32"
+        _assert_finite_metric_values(metrics["normalized_correlation"])
