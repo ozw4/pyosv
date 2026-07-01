@@ -575,6 +575,40 @@ def test_reference_find_skins_groups_thinned_apply_voting_plane_as_one_dominant_
     assert skin.likelihoods().min() >= 0.7
 
 
+def test_reference_find_skins_rejects_explicit_seed_volume_shape_mismatch() -> None:
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    ep = np.zeros((5, 5, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="fv and ep shapes must match"):
+        FaultSkinner().find_skins(fv, vp, vt, ep=ep)
+
+
+def test_reference_find_skins_reskin_false_preserves_grow_indices() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:10, 6, 3:10] = 0.9
+
+    skins = FaultSkinner(min_skin_size=1).find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=10,
+        rv=8,
+        rw=8,
+        max_steps=10,
+        reskin=False,
+    )
+
+    assert len(skins) == 1
+    assert set(map(tuple, skins[0].indices())) == {
+        (i1, 6, i3) for i1 in range(3, 10) for i3 in range(3, 10)
+    }
+
+
 def test_connected_component_find_skins_keeps_legacy_voting_plane_component() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     voter.set_attribute_smoothing(0)

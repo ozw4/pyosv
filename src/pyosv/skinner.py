@@ -464,11 +464,20 @@ def _find_reference_skins(
 ) -> list[FaultSkin]:
     should_reskin = _validate_bool(reskin, "reskin")
     threshold = _validate_nonnegative_finite_float(fm, "fm")
-    fv_array, vp_array, vt_array = _validate_matching_finite_arrays3_many(
-        (fv, vp, vt),
-        ("fv", "vp", "vt"),
+    fv_array, vp_array, vt_array, ep_array, ft_array, pt_array, tt_array = (
+        _validate_matching_finite_arrays3_many(
+            (fv, vp, vt, ep, ft, pt, tt),
+            ("fv", "vp", "vt", "ep", "ft", "pt", "tt"),
+        )
     )
-    seeds = _find_reference_seeds(d=d, fm=threshold, ep=ep, ft=ft, pt=pt, tt=tt)
+    seeds = _find_reference_seeds(
+        d=d,
+        fm=threshold,
+        ep=ep_array,
+        ft=ft_array,
+        pt=pt_array,
+        tt=tt_array,
+    )
     skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
     occupied = _SkinCellGrid()
     skins: list[FaultSkin] = []
