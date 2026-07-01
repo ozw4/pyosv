@@ -4,6 +4,7 @@ import pytest
 import pyosv
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.orient3d import FaultOrientScanner3
+from pyosv.thinning3d import reference_like_3d_thin_values
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -280,6 +281,34 @@ def test_thin_reference_mode_returns_float32_arrays_and_preserves_values() -> No
     np.testing.assert_array_equal(thinned_tt[thinned_ft == 0.0], 0.0)
 
 
+def test_thin_reference_mode_matches_smoothed_value_helper_mask() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((7, 7, 1), dtype=np.float32)
+    ft[3, 3, 0] = 10.0
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 55.0)
+    expected_ft, keep = reference_like_3d_thin_values(
+        ft,
+        pt,
+        sigma=1.0,
+        reinforce_vertical=False,
+    )
+
+    thinned_ft, thinned_pt, thinned_tt = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode="reference",
+        reference_sigma=1.0,
+    )
+
+    np.testing.assert_allclose(thinned_ft, expected_ft)
+    np.testing.assert_array_equal(thinned_pt[keep], pt[keep])
+    np.testing.assert_array_equal(thinned_tt[keep], tt[keep])
+    np.testing.assert_array_equal(thinned_pt[~keep], 0.0)
+    np.testing.assert_array_equal(thinned_tt[~keep], 0.0)
+
+
 def test_thin_rejects_invalid_mode() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((3, 3, 1), dtype=np.float32)
@@ -327,15 +356,14 @@ def test_thin_validates_inputs_for_modes(
         scanner.thin(ft, pt, tt, mode=mode)
 
 
-def test_thin_reference_mode_uses_strike_bins_not_normal_interpolation() -> None:
+def test_thin_reference_mode_uses_reference_45_degree_diagonal() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((4, 4, 1), dtype=np.float32)
     ft[1, 1, 0] = 1.0
-    ft[0, 2, 0] = 3.0
+    ft[0, 0, 0] = 3.0
     pt = np.full_like(ft, 45.0)
     tt = np.full_like(ft, 90.0)
 
-    normal_ft, _, _ = scanner.thin(ft, pt, tt, mode="normal")
     reference_ft, reference_pt, reference_tt = scanner.thin(
         ft,
         pt,
@@ -344,7 +372,6 @@ def test_thin_reference_mode_uses_strike_bins_not_normal_interpolation() -> None
         reference_sigma=0.0,
     )
 
-    assert normal_ft[1, 1, 0] == np.float32(0.0)
     assert reference_ft[1, 1, 0] == np.float32(1.0)
     assert reference_pt[1, 1, 0] == np.float32(45.0)
     assert reference_tt[1, 1, 0] == np.float32(90.0)

@@ -10,7 +10,7 @@ from scipy import ndimage
 
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.interp import sample3
-from pyosv.thinning3d import reference_like_3d_nms_mask
+from pyosv.thinning3d import reference_like_3d_thin_values
 
 __all__ = ["FaultOrientScanner3"]
 
@@ -130,15 +130,20 @@ class FaultOrientScanner3:
             fp = sample3(ft_array, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
             fm = sample3(ft_array, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
             keep = (ft_array > np.float32(0.0)) & (fp < ft_array) & (fm < ft_array)
+            thinned_ft = np.zeros((n3, n2, n1), dtype=np.float32)
+            thinned_ft[keep] = ft_array[keep]
         elif mode == "reference":
-            keep = reference_like_3d_nms_mask(ft_array, pt_array, sigma=reference_sigma)
+            thinned_ft, keep = reference_like_3d_thin_values(
+                ft_array,
+                pt_array,
+                sigma=reference_sigma,
+                reinforce_vertical=False,
+            )
         else:
             raise ValueError("mode must be 'normal' or 'reference'")
 
-        thinned_ft = np.zeros((n3, n2, n1), dtype=np.float32)
         thinned_pt = np.zeros((n3, n2, n1), dtype=np.float32)
         thinned_tt = np.zeros((n3, n2, n1), dtype=np.float32)
-        thinned_ft[keep] = ft_array[keep]
         thinned_pt[keep] = pt_array[keep]
         thinned_tt[keep] = tt_array[keep]
         return thinned_ft, thinned_pt, thinned_tt
