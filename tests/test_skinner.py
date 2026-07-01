@@ -6,7 +6,13 @@ from pyosv.skin import FaultSkin
 from pyosv.skinner import (
     ConnectedComponentSkinner,
     FaultSkinner,
+    _candidate_slice_above_below,
+    _candidate_slice_left_right,
     _find_reference_seeds,
+    _local_index_to_world,
+    _pick_candidate_us,
+    _sample_volume_nearest_java_round,
+    _update_transform_map,
     find_skins,
 )
 from pyosv.voting3d import OptimalSurfaceVoter
@@ -299,6 +305,104 @@ def test_find_reference_seeds_rejects_invalid_parameters(
             pt=pt,
             tt=tt,
         )
+
+
+def test_local_transform_maps_horizontal_plane_indices_to_expected_world_coordinates() -> None:
+    transform_map = _update_transform_map(
+        ru=2,
+        rv=2,
+        rw=2,
+        normal=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        dip=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        strike=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+    )
+
+    center = _local_index_to_world(2, 2, 2, (10.0, 20.0, 30.0), transform_map)
+    shifted = _local_index_to_world(3, 4, 0, (10.0, 20.0, 30.0), transform_map)
+
+    assert center == pytest.approx((10.0, 20.0, 30.0))
+    assert shifted == pytest.approx((8.0, 22.0, 31.0))
+
+
+def test_local_transform_maps_vertical_plane_indices_to_expected_world_coordinates() -> None:
+    transform_map = _update_transform_map(
+        ru=2,
+        rv=2,
+        rw=2,
+        normal=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        strike=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+    )
+
+    shifted = _local_index_to_world(0, 4, 3, (10.0, 20.0, 30.0), transform_map)
+
+    assert shifted == pytest.approx((8.0, 21.0, 32.0))
+
+
+def test_sample_volume_nearest_java_round_returns_zero_outside_volume() -> None:
+    i3, i2, i1 = np.indices((3, 4, 5), dtype=np.float32)
+    fv = 100.0 * i3 + 10.0 * i2 + i1
+
+    assert _sample_volume_nearest_java_round(fv, 1.5, 2.49, 1.5) == pytest.approx(
+        fv[2, 2, 2],
+    )
+    assert _sample_volume_nearest_java_round(fv, -0.51, 2.0, 1.0) == pytest.approx(0.0)
+    assert _sample_volume_nearest_java_round(fv, 4.51, 2.0, 1.0) == pytest.approx(0.0)
+
+
+def test_candidate_slices_sample_above_below_and_left_right_directions() -> None:
+    i3, i2, i1 = np.indices((7, 7, 7), dtype=np.float32)
+    fv = 100.0 * i3 + 10.0 * i2 + i1
+    transform_map = _update_transform_map(
+        ru=2,
+        rv=2,
+        rw=2,
+        normal=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        dip=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        strike=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+    )
+    origin = (3.0, 3.0, 3.0)
+
+    above = _candidate_slice_above_below(
+        fv,
+        transform_map,
+        origin,
+        ub=1,
+        ue=3,
+        vc=2,
+        wc=2,
+        direction=-1,
+        max_steps=1,
+    )
+    right = _candidate_slice_left_right(
+        fv,
+        transform_map,
+        origin,
+        ub=1,
+        ue=3,
+        vc=2,
+        wc=2,
+        direction=1,
+        max_steps=1,
+    )
+
+    np.testing.assert_allclose(above, np.array([[332.0, 333.0, 334.0], [322.0, 323.0, 324.0]]))
+    np.testing.assert_allclose(right, np.array([[332.0, 333.0, 334.0], [432.0, 433.0, 434.0]]))
+
+
+def test_pick_candidate_us_follows_maximum_likelihood_ridge() -> None:
+    candidate_slice = np.array(
+        [
+            [0.1, 0.2, 0.9, 0.4],
+            [0.1, 0.8, 0.3, 0.2],
+            [0.7, 0.5, 0.4, 0.3],
+        ],
+        dtype=np.float32,
+    )
+
+    picked = _pick_candidate_us(ub=4, candidate_slice=candidate_slice)
+
+    np.testing.assert_array_equal(picked, np.array([6, 5, 4], dtype=np.int32))
 
 
 def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
