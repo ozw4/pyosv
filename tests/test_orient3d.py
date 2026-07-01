@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -158,6 +160,129 @@ def test_scan_validates_sampling_inputs_before_image_response() -> None:
 
     with pytest.raises(ValueError, match="phi_max"):
         scanner.scan(360.0, 0.0, 35.0, 85.0, image)
+
+
+def test_scan_reference_like_method_exists() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    assert callable(scanner.scan_reference_like)
+
+
+@pytest.mark.parametrize(
+    ("phi_min", "phi_max", "theta_min", "theta_max", "message"),
+    [
+        (360.0, 0.0, 35.0, 85.0, "phi_max"),
+        (0.0, 360.0, 85.0, 35.0, "theta_max"),
+        (np.nan, 360.0, 35.0, 85.0, "phi_min"),
+        (0.0, 360.0, np.inf, 85.0, "theta_min"),
+    ],
+)
+def test_scan_reference_like_validates_angle_ranges(
+    phi_min: object,
+    phi_max: object,
+    theta_min: object,
+    theta_max: object,
+    message: str,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        scanner.scan_reference_like(
+            phi_min,  # type: ignore[arg-type]
+            phi_max,  # type: ignore[arg-type]
+            theta_min,  # type: ignore[arg-type]
+            theta_max,  # type: ignore[arg-type]
+            image,
+        )
+
+
+@pytest.mark.parametrize(
+    ("image", "message"),
+    [
+        (np.zeros((2, 3), dtype=np.float32), "3D array"),
+        (np.array([[[0.0, np.nan]]], dtype=np.float32), "finite"),
+        (np.array([[[0.0, np.inf]]], dtype=np.float32), "finite"),
+    ],
+)
+def test_scan_reference_like_validates_image_before_not_implemented(
+    image: object,
+    message: str,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    with pytest.raises(ValueError, match=message):
+        scanner.scan_reference_like(0.0, 90.0, 35.0, 85.0, image)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("interpolation_order", [-1, 6, 1.5, True])
+def test_scan_reference_like_validates_interpolation_order(
+    interpolation_order: object,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="interpolation_order"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            interpolation_order=interpolation_order,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("smoothing_mode", ["recursive", "separable", 1])
+def test_scan_reference_like_validates_smoothing_mode(smoothing_mode: object) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="smoothing_mode"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            smoothing_mode=smoothing_mode,  # type: ignore[arg-type]
+        )
+
+
+def test_scan_reference_like_valid_inputs_raise_not_implemented_after_config() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float64)
+
+    with pytest.raises(NotImplementedError, match="orientation sweep is not implemented"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            interpolation_order=1,
+            smoothing_mode="gaussian",
+        )
+
+    config = scanner._reference_like_scan_config
+    assert config["input_shape"] == image.shape
+    assert config["interpolation_order"] == 1
+    assert config["smoothing_mode"] == "gaussian"
+    np.testing.assert_array_equal(config["phi_sampling"], scanner.strike_sampling(0.0, 90.0))
+    np.testing.assert_array_equal(config["theta_sampling"], scanner.dip_sampling(35.0, 85.0))
+
+
+def test_f3_validation_examples_use_current_scan_by_default() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    example_paths = [
+        repo_root / "examples" / "run_3d_f3d_crop_validation.py",
+        repo_root / "examples" / "run_3d_f3d_full.py",
+    ]
+
+    for path in example_paths:
+        source = path.read_text()
+        assert "scan_reference_like" not in source
+        assert ".scan(" in source
 
 
 def test_scan_constant_input_returns_zero_likelihood_and_finite_angles() -> None:

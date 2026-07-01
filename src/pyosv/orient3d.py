@@ -95,6 +95,42 @@ class FaultOrientScanner3:
 
         return self._scan_orientation_bank(phi_sampling, theta_sampling, image)
 
+    def scan_reference_like(
+        self,
+        phi_min: float,
+        phi_max: float,
+        theta_min: float,
+        theta_max: float,
+        g: np.ndarray,
+        *,
+        interpolation_order: int = 1,
+        smoothing_mode: str = "gaussian",
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Validate inputs for a future reference-like scan implementation.
+
+        This opt-in entry point is intentionally a skeleton. It prepares the
+        same sampling and image-validation state as ``scan()`` plus explicit
+        interpolation/smoothing options, then raises ``NotImplementedError``
+        until the rotate-shear-smooth orientation sweep is implemented.
+        """
+
+        phi_sampling = self.strike_sampling(phi_min, phi_max)
+        theta_sampling = self.dip_sampling(theta_min, theta_max)
+        image = self.validate_image(g, "g")
+        order = _validate_interpolation_order(interpolation_order)
+        mode = _validate_smoothing_mode(smoothing_mode)
+        self._reference_like_scan_config = {
+            "phi_sampling": phi_sampling,
+            "theta_sampling": theta_sampling,
+            "interpolation_order": order,
+            "smoothing_mode": mode,
+            "input_shape": image.shape,
+        }
+        raise NotImplementedError(
+            "reference-like FaultOrientScanner3 scan skeleton is present but "
+            "the orientation sweep is not implemented yet"
+        )
+
     def thin(
         self,
         ft: np.ndarray,
@@ -248,6 +284,24 @@ def _validate_angle(value: float, name: str) -> float:
         raise ValueError(f"{name} must be a finite number")
 
     return value_float
+
+
+def _validate_interpolation_order(order: int) -> int:
+    if isinstance(order, bool) or not isinstance(order, numbers.Integral):
+        raise ValueError("interpolation_order must be an integer from 0 to 5")
+
+    order_int = int(order)
+    if order_int < 0 or order_int > 5:
+        raise ValueError("interpolation_order must be an integer from 0 to 5")
+
+    return order_int
+
+
+def _validate_smoothing_mode(mode: str) -> str:
+    if mode != "gaussian":
+        raise ValueError("smoothing_mode must be 'gaussian'")
+
+    return mode
 
 
 def _validate_finite_image3(image: np.ndarray, name: str) -> np.ndarray:

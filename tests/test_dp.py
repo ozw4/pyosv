@@ -357,6 +357,111 @@ def test_find_surface_3d_flat_valley_returns_constant_lag(
     np.testing.assert_allclose(surface, expected, atol=0.01)
 
 
+def test_find_surface_3d_reference_audit_flat_zero_lag_surface() -> None:
+    # Audits OptimalSurfaceVoter.findSurface for a deterministic zero-lag valley.
+    expected = np.zeros((5, 7), dtype=np.float32)
+    cost = _surface_cost(expected, lmin=-3, nu=7)
+
+    surface = find_surface_3d(
+        cost,
+        lmin=-3,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+        surface_smoothing1=0.0,
+        surface_smoothing2=0.0,
+    )
+
+    assert surface.shape == expected.shape
+    assert surface.dtype == np.float32
+    np.testing.assert_array_equal(surface, expected)
+
+
+def test_find_surface_3d_reference_audit_sloped_surface_is_strain_limited() -> None:
+    # Audits OptimalSurfaceVoter.findSurface inverse-strain limiting on a local surface.
+    preferred = np.zeros((3, 9), dtype=np.float32)
+    preferred[:, 4:] = 3.0
+    cost = _surface_cost(preferred, lmin=-3, nu=7)
+
+    surface = find_surface_3d(
+        cost,
+        lmin=-3,
+        bstrain1=2,
+        bstrain2=1,
+        attribute_smoothing=0,
+        surface_smoothing1=0.0,
+        surface_smoothing2=0.0,
+    )
+
+    expected = np.array(
+        [[0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.0, 3.0]] * 3,
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(surface, expected, rtol=0.0, atol=1e-6)
+    assert np.max(np.abs(np.diff(surface, axis=1))) <= 0.5
+
+
+def test_find_surface_3d_reference_audit_attribute_smoothing_on_off() -> None:
+    # Audits the optional smoothFaultAttributes pass used by findSurface.
+    cost = np.array(
+        [
+            [
+                [0.8506242, 0.63696164, 0.5111365, 0.26978666, 0.30782938],
+                [0.04097348, 0.07524014, 0.01652759, 0.17526728, 0.8132702],
+                [0.64941573, 0.91275555, 0.50362694, 0.60663575, 0.9707428],
+                [0.72949654, 0.63227075, 0.54362494, 0.5599174, 0.9350724],
+                [0.27734703, 0.81585354, 0.6708765, 0.00273848, 0.39414912],
+            ],
+            [
+                [0.85740423, 0.5543149, 0.03358555, 0.7648899, 0.72965544],
+                [0.8465752, 0.1756556, 0.08928674, 0.8631789, 0.02210194],
+                [0.54146117, 0.08039963, 0.29971188, 0.48106134, 0.42268717],
+                [0.40323848, 0.02831966, 0.00535262, 0.12428325, 0.00828427],
+                [0.6706244, 0.5256177, 0.6471895, 0.25729978, 0.61538506],
+            ],
+            [
+                [0.7640549, 0.38367754, 0.4609216, 0.9972099, 0.80498916],
+                [0.9808353, 0.37952334, 0.6855419, 0.9501003, 0.65045923],
+                [0.84031135, 0.6884467, 0.704001, 0.38892138, 0.8751561],
+                [0.13509649, 0.57890344, 0.7214883, 0.84548056, 0.52535427],
+                [0.37541664, 0.31024182, 0.42295915, 0.4858353, 0.7188217],
+            ],
+        ],
+        dtype=np.float32,
+    )
+
+    disabled = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+        surface_smoothing1=0.0,
+        surface_smoothing2=0.0,
+    )
+    enabled = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=1,
+        surface_smoothing1=0.0,
+        surface_smoothing2=0.0,
+    )
+
+    expected_disabled = np.array(
+        [[1.0, 0.0, 0.0, 0.0, 1.0], [0.0, 0.0, -1.0, 0.0, 1.0], [-1.0, -1.0, -1.0, -2.0, -1.0]],
+        dtype=np.float32,
+    )
+    expected_enabled = np.array(
+        [[1.0, 0.0, 0.0, 0.0, 1.0], [0.0, 0.0, -1.0, -1.0, 0.0], [-1.0, -1.0, -1.0, -2.0, -1.0]],
+        dtype=np.float32,
+    )
+    np.testing.assert_array_equal(disabled, expected_disabled)
+    np.testing.assert_array_equal(enabled, expected_enabled)
+    assert not np.array_equal(disabled, enabled)
+
+
 def test_find_surface_3d_linear_v_valley_returns_bounded_surface() -> None:
     nw, nv, nu = 5, 21, 9
     expected_path = np.linspace(-2.0, 2.0, nv, dtype=np.float32)
