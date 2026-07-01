@@ -1,8 +1,26 @@
-# Practical Equivalence Policy
+# Reference-First Equivalence Policy
 
 Bitwise equivalence with Java, Jython, or Mines JTK is not a goal for `pyosv`.
-Practical equivalence is the goal: Python outputs should preserve the geological
-signal and workflow behavior needed for fault interpretation.
+The implementation goal is reference-first alignment: Python code should follow
+the reference implementation's control flow and geometric semantics unless the
+reference behavior has a clear quality problem.
+
+Practical equivalence remains useful as a measurement policy for numerical
+differences, but it is not the final design target. Python outputs should
+preserve the geological signal and workflow behavior needed for fault
+interpretation while staying as close as practical to reference sampling,
+normalization, thinning, seed selection, and skinning semantics.
+
+When implementation choices conflict, use this priority order:
+
+1. Preserve reference control flow and geometric meaning.
+2. Approximate Mines JTK numerical kernels when needed, while documenting which
+   reference kernel is being approximated.
+3. Put faster, more robust, or simpler behavior behind explicit opt-in modes
+   such as `fast`, `practical`, or `connected_component`.
+4. Deviate from the reference default only for clear quality problems, including
+   unreachable conditions, broken boundary behavior, or behavior that is
+   unusable for the documented fault-interpretation workflow.
 
 Mines JTK interpolation and recursive filtering are intentionally approximated
 with Pythonic tools:
@@ -15,6 +33,19 @@ with Pythonic tools:
 
 These substitutions are allowed to differ in boundary handling, interpolation
 kernels, recursive filter response, and floating-point accumulation order.
+They do not justify changing the surrounding algorithm structure by default.
+
+## FaultSkinner Direction
+
+The current connected-component grouping in `pyosv.skinner` is a temporary
+minimal implementation and may remain available as an explicit fallback or
+opt-in mode. The default long-term direction for `FaultSkinner` is
+geometry-aware, reference-like growth aligned with the reference `findSeeds`,
+`findSkin`, and `reskin` semantics.
+
+Future skinning changes should prefer reference-like seed selection, neighbor
+growth, linking, pruning, and reskinning behavior over generic connected
+components unless a specific reference behavior is shown to be defective.
 
 Tests should prioritize:
 
@@ -79,8 +110,8 @@ or volume-size-dependent placeholders.
 ## Threshold Policy
 
 Default tests should check metric well-formedness and deterministic Python
-behavior. They should not require Java/JTK data or strict practical-equivalence
-thresholds unless a future issue explicitly defines such thresholds for a
+behavior. They should not require Java/JTK data or strict per-sample equality
+unless a future issue explicitly defines reference-alignment thresholds for a
 specific feature.
 
 Reference comparisons are report-oriented in this phase. The optional 2D voting
