@@ -20,7 +20,7 @@ JTK, or Gradle runtime dependency should be introduced.
 | --- | --- | --- | --- | --- | --- | --- |
 | `FaultOrientScanner3` constructor | `FaultOrientScanner3.__init__` | Stores strike and dip smoothing half-widths as `_sigmaPhi` and `_sigmaTheta`; the overload with `power` does not currently use that argument in the inspected reference path. | Validates positive finite `sigma1` and `sigma2`, storing them as dip and strike scanning controls. | Parameter names and validation differ; Python has no unused `power` overload. | Python constructor validation regression tests exist; no Java parity test. | No for the current derivative-bank API; revisit only if adding a reference-like scanner facade. |
 | `scan(phiMin, phiMax, thetaMin, thetaMax, g)` | `FaultOrientScanner3.scan` | Builds Java sampling objects, rotates input for each strike, applies strike smoothing, scans dips in rotated slices, unrotates results, clips likelihood/dip ranges, and keeps the best strike/dip. | Builds NumPy angle arrays, validates `(n3, n2, n1)` `float32` input, handles constant volumes, then calls `_scan_orientation_bank`. | Different algorithm, interpolation, smoothing, edge handling, angle sampling, and score definition. Current scanner is derivative-bank based. | Python synthetic localization and scan/vote regression tests exist; F3 comparison is report-oriented; no method-level Java parity test. | Yes if a reference-like scanner path is pursued. |
-| Reference-like scan entry point | `FaultOrientScanner3.scan_reference_like` | Intended future facade for the Java-style strike rotation, dip shear, smoothing, unrotation, and best-orientation workflow. | Skeleton only: validates the same angle/image inputs as `scan()`, validates `interpolation_order` and `smoothing_mode`, records scan configuration, and raises `NotImplementedError`. It is not used by default. | No orientation sweep, rotate/shear helpers, smoothing approximation, score computation, or outputs are implemented yet. | Python tests cover method presence, validation, explicit `NotImplementedError`, and unchanged F3 validation defaults. | Yes; this skeleton must not be used for production interpretation until implemented and validated. |
+| Reference-like scan entry point | `FaultOrientScanner3.scan_reference_like` | Intended facade for the Java-style strike rotation, dip shear, smoothing, unrotation, and best-orientation workflow. | Opt-in deterministic orientation sweep: validates the same angle/image inputs as `scan()`, validates `interpolation_order`, `smoothing_sigma`, and `normalize`, smooths along candidate fault-parallel directions with SciPy interpolation, scores ridge/contrast across the candidate normal, and keeps the best strike/dip. It is not used by default. | Python uses direct orientation-dependent sampling rather than the Java `Rotator` and shear/unshear array workflow; interpolation, smoothing, edge handling, and score scale differ. | Python tests cover validation, deterministic output, normalized ranges, constant volumes, no fallback to `scan()`, and synthetic planar response. | Further F3 scanner-only comparison and tuning remain future work. |
 | `scanTheta(...)` / dip sweep equivalent | Current `_scan_orientation_bank` | For each rotated `i2` slice and dip angle, shears by `-1/tan(theta)`, smooths along axis 1 with sigma scaled by `sin(theta)`, unshears, applies a semblance power transform, and keeps the best dip. | Loops over strike and dip samples, projects Gaussian derivative responses onto the fault normal, and keeps the largest local score. | Python does not rotate, shear, smooth along dip-aligned coordinates, or compute the same semblance expression. | Python scan regression tests cover output shape/ranges and synthetic behavior; no `scanTheta` parity fixture. | Yes for reference-like scanner work. |
 | `thin(float[][][][] flpt)` | `FaultOrientScanner3.thin` | Smooths likelihood in selected horizontal directions, then uses strike-binned 2D neighborhood comparisons in the `i2-i3` plane; zeroes strike/dip where likelihood is not retained. | Default `mode="normal"` samples plus/minus one fault-normal step with `interp.sample3`; opt-in `mode="reference"` uses `reference_like_3d_thin_values` for strike-binned suppression. | Default Python behavior is not the Java strike-binned thinning rule. The reference mode is an approximation and keeps current Python shape/dtype conventions. | Python normal and reference-mode thinning tests exist, including helper-level reference-like bins; no Java bit-exact parity test. | Partly represented by `mode="reference"`; more audit may be needed before changing defaults. |
 | `smooth(flstop, sigma, p2, p3, fl, g)` | `filters.smooth3d` / Gaussian derivatives | Builds local tensors from slopes and likelihood mask, then applies `LocalSmoothingFilter` with anisotropic directions. | Generic `smooth3d` wraps SciPy Gaussian filtering; scanner internals use Gaussian derivatives instead of this tensor smoothing method. | No local tensor smoothing, likelihood stop mask, or JTK filter behavior in the scanner. | `smooth3d` has Python regression tests for shape, dtype, constants, and impulse behavior; no tensor-smoothing parity test. | Required only if a future issue needs this Java smoothing behavior. |
@@ -50,28 +50,24 @@ scanner behavior.
 
 ## Reference-like scanner implementation plan
 
-1. API skeleton.
-   Present as `FaultOrientScanner3.scan_reference_like()` without changing
-   `FaultOrientScanner3.scan()` defaults. It validates inputs and stores the
-   intended sampling/configuration state, but raises `NotImplementedError`
-   because the orientation sweep is not implemented. Do not use it for
-   production interpretation until implementation and validation are complete.
-2. Orientation sweep scaffold.
-   Build the strike/dip loop structure and intermediate arrays using small
-   synthetic fixtures. Keep Java-like sampling choices explicit and documented.
-3. Coordinate transform / interpolation approximation.
+1. Orientation sweep scaffold.
+   `FaultOrientScanner3.scan_reference_like()` exists without changing
+   `FaultOrientScanner3.scan()` defaults. It builds the strike/dip loop
+   structure and intermediate arrays using small synthetic fixtures. Java-like
+   sampling choices remain explicit and documented.
+2. Coordinate transform / interpolation approximation.
    Add Python approximations for the Java `Rotator`, `shear`, and `unshear`
    stages using SciPy interpolation adapters. Test coordinate order and boundary
    behavior separately from scanner scoring.
-4. Directional smoothing approximation.
+3. Directional smoothing approximation.
    Approximate `RecursiveExponentialFilter` usage with SciPy or explicit
    separable smoothing. Document sigma mapping and edge handling before using
    F3 metrics.
-5. F3 scanner-only comparison.
+4. F3 scanner-only comparison.
    Compare scanner likelihood, strike, and dip outputs before voting or
    thinning. Treat the report as diagnostic unless a later issue defines
    acceptance thresholds.
-6. Scan-vote-thin validation.
+5. Scan-vote-thin validation.
    Run the integrated scan, voting, and thinning workflow only after scanner
    differences have been isolated. Keep any default behavior changes for a
    separate issue with focused regression coverage.

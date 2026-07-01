@@ -52,17 +52,22 @@ Tests and examples should check shape correctness, finite values, value ranges,
 synthetic localization, and deterministic Python behavior. They should not
 require bitwise equality with Java or Mines JTK outputs.
 
-## Reference-Like Scan Skeleton
+## Reference-Like Scan
 
-`FaultOrientScanner3.scan_reference_like(...)` is an opt-in API skeleton for
-future alignment with the Java rotate/shear/smooth scan workflow. It validates
-angle ranges, finite 3D input volumes, interpolation order, and smoothing mode,
-then raises `NotImplementedError`.
+`FaultOrientScanner3.scan_reference_like(...)` is an opt-in approximate backend
+for alignment experiments with the Java rotate/shear/smooth scan workflow. It
+validates angle ranges, finite 3D input volumes, interpolation order, optional
+smoothing sigma, and normalization mode, then runs a deterministic strike/dip
+orientation sweep.
 
-The skeleton is not used by default. Existing examples and F3 validation
-scripts continue to call `FaultOrientScanner3.scan(...)`, and the skeleton must
-not be used for production interpretation until the orientation sweep is
-implemented and validated.
+For each candidate orientation, it samples in an orientation-dependent coordinate
+system, smooths along candidate fault-parallel directions, evaluates a
+ridge/contrast response across the candidate normal, and keeps the strongest
+orientation. This remains a Pythonic SciPy approximation, not a bit-exact Mines
+JTK port.
+
+The reference-like backend is not used by default. Existing examples and F3
+validation scripts continue to call `FaultOrientScanner3.scan(...)`.
 
 ## Integration
 
