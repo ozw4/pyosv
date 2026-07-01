@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from pyosv.cells import FaultCell
+from pyosv.dp import update_shift_ranges_3d
 from pyosv.geometry import (
     fault_dip_vector_from_strike_and_dip,
     fault_normal_vector_from_strike_and_dip,
@@ -15,6 +16,45 @@ from pyosv.voting3d import (
     _smooth_fault_likelihood_3d,
     _surface_strike_and_dip,
 )
+
+
+def _java_style_round(value: float) -> int:
+    return int(np.floor(float(value) + 0.5))
+
+
+def _axis_aligned_ramp_volume(shape: tuple[int, int, int]) -> np.ndarray:
+    i3, i2, i1 = np.indices(shape, dtype=np.float32)
+    return (0.2 + 0.01 * i1 + 0.02 * i2 + 0.04 * i3).astype(np.float32)
+
+
+def _expected_uvw_costs(
+    voter: OptimalSurfaceVoter,
+    c1: int,
+    c2: int,
+    c3: int,
+    normal: np.ndarray,
+    dip: np.ndarray,
+    strike: np.ndarray,
+    fx: np.ndarray,
+) -> np.ndarray:
+    n3, n2, n1 = fx.shape
+    costs = np.ones((2 * voter.rw + 1, 2 * voter.rv + 1, 2 * voter.ru + 1), dtype=np.float32)
+    for kw in range(costs.shape[0]):
+        iw = kw - voter.rw
+        for kv in range(costs.shape[1]):
+            iv = kv - voter.rv
+            ku_min = voter.lmins[kw, kv] + voter.ru
+            ku_max = voter.lmaxs[kw, kv] + voter.ru
+            for ku in range(ku_min, ku_max + 1):
+                iu = ku - voter.ru
+                x1 = np.float32(c1 + iw * strike[0] + iv * dip[0] + iu * normal[0])
+                x2 = np.float32(c2 + iw * strike[1] + iv * dip[1] + iu * normal[1])
+                x3 = np.float32(c3 + iw * strike[2] + iv * dip[2] + iu * normal[2])
+                j1 = min(max(_java_style_round(float(x1)), 0), n1 - 1)
+                j2 = min(max(_java_style_round(float(x2)), 0), n2 - 1)
+                j3 = min(max(_java_style_round(float(x3)), 0), n3 - 1)
+                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
+    return costs
 
 
 def test_constructor_initializes_range_and_default_configuration() -> None:
@@ -52,6 +92,37 @@ def test_shift_range_arrays_match_surface_radius_shape() -> None:
 
     assert voter.lmins.shape == (2 * voter.rw + 1, 2 * voter.rv + 1)
     assert voter.lmaxs.shape == (2 * voter.rw + 1, 2 * voter.rv + 1)
+
+
+def test_update_shift_ranges_3d_local_uvw_masks_use_rounded_radial_distance() -> None:
+    ru, rv, rw = 4, 4, 4
+
+    lmins, lmaxs = update_shift_ranges_3d(ru, rv, rw)
+
+    assert lmins.shape == (2 * rw + 1, 2 * rv + 1)
+    assert lmaxs.shape == (2 * rw + 1, 2 * rv + 1)
+    np.testing.assert_array_equal(lmaxs, -lmins)
+    for iw in range(-rw, rw + 1):
+        for iv in range(-rv, rv + 1):
+            kw = iw + rw
+            kv = iv + rv
+            radial_distance = float(np.sqrt(iw * iw + iv * iv))
+            if radial_distance <= 2.0:
+                assert lmins[kw, kv] == 0
+                assert lmaxs[kw, kv] == 0
+            else:
+                expected_shift = min(_java_style_round(radial_distance), ru)
+                assert lmins[kw, kv] == -expected_shift
+                assert lmaxs[kw, kv] == expected_shift
+
+    assert lmins[rw, rv + 2] == 0
+    assert lmaxs[rw, rv + 2] == 0
+    assert lmins[rw, rv + 3] == -3
+    assert lmaxs[rw, rv + 3] == 3
+    assert lmins[rw + 2, rv + 2] == -3
+    assert lmaxs[rw + 2, rv + 2] == 3
+    assert lmins[rw + 2, rv + 3] == -4
+    assert lmaxs[rw + 2, rv + 3] == 4
 
 
 @pytest.mark.parametrize(
@@ -440,6 +511,76 @@ def test_samples_in_uvw_box_uses_n3_n2_n1_volume_indexing() -> None:
     assert costs[voter.rw, voter.rv, voter.ru] == pytest.approx(1.0 - fx[2, 3, 4])
     assert costs[0, 0, 4] == pytest.approx(1.0 - fx[0, 1, 6])
     assert costs[4, 4, 0] == pytest.approx(1.0 - fx[4, 5, 2])
+
+
+def test_samples_in_uvw_box_local_axis_convention_maps_w_v_u_to_strike_dip_normal() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=3, rw=3)
+    fx = _axis_aligned_ramp_volume((11, 12, 13))
+    normal = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+    costs = voter.samples_in_uvw_box(
+        c1=6,
+        c2=5,
+        c3=4,
+        normal=normal,
+        dip=dip,
+        strike=strike,
+        fx=fx,
+    )
+
+    expected = _expected_uvw_costs(voter, 6, 5, 4, normal, dip, strike, fx)
+    assert costs.shape == (2 * voter.rw + 1, 2 * voter.rv + 1, 2 * voter.ru + 1)
+    np.testing.assert_array_equal(costs, expected)
+    assert costs[voter.rw + 3, voter.rv, voter.ru + 1] == pytest.approx(
+        1.0 - fx[7, 5, 7],
+    )
+    assert costs[voter.rw, voter.rv + 3, voter.ru - 2] == pytest.approx(
+        1.0 - fx[4, 8, 4],
+    )
+    assert costs[voter.rw + 2, voter.rv + 2, voter.ru + 3] == pytest.approx(
+        1.0 - fx[6, 7, 9],
+    )
+    assert costs[voter.rw, voter.rv, voter.ru + 1] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    ("c1", "c2", "c3"),
+    [
+        (0, 2, 2),
+        (4, 2, 2),
+        (2, 0, 2),
+        (2, 4, 2),
+        (2, 2, 0),
+        (2, 2, 4),
+        (0, 0, 0),
+        (4, 4, 4),
+    ],
+)
+def test_samples_in_uvw_box_local_boundary_clamps_faces_and_preserves_invalid_mask(
+    c1: int,
+    c2: int,
+    c3: int,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=3, rw=3)
+    fx = _axis_aligned_ramp_volume((5, 5, 5))
+    normal = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+    costs = voter.samples_in_uvw_box(c1, c2, c3, normal, dip, strike, fx)
+
+    expected = _expected_uvw_costs(voter, c1, c2, c3, normal, dip, strike, fx)
+    np.testing.assert_array_equal(costs, expected)
+    valid_mask = np.zeros(costs.shape, dtype=np.bool_)
+    for kw in range(costs.shape[0]):
+        for kv in range(costs.shape[1]):
+            ku_min = voter.lmins[kw, kv] + voter.ru
+            ku_max = voter.lmaxs[kw, kv] + voter.ru
+            valid_mask[kw, kv, ku_min : ku_max + 1] = True
+    np.testing.assert_array_equal(costs[~valid_mask], np.float32(1.0))
+    assert (costs[valid_mask] < np.float32(1.0)).all()
 
 
 def test_samples_in_uvw_box_rounds_and_clamps_near_volume_boundary() -> None:
