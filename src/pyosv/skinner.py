@@ -4,16 +4,140 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 import math
 import numbers
 import operator
 
 import numpy as np
 
-from pyosv.cells import FaultCell
+from pyosv.cells import FaultCell, _java_round
 from pyosv.skin import FaultSkin
 
 __all__ = ["ConnectedComponentSkinner", "FaultSkinner", "find_skins"]
+
+
+@dataclass(slots=True, eq=False)
+class _SkinCell:
+    """Mutable internal fault cell for reference-like linking and growth."""
+
+    x1: float
+    x2: float
+    x3: float
+    fl: float
+    fp: float
+    ft: float
+    i1: int = field(init=False)
+    i2: int = field(init=False)
+    i3: int = field(init=False)
+    ca: _SkinCell | None = field(default=None, repr=False)
+    cb: _SkinCell | None = field(default=None, repr=False)
+    cl: _SkinCell | None = field(default=None, repr=False)
+    cr: _SkinCell | None = field(default=None, repr=False)
+    skin_id: int | None = None
+
+    def __post_init__(self) -> None:
+        self.x1 = float(self.x1)
+        self.x2 = float(self.x2)
+        self.x3 = float(self.x3)
+        self.fl = float(self.fl)
+        self.fp = float(self.fp)
+        self.ft = float(self.ft)
+        self.i1 = _java_round(self.x1)
+        self.i2 = _java_round(self.x2)
+        self.i3 = _java_round(self.x3)
+
+    @property
+    def index(self) -> tuple[int, int, int]:
+        return (self.i1, self.i2, self.i3)
+
+    def to_fault_cell(self) -> FaultCell:
+        return FaultCell(self.x1, self.x2, self.x3, self.fl, self.fp, self.ft)
+
+    def fault_normal(self) -> np.ndarray:
+        return self.to_fault_cell().fault_normal()
+
+    def fault_dip_vector(self) -> np.ndarray:
+        return self.to_fault_cell().fault_dip_vector()
+
+    def fault_strike_vector(self) -> np.ndarray:
+        return self.to_fault_cell().fault_strike_vector()
+
+
+class _SkinCellGrid:
+    """Sparse grid keyed by rounded fault-cell indices."""
+
+    def __init__(self) -> None:
+        self._cells: dict[tuple[int, int, int], _SkinCell] = {}
+
+    def set(self, cell: _SkinCell) -> None:
+        self._validate_cell(cell)
+        self._cells[cell.index] = cell
+
+    def get(self, i1: int, i2: int, i3: int) -> _SkinCell | None:
+        return self._cells.get(_index_key(i1, i2, i3))
+
+    def set_cells_in_box(self, cell: _SkinCell, r1: int, r2: int, r3: int) -> None:
+        self._validate_cell(cell)
+        radius1 = _validate_nonnegative_int(r1, "r1")
+        radius2 = _validate_nonnegative_int(r2, "r2")
+        radius3 = _validate_nonnegative_int(r3, "r3")
+
+        for i3 in range(cell.i3 - radius3, cell.i3 + radius3 + 1):
+            for i2 in range(cell.i2 - radius2, cell.i2 + radius2 + 1):
+                for i1 in range(cell.i1 - radius1, cell.i1 + radius1 + 1):
+                    self._cells[(i1, i2, i3)] = cell
+
+    def find_cells_in_box(
+        self,
+        i1: int,
+        i2: int,
+        i3: int,
+        r1: int,
+        r2: int,
+        r3: int,
+    ) -> list[_SkinCell]:
+        center1, center2, center3 = _index_key(i1, i2, i3)
+        radius1 = _validate_nonnegative_int(r1, "r1")
+        radius2 = _validate_nonnegative_int(r2, "r2")
+        radius3 = _validate_nonnegative_int(r3, "r3")
+
+        found: list[_SkinCell] = []
+        seen: set[int] = set()
+        for j3 in range(center3 - radius3, center3 + radius3 + 1):
+            for j2 in range(center2 - radius2, center2 + radius2 + 1):
+                for j1 in range(center1 - radius1, center1 + radius1 + 1):
+                    cell = self._cells.get((j1, j2, j3))
+                    if cell is not None and id(cell) not in seen:
+                        found.append(cell)
+                        seen.add(id(cell))
+
+        found.sort(key=lambda cell: cell.index)
+        return found
+
+    @staticmethod
+    def _validate_cell(cell: _SkinCell) -> None:
+        if not isinstance(cell, _SkinCell):
+            msg = "_SkinCellGrid only stores _SkinCell instances"
+            raise TypeError(msg)
+
+
+def link_above_below(a: _SkinCell, b: _SkinCell) -> None:
+    """Link two internal cells in the above/below direction."""
+
+    _validate_skin_cell(a, "a")
+    _validate_skin_cell(b, "b")
+    a.cb = b
+    b.ca = a
+
+
+def link_left_right(left: _SkinCell, right: _SkinCell) -> None:
+    """Link two internal cells in the left/right direction."""
+
+    _validate_skin_cell(left, "left")
+    _validate_skin_cell(right, "right")
+    left.cr = right
+    right.cl = left
 
 
 class ConnectedComponentSkinner:
@@ -248,6 +372,21 @@ def _validate_nonnegative_finite_float(value: float, name: str) -> float:
     return value_float
 
 
+def _validate_nonnegative_int(value: int, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a nonnegative integer")
+
+    try:
+        value_int = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a nonnegative integer") from exc
+
+    if value_int < 0:
+        raise ValueError(f"{name} must be a nonnegative integer")
+
+    return value_int
+
+
 def _validate_optional_nonnegative_int(value: int | None, name: str) -> int | None:
     if value is None:
         return None
@@ -263,6 +402,18 @@ def _validate_optional_nonnegative_int(value: int | None, name: str) -> int | No
         raise ValueError(f"{name} must be a nonnegative integer or None")
 
     return value_int
+
+
+def _validate_skin_cell(cell: _SkinCell, name: str) -> None:
+    if not isinstance(cell, _SkinCell):
+        raise TypeError(f"{name} must be a _SkinCell")
+
+
+def _index_key(i1: int, i2: int, i3: int) -> tuple[int, int, int]:
+    try:
+        return (operator.index(i1), operator.index(i2), operator.index(i3))
+    except TypeError as exc:
+        raise ValueError("indices must be integers") from exc
 
 
 def _validate_connectivity(connectivity: str) -> str:
