@@ -80,6 +80,26 @@ def test_fault_cell_index_uses_java_style_rounding() -> None:
     assert cell.index == (1, 3, 4)
 
 
+@pytest.mark.parametrize(
+    ("x1", "x2", "x3", "expected"),
+    [
+        (1.5, 2.5, 3.5, (2, 3, 4)),
+        (1.49, 2.50, 3.51, (1, 3, 4)),
+        (-1.5, -2.5, -3.5, (-1, -2, -3)),
+        (-1.51, -2.50, -3.49, (-2, -2, -3)),
+    ],
+)
+def test_fault_cell_index_half_values_match_java_round(
+    x1: float,
+    x2: float,
+    x3: float,
+    expected: tuple[int, int, int],
+) -> None:
+    cell = FaultCell(x1, x2, x3, 0.8, 30.0, 60.0)
+
+    assert cell.index == expected
+
+
 def test_fault_cell_basic_attributes_are_normalized() -> None:
     cell = FaultCell(
         np.float32(1.2),
@@ -123,8 +143,9 @@ def test_fault_cell_vectors_match_geometry_helpers() -> None:
 
 
 @pytest.mark.parametrize("fp", [0.0, 30.0, 90.0, 180.0, 270.0])
-@pytest.mark.parametrize("ft", [30.0, 60.0, 90.0])
+@pytest.mark.parametrize("ft", [30.0, 60.0, 65.0, 80.0, 90.0])
 def test_fault_cell_vectors_are_unit_orthogonal(fp: float, ft: float) -> None:
+    # Vector components are ordered by image axes as (i1, i2, i3).
     cell = FaultCell(1.0, 2.0, 3.0, 0.8, fp, ft)
     normal = cell.fault_normal()
     dip = cell.fault_dip_vector()
@@ -137,6 +158,39 @@ def test_fault_cell_vectors_are_unit_orthogonal(fp: float, ft: float) -> None:
     np.testing.assert_allclose(np.dot(normal, dip), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.dot(normal, strike), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.dot(dip, strike), 0.0, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("fp", "expected_dip", "expected_strike", "expected_normal"),
+    [
+        (0.0, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        (90.0, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]),
+        (180.0, [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, -1.0, 0.0]),
+        (270.0, [1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]),
+    ],
+)
+def test_fault_cell_cardinal_vertical_dip_vectors_match_geometry_convention(
+    fp: float,
+    expected_dip: list[float],
+    expected_strike: list[float],
+    expected_normal: list[float],
+) -> None:
+    # Vector components are ordered by image axes as (i1, i2, i3).
+    cell = FaultCell(1.0, 2.0, 3.0, 0.8, fp, 90.0)
+
+    np.testing.assert_allclose(
+        cell.fault_dip_vector(), np.array(expected_dip, dtype=np.float32), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        cell.fault_strike_vector(),
+        np.array(expected_strike, dtype=np.float32),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        cell.fault_normal(),
+        np.array(expected_normal, dtype=np.float32),
+        atol=1e-6,
+    )
 
 
 def test_fault_cell_repr_contains_only_stored_fields() -> None:
