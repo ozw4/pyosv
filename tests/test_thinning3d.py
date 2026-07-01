@@ -290,3 +290,45 @@ def test_fault_orient_scanner_reference_thin_does_not_reinforce_folded_vertical_
     assert thinned[1, 2, 0] == np.float32(0.0)
     assert thinned_strike[1, 2, 0] == np.float32(0.0)
     assert thinned_dip[1, 2, 0] == np.float32(0.0)
+
+
+@pytest.mark.parametrize(
+    ("strike_value", "voter_neighbor", "scanner_neighbor"),
+    [
+        (60.0, 0.0, 0.0),
+        (90.0, 3.0, 0.0),
+        (120.0, 0.0, 0.0),
+    ],
+)
+def test_reference_thin_wrappers_audit_strict_voter_reinforcement_only(
+    strike_value: float,
+    voter_neighbor: float,
+    scanner_neighbor: float,
+) -> None:
+    # Audits OptimalSurfaceVoter.thin reference semantics separately from scanner thinning.
+    values = np.zeros((5, 5, 1), dtype=np.float32)
+    strike = np.full_like(values, strike_value)
+    dip = np.zeros_like(values)
+    values[2, 2, 0] = 3.0
+
+    voter_thinned = OptimalSurfaceVoter(1, 1, 1).thin(
+        values,
+        strike,
+        dip,
+        mode="reference",
+        reference_sigma=0.0,
+    )
+    scanner_thinned, scanner_strike, scanner_dip = FaultOrientScanner3(1.0, 1.0).thin(
+        values,
+        strike,
+        dip,
+        mode="reference",
+        reference_sigma=0.0,
+    )
+
+    assert voter_thinned[2, 2, 0] == np.float32(3.0)
+    assert scanner_thinned[2, 2, 0] == np.float32(3.0)
+    assert voter_thinned[1, 2, 0] == np.float32(voter_neighbor)
+    assert scanner_thinned[1, 2, 0] == np.float32(scanner_neighbor)
+    assert scanner_strike[1, 2, 0] == np.float32(0.0)
+    assert scanner_dip[1, 2, 0] == np.float32(0.0)

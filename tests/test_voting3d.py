@@ -12,9 +12,11 @@ from pyosv.orient3d import FaultOrientScanner3
 from pyosv.thinning3d import reference_like_3d_thin_values
 from pyosv.voting3d import (
     OptimalSurfaceVoter,
+    _accumulate_surface_votes,
     _normalize_and_power_3d,
     _smooth_fault_likelihood_3d,
     _surface_strike_and_dip,
+    _surface_vote_average,
 )
 
 
@@ -701,6 +703,120 @@ def test_surface_voting_is_deterministic_for_same_seed_and_inputs() -> None:
         np.testing.assert_array_equal(first_array, second_array)
 
 
+def test_surface_vote_average_reference_audit_counts_small_plane_samples() -> None:
+    # Audits OptimalSurfaceVoter.surfaceVoting average fault-attribute sampling.
+    ft = np.zeros((5, 5, 5), dtype=np.float32)
+    expected_samples = np.arange(1, 10, dtype=np.float32).reshape(3, 3)
+    ft[1:4, 1:4, 2] = expected_samples
+
+    fa, valid_count = _surface_vote_average(
+        2,
+        2,
+        2,
+        1,
+        1,
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        np.zeros((3, 3), dtype=np.float32),
+        ft,
+    )
+
+    assert valid_count == 9
+    assert fa == pytest.approx(float(expected_samples.mean()))
+
+
+def test_accumulate_surface_votes_reference_audit_writes_and_orientation_threshold() -> None:
+    # Audits surfaceVoting accumulation and the reference "fa > vm" orientation rule.
+    fe = np.zeros((5, 5, 5), dtype=np.float32)
+    vp = np.full_like(fe, -1.0)
+    vt = np.full_like(fe, -1.0)
+    vm = np.zeros_like(fe)
+    vm[2, 2, 2] = np.float32(0.6)
+    vp[2, 2, 2] = np.float32(99.0)
+    vt[2, 2, 2] = np.float32(88.0)
+
+    _accumulate_surface_votes(
+        2,
+        2,
+        2,
+        1,
+        1,
+        np.float32(0.25),
+        np.float32(12.0),
+        np.float32(34.0),
+        False,
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        np.zeros((3, 3), dtype=np.float32),
+        fe,
+        vp,
+        vt,
+        vm,
+    )
+
+    expected_fe = np.zeros_like(fe)
+    for i3 in range(1, 4):
+        expected_fe[i3, 0, 2] = 0.25
+        expected_fe[i3, 1, 2] = 0.50
+        expected_fe[i3, 2, 2] = 0.75
+        expected_fe[i3, 3, 2] = 0.50
+        expected_fe[i3, 4, 2] = 0.25
+    np.testing.assert_array_equal(fe, expected_fe)
+    assert vp[2, 2, 2] == np.float32(99.0)
+    assert vt[2, 2, 2] == np.float32(88.0)
+    assert vm[2, 2, 2] == np.float32(0.6)
+    updated = expected_fe > 0.0
+    updated[2, 2, 2] = False
+    np.testing.assert_array_equal(
+        vp[updated],
+        np.full(np.count_nonzero(updated), 12.0, dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        vt[updated],
+        np.full(np.count_nonzero(updated), 34.0, dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        vm[updated],
+        np.full(np.count_nonzero(updated), 0.25, dtype=np.float32),
+    )
+
+
+def test_accumulate_surface_votes_reference_audit_reinforcement_is_boundary_safe() -> None:
+    # Audits the neighbor reinforcement path used by surfaceVoting at image faces.
+    fe = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fe)
+    vt = np.zeros_like(fe)
+    vm = np.zeros_like(fe)
+
+    _accumulate_surface_votes(
+        1,
+        1,
+        0,
+        0,
+        0,
+        np.float32(0.5),
+        np.float32(90.0),
+        np.float32(45.0),
+        True,
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        np.zeros((1, 1), dtype=np.float32),
+        fe,
+        vp,
+        vt,
+        vm,
+    )
+
+    expected = np.zeros_like(fe)
+    expected[0, 1, 1] = np.float32(0.5)
+    expected[1, 1, 1] = np.float32(0.5)
+    np.testing.assert_array_equal(fe, expected)
+    np.testing.assert_array_equal(vm, expected)
+
+
 def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     ft = np.zeros((7, 8, 9), dtype=np.float32)
@@ -1175,6 +1291,32 @@ def test_normalize_and_power_3d_simple_ramp_uses_min_max_and_power() -> None:
     expected = np.array([[[0.0, 0.9375, 1.0]]], dtype=np.float32)
     assert scores.dtype == np.float32
     np.testing.assert_allclose(scores, expected, rtol=0.0, atol=1e-7)
+
+
+def test_normalize_and_power_3d_reference_audit_range_and_monotonicity() -> None:
+    volume = np.array([[[-2.0, 0.0, 2.0], [4.0, 6.0, 8.0]]], dtype=np.float32)
+
+    scores = _normalize_and_power_3d(volume, sigma=0.0, power=2)
+
+    assert scores.shape == volume.shape
+    assert scores.dtype == np.float32
+    assert np.isfinite(scores).all()
+    assert scores.min() >= np.float32(0.0)
+    assert scores.max() <= np.float32(1.0)
+    assert np.all(np.diff(scores.ravel()) > 0.0)
+
+
+def test_normalize_and_power_3d_reference_audit_all_constant_input() -> None:
+    # Audits OptimalSurfaceVoter.normalization zero dynamic-range behavior.
+    volume = np.full((2, 2, 3), 4.25, dtype=np.float32)
+
+    with np.errstate(all="raise"):
+        scores = _normalize_and_power_3d(volume, sigma=0.0, power=8)
+
+    assert scores.shape == volume.shape
+    assert scores.dtype == np.float32
+    assert np.isfinite(scores).all()
+    np.testing.assert_array_equal(scores, np.zeros_like(volume))
 
 
 def test_smooth_fault_likelihood_3d_preserves_shape_and_bounds() -> None:
