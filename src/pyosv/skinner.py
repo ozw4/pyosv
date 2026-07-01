@@ -13,15 +13,17 @@ import numpy as np
 from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
 
-__all__ = ["FaultSkinner", "find_skins"]
+__all__ = ["ConnectedComponentSkinner", "FaultSkinner", "find_skins"]
 
 
-class FaultSkinner:
-    """Configuration holder for extracting and grouping fault cells.
+class ConnectedComponentSkinner:
+    """Fallback skinner that groups thresholded voxels by connectivity.
 
     Connectivity modes map to voxel adjacency over rounded ``FaultCell``
     indices: ``"face"`` is 6-connected, ``"edge"`` is 18-connected, and
-    ``"corner"`` is 26-connected.
+    ``"corner"`` is 26-connected. This is an explicit fallback API and does
+    not implement the reference Java ``FaultSkinner`` seed-growth, linking,
+    smoothing, or reskinning algorithm.
     """
 
     def __init__(
@@ -106,6 +108,80 @@ class FaultSkinner:
 
         skins.sort(key=lambda skin: (-len(skin), skin.cells[0].index))
         return skins
+
+
+class FaultSkinner:
+    """Default fault skinner facade.
+
+    The current implementation delegates to ``ConnectedComponentSkinner`` as a
+    fallback. It preserves the existing public behavior while keeping an API
+    boundary for a future reference-like grower based on seed selection,
+    neighbor links, surface smoothing, and reskinning.
+    """
+
+    def __init__(
+        self,
+        min_likelihood: float = 0.0,
+        min_skin_size: int | None = None,
+        connectivity: str = "corner",
+    ) -> None:
+        self._fallback = ConnectedComponentSkinner(
+            min_likelihood=min_likelihood,
+            min_skin_size=min_skin_size,
+            connectivity=connectivity,
+        )
+
+    @property
+    def min_likelihood(self) -> float:
+        return self._fallback.min_likelihood
+
+    @min_likelihood.setter
+    def min_likelihood(self, value: float) -> None:
+        self._fallback.min_likelihood = _validate_nonnegative_finite_float(
+            value,
+            "min_likelihood",
+        )
+
+    @property
+    def min_skin_size(self) -> int | None:
+        return self._fallback.min_skin_size
+
+    @min_skin_size.setter
+    def min_skin_size(self, value: int | None) -> None:
+        self._fallback.min_skin_size = _validate_optional_nonnegative_int(
+            value,
+            "min_skin_size",
+        )
+
+    @property
+    def connectivity(self) -> str:
+        return self._fallback.connectivity
+
+    @connectivity.setter
+    def connectivity(self, value: str) -> None:
+        self._fallback.connectivity = _validate_connectivity(value)
+
+    def cells_from_votes(
+        self,
+        fv: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        min_likelihood: float | None = None,
+    ) -> list[FaultCell]:
+        """Extract fallback cells from thresholded voting outputs."""
+
+        return self._fallback.cells_from_votes(fv, vp, vt, min_likelihood=min_likelihood)
+
+    def find_skins(
+        self,
+        fv: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        min_likelihood: float | None = None,
+    ) -> list[FaultSkin]:
+        """Find skins with the current connected-component fallback."""
+
+        return self._fallback.find_skins(fv, vp, vt, min_likelihood=min_likelihood)
 
 
 def find_skins(

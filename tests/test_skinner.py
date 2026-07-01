@@ -3,7 +3,7 @@ import pytest
 
 from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
-from pyosv.skinner import FaultSkinner, find_skins
+from pyosv.skinner import ConnectedComponentSkinner, FaultSkinner, find_skins
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -13,6 +13,30 @@ def test_constructor_stores_configuration_for_later_grouping() -> None:
     assert skinner.min_likelihood == pytest.approx(0.35)
     assert skinner.min_skin_size == 4
     assert skinner.connectivity == "corner"
+
+
+def test_connected_component_skinner_stores_fallback_configuration() -> None:
+    skinner = ConnectedComponentSkinner(
+        min_likelihood=np.float32(0.35),
+        min_skin_size=np.int32(4),
+        connectivity="face",
+    )
+
+    assert skinner.min_likelihood == pytest.approx(0.35)
+    assert skinner.min_skin_size == 4
+    assert skinner.connectivity == "face"
+
+
+def test_fault_skinner_configuration_remains_mutable() -> None:
+    skinner = FaultSkinner()
+
+    skinner.min_likelihood = np.float32(0.35)
+    skinner.min_skin_size = np.int32(4)
+    skinner.connectivity = "face"
+
+    assert skinner.min_likelihood == pytest.approx(0.35)
+    assert skinner.min_skin_size == 4
+    assert skinner.connectivity == "face"
 
 
 @pytest.mark.parametrize("min_likelihood", [-0.1, np.nan, np.inf, True, "0.5"])
@@ -217,6 +241,27 @@ def test_find_skins_uses_edge_connectivity_for_edge_adjacent_voxels() -> None:
 
     assert [len(skin) for skin in face_skins] == [1, 1]
     assert [len(skin) for skin in edge_skins] == [2]
+
+
+def test_fault_skinner_matches_connected_component_fallback() -> None:
+    fv = np.zeros((1, 3, 4), dtype=np.float32)
+    vp = np.full_like(fv, 20.0)
+    vt = np.full_like(fv, 50.0)
+    fv[0, 0, 0] = 0.7
+    fv[0, 1, 1] = 0.8
+    fv[0, 2, 3] = 0.9
+
+    fallback = ConnectedComponentSkinner(connectivity="edge").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+    )
+    default = FaultSkinner(connectivity="edge").find_skins(fv, vp, vt, min_likelihood=0.5)
+
+    assert [[cell.index for cell in skin] for skin in default] == [
+        [cell.index for cell in skin] for skin in fallback
+    ]
 
 
 def test_find_skins_filters_small_components_and_orders_remaining_skins() -> None:
