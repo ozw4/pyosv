@@ -7,6 +7,8 @@ from pyosv.geometry import (
     fault_normal_vector_from_strike_and_dip,
     fault_strike_vector_from_strike_and_dip,
 )
+from pyosv.orient3d import FaultOrientScanner3
+from pyosv.thinning3d import reference_like_3d_thin_values
 from pyosv.voting3d import (
     OptimalSurfaceVoter,
     _normalize_and_power_3d,
@@ -684,6 +686,35 @@ def test_thin_reference_mode_returns_float32_shape_and_original_values() -> None
     np.testing.assert_array_equal(fv, fv_before)
     np.testing.assert_array_equal(vp, vp_before)
     np.testing.assert_array_equal(vt, vt_before)
+
+
+def test_thin_reference_mode_reinforces_vertical_strike_neighbor() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    fv = np.zeros((7, 7, 1), dtype=np.float32)
+    fv[3, 3, 0] = 10.0
+    vp = np.full_like(fv, 90.0)
+    vt = np.full_like(fv, 45.0)
+    expected, keep = reference_like_3d_thin_values(
+        fv,
+        vp,
+        sigma=1.0,
+        reinforce_vertical=True,
+    )
+
+    fvt = voter.thin(fv, vp, vt, mode="reference", reference_sigma=1.0)
+    scanner_ft, _, _ = scanner.thin(
+        fv,
+        vp,
+        vt,
+        mode="reference",
+        reference_sigma=1.0,
+    )
+
+    assert keep[3, 3, 0]
+    np.testing.assert_allclose(fvt, expected)
+    assert fvt[2, 3, 0] == pytest.approx(float(fvt[3, 3, 0]))
+    assert scanner_ft[2, 3, 0] == np.float32(0.0)
 
 
 def test_thin_rejects_invalid_mode() -> None:

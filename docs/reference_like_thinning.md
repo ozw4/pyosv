@@ -7,7 +7,8 @@
   tests.
 - `reference`: opt-in reference-like behavior. It smooths the comparison volume,
   bins samples by strike angle, and keeps local maxima in the `i2-i3` plane.
-  Kept output samples copy values from the original unsmoothed input.
+  Kept output samples write the smoothed comparison values, matching the Java
+  thinning pattern.
 
 The reference-like mode is diagnostic and opt-in because it is closer to the
 reference Java thinning workflow but is still a Python implementation, not a

@@ -20,7 +20,7 @@ from pyosv.dp import (
 from pyosv.filters import smooth3d
 from pyosv.geometry import range360
 from pyosv.interp import sample3
-from pyosv.thinning3d import reference_like_3d_nms_mask
+from pyosv.thinning3d import reference_like_3d_thin_values
 
 __all__ = ["OptimalSurfaceVoter"]
 
@@ -896,10 +896,12 @@ def _thin_reference_like_3d(
     *,
     reference_sigma: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    keep = reference_like_3d_nms_mask(fv, vp, sigma=reference_sigma)
-    thinned = np.zeros(fv.shape, dtype=np.float32)
-    thinned[keep] = fv[keep]
-    return thinned, keep
+    return reference_like_3d_thin_values(
+        fv,
+        vp,
+        sigma=reference_sigma,
+        reinforce_vertical=True,
+    )
 
 
 def _smooth_fault_likelihood_3d(

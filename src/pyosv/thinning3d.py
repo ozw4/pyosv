@@ -8,7 +8,7 @@ import numbers
 import numpy as np
 from scipy import ndimage
 
-__all__ = ["reference_like_3d_nms_mask"]
+__all__ = ["reference_like_3d_nms_mask", "reference_like_3d_thin_values"]
 
 
 def reference_like_3d_nms_mask(
@@ -33,8 +33,52 @@ def reference_like_3d_nms_mask(
     _validate_bool(strict, "strict")
 
     smoothed = _smooth_i2_i3(values_array, sigma_float)
-    strike180 = np.mod(strike_array, np.float32(180.0))
-    keep = np.zeros(values_array.shape, dtype=np.bool_)
+    return _reference_like_3d_nms_mask_from_smoothed(smoothed, strike_array, strict=strict)
+
+
+def reference_like_3d_thin_values(
+    values: np.ndarray,
+    strike: np.ndarray,
+    *,
+    sigma: float = 1.0,
+    reinforce_vertical: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return reference-like thinned values and their retained-sample mask.
+
+    The local-maximum mask is computed from values smoothed only along the
+    ``i3`` and ``i2`` axes. Retained output samples receive those same smoothed
+    values, matching the reference Java thinning value flow.
+    """
+
+    values_array, strike_array = _validate_matching_finite_arrays3(
+        (values, strike),
+        ("values", "strike"),
+    )
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+    _validate_bool(reinforce_vertical, "reinforce_vertical")
+
+    smoothed = _smooth_i2_i3(values_array, sigma_float)
+    keep = _reference_like_3d_nms_mask_from_smoothed(smoothed, strike_array, strict=True)
+    thinned = np.zeros(values_array.shape, dtype=np.float32)
+    thinned[keep] = smoothed[keep]
+
+    if reinforce_vertical and keep.any():
+        reinforced = keep & (strike_array > np.float32(60.0)) & (strike_array < np.float32(120.0))
+        if reinforced.any():
+            i3, i2, i1 = np.nonzero(reinforced)
+            thinned[np.maximum(i3 - 1, 0), i2, i1] = smoothed[i3, i2, i1]
+
+    return thinned, keep
+
+
+def _reference_like_3d_nms_mask_from_smoothed(
+    smoothed: np.ndarray,
+    strike: np.ndarray,
+    *,
+    strict: bool,
+) -> np.ndarray:
+    strike180 = np.mod(strike, np.float32(180.0))
+    keep = np.zeros(smoothed.shape, dtype=np.bool_)
 
     horizontal = (strike180 < np.float32(22.5)) | (strike180 >= np.float32(157.5))
     positive_diagonal = (strike180 >= np.float32(22.5)) & (strike180 < np.float32(67.5))
@@ -47,7 +91,7 @@ def reference_like_3d_nms_mask(
         smoothed,
         positive_diagonal,
         d3=1,
-        d2=1,
+        d2=-1,
         strict=strict,
     )
     _accumulate_direction_mask(keep, smoothed, vertical, d3=1, d2=0, strict=strict)
@@ -56,7 +100,7 @@ def reference_like_3d_nms_mask(
         smoothed,
         negative_diagonal,
         d3=1,
-        d2=-1,
+        d2=1,
         strict=strict,
     )
     return keep
