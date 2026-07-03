@@ -418,6 +418,31 @@ def test_pick_candidate_us_follows_maximum_likelihood_ridge() -> None:
     np.testing.assert_array_equal(picked, np.array([6, 5, 4], dtype=np.int32))
 
 
+def test_pick_candidate_us_prefers_continuous_ridge_over_isolated_spike() -> None:
+    candidate_slice = np.array(
+        [
+            [0.8, 0.2, 0.1, 0.1],
+            [0.7, 0.2, 0.99, 0.1],
+            [0.8, 0.2, 0.1, 0.1],
+        ],
+        dtype=np.float32,
+    )
+
+    picked = _pick_candidate_us(ub=0, candidate_slice=candidate_slice)
+
+    np.testing.assert_array_equal(picked, np.array([0, 0, 0], dtype=np.int32))
+
+
+def test_pick_candidate_us_ties_deterministically_to_local_center() -> None:
+    candidate_slice = np.ones((4, 5), dtype=np.float32)
+
+    first = _pick_candidate_us(ub=10, candidate_slice=candidate_slice)
+    second = _pick_candidate_us(ub=10, candidate_slice=candidate_slice)
+
+    np.testing.assert_array_equal(first, np.array([12, 12, 12, 12], dtype=np.int32))
+    np.testing.assert_array_equal(second, first)
+
+
 def test_module_level_find_skins_uses_reference_backend_by_default() -> None:
     fv = np.zeros((13, 13, 13), dtype=np.float32)
     vp = np.zeros_like(fv)

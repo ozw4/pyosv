@@ -785,7 +785,7 @@ def _candidate_slice_left_right(
 
 
 def _pick_candidate_us(ub: int, candidate_slice: np.ndarray) -> np.ndarray:
-    """Pick the local u index with maximum likelihood for each slice row."""
+    """Pick a continuous local-u likelihood path through a candidate slice."""
 
     u_start = _validate_nonnegative_int(ub, "ub")
     slice_array = np.asarray(candidate_slice, dtype=np.float32)
@@ -796,7 +796,82 @@ def _pick_candidate_us(ub: int, candidate_slice: np.ndarray) -> np.ndarray:
     if not np.isfinite(slice_array).all():
         raise ValueError("candidate_slice must contain only finite values")
 
-    return (u_start + np.argmax(slice_array, axis=1)).astype(np.int32, copy=False)
+    local_us = _pick_candidate_local_u_path(slice_array)
+    return (u_start + local_us).astype(np.int32, copy=False)
+
+
+def _pick_candidate_local_u_path(
+    candidate_slice: np.ndarray,
+    *,
+    max_jump: int = 2,
+    jump_penalty: float = 0.1,
+) -> np.ndarray:
+    nrow, nu = candidate_slice.shape
+    if nrow == 0:
+        return np.empty(0, dtype=np.int32)
+    if nu == 1:
+        return np.zeros(nrow, dtype=np.int32)
+
+    max_jump_int = min(max_jump, nu - 1)
+    jump_penalty_float = float(jump_penalty)
+    accumulated = np.empty((nrow, nu), dtype=np.float32)
+    predecessor = np.full((nrow, nu), -1, dtype=np.int32)
+    accumulated[0] = candidate_slice[0]
+
+    for irow in range(1, nrow):
+        for iu in range(nu):
+            ib = max(0, iu - max_jump_int)
+            ie = min(nu, iu + max_jump_int + 1)
+            best_score = -math.inf
+            best_previous = ib
+            best_jump = nu
+            for ju in range(ib, ie):
+                jump = abs(iu - ju)
+                score = float(accumulated[irow - 1, ju]) - jump_penalty_float * jump
+                if score > best_score or (
+                    score == best_score
+                    and (
+                        jump < best_jump
+                        or (
+                            jump == best_jump
+                            and _candidate_u_tie_key(ju, nu)
+                            < _candidate_u_tie_key(best_previous, nu)
+                        )
+                    )
+                ):
+                    best_score = score
+                    best_previous = ju
+                    best_jump = jump
+
+            accumulated[irow, iu] = candidate_slice[irow, iu] + best_score
+            predecessor[irow, iu] = best_previous
+
+    path = np.empty(nrow, dtype=np.int32)
+    iu = _best_candidate_u(accumulated[-1], nu)
+    for irow in range(nrow - 1, -1, -1):
+        path[irow] = iu
+        previous = predecessor[irow, iu]
+        if previous >= 0:
+            iu = int(previous)
+
+    return path
+
+
+def _best_candidate_u(scores: np.ndarray, nu: int) -> int:
+    best_u = 0
+    best_score = float(scores[0])
+    for iu in range(1, nu):
+        score = float(scores[iu])
+        if score > best_score or (
+            score == best_score and _candidate_u_tie_key(iu, nu) < _candidate_u_tie_key(best_u, nu)
+        ):
+            best_u = iu
+            best_score = score
+    return best_u
+
+
+def _candidate_u_tie_key(iu: int, nu: int) -> tuple[int, int]:
+    return (abs(2 * iu - (nu - 1)), iu)
 
 
 def _grow_reference_skin(
