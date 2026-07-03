@@ -7,8 +7,9 @@ claim. The current Python implementation keeps repository conventions:
 global arrays are `(n3, n2, n1)`, local voting costs are `(nw, nv, nu)`, and
 values are normalized to `np.float32` where practical.
 
-`pyosv` targets practical agreement for fault interpretation workflows. It
-does not add runtime dependencies on JVM, Jython, Mines JTK, or Gradle. Java
+`pyosv` follows a reference-first policy for fault interpretation workflows,
+using practical agreement metrics to measure remaining differences. It does not
+add runtime dependencies on JVM, Jython, Mines JTK, or Gradle. Java
 `SincInterpolator`, `RecursiveExponentialFilter`, and related JTK filters are
 therefore approximation targets for Python/SciPy code, not dependencies.
 

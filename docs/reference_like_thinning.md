@@ -7,13 +7,15 @@
   tests.
 - `reference`: opt-in reference-like behavior. It smooths the comparison volume,
   bins samples by strike angle, and keeps local maxima in the `i2-i3` plane.
-  Kept output samples write the smoothed comparison values, matching the Java
-  thinning pattern.
+  Kept likelihood samples write the smoothed comparison values, matching the
+  current Python reference-like helper.
 
-The reference-like mode is diagnostic and opt-in because it is closer to the
-reference Java thinning workflow but is still a Python implementation, not a
-bit-exact Mines JTK reproduction. Existing pyosv behavior remains unchanged
-unless `mode="reference"` is selected explicitly.
+The current implementation still defaults to `normal`; that is an implementation
+state for existing tests and workflows, not the reference-first end state for
+3D thinning. The reference-first direction is to validate `reference` mode and
+promote it in a later issue if it is suitable for normal workflows. Until then,
+select `mode="reference"` explicitly for reference-like thinning reports or
+diagnostics.
 
 Use the mode on scanner thinning:
 

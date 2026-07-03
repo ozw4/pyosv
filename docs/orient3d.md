@@ -35,12 +35,13 @@ The returned `pt` and `tt` use the same convention consumed by
 
 The component order above is `(x1, x2, x3)`, not array indexing order.
 
-## Practical Equivalence
+## Reference-First Alignment
 
-The scanner targets practical equivalence for fault interpretation workflows,
-not exact reproduction of `reference_osv/src/osv/FaultOrientScanner3.java`.
-It is not a Mines JTK replacement and does not add a runtime dependency on the
-JVM, Jython, Gradle, or Mines JTK.
+The scanner follows the repository reference-first policy for fault
+interpretation workflows, but it is not an exact reproduction of
+`reference_osv/src/osv/FaultOrientScanner3.java`. It is not a Mines JTK
+replacement and does not add a runtime dependency on the JVM, Jython, Gradle,
+or Mines JTK.
 
 The implementation uses NumPy and SciPy derivative and smoothing operations as
 an intentional approximation of the Java/JTK workflow. Outputs may differ from
@@ -105,19 +106,21 @@ fvt = voter.thin(fv, vp, vt)
 `fv` is a normalized vote volume, and `vp`/`vt` store the strike and dip angles
 associated with the strongest local vote at each sample.
 
-`FaultOrientScanner3.thin(ft, pt, tt, mode="normal")` keeps the default
-fault-normal local maxima used by existing workflows. The opt-in
-`mode="reference"` path instead applies strike-binned non-maximum suppression in
-the `i2-i3` plane using `pt` as the strike-angle volume:
+`FaultOrientScanner3.thin(ft, pt, tt, mode="normal")` is the current default
+and keeps the fault-normal local maxima used by existing workflows. The opt-in
+`mode="reference"` path instead applies reference-like strike-binned
+non-maximum suppression in the `i2-i3` plane using `pt` as the strike-angle
+volume:
 
 ```python
 fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="reference", reference_sigma=1.0)
 ```
 
-Both modes return `float32` arrays with the original values retained at kept
-samples and zeros elsewhere. `reference_sigma` controls the helper smoothing
-used only for the reference-like comparison; output values are copied from the
-unsmoothed inputs.
+Both modes return `float32` arrays with zeros outside retained samples. In
+`normal` mode, kept likelihood samples retain the original `ft` values. In
+`reference` mode, kept likelihood samples use the smoothed comparison values;
+`pt` and `tt` are copied at retained samples. `reference_sigma` controls that
+reference-like smoothing.
 
 ## Limitations
 

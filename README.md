@@ -1,6 +1,6 @@
 # pyosv
 
-`pyosv` is a Python package scaffold for reimplementing practical OSV (Optimal Surface Voting / Optimal Path Voting) workflows.
+`pyosv` is a Python package scaffold for reimplementing reference-first OSV (Optimal Surface Voting / Optimal Path Voting) workflows.
 
 The project uses the local `reference_osv/` directory as a read-only reference implementation. That directory is expected to be a bind mount and is not part of this repository.
 
@@ -9,9 +9,9 @@ The project uses the local `reference_osv/` directory as a read-only reference i
 This repository has the package scaffold plus DAT I/O, reference dataset
 metadata, the implemented 2D orientation scanner and optimal-path voting
 workflow, an approximate 3D orientation scanner, and a synthetic-test-covered
-3D voting/thinning MVP. Reference-like skinning is the default for thinned 3D
-vote volumes, with connected-component grouping available as an explicit
-fallback.
+3D voting MVP with current 3D thinning helpers. Reference-like skinning is the
+default for thinned 3D vote volumes, with connected-component grouping
+available only as an explicit fallback or diagnostic path.
 
 ## DAT I/O
 
@@ -108,9 +108,10 @@ Public F3 3D reference-data validation is documented in
 crop validation, and the manual full-volume pipeline.
 
 Reference-like 3D thinning is documented in
-`docs/reference_like_thinning.md`. It explains the default `normal` thinning
-mode, the opt-in `reference` mode, and the F3 crop, multi-crop, and ablation
-validation workflow.
+`docs/reference_like_thinning.md`. The current implementation still defaults
+to `mode="normal"` for scanner and voter thinning; use `mode="reference"`
+explicitly for reference-like strike-binned thinning until that path is
+promoted in a later issue.
 
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.
@@ -125,6 +126,12 @@ self-contained example:
 ```bash
 python examples/run_3d_synthetic_skinning.py
 ```
+
+Normal skinning workflows should use `FaultSkinner()` or module-level
+`pyosv.skinner.find_skins(...)`, both of which use the reference-like backend.
+Use `FaultSkinner(method="connected_component")` or
+`pyosv.skinner.find_connected_component_skins(...)` only for fallback or
+diagnostic connected-component grouping.
 
 The reference example scripts read `ft.dat` and `pt.dat` from `reference_osv/`
 or `PYOSV_REFERENCE_OSV`, then write generated files such as `fv_py.dat` and

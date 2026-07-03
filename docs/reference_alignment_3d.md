@@ -4,10 +4,11 @@ This document is the entry point for aligning the 3D scanner and
 optimal-surface voter with the read-only Java reference implementation. It
 organizes the audit work before changing scanner or voter logic.
 
-`pyosv` targets practical agreement for fault interpretation workflows, not
-bit-exact reproduction of Java, Jython, Mines JTK, or Gradle behavior. Alignment
-work should explain observed differences, isolate their source, and add focused
-regression coverage before implementation changes are made.
+`pyosv` follows a reference-first policy for fault interpretation workflows
+while avoiding bit-exact reproduction requirements for Java, Jython, Mines JTK,
+or Gradle behavior. Alignment work should explain observed differences, isolate
+their source, and add focused regression coverage before implementation changes
+are made.
 
 ## Current F3 Status
 

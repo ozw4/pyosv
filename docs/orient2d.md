@@ -3,12 +3,13 @@
 `pyosv.orient2d.FaultOrientScanner2` is the Python 2D orientation scanner used
 to produce fault-likelihood and dip-angle images for `OptimalPathVoter`.
 
-## Practical Equivalence
+## Reference-First Alignment
 
-The scanner targets practical equivalence for fault interpretation workflows,
-not exact reproduction of `reference_osv/src/osv/FaultOrientScanner2.java`.
-Synthetic tests check deterministic localization and orientation sanity, but
-they do not require bitwise equality with Java, Jython, or Mines JTK output.
+The scanner follows the repository reference-first policy for fault
+interpretation workflows, but it is not an exact reproduction of
+`reference_osv/src/osv/FaultOrientScanner2.java`. Synthetic tests check
+deterministic localization and orientation sanity, but they do not require
+bitwise equality with Java, Jython, or Mines JTK output.
 
 The implementation uses NumPy and SciPy image derivatives. This is an
 intentional approximation of the Java/JTK implementation and can differ in

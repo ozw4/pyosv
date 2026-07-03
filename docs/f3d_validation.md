@@ -100,11 +100,11 @@ The 3D scanner and voter thinning steps support two modes:
 - `reference`: opt-in reference-like behavior. It smooths the comparison volume,
   bins samples by strike angle, and compares local maxima in the `i2-i3` plane.
 
-Use `reference` mode only when running diagnostics against reference-style
-outputs. It is closer to the Java thinning workflow, but it is still Pythonic
-and not bit-exact Mines JTK. Existing pyosv behavior and tests remain unchanged
-unless the mode is selected explicitly. See `docs/reference_like_thinning.md`
-for the API-level details.
+Use `reference` mode explicitly when running reference-style thinning reports.
+It is closer to the Java thinning workflow, but it is still Pythonic and not
+bit-exact Mines JTK. Existing pyosv behavior and tests remain unchanged until a
+later issue changes the default. See `docs/reference_like_thinning.md` for the
+API-level details.
 
 Run one crop with reference-like scanner and voter thinning:
 

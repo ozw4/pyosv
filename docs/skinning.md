@@ -17,9 +17,10 @@ cell order, supports iteration and `len()`, and exposes helper arrays:
 `FaultSkinner(method="reference")` is the default and should be used for normal
 fault-interpretation workflows. The module-level
 `pyosv.skinner.find_skins(fv, vp, vt, min_likelihood=None)` function is a
-convenience wrapper around the same reference-like backend. Use
-`pyosv.skinner.find_connected_component_skins(...)` when the legacy
-connected-component fallback is intended.
+convenience wrapper around the same reference-like backend. It does not use
+connected-component grouping unless that fallback is requested explicitly. Use
+`pyosv.skinner.find_connected_component_skins(...)` only when the legacy
+connected-component fallback or a diagnostic comparison is intended.
 
 `ConnectedComponentSkinner.cells_from_votes` extracts one `FaultCell` for
 positive `fv` samples where `fv >= min_likelihood`. Zero-valued background
@@ -52,8 +53,8 @@ repository shape conventions and explicit validation.
 seeds by descending likelihood, skips seeds already occupied by an accepted
 skin, grows each candidate with `find_skin`-style local geometry, filters by
 `min_skin_size`, and marks accepted skin cells as occupied before continuing.
-When `ep`, `ft`, `pt`, and `tt` are not supplied, the compatibility mapping is
-`ep=fv`, `ft=fv`, `pt=vp`, and `tt=vt`.
+When `ep`, `ft`, `pt`, and `tt` are not supplied, the convenience argument
+mapping is `ep=fv`, `ft=fv`, `pt=vp`, and `tt=vt`.
 
 This is the multi-skin driver corresponding to the reference sequence of
 `findSeeds(...)`, repeated `findSkin(...)` growth, accepted-cell occupancy, and
@@ -99,15 +100,17 @@ the repository equivalence policy, not as exact Java equality checks.
 ## Minimal Usage
 
 ```python
-from pyosv.skinner import FaultSkinner
+from pyosv.skinner import FaultSkinner, find_connected_component_skins
 from pyosv.voting3d import OptimalSurfaceVoter
 
 voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
 fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
 fvt = voter.thin(fv, vp, vt)
 
-skinner = FaultSkinner(method="reference", min_likelihood=0.7, min_skin_size=20)
+skinner = FaultSkinner(min_likelihood=0.7, min_skin_size=20)
 skins = skinner.find_skins(fvt, vp, vt, ep=fvt, ft=fvt, pt=vp, tt=vt)
+
+fallback_skins = find_connected_component_skins(fvt, vp, vt, min_likelihood=0.7)
 ```
 
 The self-contained example can be run without external data:
