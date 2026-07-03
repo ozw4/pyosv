@@ -8,11 +8,14 @@ from pyosv.skinner import (
     FaultSkinner,
     _candidate_slice_above_below,
     _candidate_slice_left_right,
+    _find_reference_skins,
     _find_reference_seeds,
     _local_index_to_world,
+    _mark_occupied_skin,
     _pick_candidate_us,
     _reskin_reference,
     _sample_volume_nearest_java_round,
+    _SkinCellGrid,
     _update_transform_map,
     find_connected_component_skins,
     find_skins,
@@ -642,6 +645,70 @@ def test_reference_find_skins_reskin_false_preserves_grow_indices() -> None:
     assert set(map(tuple, skins[0].indices())) == {
         (i1, 6, i3) for i1 in range(3, 10) for i3 in range(3, 10)
     }
+
+
+def test_mark_occupied_skin_registers_accepted_cells_with_box_radius() -> None:
+    occupied = _SkinCellGrid()
+    skin = FaultSkin.from_cells([FaultCell(10.0, 10.0, 10.0, 0.9, 0.0, 90.0)])
+
+    _mark_occupied_skin(occupied, skin, radius=5)
+
+    assert occupied.find_cells_in_box(10, 15, 10, 0, 0, 0)
+    assert occupied.find_cells_in_box(10, 16, 10, 0, 0, 0) == []
+
+
+def test_reference_find_skins_box_marks_accepted_skin_to_skip_nearby_seed() -> None:
+    fv = np.zeros((21, 21, 21), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[10, 10, 10] = 0.9
+    fv[10, 15, 10] = 0.8
+
+    exact_occupancy_skins = _find_reference_skins(
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        fm=0.5,
+        min_skin_size=1,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+        accepted_occupancy_radius=0,
+    )
+    box_occupancy_skins = _find_reference_skins(
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        fm=0.5,
+        min_skin_size=1,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+    )
+
+    assert [[cell.index for cell in skin] for skin in exact_occupancy_skins] == [
+        [(10, 10, 10)],
+        [(10, 15, 10)],
+    ]
+    assert [[cell.index for cell in skin] for skin in box_occupancy_skins] == [[(10, 10, 10)]]
 
 
 def test_connected_component_find_skins_keeps_legacy_voting_plane_component() -> None:

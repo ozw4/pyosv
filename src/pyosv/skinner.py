@@ -519,9 +519,14 @@ def _find_reference_skins(
     du: float,
     max_delta_strike: float,
     reskin: bool,
+    accepted_occupancy_radius: int = 5,
 ) -> list[FaultSkin]:
     should_reskin = _validate_bool(reskin, "reskin")
     threshold = _validate_nonnegative_finite_float(fm, "fm")
+    occupancy_radius = _validate_nonnegative_int(
+        accepted_occupancy_radius,
+        "accepted_occupancy_radius",
+    )
     fv_array, vp_array, vt_array, ep_array, ft_array, pt_array, tt_array = (
         _validate_matching_finite_arrays3_many(
             (fv, vp, vt, ep, ft, pt, tt),
@@ -563,14 +568,20 @@ def _find_reference_skins(
             continue
 
         skins.append(skin)
-        _mark_occupied_skin(occupied, skin)
+        _mark_occupied_skin(occupied, skin, radius=occupancy_radius)
 
     return skins
 
 
-def _mark_occupied_skin(occupied: _SkinCellGrid, skin: FaultSkin) -> None:
+def _mark_occupied_skin(occupied: _SkinCellGrid, skin: FaultSkin, radius: int = 5) -> None:
+    radius_int = _validate_nonnegative_int(radius, "accepted_occupancy_radius")
     for cell in skin:
-        occupied.set(_SkinCell(cell.x1, cell.x2, cell.x3, cell.fl, cell.fp, cell.ft))
+        occupied.set_cells_in_box(
+            _SkinCell(cell.x1, cell.x2, cell.x3, cell.fl, cell.fp, cell.ft),
+            radius_int,
+            radius_int,
+            radius_int,
+        )
 
 
 def _find_reference_seeds(
