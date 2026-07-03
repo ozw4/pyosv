@@ -14,6 +14,7 @@ from pyosv.skinner import (
     _reskin_reference,
     _sample_volume_nearest_java_round,
     _update_transform_map,
+    find_connected_component_skins,
     find_skins,
 )
 from pyosv.voting3d import OptimalSurfaceVoter
@@ -414,7 +415,41 @@ def test_pick_candidate_us_follows_maximum_likelihood_ridge() -> None:
     np.testing.assert_array_equal(picked, np.array([6, 5, 4], dtype=np.int32))
 
 
-def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
+def test_module_level_find_skins_uses_reference_backend_by_default() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:10, 6, 3:10] = 0.9
+
+    module_skins = find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=10,
+        rv=8,
+        rw=8,
+        max_steps=10,
+        reskin=False,
+    )
+    class_skins = FaultSkinner(method="reference").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=10,
+        rv=8,
+        rw=8,
+        max_steps=10,
+        reskin=False,
+    )
+
+    assert [[cell.index for cell in skin] for skin in module_skins] == [
+        [cell.index for cell in skin] for skin in class_skins
+    ]
+
+
+def test_find_connected_component_skins_groups_only_sparse_positive_samples() -> None:
     fv = np.zeros((2, 3, 4), dtype=np.float32)
     vp = np.full_like(fv, 25.0)
     vt = np.full_like(fv, 65.0)
@@ -422,7 +457,7 @@ def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
     fv[0, 0, 1] = 0.3
     fv[1, 2, 3] = 0.4
 
-    skins = find_skins(fv, vp, vt)
+    skins = find_connected_component_skins(fv, vp, vt)
 
     assert [len(skin) for skin in skins] == [2, 1]
     assert [[cell.index for cell in skin] for skin in skins] == [
@@ -431,14 +466,14 @@ def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
     ]
 
 
-def test_find_skins_returns_separated_planar_patches_as_two_skins() -> None:
+def test_find_connected_component_skins_returns_separated_planar_patches_as_two_skins() -> None:
     fv = np.zeros((3, 5, 6), dtype=np.float32)
     vp = np.full_like(fv, 30.0)
     vt = np.full_like(fv, 60.0)
     fv[0, 0:2, 0:2] = 0.8
     fv[2, 3:5, 4:6] = 0.9
 
-    skins = find_skins(fv, vp, vt, min_likelihood=0.5)
+    skins = find_connected_component_skins(fv, vp, vt, min_likelihood=0.5)
 
     assert [len(skin) for skin in skins] == [4, 4]
     assert [skin.cells[0].index for skin in skins] == [(0, 0, 0), (4, 3, 2)]

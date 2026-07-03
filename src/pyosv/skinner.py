@@ -17,7 +17,12 @@ from pyosv.filters import smooth2d
 from pyosv.geometry import strike_and_dip_from_local_surface_derivatives
 from pyosv.skin import FaultSkin
 
-__all__ = ["ConnectedComponentSkinner", "FaultSkinner", "find_skins"]
+__all__ = [
+    "ConnectedComponentSkinner",
+    "FaultSkinner",
+    "find_connected_component_skins",
+    "find_skins",
+]
 
 
 @dataclass(slots=True, eq=False)
@@ -431,10 +436,63 @@ def find_skins(
     vp: np.ndarray,
     vt: np.ndarray,
     min_likelihood: float | None = None,
+    *,
+    ep: np.ndarray | None = None,
+    ft: np.ndarray | None = None,
+    pt: np.ndarray | None = None,
+    tt: np.ndarray | None = None,
+    d: int = 1,
+    ru: int = 150,
+    rv: int | None = None,
+    rw: int | None = None,
+    max_steps: int = 10,
+    du: float = 5.0,
+    max_delta_strike: float = 30.0,
+    reskin: bool = True,
 ) -> list[FaultSkin]:
-    """Group thresholded 3D voting outputs with the compatibility fallback."""
+    """Find reference-like skins from 3D voting outputs.
 
-    return FaultSkinner(method="connected_component").find_skins(
+    This module-level convenience API uses the same reference-like backend as
+    ``FaultSkinner(method="reference")``. Use
+    ``find_connected_component_skins`` for the legacy connected-component
+    fallback.
+    """
+
+    return FaultSkinner().find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=min_likelihood,
+        ep=ep,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+        d=d,
+        ru=ru,
+        rv=rv,
+        rw=rw,
+        max_steps=max_steps,
+        du=du,
+        max_delta_strike=max_delta_strike,
+        reskin=reskin,
+    )
+
+
+def find_connected_component_skins(
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    min_likelihood: float | None = None,
+    *,
+    min_skin_size: int | None = None,
+    connectivity: str = "corner",
+) -> list[FaultSkin]:
+    """Group thresholded 3D voting outputs with the explicit fallback."""
+
+    return ConnectedComponentSkinner(
+        min_skin_size=min_skin_size,
+        connectivity=connectivity,
+    ).find_skins(
         fv,
         vp,
         vt,

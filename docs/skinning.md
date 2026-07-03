@@ -17,8 +17,9 @@ cell order, supports iteration and `len()`, and exposes helper arrays:
 `FaultSkinner(method="reference")` is the default and should be used for normal
 fault-interpretation workflows. The module-level
 `pyosv.skinner.find_skins(fv, vp, vt, min_likelihood=None)` function is a
-compatibility wrapper around the connected-component fallback and is not the
-reference-first API.
+convenience wrapper around the same reference-like backend. Use
+`pyosv.skinner.find_connected_component_skins(...)` when the legacy
+connected-component fallback is intended.
 
 `ConnectedComponentSkinner.cells_from_votes` extracts one `FaultCell` for
 positive `fv` samples where `fv >= min_likelihood`. Zero-valued background
