@@ -8,12 +8,16 @@ from pyosv.skinner import (
     FaultSkinner,
     _candidate_slice_above_below,
     _candidate_slice_left_right,
+    _find_reference_skins,
     _find_reference_seeds,
     _local_index_to_world,
+    _mark_occupied_skin,
     _pick_candidate_us,
     _reskin_reference,
     _sample_volume_nearest_java_round,
+    _SkinCellGrid,
     _update_transform_map,
+    find_connected_component_skins,
     find_skins,
 )
 from pyosv.voting3d import OptimalSurfaceVoter
@@ -414,7 +418,66 @@ def test_pick_candidate_us_follows_maximum_likelihood_ridge() -> None:
     np.testing.assert_array_equal(picked, np.array([6, 5, 4], dtype=np.int32))
 
 
-def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
+def test_pick_candidate_us_prefers_continuous_ridge_over_isolated_spike() -> None:
+    candidate_slice = np.array(
+        [
+            [0.8, 0.2, 0.1, 0.1],
+            [0.7, 0.2, 0.99, 0.1],
+            [0.8, 0.2, 0.1, 0.1],
+        ],
+        dtype=np.float32,
+    )
+
+    picked = _pick_candidate_us(ub=0, candidate_slice=candidate_slice)
+
+    np.testing.assert_array_equal(picked, np.array([0, 0, 0], dtype=np.int32))
+
+
+def test_pick_candidate_us_ties_deterministically_to_local_center() -> None:
+    candidate_slice = np.ones((4, 5), dtype=np.float32)
+
+    first = _pick_candidate_us(ub=10, candidate_slice=candidate_slice)
+    second = _pick_candidate_us(ub=10, candidate_slice=candidate_slice)
+
+    np.testing.assert_array_equal(first, np.array([12, 12, 12, 12], dtype=np.int32))
+    np.testing.assert_array_equal(second, first)
+
+
+def test_module_level_find_skins_uses_reference_backend_by_default() -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:10, 6, 3:10] = 0.9
+
+    module_skins = find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=10,
+        rv=8,
+        rw=8,
+        max_steps=10,
+        reskin=False,
+    )
+    class_skins = FaultSkinner(method="reference").find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=10,
+        rv=8,
+        rw=8,
+        max_steps=10,
+        reskin=False,
+    )
+
+    assert [[cell.index for cell in skin] for skin in module_skins] == [
+        [cell.index for cell in skin] for skin in class_skins
+    ]
+
+
+def test_find_connected_component_skins_groups_only_sparse_positive_samples() -> None:
     fv = np.zeros((2, 3, 4), dtype=np.float32)
     vp = np.full_like(fv, 25.0)
     vt = np.full_like(fv, 65.0)
@@ -422,7 +485,7 @@ def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
     fv[0, 0, 1] = 0.3
     fv[1, 2, 3] = 0.4
 
-    skins = find_skins(fv, vp, vt)
+    skins = find_connected_component_skins(fv, vp, vt)
 
     assert [len(skin) for skin in skins] == [2, 1]
     assert [[cell.index for cell in skin] for skin in skins] == [
@@ -431,14 +494,14 @@ def test_find_skins_default_groups_only_sparse_positive_samples() -> None:
     ]
 
 
-def test_find_skins_returns_separated_planar_patches_as_two_skins() -> None:
+def test_find_connected_component_skins_returns_separated_planar_patches_as_two_skins() -> None:
     fv = np.zeros((3, 5, 6), dtype=np.float32)
     vp = np.full_like(fv, 30.0)
     vt = np.full_like(fv, 60.0)
     fv[0, 0:2, 0:2] = 0.8
     fv[2, 3:5, 4:6] = 0.9
 
-    skins = find_skins(fv, vp, vt, min_likelihood=0.5)
+    skins = find_connected_component_skins(fv, vp, vt, min_likelihood=0.5)
 
     assert [len(skin) for skin in skins] == [4, 4]
     assert [skin.cells[0].index for skin in skins] == [(0, 0, 0), (4, 3, 2)]
@@ -607,6 +670,70 @@ def test_reference_find_skins_reskin_false_preserves_grow_indices() -> None:
     assert set(map(tuple, skins[0].indices())) == {
         (i1, 6, i3) for i1 in range(3, 10) for i3 in range(3, 10)
     }
+
+
+def test_mark_occupied_skin_registers_accepted_cells_with_box_radius() -> None:
+    occupied = _SkinCellGrid()
+    skin = FaultSkin.from_cells([FaultCell(10.0, 10.0, 10.0, 0.9, 0.0, 90.0)])
+
+    _mark_occupied_skin(occupied, skin, radius=5)
+
+    assert occupied.find_cells_in_box(10, 15, 10, 0, 0, 0)
+    assert occupied.find_cells_in_box(10, 16, 10, 0, 0, 0) == []
+
+
+def test_reference_find_skins_box_marks_accepted_skin_to_skip_nearby_seed() -> None:
+    fv = np.zeros((21, 21, 21), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[10, 10, 10] = 0.9
+    fv[10, 15, 10] = 0.8
+
+    exact_occupancy_skins = _find_reference_skins(
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        fm=0.5,
+        min_skin_size=1,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+        accepted_occupancy_radius=0,
+    )
+    box_occupancy_skins = _find_reference_skins(
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        fm=0.5,
+        min_skin_size=1,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+    )
+
+    assert [[cell.index for cell in skin] for skin in exact_occupancy_skins] == [
+        [(10, 10, 10)],
+        [(10, 15, 10)],
+    ]
+    assert [[cell.index for cell in skin] for skin in box_occupancy_skins] == [[(10, 10, 10)]]
 
 
 def test_connected_component_find_skins_keeps_legacy_voting_plane_component() -> None:

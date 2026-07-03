@@ -47,11 +47,11 @@ the inputs. `fv` is a normalized `float32` vote volume in `[0, 1]`; `vp` and
 `vt` store the strike and dip angles associated with the strongest local vote at
 each sample.
 
-`OptimalSurfaceVoter.thin` keeps practical local maxima from `fv` along the
-fault-normal field derived from `vp` and `vt`. It returns a thinned `float32`
-vote volume with the same shape. The thinning interpolation and smoothing use
-SciPy adapters, so this is a practical approximation of the reference workflow
-rather than a bit-exact Mines JTK implementation.
+`OptimalSurfaceVoter.thin` keeps local maxima from `fv` along the fault-normal
+field derived from `vp` and `vt`. It returns a thinned `float32` vote volume
+with the same shape. The current default uses SciPy interpolation along fault
+normals; the opt-in reference-like mode uses SciPy smoothing before
+strike-binned comparison. Neither mode is a bit-exact Mines JTK implementation.
 
 The default `voter.thin(fv, vp, vt, mode="normal")` preserves that fault-normal
 path. For F3 diagnostics and other reference-style comparisons, use the opt-in
@@ -62,9 +62,9 @@ fvt = voter.thin(fv, vp, vt, mode="reference", reference_sigma=1.0)
 ```
 
 Reference-like thinning uses `fv` for values and `vp` for strike-angle bins,
-compares local maxima in the `i2-i3` plane, and copies original unsmoothed `fv`
+compares local maxima in the `i2-i3` plane, and writes the smoothed comparison
 values to retained samples. `reference_sigma` controls smoothing inside the
-comparison helper only.
+comparison helper.
 
 ## MVP Limitations
 

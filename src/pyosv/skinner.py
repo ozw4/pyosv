@@ -17,7 +17,12 @@ from pyosv.filters import smooth2d
 from pyosv.geometry import strike_and_dip_from_local_surface_derivatives
 from pyosv.skin import FaultSkin
 
-__all__ = ["ConnectedComponentSkinner", "FaultSkinner", "find_skins"]
+__all__ = [
+    "ConnectedComponentSkinner",
+    "FaultSkinner",
+    "find_connected_component_skins",
+    "find_skins",
+]
 
 
 @dataclass(slots=True, eq=False)
@@ -431,10 +436,63 @@ def find_skins(
     vp: np.ndarray,
     vt: np.ndarray,
     min_likelihood: float | None = None,
+    *,
+    ep: np.ndarray | None = None,
+    ft: np.ndarray | None = None,
+    pt: np.ndarray | None = None,
+    tt: np.ndarray | None = None,
+    d: int = 1,
+    ru: int = 150,
+    rv: int | None = None,
+    rw: int | None = None,
+    max_steps: int = 10,
+    du: float = 5.0,
+    max_delta_strike: float = 30.0,
+    reskin: bool = True,
 ) -> list[FaultSkin]:
-    """Group thresholded 3D voting outputs with the compatibility fallback."""
+    """Find reference-like skins from 3D voting outputs.
 
-    return FaultSkinner(method="connected_component").find_skins(
+    This module-level convenience API uses the same reference-like backend as
+    ``FaultSkinner(method="reference")``. Use
+    ``find_connected_component_skins`` for the legacy connected-component
+    fallback.
+    """
+
+    return FaultSkinner().find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=min_likelihood,
+        ep=ep,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+        d=d,
+        ru=ru,
+        rv=rv,
+        rw=rw,
+        max_steps=max_steps,
+        du=du,
+        max_delta_strike=max_delta_strike,
+        reskin=reskin,
+    )
+
+
+def find_connected_component_skins(
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    min_likelihood: float | None = None,
+    *,
+    min_skin_size: int | None = None,
+    connectivity: str = "corner",
+) -> list[FaultSkin]:
+    """Group thresholded 3D voting outputs with the explicit fallback."""
+
+    return ConnectedComponentSkinner(
+        min_skin_size=min_skin_size,
+        connectivity=connectivity,
+    ).find_skins(
         fv,
         vp,
         vt,
@@ -461,9 +519,14 @@ def _find_reference_skins(
     du: float,
     max_delta_strike: float,
     reskin: bool,
+    accepted_occupancy_radius: int = 5,
 ) -> list[FaultSkin]:
     should_reskin = _validate_bool(reskin, "reskin")
     threshold = _validate_nonnegative_finite_float(fm, "fm")
+    occupancy_radius = _validate_nonnegative_int(
+        accepted_occupancy_radius,
+        "accepted_occupancy_radius",
+    )
     fv_array, vp_array, vt_array, ep_array, ft_array, pt_array, tt_array = (
         _validate_matching_finite_arrays3_many(
             (fv, vp, vt, ep, ft, pt, tt),
@@ -505,14 +568,20 @@ def _find_reference_skins(
             continue
 
         skins.append(skin)
-        _mark_occupied_skin(occupied, skin)
+        _mark_occupied_skin(occupied, skin, radius=occupancy_radius)
 
     return skins
 
 
-def _mark_occupied_skin(occupied: _SkinCellGrid, skin: FaultSkin) -> None:
+def _mark_occupied_skin(occupied: _SkinCellGrid, skin: FaultSkin, radius: int = 5) -> None:
+    radius_int = _validate_nonnegative_int(radius, "accepted_occupancy_radius")
     for cell in skin:
-        occupied.set(_SkinCell(cell.x1, cell.x2, cell.x3, cell.fl, cell.fp, cell.ft))
+        occupied.set_cells_in_box(
+            _SkinCell(cell.x1, cell.x2, cell.x3, cell.fl, cell.fp, cell.ft),
+            radius_int,
+            radius_int,
+            radius_int,
+        )
 
 
 def _find_reference_seeds(
@@ -716,7 +785,7 @@ def _candidate_slice_left_right(
 
 
 def _pick_candidate_us(ub: int, candidate_slice: np.ndarray) -> np.ndarray:
-    """Pick the local u index with maximum likelihood for each slice row."""
+    """Pick a continuous local-u likelihood path through a candidate slice."""
 
     u_start = _validate_nonnegative_int(ub, "ub")
     slice_array = np.asarray(candidate_slice, dtype=np.float32)
@@ -727,7 +796,82 @@ def _pick_candidate_us(ub: int, candidate_slice: np.ndarray) -> np.ndarray:
     if not np.isfinite(slice_array).all():
         raise ValueError("candidate_slice must contain only finite values")
 
-    return (u_start + np.argmax(slice_array, axis=1)).astype(np.int32, copy=False)
+    local_us = _pick_candidate_local_u_path(slice_array)
+    return (u_start + local_us).astype(np.int32, copy=False)
+
+
+def _pick_candidate_local_u_path(
+    candidate_slice: np.ndarray,
+    *,
+    max_jump: int = 2,
+    jump_penalty: float = 0.1,
+) -> np.ndarray:
+    nrow, nu = candidate_slice.shape
+    if nrow == 0:
+        return np.empty(0, dtype=np.int32)
+    if nu == 1:
+        return np.zeros(nrow, dtype=np.int32)
+
+    max_jump_int = min(max_jump, nu - 1)
+    jump_penalty_float = float(jump_penalty)
+    accumulated = np.empty((nrow, nu), dtype=np.float32)
+    predecessor = np.full((nrow, nu), -1, dtype=np.int32)
+    accumulated[0] = candidate_slice[0]
+
+    for irow in range(1, nrow):
+        for iu in range(nu):
+            ib = max(0, iu - max_jump_int)
+            ie = min(nu, iu + max_jump_int + 1)
+            best_score = -math.inf
+            best_previous = ib
+            best_jump = nu
+            for ju in range(ib, ie):
+                jump = abs(iu - ju)
+                score = float(accumulated[irow - 1, ju]) - jump_penalty_float * jump
+                if score > best_score or (
+                    score == best_score
+                    and (
+                        jump < best_jump
+                        or (
+                            jump == best_jump
+                            and _candidate_u_tie_key(ju, nu)
+                            < _candidate_u_tie_key(best_previous, nu)
+                        )
+                    )
+                ):
+                    best_score = score
+                    best_previous = ju
+                    best_jump = jump
+
+            accumulated[irow, iu] = candidate_slice[irow, iu] + best_score
+            predecessor[irow, iu] = best_previous
+
+    path = np.empty(nrow, dtype=np.int32)
+    iu = _best_candidate_u(accumulated[-1], nu)
+    for irow in range(nrow - 1, -1, -1):
+        path[irow] = iu
+        previous = predecessor[irow, iu]
+        if previous >= 0:
+            iu = int(previous)
+
+    return path
+
+
+def _best_candidate_u(scores: np.ndarray, nu: int) -> int:
+    best_u = 0
+    best_score = float(scores[0])
+    for iu in range(1, nu):
+        score = float(scores[iu])
+        if score > best_score or (
+            score == best_score and _candidate_u_tie_key(iu, nu) < _candidate_u_tie_key(best_u, nu)
+        ):
+            best_u = iu
+            best_score = score
+    return best_u
+
+
+def _candidate_u_tie_key(iu: int, nu: int) -> tuple[int, int]:
+    return (abs(2 * iu - (nu - 1)), iu)
 
 
 def _grow_reference_skin(
