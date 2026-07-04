@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
@@ -202,6 +204,48 @@ def sparse_ridge_distance_metrics(
     return result
 
 
+def orientation_field_report(
+    likelihood: np.ndarray,
+    strike: np.ndarray,
+    dip: np.ndarray,
+    *,
+    percentile: float = 99.0,
+    nonzero_epsilon: float = 1.0e-6,
+) -> dict[str, Any]:
+    """Summarize voting orientation fields on a high-likelihood mask."""
+
+    likelihood_values, strike_values = _validate_comparable_shape_arrays(likelihood, strike)
+    _, dip_values = _validate_comparable_shape_arrays(likelihood_values, dip)
+    _validate_percentile(percentile)
+    epsilon = _validate_nonnegative_finite_scalar(nonzero_epsilon, "nonzero_epsilon")
+
+    high_likelihood_mask = _finite_positive_percentile_mask(likelihood_values, percentile)
+    finite_strike = np.isfinite(strike_values)
+    finite_dip = np.isfinite(dip_values)
+    paired_mask = high_likelihood_mask & finite_strike & finite_dip
+
+    return {
+        "likelihood_source": "fv",
+        "likelihood_percentile": float(percentile),
+        "likelihood_mask_count": int(np.count_nonzero(high_likelihood_mask)),
+        "paired_sample_count": int(np.count_nonzero(paired_mask)),
+        "strike": {
+            **_orientation_value_counts(strike_values, epsilon),
+            "high_likelihood": _distribution_summary(
+                strike_values[high_likelihood_mask & finite_strike]
+            ),
+        },
+        "dip": {
+            **_orientation_value_counts(dip_values, epsilon),
+            "high_likelihood": _distribution_summary(dip_values[high_likelihood_mask & finite_dip]),
+        },
+        "paired_high_likelihood": {
+            "strike": _distribution_summary(strike_values[paired_mask]),
+            "dip": _distribution_summary(dip_values[paired_mask]),
+        },
+    }
+
+
 def orientation_angle_error(
     actual: np.ndarray,
     expected_degrees: float | np.ndarray,
@@ -295,14 +339,21 @@ def top_percentile_overlap(
 def _validate_comparable_finite_arrays(
     a: np.ndarray, b: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    av = np.asarray(a)
-    bv = np.asarray(b)
-    if av.shape != bv.shape:
-        raise ValueError(f"array shapes must match, got {av.shape} and {bv.shape}")
+    av, bv = _validate_comparable_shape_arrays(a, b)
     if not np.all(np.isfinite(av)):
         raise ValueError("first array must contain only finite values")
     if not np.all(np.isfinite(bv)):
         raise ValueError("second array must contain only finite values")
+    return av, bv
+
+
+def _validate_comparable_shape_arrays(
+    a: np.ndarray, b: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    av = np.asarray(a)
+    bv = np.asarray(b)
+    if av.shape != bv.shape:
+        raise ValueError(f"array shapes must match, got {av.shape} and {bv.shape}")
     return av, bv
 
 
@@ -334,6 +385,58 @@ def _validate_positive_finite_scalar(value: float, name: str) -> float:
     if result <= 0.0:
         raise ValueError(f"{name} must be positive")
     return result
+
+
+def _validate_nonnegative_finite_scalar(value: float, name: str) -> float:
+    result = _validate_finite_scalar(value, name)
+    if result < 0.0:
+        raise ValueError(f"{name} must be non-negative")
+    return result
+
+
+def _finite_positive_percentile_mask(values: np.ndarray, percentile: float) -> np.ndarray:
+    finite_positive = np.isfinite(values) & (values > 0)
+    if not np.any(finite_positive):
+        return np.zeros(values.shape, dtype=bool)
+    threshold = float(
+        np.percentile(values[finite_positive].astype(np.float64, copy=False), percentile)
+    )
+    return finite_positive & (values >= threshold)
+
+
+def _orientation_value_counts(values: np.ndarray, nonzero_epsilon: float) -> dict[str, int | float]:
+    finite = np.isfinite(values)
+    finite_nonzero = finite & (np.abs(values) > nonzero_epsilon)
+    return {
+        "size": int(values.size),
+        "finite_count": int(np.count_nonzero(finite)),
+        "nonzero_count": int(np.count_nonzero(finite_nonzero)),
+        "finite_fraction": float(np.count_nonzero(finite) / values.size) if values.size else 0.0,
+        "nonzero_fraction": (
+            float(np.count_nonzero(finite_nonzero) / values.size) if values.size else 0.0
+        ),
+    }
+
+
+def _distribution_summary(values: np.ndarray) -> dict[str, float | int | None]:
+    finite_values = np.asarray(values)[np.isfinite(values)].astype(np.float64, copy=False)
+    if finite_values.size == 0:
+        return {
+            "count": 0,
+            "mean": None,
+            "std": None,
+            "median": None,
+            "median_absolute_deviation": None,
+        }
+
+    median = float(np.median(finite_values))
+    return {
+        "count": int(finite_values.size),
+        "mean": float(np.mean(finite_values)),
+        "std": float(np.std(finite_values)),
+        "median": median,
+        "median_absolute_deviation": float(np.median(np.abs(finite_values - median))),
+    }
 
 
 def _dilate_mask(mask: np.ndarray, radius: float) -> np.ndarray:

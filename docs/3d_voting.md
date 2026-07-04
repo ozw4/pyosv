@@ -50,11 +50,15 @@ each sample.
 Surface orientation is re-estimated from each extracted local surface before
 votes are accumulated. By default, `OptimalSurfaceVoter` smooths that surface
 with `surface_orientation_smoothing=max(rv, rw)` before computing the
-center-difference strike and dip. This setting is separate from
-`surface_smoothing1` and `surface_smoothing2`, which affect dynamic-programming
-surface extraction. Use `voter.set_surface_orientation_smoothing(0.0)` to
-disable this orientation-only smoothing; negative, nonfinite, boolean, and
-nonnumeric values are rejected.
+center-difference strike and dip. This corresponds to the reference
+`surfaceStrikeAndDip` path, where `RecursiveGaussianFilter(max(rv,rw))` smooths
+the picked surface before orientation is recomputed. In `pyosv`, the filter is a
+SciPy-backed approximation through `smooth_surface_2d`, not a bit-exact Mines
+JTK clone. This setting is separate from `surface_smoothing1` and
+`surface_smoothing2`, which affect dynamic-programming surface extraction. Use
+`voter.set_surface_orientation_smoothing(0.0)` to disable this orientation-only
+smoothing for diagnostics that need raw-surface behavior; negative, nonfinite,
+boolean, and nonnumeric values are rejected.
 
 `OptimalSurfaceVoter.thin` keeps local maxima from `fv` along the fault-normal
 field derived from `vp` and `vt`. It returns a thinned `float32` vote volume

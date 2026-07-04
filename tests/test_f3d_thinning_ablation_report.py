@@ -55,6 +55,8 @@ def _case_outputs(module: object, shape: tuple[int, int, int]) -> dict[str, dict
             "fpt_py.dat": np.full(shape, 10.0, dtype=np.float32),
             "ftt_py.dat": np.full(shape, 70.0, dtype=np.float32),
             "fv_py.dat": fv,
+            "vp_py.dat": np.full(shape, 10.0, dtype=np.float32),
+            "vt_py.dat": np.full(shape, 70.0, dtype=np.float32),
             "fvt_py.dat": fvt,
         }
     return outputs

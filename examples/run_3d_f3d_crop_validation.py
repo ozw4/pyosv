@@ -26,6 +26,7 @@ from pyosv.metrics import (
     buffered_ridge_overlap,
     finite_value_report,
     normalized_correlation,
+    orientation_field_report,
     sparse_ridge_distance_metrics,
     top_percentile_overlap,
 )
@@ -46,6 +47,8 @@ VOLUME_NAMES = (
     "fpt_py.dat",
     "ftt_py.dat",
     "fv_py.dat",
+    "vp_py.dat",
+    "vt_py.dat",
     "fvt_py.dat",
 )
 THIN_MODES = ("normal", "reference")
@@ -187,6 +190,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         help="Surface smoothing in the second voting dimension.",
     )
+    parser.add_argument(
+        "--surface-orientation-smoothing",
+        type=float,
+        default=None,
+        help=(
+            "Optional smoothing applied only before vote strike/dip re-estimation; "
+            "defaults to max(rv, rw). Use 0 to disable."
+        ),
+    )
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
     parser.add_argument(
@@ -228,6 +240,7 @@ def run_example(
     strain_max2: float = 0.25,
     surface_smoothing1: float = 2.0,
     surface_smoothing2: float = 2.0,
+    surface_orientation_smoothing: float | None = None,
     d: int = 4,
     fm: float = 0.3,
     interior_margin: int | None = None,
@@ -277,6 +290,11 @@ def run_example(
             "strain_max2": float(strain_max2),
             "surface_smoothing1": float(surface_smoothing1),
             "surface_smoothing2": float(surface_smoothing2),
+            "surface_orientation_smoothing": float(
+                max(rv, rw)
+                if surface_orientation_smoothing is None
+                else surface_orientation_smoothing
+            ),
             "d": int(d),
             "fm": float(fm),
             "thin_mode": voter_thin_mode,
@@ -326,6 +344,7 @@ def run_example(
             strain_max2=strain_max2,
             surface_smoothing1=surface_smoothing1,
             surface_smoothing2=surface_smoothing2,
+            surface_orientation_smoothing=surface_orientation_smoothing,
             d=d,
             fm=fm,
             scanner_thin_mode=scanner_thin_mode,
@@ -439,6 +458,7 @@ def run_pipeline(
     surface_smoothing2: float,
     d: int,
     fm: float,
+    surface_orientation_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
@@ -459,6 +479,8 @@ def run_pipeline(
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
+    if surface_orientation_smoothing is not None:
+        voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
     fv, vp, vt = voter.apply_voting(d=d, fm=fm, ft=fet, pt=fpt, tt=ftt)
     fvt = voter.thin(
         fv,
@@ -476,6 +498,8 @@ def run_pipeline(
         "fpt_py.dat": fpt,
         "ftt_py.dat": ftt,
         "fv_py.dat": fv,
+        "vp_py.dat": vp,
+        "vt_py.dat": vt,
         "fvt_py.dat": fvt,
     }
 
@@ -497,6 +521,8 @@ def build_crop_report(
         for crop_slice, local_slice in zip(slices, local_interior_slices, strict=True)
     )
     py_fv = np.asarray(outputs["fv_py.dat"])
+    py_vp = np.asarray(outputs["vp_py.dat"])
+    py_vt = np.asarray(outputs["vt_py.dat"])
     py_fvt = np.asarray(outputs["fvt_py.dat"])
     py_fv_interior = py_fv[local_interior_slices]
     py_fvt_interior = py_fvt[local_interior_slices]
@@ -513,7 +539,18 @@ def build_crop_report(
         "crop_shape": [int(size) for size in crop_shape],
         "pyosv": {
             "fv": summarize_array(py_fv),
+            "vp": summarize_array(py_vp),
+            "vt": summarize_array(py_vt),
             "fvt": summarize_array(py_fvt),
+        },
+        "voting": {
+            "orientation": orientation_field_report(
+                py_fv,
+                py_vp,
+                py_vt,
+                percentile=RIDGE_PERCENTILE,
+                nonzero_epsilon=NONZERO_EPSILON,
+            ),
         },
         "reference": {
             "fv": summarize_array(reference_fv),
@@ -823,6 +860,7 @@ def main(argv: list[str] | None = None) -> int:
             strain_max2=args.strain_max2,
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
+            surface_orientation_smoothing=args.surface_orientation_smoothing,
             d=args.d,
             fm=args.fm,
             interior_margin=args.interior_margin,

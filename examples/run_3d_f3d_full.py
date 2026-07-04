@@ -19,6 +19,7 @@ from pyosv.metrics import (
     buffered_ridge_overlap,
     finite_value_report,
     normalized_correlation,
+    orientation_field_report,
     sparse_ridge_distance_metrics,
     top_percentile_overlap,
 )
@@ -140,6 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Surface smoothing in the second voting dimension.",
     )
     parser.add_argument(
+        "--surface-orientation-smoothing",
+        type=float,
+        default=None,
+        help=(
+            "Optional smoothing applied only before vote strike/dip re-estimation; "
+            "defaults to max(rv, rw). Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--reuse-existing",
         action="store_true",
         help="Reuse the full existing pyosv DAT output set in --output-dir.",
@@ -188,6 +198,7 @@ def run_example(
     strain_max2: float = 0.25,
     surface_smoothing1: float = 2.0,
     surface_smoothing2: float = 2.0,
+    surface_orientation_smoothing: float | None = None,
     reuse_existing: bool = False,
     skip_save_intermediates: bool = False,
     save_volumes: bool = True,
@@ -219,6 +230,7 @@ def run_example(
         strain_max2=strain_max2,
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
+        surface_orientation_smoothing=surface_orientation_smoothing,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
@@ -248,6 +260,7 @@ def run_example(
         strain_max2=strain_max2,
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
+        surface_orientation_smoothing=surface_orientation_smoothing,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
@@ -265,6 +278,8 @@ def run_example(
         config=config,
         pyosv_ft=outputs["ft_py.dat"],
         pyosv_fv=outputs["fv_py.dat"],
+        pyosv_vp=outputs["vp_py.dat"],
+        pyosv_vt=outputs["vt_py.dat"],
         pyosv_fvt=outputs["fvt_py.dat"],
         reference_fl=reference_fl,
         reference_fv=reference_fv,
@@ -298,6 +313,7 @@ def build_run_config(
     skip_save_intermediates: bool,
     save_volumes: bool,
     output_json: str | PathLike[str],
+    surface_orientation_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
@@ -330,6 +346,11 @@ def build_run_config(
             "strain_max2": float(strain_max2),
             "surface_smoothing1": float(surface_smoothing1),
             "surface_smoothing2": float(surface_smoothing2),
+            "surface_orientation_smoothing": float(
+                max(rv, rw)
+                if surface_orientation_smoothing is None
+                else surface_orientation_smoothing
+            ),
             "thin_mode": voter_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
         },
@@ -366,6 +387,7 @@ def run_or_reuse_pipeline(
     reuse_existing: bool,
     skip_save_intermediates: bool,
     save_volumes: bool,
+    surface_orientation_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
@@ -386,6 +408,8 @@ def run_or_reuse_pipeline(
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
+    if surface_orientation_smoothing is not None:
+        voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
 
     if should_reuse_stage_outputs(output_path, SCANNER_OUTPUT_NAMES, reuse_existing, "scanner"):
         scanner_outputs = read_outputs(output_path, SCANNER_OUTPUT_NAMES)
@@ -502,10 +526,15 @@ def run_or_reuse_pipeline(
                 ("fvt_py.dat",),
                 skip_intermediates=skip_save_intermediates,
             )
-    del vp, vt
     finalize_runtime_mode(runtime, reuse_existing)
 
-    return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}, runtime
+    return {
+        "ft_py.dat": ft,
+        "fv_py.dat": fv,
+        "vp_py.dat": vp,
+        "vt_py.dat": vt,
+        "fvt_py.dat": fvt,
+    }, runtime
 
 
 def should_reuse_stage_outputs(
@@ -606,6 +635,8 @@ def build_metrics_report(
     config: Mapping[str, Any],
     pyosv_ft: np.ndarray,
     pyosv_fv: np.ndarray,
+    pyosv_vp: np.ndarray,
+    pyosv_vt: np.ndarray,
     pyosv_fvt: np.ndarray,
     reference_fl: np.ndarray,
     reference_fv: np.ndarray,
@@ -626,6 +657,13 @@ def build_metrics_report(
         },
         "voting": {
             "parameters": config["voter"],
+            "orientation": orientation_field_report(
+                pyosv_fv,
+                pyosv_vp,
+                pyosv_vt,
+                percentile=RIDGE_PERCENTILE,
+                nonzero_epsilon=NONZERO_EPSILON,
+            ),
             "fv_py_vs_fv": {
                 **comparison_metrics(pyosv_fv, reference_fv),
                 "nonzero_fraction_ratio": nonzero_fraction_ratio(pyosv_fv, reference_fv),
@@ -652,6 +690,8 @@ def build_metrics_report(
         "pyosv": {
             "ft": summarize_array(pyosv_ft),
             "fv": summarize_array(pyosv_fv),
+            "vp": summarize_array(pyosv_vp),
+            "vt": summarize_array(pyosv_vt),
             "fvt": summarize_array(pyosv_fvt),
         },
         "reference": {
@@ -663,6 +703,8 @@ def build_metrics_report(
             "pyosv": {
                 "ft_py": finite_report(pyosv_ft),
                 "fv_py": finite_report(pyosv_fv),
+                "vp_py": finite_report(pyosv_vp),
+                "vt_py": finite_report(pyosv_vt),
                 "fvt_py": finite_report(pyosv_fvt),
             },
             "reference": {
@@ -817,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
             strain_max2=args.strain_max2,
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
+            surface_orientation_smoothing=args.surface_orientation_smoothing,
             reuse_existing=args.reuse_existing,
             skip_save_intermediates=args.skip_save_intermediates,
             save_volumes=args.save_volumes,

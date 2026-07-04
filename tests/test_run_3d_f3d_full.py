@@ -34,7 +34,13 @@ def _synthetic_outputs(shape: tuple[int, int, int] = (4, 4, 4)) -> dict[str, np.
     ft[center] = 1.0
     fv[center] = 1.0
     fvt[center] = 1.0
-    return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}
+    return {
+        "ft_py.dat": ft,
+        "fv_py.dat": fv,
+        "vp_py.dat": np.full(shape, 10.0, dtype=np.float32),
+        "vt_py.dat": np.full(shape, 70.0, dtype=np.float32),
+        "fvt_py.dat": fvt,
+    }
 
 
 def _full_synthetic_outputs(shape: tuple[int, int, int] = (4, 4, 4)) -> dict[str, np.ndarray]:
@@ -96,6 +102,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert args.strain_max2 == 0.25
     assert args.surface_smoothing1 == 2.0
     assert args.surface_smoothing2 == 2.0
+    assert args.surface_orientation_smoothing is None
     assert args.reuse_existing is False
     assert args.skip_save_intermediates is False
     assert args.save_volumes is True
@@ -107,6 +114,11 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         ["--output-dir", str(tmp_path), "--no-save-volumes"]
     )
     assert no_save_args.save_volumes is False
+
+    override_args = module.build_parser().parse_args(
+        ["--output-dir", str(tmp_path), "--surface-orientation-smoothing", "0"]
+    )
+    assert override_args.surface_orientation_smoothing == 0.0
 
     reference_args = module.build_parser().parse_args(
         [
@@ -187,6 +199,7 @@ def test_build_run_config_is_serializable(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert loaded["reference"] == ["fl.dat", "fv.dat", "fvt.dat"]
     assert loaded["scanner"]["theta_min"] == 65.0
     assert loaded["voter"]["ru"] == 10
+    assert loaded["voter"]["surface_orientation_smoothing"] == 30.0
     assert loaded["scanner"]["thin_mode"] == "reference"
     assert loaded["voter"]["thin_mode"] == "normal"
     assert loaded["scanner"]["reference_thin_sigma"] == 1.0
@@ -293,7 +306,13 @@ def test_reuse_mode_reads_each_full_stage_output_set(
         module.VOTING_OUTPUT_NAMES,
         ("fvt_py.dat",),
     ]
-    assert tuple(outputs) == module.REPORT_OUTPUT_NAMES
+    assert tuple(outputs) == (
+        "ft_py.dat",
+        "fv_py.dat",
+        "vp_py.dat",
+        "vt_py.dat",
+        "fvt_py.dat",
+    )
     assert runtime["mode"] == "reuse_existing"
     assert runtime["reused_stages"] == ["scanner", "scanner_thin", "voting", "voter_thin"]
     assert runtime["computed_stages"] == []
@@ -442,15 +461,18 @@ def test_run_example_records_selected_thinning_modes(
         scanner_thin_mode="reference",
         voter_thin_mode="reference",
         reference_thin_sigma=1.25,
+        surface_orientation_smoothing=0.0,
     )
 
     assert report["config"]["scanner"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["thin_mode"] == "reference"
+    assert report["config"]["voter"]["surface_orientation_smoothing"] == 0.0
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
     assert received_kwargs["scanner_thin_mode"] == "reference"
     assert received_kwargs["voter_thin_mode"] == "reference"
     assert received_kwargs["reference_thin_sigma"] == 1.25
+    assert received_kwargs["surface_orientation_smoothing"] == 0.0
 
 
 def test_run_example_writes_final_outputs_and_metrics_without_f3_data(
@@ -526,6 +548,8 @@ def test_build_metrics_report_on_small_synthetic_arrays(
         config=config,
         pyosv_ft=outputs["ft_py.dat"],
         pyosv_fv=outputs["fv_py.dat"],
+        pyosv_vp=outputs["vp_py.dat"],
+        pyosv_vt=outputs["vt_py.dat"],
         pyosv_fvt=outputs["fvt_py.dat"],
         reference_fl=outputs["ft_py.dat"].copy(),
         reference_fv=outputs["fv_py.dat"].copy(),
@@ -537,6 +561,9 @@ def test_build_metrics_report_on_small_synthetic_arrays(
     assert loaded["data"]["shape"] == list(module.F3D_SHAPE)
     assert loaded["scanner"]["parameters"]["sigma1"] == 8.0
     assert loaded["scanner"]["ft_py_vs_fl"]["normalized_correlation"] == pytest.approx(1.0)
+    assert loaded["voting"]["orientation"]["likelihood_mask_count"] == 1
+    assert loaded["voting"]["orientation"]["strike"]["finite_count"] == 64
+    assert loaded["voting"]["orientation"]["dip"]["high_likelihood"]["median"] == 70.0
     assert loaded["voting"]["fv_py_vs_fv"]["nonzero_fraction_ratio"] == pytest.approx(1.0)
     assert loaded["thinning"]["fvt_py_vs_fvt"]["buffered_ridge_overlap"]["buffered_f1"] == (
         pytest.approx(1.0)
