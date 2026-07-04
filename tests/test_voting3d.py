@@ -78,6 +78,7 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
     assert voter.attribute_smoothing == 1
     assert voter.surface_smoothing1 == 2.0
     assert voter.surface_smoothing2 == 2.0
+    assert voter.surface_orientation_smoothing == 2.0
     np.testing.assert_array_equal(
         voter.lmins,
         np.array(
@@ -92,6 +93,18 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
         ),
     )
     np.testing.assert_array_equal(voter.lmaxs, -voter.lmins)
+
+
+def test_constructor_initializes_surface_orientation_smoothing_from_max_radius() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=5)
+
+    assert voter.surface_orientation_smoothing == 5.0
+
+
+def test_constructor_allows_zero_surface_orientation_smoothing_default() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=0, rw=0)
+
+    assert voter.surface_orientation_smoothing == 0.0
 
 
 def test_shift_range_arrays_match_surface_radius_shape() -> None:
@@ -245,6 +258,33 @@ def test_set_surface_smoothing_rejects_invalid_second_value(
 
     with pytest.raises(ValueError, match="surface_smoothing2"):
         voter.set_surface_smoothing(0.0, surface_smoothing)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("surface_orientation_smoothing", [0.0, np.float32(2.5)])
+def test_set_surface_orientation_smoothing_accepts_nonnegative_finite_numbers(
+    surface_orientation_smoothing: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
+
+    assert voter.surface_orientation_smoothing == float(surface_orientation_smoothing)
+    assert isinstance(voter.surface_orientation_smoothing, float)
+
+
+@pytest.mark.parametrize(
+    "surface_orientation_smoothing",
+    [-0.1, np.nan, np.inf, True, "1.0"],
+)
+def test_set_surface_orientation_smoothing_rejects_invalid_values(
+    surface_orientation_smoothing: object,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="surface_orientation_smoothing"):
+        voter.set_surface_orientation_smoothing(
+            surface_orientation_smoothing,  # type: ignore[arg-type]
+        )
 
 
 def test_pick_seeds_returns_no_seeds_when_no_sample_exceeds_threshold() -> None:

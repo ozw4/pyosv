@@ -38,6 +38,7 @@ class OptimalSurfaceVoter:
         self.attribute_smoothing = 1
         self.surface_smoothing1 = 2.0
         self.surface_smoothing2 = 2.0
+        self.surface_orientation_smoothing = float(max(self.rv, self.rw))
         self.lmins: np.ndarray
         self.lmaxs: np.ndarray
         self._update_shift_ranges()
@@ -75,6 +76,17 @@ class OptimalSurfaceVoter:
         )
         self.surface_smoothing1 = smoothing1
         self.surface_smoothing2 = smoothing2
+
+    def set_surface_orientation_smoothing(
+        self,
+        surface_orientation_smoothing: float,
+    ) -> None:
+        """Set smoothing for surface orientation re-estimation."""
+
+        self.surface_orientation_smoothing = _validate_nonnegative_float(
+            surface_orientation_smoothing,
+            "surface_orientation_smoothing",
+        )
 
     def _update_shift_ranges(self) -> None:
         self.lmins, self.lmaxs = update_shift_ranges_3d(self.ru, self.rv, self.rw)
