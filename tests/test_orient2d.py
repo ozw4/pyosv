@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 import pyosv
+from pyosv.metrics import buffered_ridge_overlap, orientation_angle_error
 from pyosv.orient2d import FaultOrientScanner2
 from pyosv.voting2d import OptimalPathVoter
 
@@ -236,9 +237,63 @@ def test_scan_reference_like_localizes_synthetic_lineament_orientation() -> None
     high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
     assert np.count_nonzero(high_likelihood) > 0
     expected_pt = _voter_angle_from_feature_angle(theta)
-    angle_error = _orientation_error_degrees(pt[high_likelihood], expected_pt)
+    angle_error = orientation_angle_error(pt[high_likelihood], expected_pt, period=180.0)
     sample_step = float(np.diff(scanner.theta_sampling(0.0, 60.0)).max())
     assert float(np.median(angle_error)) <= sample_step
+
+
+def test_scan_keeps_noisy_continuous_ridge_localization() -> None:
+    theta = 25.0
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    clean_image, distance = _low_planarity_lineament(theta, n2=64, n1=80)
+    rng = np.random.default_rng(20240704)
+    noisy_image = np.clip(
+        clean_image + rng.normal(0.0, 0.035, size=clean_image.shape).astype(np.float32),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    ft, pt = scanner.scan(0.0, 50.0, noisy_image)
+
+    assert ft.shape == noisy_image.shape
+    assert pt.shape == noisy_image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+
+    near_line = np.abs(distance) <= 2.0
+    far_from_line = np.abs(distance) >= 10.0
+    assert float(np.mean(ft[near_line])) > float(np.mean(ft[far_from_line])) + 0.25
+
+    ridge_target = np.exp(-0.5 * (distance / np.float32(1.2)) ** 2).astype(np.float32)
+    overlap = buffered_ridge_overlap(
+        ridge_target,
+        ft,
+        percentile=95.0,
+        radius=2.5,
+    )
+    assert overlap["reference_count"] > 0
+    assert overlap["candidate_count"] > 0
+    assert overlap["buffered_precision"] >= 0.75
+
+    high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
+    expected_pt = _voter_angle_from_feature_angle(theta)
+    angle_error = orientation_angle_error(pt[high_likelihood], expected_pt, period=180.0)
+    assert float(np.median(angle_error)) <= 12.0
+
+
+def test_scan_and_scan_fast_are_finite_on_same_synthetic_lineament() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _low_planarity_lineament(30.0, n2=48, n1=64)
+
+    scan_ft, scan_pt = scanner.scan(0.0, 60.0, image)
+    fast_ft, fast_pt = scanner.scan_fast(0.0, 60.0, image)
+
+    for array in (scan_ft, scan_pt, fast_ft, fast_pt):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
 
 
 @pytest.mark.parametrize(
@@ -266,7 +321,7 @@ def test_scan_fast_detects_synthetic_lineament_orientation(
     high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
     assert np.count_nonzero(high_likelihood) > 0
     expected_pt = _voter_angle_from_feature_angle(theta)
-    angle_error = _orientation_error_degrees(pt[high_likelihood], expected_pt)
+    angle_error = orientation_angle_error(pt[high_likelihood], expected_pt, period=180.0)
     assert float(np.median(angle_error)) <= 15.0
 
 
@@ -279,7 +334,7 @@ def test_scan_fast_outputs_voting_angle_for_down_right_diagonal_lineament() -> N
     near_line = np.abs(distance) <= 1.5
     high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
     assert np.count_nonzero(high_likelihood) > 0
-    angle_error = _orientation_error_degrees(pt[high_likelihood], 135.0)
+    angle_error = orientation_angle_error(pt[high_likelihood], 135.0, period=180.0)
     assert float(np.median(angle_error)) <= 10.0
 
     voter = OptimalPathVoter(ru=2, rv=5)
@@ -491,13 +546,6 @@ def test_thin_rejects_non_2d_arrays() -> None:
             np.zeros((1, 2, 3), dtype=np.float32),
             np.zeros((2, 3), dtype=np.float32),
         )
-
-
-def _orientation_error_degrees(
-    actual: np.ndarray,
-    expected_degrees: float,
-) -> np.ndarray:
-    return np.abs((actual - np.float32(expected_degrees) + 90.0) % 180.0 - 90.0)
 
 
 def _voter_angle_from_feature_angle(theta_degrees: float) -> np.float32:

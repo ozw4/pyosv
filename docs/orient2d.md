@@ -80,6 +80,15 @@ voter = OptimalPathVoter(ru=2, rv=5)
 fv, w1, w2 = voter.apply_voting(d=3, fm=0.45, ft=ft, pt=pt)
 ```
 
+## Synthetic Validation
+
+Default scanner tests use small synthetic images only. They cover constant
+images, straight and noisy continuous ridges, finite output from both `scan()`
+and `scan_fast()`, and orientation selection against the nearest sampled
+synthetic angle. Ridge localization is checked with top-percentile or buffered
+overlap-style metrics and near-ridge versus background response, not exact
+per-sample equality.
+
 ## Limitations
 
 This module does not add a runtime dependency on the JVM, Jython, Mines JTK, or

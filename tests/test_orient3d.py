@@ -5,6 +5,7 @@ import pytest
 
 import pyosv
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
+from pyosv.metrics import buffered_ridge_overlap, strike_dip_angle_error
 from pyosv.orient3d import (
     FaultOrientScanner3,
     _dip_shear_from_theta,
@@ -512,11 +513,83 @@ def test_scan_reference_like_localizes_synthetic_planar_fault_orientation() -> N
     far_from_plane = np.abs(distance) >= 5.0
     assert float(np.mean(ft[near_plane])) > 2.0 * float(np.mean(ft[far_from_plane]))
 
+    ridge_target = np.exp(-0.5 * (distance / np.float32(1.0)) ** 2).astype(np.float32)
+    overlap = buffered_ridge_overlap(
+        ridge_target,
+        ft,
+        percentile=98.0,
+        radius=2.5,
+    )
+    assert overlap["reference_count"] > 0
+    assert overlap["candidate_count"] > 0
+    assert overlap["buffered_precision"] >= 0.70
+
     high_likelihood = ft >= np.percentile(ft, 98.0)
-    phi_error = _periodic_angle_error(pt[high_likelihood], true_phi, period=180.0)
-    theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
-    assert float(np.median(phi_error)) <= 31.0
-    assert float(np.median(theta_error)) <= 31.0
+    angle_error = strike_dip_angle_error(
+        pt[high_likelihood],
+        tt[high_likelihood],
+        expected_strike=true_phi,
+        expected_dip=true_theta,
+        strike_period=180.0,
+    )
+    assert float(np.median(angle_error["strike"])) <= 31.0
+    assert float(np.median(angle_error["dip"])) <= 31.0
+
+
+def test_scan_reference_like_crossing_planes_selects_deterministic_maximum() -> None:
+    shape = (17, 18, 19)
+    plane_a, distance_a = _planar_gaussian_fault(0.0, 90.0, shape=shape, width=0.8)
+    plane_b, distance_b = _planar_gaussian_fault(60.0, 60.0, shape=shape, width=0.8)
+    image = (np.float32(1.0) - np.maximum(plane_a, plane_b * np.float32(0.9))).astype(
+        np.float32,
+        copy=False,
+    )
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+
+    first = scanner.scan_reference_like(
+        0.0,
+        100.0,
+        50.0,
+        90.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    second = scanner.scan_reference_like(
+        0.0,
+        100.0,
+        50.0,
+        90.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    ft, pt, tt = first
+
+    for first_array, second_array in zip(first, second):
+        assert first_array.shape == image.shape
+        assert first_array.dtype == np.float32
+        assert np.isfinite(first_array).all()
+        np.testing.assert_array_equal(first_array, second_array)
+
+    max_mask = ft == np.max(ft)
+    assert np.count_nonzero(max_mask) > 0
+    assert np.all(np.abs(distance_a[max_mask]) <= 1.0)
+    assert np.all(np.abs(distance_b[max_mask]) <= 1.0)
+    assert np.unique(pt[max_mask]).size == 1
+    assert np.unique(tt[max_mask]).size == 1
+    np.testing.assert_array_equal(
+        np.unique(pt[max_mask]),
+        np.intersect1d(
+            np.unique(pt[max_mask]),
+            scanner.reference_like_strike_sampling(0.0, 100.0),
+        ),
+    )
+    np.testing.assert_array_equal(
+        np.unique(tt[max_mask]),
+        np.intersect1d(
+            np.unique(tt[max_mask]),
+            scanner.reference_like_dip_sampling(50.0, 90.0),
+        ),
+    )
 
 
 def test_scan_reference_like_does_not_call_default_scan(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -635,10 +708,28 @@ def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> Non
     assert float(np.mean(ft[near_plane])) > 2.0 * float(np.mean(ft[far_from_plane]))
 
     high_likelihood = ft >= np.percentile(ft, 98.0)
-    phi_error = _periodic_angle_error(pt[high_likelihood], true_phi, period=180.0)
-    theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
-    assert float(np.median(phi_error)) <= 31.0
-    assert float(np.median(theta_error)) <= 31.0
+    angle_error = strike_dip_angle_error(
+        pt[high_likelihood],
+        tt[high_likelihood],
+        expected_strike=true_phi,
+        expected_dip=true_theta,
+        strike_period=180.0,
+    )
+    assert float(np.median(angle_error["strike"])) <= 31.0
+    assert float(np.median(angle_error["dip"])) <= 31.0
+
+
+def test_scan_and_scan_fast_are_finite_on_same_synthetic_planar_volume() -> None:
+    image, _ = _low_planarity_fault(45.0, 50.0, shape=(17, 18, 19), width=1.0)
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    scan_outputs = scanner.scan(0.0, 90.0, 20.0, 80.0, image)
+    fast_outputs = scanner.scan_fast(0.0, 90.0, 20.0, 80.0, image)
+
+    for array in (*scan_outputs, *fast_outputs):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
 
 
 def test_scan_fast_returns_finite_normalized_outputs() -> None:
@@ -927,13 +1018,3 @@ def _low_planarity_fault(
     high_likelihood, distance = _planar_gaussian_fault(phi, theta, shape=shape, width=width)
     planarity = np.float32(1.0) - high_likelihood
     return planarity.astype(np.float32, copy=False), distance
-
-
-def _periodic_angle_error(
-    actual: np.ndarray,
-    expected: float,
-    *,
-    period: float,
-) -> np.ndarray:
-    half_period = np.float32(0.5 * period)
-    return np.abs((actual - np.float32(expected) + half_period) % period - half_period)

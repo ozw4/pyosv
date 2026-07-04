@@ -141,6 +141,15 @@ Both modes return `float32` arrays with zeros outside retained samples. In
 `pt` and `tt` are copied at retained samples. `reference_sigma` controls that
 reference-like smoothing.
 
+## Synthetic Validation
+
+Default scanner tests use small synthetic volumes only. They cover constant
+volumes, planar sheets with expected strike/dip recovery, crossing planes with
+deterministic maximum-response selection, and finite output from both `scan()`
+and `scan_fast()`. Planar localization is checked with near-plane response and
+buffered top-percentile overlap metrics. Strike error is measured with
+wraparound, while dip error is measured as an absolute angular difference.
+
 ## Limitations
 
 This is a compact Python scanner intended for deterministic local workflows and
