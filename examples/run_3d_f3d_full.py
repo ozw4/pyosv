@@ -61,8 +61,8 @@ def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--scanner-thin-mode",
         choices=THIN_MODES,
-        default="normal",
-        help="Scanner thinning mode.",
+        default="reference",
+        help="Scanner thinning mode. Defaults to the reference-like scanner thinning path.",
     )
     parser.add_argument(
         "--voter-thin-mode",
@@ -191,7 +191,7 @@ def run_example(
     reuse_existing: bool = False,
     skip_save_intermediates: bool = False,
     save_volumes: bool = True,
-    scanner_thin_mode: str = "normal",
+    scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
@@ -298,7 +298,7 @@ def build_run_config(
     skip_save_intermediates: bool,
     save_volumes: bool,
     output_json: str | PathLike[str],
-    scanner_thin_mode: str = "normal",
+    scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
@@ -366,7 +366,7 @@ def run_or_reuse_pipeline(
     reuse_existing: bool,
     skip_save_intermediates: bool,
     save_volumes: bool,
-    scanner_thin_mode: str = "normal",
+    scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:

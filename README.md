@@ -121,7 +121,8 @@ python examples/run_2d_synthetic_scan_vote.py
 ```
 
 Pass `--output-dir` to that synthetic example only when generated DAT outputs
-should be written.
+should be written. Detailed 2D scanner behavior is documented in
+`docs/orient2d.md`.
 
 The approximate 3D scanner is documented in `docs/orient3d.md`, with a small
 self-contained example:
@@ -130,21 +131,28 @@ self-contained example:
 python examples/run_3d_synthetic_scan_vote.py
 ```
 
-`FaultOrientScanner3.scan()` is the reference-like default and uses Java-style
-strike and dip sampling for normal scanner-to-voting workflows.
-`scan_reference_like()` remains as an explicit compatible alias, while
-`scan_fast()` exposes the older derivative-bank backend for diagnostics or
-practical comparisons.
+`FaultOrientScanner3.scan()` is the reference-like default and uses the
+rotate/shear scanner path with Java-style strike and dip sampling for normal
+scanner-to-voting workflows. `scan_reference_like()` remains as an explicit
+compatible alias and exposes `backend="directional"` for the previous
+fault-parallel smoothing approximation, while `scan_fast()` exposes the older
+derivative-bank backend for diagnostics or practical comparisons.
 
 Public F3 3D reference-data validation is documented in
 `docs/f3d_validation.md`, including the external data layout, smoke checks,
 crop validation, and the manual full-volume pipeline.
 
 Reference-like 3D thinning is documented in
-`docs/reference_like_thinning.md`. The current implementation still defaults
-to `mode="normal"` for scanner and voter thinning; use `mode="reference"`
-explicitly for reference-like strike-binned thinning until that path is
-promoted in a later issue.
+`docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
+to reference-like strike-binned thinning; pass `mode="normal"` explicitly for
+the legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` still
+defaults to `mode="normal"`, with `mode="reference"` available for
+reference-like voter thinning.
+
+Migration note: code that relied on the older derivative-bank scanner should
+call `scan_fast()` explicitly. Code that relied on old 3D scanner
+fault-normal thinning should pass `mode="normal"` explicitly, or use
+`--scanner-thin-mode normal` in F3 validation examples.
 
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.

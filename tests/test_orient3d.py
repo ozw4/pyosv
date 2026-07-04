@@ -5,7 +5,15 @@ import pytest
 
 import pyosv
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
-from pyosv.orient3d import FaultOrientScanner3
+from pyosv.metrics import buffered_ridge_overlap, strike_dip_angle_error
+from pyosv.orient3d import (
+    FaultOrientScanner3,
+    _dip_shear_from_theta,
+    _rotate3_axis1,
+    _shear2,
+    _unrotate3_axis1,
+    _unshear2,
+)
 from pyosv.thinning3d import reference_like_3d_thin_values
 from pyosv.voting3d import OptimalSurfaceVoter
 
@@ -291,6 +299,128 @@ def test_scan_reference_like_validates_normalize() -> None:
         )
 
 
+@pytest.mark.parametrize("backend", ["missing", 1])
+def test_scan_reference_like_validates_backend(backend: object) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="backend"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            backend=backend,  # type: ignore[arg-type]
+        )
+
+
+def test_scan_reference_like_backend_selector_keeps_directional_approximation() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(60.0, 60.0, shape=(9, 10, 11), width=1.0)
+
+    rotate_shear = scanner.scan_reference_like(
+        0.0,
+        80.0,
+        40.0,
+        80.0,
+        image,
+        backend="rotate_shear",
+        smoothing_sigma=0.75,
+    )
+    directional = scanner.scan_reference_like(
+        0.0,
+        80.0,
+        40.0,
+        80.0,
+        image,
+        backend="directional",
+        smoothing_sigma=0.75,
+    )
+
+    for outputs in (rotate_shear, directional):
+        for array in outputs:
+            assert array.shape == image.shape
+            assert array.dtype == np.float32
+            assert np.isfinite(array).all()
+        assert float(outputs[0].min()) >= 0.0
+        assert float(outputs[0].max()) <= 1.0
+
+
+def test_rotate3_axis1_unrotate3_axis1_return_finite_float32_shapes() -> None:
+    volume = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+
+    rotated = _rotate3_axis1(volume, 35.0, interpolation_order=1)
+    unrotated = _unrotate3_axis1(rotated, volume.shape, 35.0, interpolation_order=1)
+
+    assert rotated.ndim == 3
+    assert rotated.shape[0] >= volume.shape[0]
+    assert rotated.shape[1] >= volume.shape[1]
+    assert rotated.shape[2] == volume.shape[2]
+    assert rotated.dtype == np.float32
+    assert unrotated.shape == volume.shape
+    assert unrotated.dtype == np.float32
+    assert np.isfinite(rotated).all()
+    assert np.isfinite(unrotated).all()
+
+
+@pytest.mark.parametrize("shape", [(4, 6, 5), (5, 5, 6)])
+def test_rotate3_axis1_unrotate3_axis1_zero_degrees_are_identity(
+    shape: tuple[int, int, int],
+) -> None:
+    volume = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+
+    rotated = _rotate3_axis1(volume, 0.0, interpolation_order=1)
+    unrotated = _unrotate3_axis1(rotated, volume.shape, 0.0, interpolation_order=1)
+
+    assert rotated.shape[0] >= volume.shape[0]
+    assert rotated.shape[1] >= volume.shape[1]
+    assert rotated.shape[2] == volume.shape[2]
+    np.testing.assert_array_equal(
+        rotated[: volume.shape[0], : volume.shape[1], :],
+        volume,
+    )
+    np.testing.assert_array_equal(unrotated, volume)
+
+
+def test_rotate3_axis1_unrotate3_axis1_round_trip_is_close_for_smooth_volume() -> None:
+    shape = (9, 10, 11)
+    i3, i2, i1 = np.indices(shape, dtype=np.float32)
+    c3 = np.float32(0.5 * (shape[0] - 1))
+    c2 = np.float32(0.5 * (shape[1] - 1))
+    c1 = np.float32(0.5 * (shape[2] - 1))
+    radius2 = (i1 - c1) ** 2 + (i2 - c2) ** 2 + (i3 - c3) ** 2
+    volume = (1.0 - 0.5 * np.exp(-radius2 / np.float32(18.0))).astype(np.float32)
+
+    rotated = _rotate3_axis1(volume, 35.0, interpolation_order=1)
+    unrotated = _unrotate3_axis1(rotated, volume.shape, 35.0, interpolation_order=1)
+
+    np.testing.assert_allclose(
+        unrotated[2:-2, 2:-2, 2:-2],
+        volume[2:-2, 2:-2, 2:-2],
+        atol=0.06,
+        rtol=0.0,
+    )
+
+
+def test_shear2_unshear2_are_deterministic_and_near_vertical_shear_is_stable() -> None:
+    image = np.arange(5 * 6, dtype=np.float32).reshape(5, 6)
+    shear = _dip_shear_from_theta(90.0)
+
+    first = _shear2(image, float(shear), interpolation_order=1)
+    second = _shear2(image, float(shear), interpolation_order=1)
+    restored = _unshear2(first, float(shear), interpolation_order=1)
+
+    assert shear == np.float32(0.0)
+    assert first.shape == image.shape
+    assert restored.shape == image.shape
+    assert first.dtype == np.float32
+    assert restored.dtype == np.float32
+    assert np.isfinite(first).all()
+    assert np.isfinite(restored).all()
+    np.testing.assert_array_equal(first, second)
+
+
 def test_scan_reference_like_constant_input_returns_zero_likelihood_and_finite_angles() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     image = np.full((5, 6, 7), 3.0, dtype=np.float64)
@@ -422,11 +552,83 @@ def test_scan_reference_like_localizes_synthetic_planar_fault_orientation() -> N
     far_from_plane = np.abs(distance) >= 5.0
     assert float(np.mean(ft[near_plane])) > 2.0 * float(np.mean(ft[far_from_plane]))
 
+    ridge_target = np.exp(-0.5 * (distance / np.float32(1.0)) ** 2).astype(np.float32)
+    overlap = buffered_ridge_overlap(
+        ridge_target,
+        ft,
+        percentile=98.0,
+        radius=2.5,
+    )
+    assert overlap["reference_count"] > 0
+    assert overlap["candidate_count"] > 0
+    assert overlap["buffered_precision"] >= 0.70
+
     high_likelihood = ft >= np.percentile(ft, 98.0)
-    phi_error = _periodic_angle_error(pt[high_likelihood], true_phi, period=180.0)
-    theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
-    assert float(np.median(phi_error)) <= 31.0
-    assert float(np.median(theta_error)) <= 31.0
+    angle_error = strike_dip_angle_error(
+        pt[high_likelihood],
+        tt[high_likelihood],
+        expected_strike=true_phi,
+        expected_dip=true_theta,
+        strike_period=180.0,
+    )
+    assert float(np.median(angle_error["strike"])) <= 31.0
+    assert float(np.median(angle_error["dip"])) <= 31.0
+
+
+def test_scan_reference_like_crossing_planes_selects_deterministic_maximum() -> None:
+    shape = (17, 18, 19)
+    plane_a, distance_a = _planar_gaussian_fault(0.0, 90.0, shape=shape, width=0.8)
+    plane_b, distance_b = _planar_gaussian_fault(60.0, 60.0, shape=shape, width=0.8)
+    image = (np.float32(1.0) - np.maximum(plane_a, plane_b * np.float32(0.9))).astype(
+        np.float32,
+        copy=False,
+    )
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+
+    first = scanner.scan_reference_like(
+        0.0,
+        100.0,
+        50.0,
+        90.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    second = scanner.scan_reference_like(
+        0.0,
+        100.0,
+        50.0,
+        90.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    ft, pt, tt = first
+
+    for first_array, second_array in zip(first, second):
+        assert first_array.shape == image.shape
+        assert first_array.dtype == np.float32
+        assert np.isfinite(first_array).all()
+        np.testing.assert_array_equal(first_array, second_array)
+
+    max_mask = ft == np.max(ft)
+    assert np.count_nonzero(max_mask) > 0
+    assert np.all(np.abs(distance_a[max_mask]) <= 1.0)
+    assert np.all(np.abs(distance_b[max_mask]) <= 1.0)
+    assert np.unique(pt[max_mask]).size == 1
+    assert np.unique(tt[max_mask]).size == 1
+    np.testing.assert_array_equal(
+        np.unique(pt[max_mask]),
+        np.intersect1d(
+            np.unique(pt[max_mask]),
+            scanner.reference_like_strike_sampling(0.0, 100.0),
+        ),
+    )
+    np.testing.assert_array_equal(
+        np.unique(tt[max_mask]),
+        np.intersect1d(
+            np.unique(tt[max_mask]),
+            scanner.reference_like_dip_sampling(50.0, 90.0),
+        ),
+    )
 
 
 def test_scan_reference_like_does_not_call_default_scan(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -521,7 +723,7 @@ def test_scan_uses_reference_like_sampling_for_constant_input() -> None:
 
 
 def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> None:
-    true_phi = 45.0
+    true_phi = 60.0
     true_theta = 50.0
     image, distance = _low_planarity_fault(true_phi, true_theta)
     scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
@@ -545,10 +747,28 @@ def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> Non
     assert float(np.mean(ft[near_plane])) > 2.0 * float(np.mean(ft[far_from_plane]))
 
     high_likelihood = ft >= np.percentile(ft, 98.0)
-    phi_error = _periodic_angle_error(pt[high_likelihood], true_phi, period=180.0)
-    theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
-    assert float(np.median(phi_error)) <= 31.0
-    assert float(np.median(theta_error)) <= 31.0
+    angle_error = strike_dip_angle_error(
+        pt[high_likelihood],
+        tt[high_likelihood],
+        expected_strike=true_phi,
+        expected_dip=true_theta,
+        strike_period=180.0,
+    )
+    assert float(np.median(angle_error["strike"])) <= 31.0
+    assert float(np.median(angle_error["dip"])) <= 31.0
+
+
+def test_scan_and_scan_fast_are_finite_on_same_synthetic_planar_volume() -> None:
+    image, _ = _low_planarity_fault(45.0, 50.0, shape=(17, 18, 19), width=1.0)
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    scan_outputs = scanner.scan(0.0, 90.0, 20.0, 80.0, image)
+    fast_outputs = scanner.scan_fast(0.0, 90.0, 20.0, 80.0, image)
+
+    for array in (*scan_outputs, *fast_outputs):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
 
 
 def test_scan_fast_returns_finite_normalized_outputs() -> None:
@@ -589,7 +809,7 @@ def test_scan_fast_constant_input_uses_derivative_bank_sampling() -> None:
     )
 
 
-def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
+def test_thin_normal_mode_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((7, 9, 7), dtype=np.float32)
     ft[1:6, 3, 1:6] = 0.6
@@ -601,16 +821,12 @@ def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
     pt_before = pt.copy()
     tt_before = tt.copy()
 
-    thinned_ft, thinned_pt, thinned_tt = scanner.thin(ft, pt, tt)
-    normal_ft, normal_pt, normal_tt = scanner.thin(ft, pt, tt, mode="normal")
+    thinned_ft, thinned_pt, thinned_tt = scanner.thin(ft, pt, tt, mode="normal")
 
     for array in (thinned_ft, thinned_pt, thinned_tt):
         assert array.shape == ft.shape
         assert array.dtype == np.float32
         assert np.isfinite(array).all()
-    np.testing.assert_array_equal(normal_ft, thinned_ft)
-    np.testing.assert_array_equal(normal_pt, thinned_pt)
-    np.testing.assert_array_equal(normal_tt, thinned_tt)
     np.testing.assert_array_equal(ft, ft_before)
     np.testing.assert_array_equal(pt, pt_before)
     np.testing.assert_array_equal(tt, tt_before)
@@ -622,6 +838,27 @@ def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
     np.testing.assert_array_equal(thinned_tt[thinned_ft > 0.0], tt[thinned_ft > 0.0])
     np.testing.assert_array_equal(thinned_pt[thinned_ft == 0.0], 0.0)
     np.testing.assert_array_equal(thinned_tt[thinned_ft == 0.0], 0.0)
+
+
+def test_thin_default_matches_reference_mode() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((7, 7, 2), dtype=np.float32)
+    ft[3, 2:5, :] = np.array([[0.4, 0.2], [1.0, 0.8], [0.3, 0.1]], dtype=np.float32)
+    pt = np.full_like(ft, 10.0)
+    tt = np.full_like(ft, 55.0)
+
+    default_ft, default_pt, default_tt = scanner.thin(ft, pt, tt)
+    reference_ft, reference_pt, reference_tt = scanner.thin(ft, pt, tt, mode="reference")
+
+    for array in (default_ft, default_pt, default_tt):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert float(default_ft.min()) >= 0.0
+    assert float(default_ft.max()) <= 1.0
+    np.testing.assert_array_equal(default_ft, reference_ft)
+    np.testing.assert_array_equal(default_pt, reference_pt)
+    np.testing.assert_array_equal(default_tt, reference_tt)
 
 
 def test_thin_reference_mode_returns_float32_arrays_and_preserves_values() -> None:
@@ -734,7 +971,7 @@ def test_thin_validates_inputs_for_modes(
         scanner.thin(ft, pt, tt, mode=mode)
 
 
-def test_thin_reference_mode_uses_reference_45_degree_diagonal() -> None:
+def test_thin_default_uses_reference_45_degree_diagonal() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((4, 4, 1), dtype=np.float32)
     ft[1, 1, 0] = 1.0
@@ -746,7 +983,6 @@ def test_thin_reference_mode_uses_reference_45_degree_diagonal() -> None:
         ft,
         pt,
         tt,
-        mode="reference",
         reference_sigma=0.0,
     )
 
@@ -821,13 +1057,3 @@ def _low_planarity_fault(
     high_likelihood, distance = _planar_gaussian_fault(phi, theta, shape=shape, width=width)
     planarity = np.float32(1.0) - high_likelihood
     return planarity.astype(np.float32, copy=False), distance
-
-
-def _periodic_angle_error(
-    actual: np.ndarray,
-    expected: float,
-    *,
-    period: float,
-) -> np.ndarray:
-    half_period = np.float32(0.5 * period)
-    return np.abs((actual - np.float32(expected) + half_period) % period - half_period)

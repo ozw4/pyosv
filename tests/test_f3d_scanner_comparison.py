@@ -90,7 +90,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.crop_shape == (64, 64, 64)
     assert args.max_crops == 1
     assert args.interior_margin == 0
-    assert args.scanner_backends == ["current"]
+    assert args.scanner_backends == ["fast"]
     assert args.percentile == 99.9
     assert args.min_separation == 48.0
     assert args.sigma1 == 8.0
@@ -107,7 +107,7 @@ def test_parser_accepts_scanner_backend_arguments(monkeypatch: pytest.MonkeyPatc
     args = module.build_parser().parse_args(
         [
             "--scanner-backends",
-            "current,reference-like",
+            "fast,reference-like",
             "--count",
             "3",
             "--interior-margin",
@@ -115,7 +115,7 @@ def test_parser_accepts_scanner_backend_arguments(monkeypatch: pytest.MonkeyPatc
         ]
     )
 
-    assert args.scanner_backends == ["current", "reference-like"]
+    assert args.scanner_backends == ["fast", "reference-like"]
     assert args.max_crops == 3
     assert args.interior_margin == 16
 
@@ -153,7 +153,7 @@ def test_build_report_is_json_serializable_for_synthetic_arrays(
 
     assert loaded["comparison"] == "scanner-only ft_py.dat versus public fl.dat"
     assert loaded["config"]["comparison"] == "f3d_scanner_backend_comparison"
-    assert loaded["config"]["scanner_backends"] == ["current"]
+    assert loaded["config"]["scanner_backends"] == ["fast"]
     assert loaded["crops"][0]["pyosv"]["ft_py"]["shape"] == [6, 6, 6]
     assert loaded["crops"][0]["reference"]["fl"]["max"] == 1.0
     assert loaded["crops"][0]["normalized_correlation"]["ft_py_vs_fl"] == pytest.approx(1.0)
@@ -248,20 +248,20 @@ def test_run_example_writes_multiple_backend_schema_without_f3_data(
         interior_margin=1,
         percentile=99.0,
         min_separation=1.0,
-        scanner_backends=["current", "reference-like"],
+        scanner_backends=["fast", "reference-like"],
     )
 
     crop = report["crops"][0]
-    assert report["config"]["scanner_backends"] == ["current", "reference-like"]
-    assert set(crop["backends"]) == {"current", "reference-like"}
-    assert report["aggregate"]["backends"]["current"]["crop_count"] == 1
-    assert crop["backends"]["current"]["normalized_correlation"]["full_crop"][
+    assert report["config"]["scanner_backends"] == ["fast", "reference-like"]
+    assert set(crop["backends"]) == {"fast", "reference-like"}
+    assert report["aggregate"]["backends"]["fast"]["crop_count"] == 1
+    assert crop["backends"]["fast"]["normalized_correlation"]["full_crop"][
         "ft_vs_fl"
     ] == pytest.approx(1.0)
     assert "finite_value_report" in crop["backends"]["reference-like"]
     assert (
         "top_percentile_overlap.interior.ft_vs_fl.99.jaccard"
-        in (report["aggregate"]["backends"]["current"]["metric_paths"])
+        in (report["aggregate"]["backends"]["fast"]["metric_paths"])
     )
 
 
@@ -277,6 +277,77 @@ def test_unknown_scanner_backend_fails_explicitly(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--scanner-backends", "missing"])
+
+
+def test_run_scanner_backend_dispatch_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_scanner_module(monkeypatch)
+    import pyosv.orient3d as orient3d
+
+    calls: list[tuple[str, object]] = []
+
+    class RecordingScanner:
+        def __init__(self, *, sigma1: float, sigma2: float) -> None:
+            calls.append(("init", (sigma1, sigma2)))
+
+        def scan_fast(
+            self,
+            phi_min: float,
+            phi_max: float,
+            theta_min: float,
+            theta_max: float,
+            ep: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            calls.append(("scan_fast", (phi_min, phi_max, theta_min, theta_max)))
+            outputs = _synthetic_outputs(ep.shape)
+            return outputs["ft_py.dat"], outputs["pt_py.dat"], outputs["tt_py.dat"]
+
+        def scan_reference_like(
+            self,
+            phi_min: float,
+            phi_max: float,
+            theta_min: float,
+            theta_max: float,
+            ep: np.ndarray,
+            *,
+            backend: str,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            calls.append(("scan_reference_like", backend))
+            outputs = _synthetic_outputs(ep.shape)
+            return outputs["ft_py.dat"], outputs["pt_py.dat"], outputs["tt_py.dat"]
+
+        def scan(self, *args: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            raise AssertionError("diagnostic backend dispatch must not call scan()")
+
+    monkeypatch.setattr(orient3d, "FaultOrientScanner3", RecordingScanner)
+    ep = np.zeros((6, 6, 6), dtype=np.float32)
+
+    module.run_scanner(
+        ep,
+        backend="fast",
+        sigma1=1.0,
+        sigma2=2.0,
+        phi_min=0.0,
+        phi_max=1.0,
+        theta_min=2.0,
+        theta_max=3.0,
+    )
+    module.run_scanner(
+        ep,
+        backend="reference-like",
+        sigma1=1.0,
+        sigma2=2.0,
+        phi_min=0.0,
+        phi_max=1.0,
+        theta_min=2.0,
+        theta_max=3.0,
+    )
+
+    assert calls == [
+        ("init", (1.0, 2.0)),
+        ("scan_fast", (0.0, 1.0, 2.0, 3.0)),
+        ("init", (1.0, 2.0)),
+        ("scan_reference_like", "rotate_shear"),
+    ]
 
 
 def test_crop_selection_is_deterministic_for_same_inputs(
@@ -377,7 +448,7 @@ def test_f3d_scanner_comparison_reference_like_backend_small_crop(
         crop_shape=(8, 8, 8),
         max_crops=1,
         interior_margin=1,
-        scanner_backends=["current", "reference-like"],
+        scanner_backends=["fast", "reference-like"],
         percentile=99.9,
         min_separation=1.0,
         sigma1=1.0,
@@ -389,9 +460,9 @@ def test_f3d_scanner_comparison_reference_like_backend_small_crop(
     )
 
     crop = report["crops"][0]
-    assert report["config"]["scanner_backends"] == ["current", "reference-like"]
-    assert set(crop["backends"]) == {"current", "reference-like"}
-    for backend in ("current", "reference-like"):
+    assert report["config"]["scanner_backends"] == ["fast", "reference-like"]
+    assert set(crop["backends"]) == {"fast", "reference-like"}
+    for backend in ("fast", "reference-like"):
         metrics = crop["backends"][backend]
         assert metrics["pyosv"]["ft_py"]["shape"] == [8, 8, 8]
         assert metrics["pyosv"]["ft_py"]["dtype"] == "float32"

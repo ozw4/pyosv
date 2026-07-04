@@ -31,7 +31,7 @@ DEFAULT_CENTER_PERCENTILE = 99.9
 DEFAULT_MIN_SEPARATION = 48.0
 DEFAULT_REFERENCE_PERCENTILE = 99.0
 REFERENCE_OSV_DIR = Path(__file__).resolve().parents[1] / "reference_osv"
-SCANNER_BACKENDS = ("current", "reference-like")
+SCANNER_BACKENDS = ("fast", "reference-like")
 SCANNER_THIN_MODES = ("normal", "reference")
 AGGREGATE_ROOTS = ("seed_diagnostics",)
 
@@ -116,7 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--scanner-backends",
         type=parse_scanner_backends,
         default=SCANNER_BACKENDS,
-        help='Comma-separated scanner backends: "current", "reference-like".',
+        help=(
+            'Comma-separated scanner backends: "fast"=legacy scan_fast, '
+            '"reference-like"=rotate/shear scan_reference_like.'
+        ),
     )
     parser.add_argument(
         "--scanner-thin-modes",
@@ -999,13 +1002,20 @@ def _scan_backend(
     theta_max: float,
     ep: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if backend == "current":
-        return scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
+    if backend == "fast":
+        return scanner.scan_fast(phi_min, phi_max, theta_min, theta_max, ep)
     if backend == "reference-like":
         scan_reference_like = getattr(scanner, "scan_reference_like", None)
         if not callable(scan_reference_like):
             raise ValueError("reference-like scanner backend is unavailable")
-        return scan_reference_like(phi_min, phi_max, theta_min, theta_max, ep)
+        return scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            ep,
+            backend="rotate_shear",
+        )
     raise ValueError(f"unknown scanner backend: {backend}")
 
 

@@ -2,29 +2,26 @@
 
 `pyosv` has two 3D thinning modes for scanner and voter outputs:
 
+- `reference`: reference-like behavior. It smooths the comparison volume, bins
+  samples by strike angle, and keeps local maxima in the `i2-i3` plane. Kept
+  likelihood samples write the smoothed comparison values, matching the current
+  Python reference-like helper.
 - `normal`: existing pyosv behavior. It uses 3D normal-vector interpolation for
-  non-maximum suppression and remains the default for existing workflows and
-  tests.
-- `reference`: opt-in reference-like behavior. It smooths the comparison volume,
-  bins samples by strike angle, and keeps local maxima in the `i2-i3` plane.
-  Kept likelihood samples write the smoothed comparison values, matching the
-  current Python reference-like helper.
+  non-maximum suppression.
 
-The current implementation still defaults to `normal`; that is an implementation
-state for existing tests and workflows, not the reference-first end state for
-3D thinning. The reference-first direction is to validate `reference` mode and
-promote it in a later issue if it is suitable for normal workflows. Until then,
-select `mode="reference"` explicitly for reference-like thinning reports or
+`FaultOrientScanner3.thin(...)` defaults to `mode="reference"`. The legacy
+fault-normal scanner thinning path remains available with `mode="normal"`.
+`OptimalSurfaceVoter.thin(...)` still defaults to `mode="normal"`; pass
+`mode="reference"` explicitly for reference-like voter thinning reports or
 diagnostics.
 
-Use the mode on scanner thinning:
+Use scanner reference-like thinning:
 
 ```python
 fet, fpt, ftt = scanner.thin(
     ft,
     pt,
     tt,
-    mode="reference",
     reference_sigma=1.0,
 )
 ```
@@ -56,7 +53,7 @@ necessarily high voxel-wise correlation. Check whether:
 - ridge overlay figures show fewer far-away candidate-only ridges.
 - exact overlap remains plausible even if it is low for sparse ridges.
 
-The previous current/current baseline is useful context:
+The previous normal/normal baseline is useful context:
 
 ```text
 normalized_correlation.interior.fvt.mean ~= 0.224

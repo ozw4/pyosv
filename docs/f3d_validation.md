@@ -96,15 +96,16 @@ a specific manual crop.
 The 3D scanner and voter thinning steps support two modes:
 
 - `normal`: existing pyosv behavior. It uses 3D normal-vector interpolation for
-  non-maximum suppression and remains the default.
-- `reference`: opt-in reference-like behavior. It smooths the comparison volume,
-  bins samples by strike angle, and compares local maxima in the `i2-i3` plane.
+  non-maximum suppression. For scanner thinning this is now the legacy opt-in
+  mode; for voter thinning it remains the default.
+- `reference`: reference-like behavior. It smooths the comparison volume, bins
+  samples by strike angle, and compares local maxima in the `i2-i3` plane.
 
-Use `reference` mode explicitly when running reference-style thinning reports.
-It is closer to the Java thinning workflow, but it is still Pythonic and not
-bit-exact Mines JTK. Existing pyosv behavior and tests remain unchanged until a
-later issue changes the default. See `docs/reference_like_thinning.md` for the
-API-level details.
+Scanner thinning defaults to `reference`; pass `--scanner-thin-mode normal`
+only when comparing against older pyosv runs. Voter thinning still defaults to
+`normal`; pass `--voter-thin-mode reference` for reference-like voter thinning
+reports. Both modes are Pythonic approximations, not bit-exact Mines JTK ports.
+See `docs/reference_like_thinning.md` for the API-level details.
 
 Run one crop with reference-like scanner and voter thinning:
 
@@ -136,7 +137,7 @@ python examples/report_3d_f3d_multicrop.py \
   --write-markdown-index
 ```
 
-Run the thinning ablation report to compare current/current, mixed, and
+Run the thinning ablation report to compare normal/normal, mixed, and
 reference/reference thinning cases:
 
 ```bash
@@ -236,7 +237,7 @@ necessarily high voxel-wise correlation. The main checks are:
 - ridge overlay figures showing fewer far-away candidate-only ridges.
 - exact overlap remaining interpretable even when it is low for sparse ridges.
 
-Previous current/current baseline context:
+Previous normal/normal baseline context:
 
 ```text
 normalized_correlation.interior.fvt.mean ~= 0.224

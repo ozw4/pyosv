@@ -145,22 +145,28 @@ class FaultOrientScanner3:
         theta_max: float,
         g: np.ndarray,
         *,
+        backend: str = "rotate_shear",
         interpolation_order: int = 1,
         smoothing_sigma: float | None = None,
         normalize: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Scan using an approximate Java reference-like orientation sweep.
 
-        This backend is not a bit-exact Mines JTK port. It uses SciPy
-        interpolation to sample in each candidate strike/dip coordinate system,
-        smooths planarity values along candidate fault-parallel directions,
-        converts the smoothed response to likelihood with ``1 - smoothed**4``,
-        and keeps the best orientation. It is the default :meth:`scan` backend.
+        ``backend="rotate_shear"`` is the default reference-first path. It uses
+        SciPy interpolation to approximate the Java scanner's rotate, strike
+        smooth, dip shear, dip smooth, unshear, likelihood, and unrotate stages.
+        ``backend="directional"`` keeps the previous practical approximation
+        that directly smooths along candidate fault-parallel directions.
+
+        Neither backend is a bit-exact Mines JTK port. Both convert smoothed
+        planarity values to likelihood with ``1 - smoothed**4`` and keep the
+        best orientation.
         """
 
         phi_sampling = self.reference_like_strike_sampling(phi_min, phi_max)
         theta_sampling = self.reference_like_dip_sampling(theta_min, theta_max)
         image = self.validate_image(g, "g")
+        backend_name = _validate_reference_like_backend(backend)
         order = _validate_interpolation_order(interpolation_order)
         sigma = _validate_optional_nonnegative_float(
             smoothing_sigma,
@@ -173,6 +179,16 @@ class FaultOrientScanner3:
             pt = np.full_like(image, phi_sampling[0], dtype=np.float32)
             tt = np.full_like(image, theta_sampling[0], dtype=np.float32)
             return ft, pt, tt
+
+        if backend_name == "rotate_shear":
+            return self._scan_rotate_shear_reference_like(
+                phi_sampling,
+                theta_sampling,
+                image,
+                interpolation_order=order,
+                smoothing_sigma=sigma,
+                normalize=normalize_output,
+            )
 
         return self._scan_reference_like_orientation_sweep(
             phi_sampling,
@@ -189,7 +205,7 @@ class FaultOrientScanner3:
         pt: np.ndarray,
         tt: np.ndarray,
         *,
-        mode: str = "normal",
+        mode: str = "reference",
         reference_sigma: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Keep likelihood maxima using the selected 3D thinning mode.
@@ -200,10 +216,11 @@ class FaultOrientScanner3:
         orientation values match the input, and non-retained samples use zero
         as the orientation sentinel.
 
-        ``mode="normal"`` preserves the default local fault-normal thinning.
-        ``mode="reference"`` applies reference-like strike-binned local-maximum
-        suppression in the ``i2-i3`` plane, using ``reference_sigma`` for
-        smoothing inside the shared helper.
+        ``mode="reference"`` applies the default reference-like strike-binned
+        local-maximum suppression in the ``i2-i3`` plane, using
+        ``reference_sigma`` for smoothing inside the shared helper.
+        ``mode="normal"`` preserves the legacy local fault-normal thinning as
+        an explicit opt-in mode.
         """
 
         ft_array, pt_array, tt_array = _validate_matching_finite_images3(
@@ -282,6 +299,94 @@ class FaultOrientScanner3:
             best_phi.astype(np.float32, copy=False),
             best_theta.astype(np.float32, copy=False),
         )
+
+    def _scan_rotate_shear_reference_like(
+        self,
+        phi_sampling: np.ndarray,
+        theta_sampling: np.ndarray,
+        image: np.ndarray,
+        *,
+        interpolation_order: int,
+        smoothing_sigma: float,
+        normalize: bool,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        best_score = np.zeros_like(image, dtype=np.float32)
+        best_phi = np.full_like(image, phi_sampling[0], dtype=np.float32)
+        best_theta = np.full_like(image, theta_sampling[0], dtype=np.float32)
+
+        for phi in phi_sampling:
+            rotated = _rotate3_axis1(
+                image,
+                float(phi),
+                interpolation_order=interpolation_order,
+            )
+            strike_smoothed = _smooth_rotated_strike_axis(
+                rotated,
+                sigma=smoothing_sigma,
+            )
+            rotated_scores = self._scan_theta_shear_reference_like(
+                theta_sampling,
+                strike_smoothed,
+                interpolation_order=interpolation_order,
+                smoothing_sigma=smoothing_sigma,
+            )
+            for theta, rotated_score in zip(theta_sampling, rotated_scores):
+                score = _unrotate3_axis1(
+                    rotated_score,
+                    image.shape,
+                    float(phi),
+                    interpolation_order=interpolation_order,
+                )
+                score = np.clip(score, np.float32(0.0), np.float32(1.0)).astype(
+                    np.float32,
+                    copy=False,
+                )
+                better = score > best_score
+                best_score[better] = score[better]
+                best_phi[better] = phi
+                best_theta[better] = theta
+
+        if normalize:
+            ft = _normalize_reference_like_likelihood(best_score)
+        else:
+            ft = np.maximum(best_score, np.float32(0.0)).astype(np.float32, copy=False)
+
+        theta_min = np.float32(theta_sampling[0])
+        theta_max = np.float32(theta_sampling[-1])
+        return (
+            ft,
+            best_phi.astype(np.float32, copy=False),
+            np.clip(best_theta, theta_min, theta_max).astype(np.float32, copy=False),
+        )
+
+    def _scan_theta_shear_reference_like(
+        self,
+        theta_sampling: np.ndarray,
+        rotated: np.ndarray,
+        *,
+        interpolation_order: int,
+        smoothing_sigma: float,
+    ) -> list[np.ndarray]:
+        scores: list[np.ndarray] = []
+        for theta in theta_sampling:
+            shear = _dip_shear_from_theta(float(theta))
+            sheared = _shear_rotated_volume(
+                rotated,
+                shear,
+                interpolation_order=interpolation_order,
+            )
+            dip_smoothed = _smooth_sheared_dip_axis(
+                sheared,
+                sigma=smoothing_sigma,
+                theta_degrees=float(theta),
+            )
+            unsheared = _unshear_rotated_volume(
+                dip_smoothed,
+                shear,
+                interpolation_order=interpolation_order,
+            )
+            scores.append(_reference_like_planarity_to_likelihood(unsheared))
+        return scores
 
     def _scan_reference_like_orientation_sweep(
         self,
@@ -458,6 +563,16 @@ def _validate_bool(value: bool, name: str) -> bool:
     return value
 
 
+def _validate_reference_like_backend(backend: str) -> str:
+    if not isinstance(backend, str):
+        raise ValueError("backend must be 'rotate_shear' or 'directional'")
+
+    if backend not in {"rotate_shear", "directional"}:
+        raise ValueError("backend must be 'rotate_shear' or 'directional'")
+
+    return backend
+
+
 def _validate_finite_image3(image: np.ndarray, name: str) -> np.ndarray:
     image_array = np.asarray(image)
     if image_array.ndim != 3:
@@ -550,6 +665,285 @@ def _coordinate_grids3(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     i3, i2, i1 = np.indices(shape, dtype=np.float32)
     return i1, i2, i3
+
+
+def _rotate3_axis1(
+    volume: np.ndarray,
+    phi_degrees: float,
+    *,
+    interpolation_order: int,
+) -> np.ndarray:
+    """Rotate a volume around axis 1 so strike is aligned with rotated axis 3."""
+
+    n3, n2, _ = volume.shape
+    phi = math.radians(phi_degrees)
+    sin_phi = np.float32(math.sin(phi))
+    cos_phi = np.float32(math.cos(phi))
+    nrot2, nrot3, origin2, origin3 = _rotated_axis1_grid(
+        n2,
+        n3,
+        sin_phi=float(sin_phi),
+        cos_phi=float(cos_phi),
+    )
+    rotated_shape = (nrot3, nrot2, volume.shape[2])
+    i1, j2, j3 = _coordinate_grids3(rotated_shape)
+    center2 = np.float32(0.5 * (n2 - 1))
+    center3 = np.float32(0.5 * (n3 - 1))
+    d2 = j2 + origin2
+    d3 = j3 + origin3
+    source_x2 = center2 + d2 * cos_phi + d3 * sin_phi
+    source_x3 = center3 - d2 * sin_phi + d3 * cos_phi
+    rotated = _sample3_with_constant(
+        volume,
+        i1,
+        source_x2.astype(np.float32, copy=False),
+        source_x3.astype(np.float32, copy=False),
+        order=interpolation_order,
+        fill_value=1.0,
+    )
+    return np.asarray(rotated, dtype=np.float32)
+
+
+def _unrotate3_axis1(
+    rotated: np.ndarray,
+    shape: tuple[int, int, int],
+    phi_degrees: float,
+    *,
+    interpolation_order: int,
+    fill_value: float = 0.0,
+) -> np.ndarray:
+    """Unrotate an axis-1 rotated volume back to global coordinates."""
+
+    n3, n2, _ = shape
+    i1, i2, i3 = _coordinate_grids3(shape)
+    center2 = np.float32(0.5 * (n2 - 1))
+    center3 = np.float32(0.5 * (n3 - 1))
+    phi = math.radians(phi_degrees)
+    sin_phi = np.float32(math.sin(phi))
+    cos_phi = np.float32(math.cos(phi))
+    _, _, origin2, origin3 = _rotated_axis1_grid(
+        n2,
+        n3,
+        sin_phi=float(sin_phi),
+        cos_phi=float(cos_phi),
+    )
+    d2 = i2 - center2
+    d3 = i3 - center3
+    source_x2 = d2 * cos_phi - d3 * sin_phi - origin2
+    source_x3 = d2 * sin_phi + d3 * cos_phi - origin3
+    unrotated = _sample3_with_constant(
+        rotated,
+        i1,
+        source_x2.astype(np.float32, copy=False),
+        source_x3.astype(np.float32, copy=False),
+        order=interpolation_order,
+        fill_value=fill_value,
+    )
+    return np.asarray(unrotated, dtype=np.float32)
+
+
+def _rotated_axis1_grid(
+    n2: int,
+    n3: int,
+    *,
+    sin_phi: float,
+    cos_phi: float,
+) -> tuple[int, int, np.float32, np.float32]:
+    center2 = 0.5 * (n2 - 1)
+    center3 = 0.5 * (n3 - 1)
+    corners = (
+        (-center2, -center3),
+        (-center2, (n3 - 1) - center3),
+        ((n2 - 1) - center2, -center3),
+        ((n2 - 1) - center2, (n3 - 1) - center3),
+    )
+    rotated2_values = []
+    rotated3_values = []
+    for d2, d3 in corners:
+        rotated2_values.append(d2 * cos_phi - d3 * sin_phi)
+        rotated3_values.append(d2 * sin_phi + d3 * cos_phi)
+
+    min2 = min(rotated2_values)
+    max2 = max(rotated2_values)
+    min3 = min(rotated3_values)
+    max3 = max(rotated3_values)
+    radius2 = max(abs(min2), abs(max2))
+    radius3 = max(abs(min3), abs(max3))
+    nrot2 = _symmetric_sample_count_covering_radius(radius2)
+    nrot3 = _symmetric_sample_count_covering_radius(radius3)
+    return nrot2, nrot3, np.float32(-radius2), np.float32(-radius3)
+
+
+def _symmetric_sample_count_covering_radius(radius: float) -> int:
+    nearest_integer = round(radius)
+    if math.isclose(radius, nearest_integer, abs_tol=1.0e-6):
+        half_width = int(nearest_integer)
+    else:
+        half_width = math.ceil(radius)
+
+    return 2 * half_width + 1
+
+
+def _shear2(
+    image: np.ndarray,
+    shear: float,
+    *,
+    interpolation_order: int,
+) -> np.ndarray:
+    """Shear a ``(n2, n1)`` slice in axis 2 by ``shear * axis1``."""
+
+    n2, n1 = image.shape
+    i2, i1 = np.indices((n2, n1), dtype=np.float32)
+    center1 = np.float32(0.5 * (n1 - 1))
+    source_x2 = i2 - np.float32(shear) * (i1 - center1)
+    sheared = _sample2_with_constant(
+        image,
+        i1,
+        source_x2.astype(np.float32, copy=False),
+        order=interpolation_order,
+        fill_value=1.0,
+    )
+    return np.asarray(sheared, dtype=np.float32)
+
+
+def _unshear2(
+    sheared: np.ndarray,
+    shear: float,
+    *,
+    interpolation_order: int,
+) -> np.ndarray:
+    """Restore a same-shape slice previously transformed by :func:`_shear2`."""
+
+    return _shear2(sheared, -shear, interpolation_order=interpolation_order)
+
+
+def _shear_rotated_volume(
+    rotated: np.ndarray,
+    shear: float,
+    *,
+    interpolation_order: int,
+) -> np.ndarray:
+    sheared = np.empty_like(rotated, dtype=np.float32)
+    for i3 in range(rotated.shape[0]):
+        sheared[i3] = _shear2(
+            rotated[i3],
+            shear,
+            interpolation_order=interpolation_order,
+        )
+    return sheared
+
+
+def _unshear_rotated_volume(
+    sheared: np.ndarray,
+    shear: float,
+    *,
+    interpolation_order: int,
+) -> np.ndarray:
+    unsheared = np.empty_like(sheared, dtype=np.float32)
+    for i3 in range(sheared.shape[0]):
+        unsheared[i3] = _unshear2(
+            sheared[i3],
+            shear,
+            interpolation_order=interpolation_order,
+        )
+    return unsheared
+
+
+def _smooth_rotated_strike_axis(rotated: np.ndarray, *, sigma: float) -> np.ndarray:
+    if sigma <= 0.0:
+        return rotated.astype(np.float32, copy=True)
+
+    smoothed = ndimage.gaussian_filter1d(
+        rotated,
+        sigma=sigma,
+        axis=0,
+        mode="nearest",
+    )
+    return smoothed.astype(np.float32, copy=False)
+
+
+def _smooth_sheared_dip_axis(
+    sheared: np.ndarray,
+    *,
+    sigma: float,
+    theta_degrees: float,
+) -> np.ndarray:
+    if sigma <= 0.0:
+        return sheared.astype(np.float32, copy=True)
+
+    sin_theta = abs(math.sin(math.radians(theta_degrees)))
+    axis_sigma = max(0.0, sigma * sin_theta)
+    if axis_sigma <= 0.0:
+        return sheared.astype(np.float32, copy=True)
+
+    smoothed = ndimage.gaussian_filter1d(
+        sheared,
+        sigma=axis_sigma,
+        axis=2,
+        mode="nearest",
+    )
+    return smoothed.astype(np.float32, copy=False)
+
+
+def _dip_shear_from_theta(theta_degrees: float) -> np.float32:
+    theta = math.radians(theta_degrees)
+    sin_theta = math.sin(theta)
+    cos_theta = math.cos(theta)
+    if abs(cos_theta) <= 1.0e-6:
+        return np.float32(0.0)
+    if abs(sin_theta) <= 1.0e-6:
+        return np.float32(math.copysign(1.0e4, -cos_theta))
+
+    shear = -cos_theta / sin_theta
+    return np.float32(np.clip(shear, -1.0e4, 1.0e4))
+
+
+def _reference_like_planarity_to_likelihood(smoothed: np.ndarray) -> np.ndarray:
+    clipped = np.clip(smoothed, np.float32(0.0), np.float32(1.0))
+    score = np.float32(1.0) - clipped ** np.float32(4.0)
+    return np.clip(score, np.float32(0.0), np.float32(1.0)).astype(
+        np.float32,
+        copy=False,
+    )
+
+
+def _sample2_with_constant(
+    image: np.ndarray,
+    x1: np.ndarray,
+    x2: np.ndarray,
+    *,
+    order: int,
+    fill_value: float,
+) -> np.ndarray:
+    coordinates = np.stack((x2, x1))
+    sampled = ndimage.map_coordinates(
+        image,
+        coordinates,
+        order=order,
+        mode="constant",
+        cval=float(fill_value),
+    )
+    return sampled.astype(np.float32, copy=False)
+
+
+def _sample3_with_constant(
+    volume: np.ndarray,
+    x1: np.ndarray,
+    x2: np.ndarray,
+    x3: np.ndarray,
+    *,
+    order: int,
+    fill_value: float,
+) -> np.ndarray:
+    coordinates = np.stack((x3, x2, x1))
+    sampled = ndimage.map_coordinates(
+        volume,
+        coordinates,
+        order=order,
+        mode="constant",
+        cval=float(fill_value),
+    )
+    return sampled.astype(np.float32, copy=False)
 
 
 def _orientation_basis_from_strike_and_dip(

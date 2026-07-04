@@ -48,15 +48,13 @@ components unless a specific reference behavior is shown to be defective.
 
 ## Current 3D Thinning Direction
 
-`FaultOrientScanner3.thin` and `OptimalSurfaceVoter.thin` currently default to
-`mode="normal"`, the existing fault-normal non-maximum suppression path used by
-current tests and examples. This is the current implementation state, not the
-reference-first end state for 3D thinning.
+`FaultOrientScanner3.thin` defaults to `mode="reference"`, the reference-like
+strike-binned non-maximum suppression path. Its legacy fault-normal path remains
+available with `mode="normal"`.
 
-The reference-first direction is to validate `mode="reference"` and promote it
-in a later issue if it is suitable for normal workflows. Until that default
-changes, callers that need reference-like strike-binned thinning must pass
-`mode="reference"` explicitly.
+`OptimalSurfaceVoter.thin` still defaults to `mode="normal"`, the existing
+fault-normal non-maximum suppression path. Callers that need reference-like
+strike-binned voter thinning must pass `mode="reference"` explicitly.
 
 ## Testing Policy
 
@@ -120,6 +118,26 @@ distance-transform summaries: mean, median, p90, and p95 in each direction. If
 either ridge mask is empty, all distance values are `None` rather than infinite
 or volume-size-dependent placeholders.
 
+`orientation_angle_error(actual, expected_degrees, period=180.0)` reports
+wrapped angular error in degrees. Use `period=180` for axes where opposite
+directions are equivalent, and `period=360` when full azimuth wraparound should
+be preserved. `expected_degrees` may be a scalar synthetic target or a
+broadcast-compatible reference angle array.
+
+`strike_dip_angle_error(actual_strike, actual_dip, expected_strike=...,
+expected_dip=..., strike_period=360.0)` reports strike error with wraparound and
+dip error as a direct absolute difference. Synthetic scanner tests normally use
+the sampled expected strike/dip and assert median or percentile errors within a
+coarse angle-grid tolerance, not exact sample equality.
+
+Scanner validation should be read as signal preservation checks. Constant
+inputs should produce zero likelihood and finite angle arrays. Synthetic ridges
+or planes should place top-percentile likelihood samples on or near the known
+feature, which can be measured with `top_percentile_mask`,
+`buffered_ridge_overlap`, or sparse-distance metrics. The fast and
+reference-like scanner paths only need to be finite and shape-compatible with
+their contracts unless a test is explicitly about one backend's semantics.
+
 ## Threshold Policy
 
 Default tests should check metric well-formedness and deterministic Python
@@ -128,10 +146,10 @@ unless a future issue explicitly defines reference-alignment thresholds for a
 specific feature.
 
 Reference comparisons are report-oriented in this phase. The optional 2D voting
-smoke test prints finite-value reports, normalized correlation, and
-top-percentile overlap at selected percentiles, but it intentionally avoids
-failing on fixed correlation or overlap thresholds while the implementation is
-still evolving.
+and scanner reports print finite-value reports, normalized correlation,
+top-percentile or buffered overlap, and angle-error summaries, but they
+intentionally avoid failing on fixed correlation, overlap, or angle thresholds
+while the implementation is still evolving.
 
 ## Optional Reference Checks
 
@@ -156,6 +174,15 @@ PYOSV_RUN_SLOW_REFERENCE_VOTING=1 \
 python -m pytest -q tests/test_voting2d_reference_smoke.py
 ```
 
-The optional report compares `pyosv` output with existing reference `.dat`
-files. It does not add a runtime dependency on the JVM, Jython, Mines JTK, or
-Gradle, and it does not imply bitwise equivalence.
+To run the optional slow 2D scanner reference report, provide the same
+reference root and opt in with:
+
+```bash
+PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master \
+PYOSV_RUN_SLOW_REFERENCE_SCANNER=1 \
+python -m pytest -q tests/test_orient2d_reference_report.py
+```
+
+The optional reports compare `pyosv` output with existing reference `.dat`
+files. They do not add a runtime dependency on the JVM, Jython, Mines JTK, or
+Gradle, and they do not imply bitwise equivalence.

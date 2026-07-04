@@ -202,6 +202,66 @@ def sparse_ridge_distance_metrics(
     return result
 
 
+def orientation_angle_error(
+    actual: np.ndarray,
+    expected_degrees: float | np.ndarray,
+    *,
+    period: float = 180.0,
+) -> np.ndarray:
+    """Return wrapped absolute angular error in degrees.
+
+    ``period`` controls angle equivalence. Use ``period=180`` for normal or
+    strike axes where opposite directions are equivalent, and ``period=360``
+    when full azimuth wraparound should be preserved.
+    """
+
+    values = np.asarray(actual)
+    expected = np.asarray(expected_degrees)
+    angle_period = _validate_positive_finite_scalar(period, "period")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("actual angles must contain only finite values")
+    if not np.all(np.isfinite(expected)):
+        raise ValueError("expected_degrees must contain only finite values")
+
+    try:
+        actual_values, expected_values = np.broadcast_arrays(
+            values.astype(np.float32, copy=False),
+            expected.astype(np.float32, copy=False),
+        )
+    except ValueError as error:
+        raise ValueError("actual and expected angles must be broadcast-compatible") from error
+
+    half_period = np.float32(0.5 * angle_period)
+    return np.abs(
+        (actual_values - expected_values + half_period) % np.float32(angle_period) - half_period
+    ).astype(np.float32, copy=False)
+
+
+def strike_dip_angle_error(
+    actual_strike: np.ndarray,
+    actual_dip: np.ndarray,
+    *,
+    expected_strike: float,
+    expected_dip: float,
+    strike_period: float = 360.0,
+) -> dict[str, np.ndarray]:
+    """Return strike wraparound error and absolute dip error in degrees."""
+
+    strike_values, dip_values = _validate_comparable_finite_arrays(actual_strike, actual_dip)
+    dip_expected = _validate_finite_scalar(expected_dip, "expected_dip")
+    return {
+        "strike": orientation_angle_error(
+            strike_values,
+            expected_strike,
+            period=strike_period,
+        ),
+        "dip": np.abs(dip_values.astype(np.float32, copy=False) - np.float32(dip_expected)).astype(
+            np.float32,
+            copy=False,
+        ),
+    }
+
+
 def top_percentile_overlap(
     a: np.ndarray, b: np.ndarray, percentile: float = 95.0, *, positive_only: bool = False
 ) -> dict[str, float]:
@@ -258,6 +318,22 @@ def _validate_radius(radius: float) -> None:
         raise ValueError("radius must be finite")
     if radius < 0.0:
         raise ValueError("radius must be non-negative")
+
+
+def _validate_finite_scalar(value: float, name: str) -> float:
+    if not np.isscalar(value):
+        raise ValueError(f"{name} must be a finite scalar")
+    result = float(value)
+    if not np.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _validate_positive_finite_scalar(value: float, name: str) -> float:
+    result = _validate_finite_scalar(value, name)
+    if result <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    return result
 
 
 def _dilate_mask(mask: np.ndarray, radius: float) -> np.ndarray:

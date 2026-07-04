@@ -210,7 +210,7 @@ def run_example(
     surface_smoothing2: float = 2.0,
     d: int = 4,
     fm: float = 0.3,
-    scanner_thin_mode: str = "normal",
+    scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
@@ -441,7 +441,7 @@ def build_config(
     surface_smoothing2: float,
     d: int,
     fm: float,
-    scanner_thin_mode: str = "normal",
+    scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:

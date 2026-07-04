@@ -84,3 +84,48 @@ def test_top_percentile_overlap_reports_mask_agreement() -> None:
 def test_top_percentile_overlap_rejects_nonfinite_values() -> None:
     with pytest.raises(ValueError, match="finite"):
         metrics.top_percentile_overlap(np.array([1.0, np.inf]), np.array([1.0, 2.0]))
+
+
+def test_orientation_angle_error_wraps_periodic_angles() -> None:
+    actual = np.array([359.0, 1.0, 181.0], dtype=np.float32)
+
+    errors = metrics.orientation_angle_error(actual, 0.0, period=360.0)
+
+    np.testing.assert_allclose(errors, np.array([1.0, 1.0, 179.0], dtype=np.float32))
+
+
+def test_orientation_angle_error_supports_modulo_180_axes() -> None:
+    actual = np.array([175.0, 5.0, 95.0], dtype=np.float32)
+
+    errors = metrics.orientation_angle_error(actual, 0.0, period=180.0)
+
+    np.testing.assert_allclose(errors, np.array([5.0, 5.0, 85.0], dtype=np.float32))
+
+
+def test_orientation_angle_error_accepts_expected_angle_arrays() -> None:
+    actual = np.array([179.0, 1.0], dtype=np.float32)
+    expected = np.array([1.0, 179.0], dtype=np.float32)
+
+    errors = metrics.orientation_angle_error(actual, expected, period=180.0)
+
+    np.testing.assert_allclose(errors, np.array([2.0, 2.0], dtype=np.float32))
+
+
+def test_strike_dip_angle_error_wraps_strike_and_uses_absolute_dip() -> None:
+    strike = np.array([[350.0, 5.0]], dtype=np.float32)
+    dip = np.array([[55.0, 65.0]], dtype=np.float32)
+
+    errors = metrics.strike_dip_angle_error(
+        strike,
+        dip,
+        expected_strike=0.0,
+        expected_dip=60.0,
+    )
+
+    np.testing.assert_allclose(errors["strike"], np.array([[10.0, 5.0]], dtype=np.float32))
+    np.testing.assert_allclose(errors["dip"], np.array([[5.0, 5.0]], dtype=np.float32))
+
+
+def test_orientation_angle_error_rejects_nonfinite_angles() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        metrics.orientation_angle_error(np.array([np.nan]), 0.0)

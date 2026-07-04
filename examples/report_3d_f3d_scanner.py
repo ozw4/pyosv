@@ -26,8 +26,8 @@ from pyosv.metrics import finite_value_report, normalized_correlation, top_perce
 NONZERO_EPSILON = 1.0e-6
 OVERLAP_PERCENTILES = (95.0, 99.0, 99.5, 99.9)
 VOLUME_NAMES = ("ft_py.dat", "pt_py.dat", "tt_py.dat")
-DEFAULT_SCANNER_BACKENDS = ("current",)
-SUPPORTED_SCANNER_BACKENDS = ("current", "reference-like")
+DEFAULT_SCANNER_BACKENDS = ("fast",)
+SUPPORTED_SCANNER_BACKENDS = ("fast", "reference-like")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,7 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--scanner-backends",
         type=parse_scanner_backends,
         default=list(DEFAULT_SCANNER_BACKENDS),
-        help="Comma-separated scanner backends: current,reference-like.",
+        help=(
+            "Comma-separated scanner backends: fast=legacy scan_fast, "
+            "reference-like=rotate/shear scan_reference_like."
+        ),
     )
     parser.add_argument(
         "--percentile",
@@ -220,7 +223,7 @@ def run_example(
         for backend_name, outputs in backend_outputs.items():
             if output_dir is not None and save_volumes:
                 crop_volume_dir = Path(output_dir) / f"crop_{crop_index:03d}"
-                if backend_names != ["current"]:
+                if backend_names != ["fast"]:
                     crop_volume_dir /= backend_name
                 write_crop_volumes(crop_volume_dir, outputs)
 
@@ -244,11 +247,11 @@ def run_example(
                     outputs=outputs,
                     figure_percentile=figure_percentile,
                 )
-            if set(backend_names) >= {"current", "reference-like"}:
+            if set(backend_names) >= {"fast", "reference-like"}:
                 crop_report["figures"]["backend_difference"] = write_backend_difference_figures(
                     output_base_dir / f"crop_{crop_index:03d}" / "backend_difference" / "figures",
                     metrics_base_dir=output_base_dir,
-                    current_ft=backend_outputs["current"]["ft_py.dat"],
+                    fast_ft=backend_outputs["fast"]["ft_py.dat"],
                     reference_like_ft=backend_outputs["reference-like"]["ft_py.dat"],
                     figure_percentile=figure_percentile,
                 )
@@ -328,7 +331,7 @@ def build_config(
 def run_scanner(
     ep: np.ndarray,
     *,
-    backend: str = "current",
+    backend: str = "fast",
     sigma1: float,
     sigma2: float,
     phi_min: float,
@@ -339,13 +342,20 @@ def run_scanner(
     from pyosv.orient3d import FaultOrientScanner3
 
     scanner = FaultOrientScanner3(sigma1=sigma1, sigma2=sigma2)
-    if backend == "current":
-        ft, pt, tt = scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
+    if backend == "fast":
+        ft, pt, tt = scanner.scan_fast(phi_min, phi_max, theta_min, theta_max, ep)
     elif backend == "reference-like":
         scan_reference_like = getattr(scanner, "scan_reference_like", None)
-        if scan_reference_like is None:
+        if not callable(scan_reference_like):
             raise NotImplementedError("FaultOrientScanner3.scan_reference_like is unavailable")
-        ft, pt, tt = scan_reference_like(phi_min, phi_max, theta_min, theta_max, ep)
+        ft, pt, tt = scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            ep,
+            backend="rotate_shear",
+        )
     else:
         raise ValueError(f"unknown scanner backend: {backend}")
     return dict(zip(VOLUME_NAMES, (ft, pt, tt), strict=True))
@@ -687,7 +697,7 @@ def write_backend_difference_figures(
     output_dir: str | PathLike[str],
     *,
     metrics_base_dir: str | PathLike[str],
-    current_ft: np.ndarray,
+    fast_ft: np.ndarray,
     reference_like_ft: np.ndarray,
     figure_percentile: float,
 ) -> dict[str, Any]:
@@ -695,7 +705,7 @@ def write_backend_difference_figures(
 
     directory = Path(output_dir)
     base_dir = Path(metrics_base_dir)
-    slice_indices = viz.select_center_slices(np.asarray(current_ft).shape)
+    slice_indices = viz.select_center_slices(np.asarray(fast_ft).shape)
     clip_percentiles = (1.0, float(figure_percentile))
     written: dict[str, Any] = {
         "directory": path_for_metrics(directory, base_dir),
@@ -704,12 +714,12 @@ def write_backend_difference_figures(
         "figure_percentile": float(figure_percentile),
         "files": {},
     }
-    written["files"]["current_vs_reference_like_ft"] = paths_for_metrics(
+    written["files"]["fast_vs_reference_like_ft"] = paths_for_metrics(
         viz.save_volume_comparison_slices(
             directory,
-            reference=current_ft,
+            reference=fast_ft,
             candidate=reference_like_ft,
-            name="current_vs_reference_like_ft",
+            name="fast_vs_reference_like_ft",
             slice_indices=slice_indices,
             clip_percentiles=clip_percentiles,
         ),
@@ -939,9 +949,9 @@ def _important_figure_links(figure_report: Mapping[str, Any]) -> list[tuple[str,
     ft_mip = _nested(files, "ft", "mip")
     if isinstance(ft_mip, str):
         links.append(("ft MIP", ft_mip))
-    backend_diff = _nested(files, "current_vs_reference_like_ft", "i3")
+    backend_diff = _nested(files, "fast_vs_reference_like_ft", "i3")
     if isinstance(backend_diff, str):
-        links.append(("current vs reference-like ft", backend_diff))
+        links.append(("fast vs reference-like ft", backend_diff))
     return links
 
 
