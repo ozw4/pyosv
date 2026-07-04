@@ -149,6 +149,11 @@ the legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` still
 defaults to `mode="normal"`, with `mode="reference"` available for
 reference-like voter thinning.
 
+`OptimalSurfaceVoter` smooths extracted local surfaces before recomputing vote
+strike/dip, matching the reference-first surface-orientation path. Use
+`set_surface_orientation_smoothing(0.0)` only for diagnostics that require the
+older raw-surface behavior.
+
 Migration note: code that relied on the older derivative-bank scanner should
 call `scan_fast()` explicitly. Code that relied on old 3D scanner
 fault-normal thinning should pass `mode="normal"` explicitly, or use
