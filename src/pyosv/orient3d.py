@@ -679,15 +679,18 @@ def _rotate3_axis1(
     phi = math.radians(phi_degrees)
     sin_phi = np.float32(math.sin(phi))
     cos_phi = np.float32(math.cos(phi))
-    r2, r3 = _rotated_axis1_radii(n2, n3, sin_phi=float(sin_phi), cos_phi=float(cos_phi))
-    rotated_shape = (2 * r3 + 1, 2 * r2 + 1, volume.shape[2])
+    nrot2, nrot3, origin2, origin3 = _rotated_axis1_grid(
+        n2,
+        n3,
+        sin_phi=float(sin_phi),
+        cos_phi=float(cos_phi),
+    )
+    rotated_shape = (nrot3, nrot2, volume.shape[2])
     i1, j2, j3 = _coordinate_grids3(rotated_shape)
     center2 = np.float32(0.5 * (n2 - 1))
     center3 = np.float32(0.5 * (n3 - 1))
-    rotated_center2 = np.float32(r2)
-    rotated_center3 = np.float32(r3)
-    d2 = j2 - rotated_center2
-    d3 = j3 - rotated_center3
+    d2 = j2 + origin2
+    d3 = j3 + origin3
     source_x2 = center2 + d2 * cos_phi + d3 * sin_phi
     source_x3 = center3 - d2 * sin_phi + d3 * cos_phi
     rotated = _sample3_with_constant(
@@ -715,15 +718,19 @@ def _unrotate3_axis1(
     i1, i2, i3 = _coordinate_grids3(shape)
     center2 = np.float32(0.5 * (n2 - 1))
     center3 = np.float32(0.5 * (n3 - 1))
-    rotated_center2 = np.float32(0.5 * (rotated.shape[1] - 1))
-    rotated_center3 = np.float32(0.5 * (rotated.shape[0] - 1))
     phi = math.radians(phi_degrees)
     sin_phi = np.float32(math.sin(phi))
     cos_phi = np.float32(math.cos(phi))
+    _, _, origin2, origin3 = _rotated_axis1_grid(
+        n2,
+        n3,
+        sin_phi=float(sin_phi),
+        cos_phi=float(cos_phi),
+    )
     d2 = i2 - center2
     d3 = i3 - center3
-    source_x2 = rotated_center2 + d2 * cos_phi - d3 * sin_phi
-    source_x3 = rotated_center3 + d2 * sin_phi + d3 * cos_phi
+    source_x2 = d2 * cos_phi - d3 * sin_phi - origin2
+    source_x3 = d2 * sin_phi + d3 * cos_phi - origin3
     unrotated = _sample3_with_constant(
         rotated,
         i1,
@@ -735,13 +742,13 @@ def _unrotate3_axis1(
     return np.asarray(unrotated, dtype=np.float32)
 
 
-def _rotated_axis1_radii(
+def _rotated_axis1_grid(
     n2: int,
     n3: int,
     *,
     sin_phi: float,
     cos_phi: float,
-) -> tuple[int, int]:
+) -> tuple[int, int, np.float32, np.float32]:
     center2 = 0.5 * (n2 - 1)
     center3 = 0.5 * (n3 - 1)
     corners = (
@@ -750,15 +757,31 @@ def _rotated_axis1_radii(
         ((n2 - 1) - center2, -center3),
         ((n2 - 1) - center2, (n3 - 1) - center3),
     )
-    radius2 = 0.0
-    radius3 = 0.0
+    rotated2_values = []
+    rotated3_values = []
     for d2, d3 in corners:
-        rotated2 = d2 * cos_phi - d3 * sin_phi
-        rotated3 = d2 * sin_phi + d3 * cos_phi
-        radius2 = max(radius2, abs(rotated2))
-        radius3 = max(radius3, abs(rotated3))
+        rotated2_values.append(d2 * cos_phi - d3 * sin_phi)
+        rotated3_values.append(d2 * sin_phi + d3 * cos_phi)
 
-    return math.ceil(radius2), math.ceil(radius3)
+    min2 = min(rotated2_values)
+    max2 = max(rotated2_values)
+    min3 = min(rotated3_values)
+    max3 = max(rotated3_values)
+    radius2 = max(abs(min2), abs(max2))
+    radius3 = max(abs(min3), abs(max3))
+    nrot2 = _symmetric_sample_count_covering_radius(radius2)
+    nrot3 = _symmetric_sample_count_covering_radius(radius3)
+    return nrot2, nrot3, np.float32(-radius2), np.float32(-radius3)
+
+
+def _symmetric_sample_count_covering_radius(radius: float) -> int:
+    nearest_integer = round(radius)
+    if math.isclose(radius, nearest_integer, abs_tol=1.0e-6):
+        half_width = int(nearest_integer)
+    else:
+        half_width = math.ceil(radius)
+
+    return 2 * half_width + 1
 
 
 def _shear2(

@@ -364,6 +364,45 @@ def test_rotate3_axis1_unrotate3_axis1_return_finite_float32_shapes() -> None:
     assert np.isfinite(unrotated).all()
 
 
+@pytest.mark.parametrize("shape", [(4, 6, 5), (5, 5, 6)])
+def test_rotate3_axis1_unrotate3_axis1_zero_degrees_are_identity(
+    shape: tuple[int, int, int],
+) -> None:
+    volume = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+
+    rotated = _rotate3_axis1(volume, 0.0, interpolation_order=1)
+    unrotated = _unrotate3_axis1(rotated, volume.shape, 0.0, interpolation_order=1)
+
+    assert rotated.shape[0] >= volume.shape[0]
+    assert rotated.shape[1] >= volume.shape[1]
+    assert rotated.shape[2] == volume.shape[2]
+    np.testing.assert_array_equal(
+        rotated[: volume.shape[0], : volume.shape[1], :],
+        volume,
+    )
+    np.testing.assert_array_equal(unrotated, volume)
+
+
+def test_rotate3_axis1_unrotate3_axis1_round_trip_is_close_for_smooth_volume() -> None:
+    shape = (9, 10, 11)
+    i3, i2, i1 = np.indices(shape, dtype=np.float32)
+    c3 = np.float32(0.5 * (shape[0] - 1))
+    c2 = np.float32(0.5 * (shape[1] - 1))
+    c1 = np.float32(0.5 * (shape[2] - 1))
+    radius2 = (i1 - c1) ** 2 + (i2 - c2) ** 2 + (i3 - c3) ** 2
+    volume = (1.0 - 0.5 * np.exp(-radius2 / np.float32(18.0))).astype(np.float32)
+
+    rotated = _rotate3_axis1(volume, 35.0, interpolation_order=1)
+    unrotated = _unrotate3_axis1(rotated, volume.shape, 35.0, interpolation_order=1)
+
+    np.testing.assert_allclose(
+        unrotated[2:-2, 2:-2, 2:-2],
+        volume[2:-2, 2:-2, 2:-2],
+        atol=0.06,
+        rtol=0.0,
+    )
+
+
 def test_shear2_unshear2_are_deterministic_and_near_vertical_shear_is_stable() -> None:
     image = np.arange(5 * 6, dtype=np.float32).reshape(5, 6)
     shear = _dip_shear_from_theta(90.0)
@@ -684,7 +723,7 @@ def test_scan_uses_reference_like_sampling_for_constant_input() -> None:
 
 
 def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> None:
-    true_phi = 45.0
+    true_phi = 60.0
     true_theta = 50.0
     image, distance = _low_planarity_fault(true_phi, true_theta)
     scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
