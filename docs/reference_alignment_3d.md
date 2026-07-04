@@ -113,7 +113,7 @@ validation, thinning ablation report, large crop validation, and full F3 run.
 | Scanner mapping | Map `FaultOrientScanner3.java` methods to `src/pyosv/orient3d.py` functions and document intentional approximations in [reference_mapping_orient3d.md](reference_mapping_orient3d.md). | Added |
 | Voter mapping | Map `OptimalSurfaceVoter.java` methods to `src/pyosv/voting3d.py`, `src/pyosv/dp.py`, and related helpers in [reference_mapping_voting3d.md](reference_mapping_voting3d.md). | Added |
 | Parity tests | Define method-level parity fixtures that do not require F3 data and cover scanner, UVW sampling, DP, voting, and thinning behavior. | Planned |
-| Reference-like scanner skeleton | Sketch any opt-in reference-like scanner path only after mapping and parity tests identify a concrete need. | Planned |
+| Reference-like scanner follow-up | Refine the current default reference-like scanner with scanner-only reports, rotated-boundary checks, sigma mapping, and interpolation audits. | Planned |
 
 Related existing documents:
 

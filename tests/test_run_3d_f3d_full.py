@@ -99,7 +99,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert args.reuse_existing is False
     assert args.skip_save_intermediates is False
     assert args.save_volumes is True
-    assert args.scanner_thin_mode == "normal"
+    assert args.scanner_thin_mode == "reference"
     assert args.voter_thin_mode == "normal"
     assert args.reference_thin_sigma == 1.0
 
@@ -187,7 +187,7 @@ def test_build_run_config_is_serializable(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert loaded["reference"] == ["fl.dat", "fv.dat", "fvt.dat"]
     assert loaded["scanner"]["theta_min"] == 65.0
     assert loaded["voter"]["ru"] == 10
-    assert loaded["scanner"]["thin_mode"] == "normal"
+    assert loaded["scanner"]["thin_mode"] == "reference"
     assert loaded["voter"]["thin_mode"] == "normal"
     assert loaded["scanner"]["reference_thin_sigma"] == 1.0
     assert loaded["voter"]["reference_thin_sigma"] == 1.0
@@ -405,7 +405,7 @@ def test_run_example_writes_config_before_heavy_processing(
         config = json.load(file)
     assert config["data_root"] == str(data_root)
     assert config["output_dir"] == str(output_dir.resolve(strict=False))
-    assert config["scanner"]["thin_mode"] == "normal"
+    assert config["scanner"]["thin_mode"] == "reference"
     assert config["voter"]["thin_mode"] == "normal"
 
 

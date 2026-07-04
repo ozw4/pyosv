@@ -1,4 +1,4 @@
-"""Run 3D orientation scanning and voting on a synthetic low-planarity fault."""
+"""Run reference-like 3D orientation scanning and voting on a synthetic low-planarity fault."""
 
 from __future__ import annotations
 

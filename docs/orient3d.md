@@ -92,6 +92,10 @@ approximations, not bit-exact Mines JTK ports.
 as an explicit practical backend for diagnostics or workflows that prefer its
 ridge/contrast score and sigma-derived dense angle sampling.
 
+Migration note: callers that used the old derivative-bank `scan()` behavior
+should call `scan_fast()` explicitly. Callers that used the old scanner
+fault-normal thinning default should pass `mode="normal"` explicitly.
+
 ## Integration
 
 Scanner output can be passed directly to 3D optimal-surface voting:

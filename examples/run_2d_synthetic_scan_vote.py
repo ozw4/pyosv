@@ -1,4 +1,4 @@
-"""Run 2D orientation scanning and voting on a synthetic lineament."""
+"""Run reference-like 2D orientation scanning and voting on a synthetic lineament."""
 
 from __future__ import annotations
 

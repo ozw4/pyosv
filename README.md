@@ -121,7 +121,8 @@ python examples/run_2d_synthetic_scan_vote.py
 ```
 
 Pass `--output-dir` to that synthetic example only when generated DAT outputs
-should be written.
+should be written. Detailed 2D scanner behavior is documented in
+`docs/orient2d.md`.
 
 The approximate 3D scanner is documented in `docs/orient3d.md`, with a small
 self-contained example:
@@ -147,6 +148,11 @@ to reference-like strike-binned thinning; pass `mode="normal"` explicitly for
 the legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` still
 defaults to `mode="normal"`, with `mode="reference"` available for
 reference-like voter thinning.
+
+Migration note: code that relied on the older derivative-bank scanner should
+call `scan_fast()` explicitly. Code that relied on old 3D scanner
+fault-normal thinning should pass `mode="normal"` explicitly, or use
+`--scanner-thin-mode normal` in F3 validation examples.
 
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.

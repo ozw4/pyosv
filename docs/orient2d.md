@@ -57,6 +57,9 @@ derivative-bank scanner with the same output contract. It is not the default
 backend and should be selected only when a caller specifically wants the faster
 legacy scoring path for diagnosis or fallback behavior.
 
+Migration note: callers that used the old derivative-bank `scan()` behavior
+should call `scan_fast()` explicitly.
+
 `FaultOrientScanner2.scan_dip(theta_min, theta_max, g)` follows the reference
 API shape by scanning both feature-angle branches, `90 - theta_max` to
 `90 - theta_min` and `90 + theta_min` to `90 + theta_max`, then keeping the
