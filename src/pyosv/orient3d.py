@@ -20,7 +20,7 @@ __all__ = ["FaultOrientScanner3"]
 
 
 class FaultOrientScanner3:
-    """Configuration holder for approximate 3D fault-orientation scanning.
+    """Configuration holder for reference-first 3D fault-orientation scanning.
 
     Parameters
     ----------
@@ -101,11 +101,29 @@ class FaultOrientScanner3:
         theta_max: float,
         g: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Scan a 3D image for approximate fault likelihood, strike, and dip.
+        """Scan a 3D image with the reference-like backend.
 
         The returned arrays have shape ``(n3, n2, n1)``. ``ft`` is normalized
         to ``[0, 1]``, ``pt`` contains strike in degrees, and ``tt`` contains
         dip in degrees.
+        """
+
+        return self.scan_reference_like(phi_min, phi_max, theta_min, theta_max, g)
+
+    def scan_fast(
+        self,
+        phi_min: float,
+        phi_max: float,
+        theta_min: float,
+        theta_max: float,
+        g: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Scan with the legacy derivative-bank backend.
+
+        This practical backend is faster than :meth:`scan_reference_like` but
+        does not follow the Java reference scanner's orientation sweep
+        semantics. Returned strike and dip angles use the same convention as
+        :meth:`scan`.
         """
 
         phi_sampling = self.strike_sampling(phi_min, phi_max)
@@ -131,14 +149,13 @@ class FaultOrientScanner3:
         smoothing_sigma: float | None = None,
         normalize: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Scan using an opt-in approximate Java reference-like orientation sweep.
+        """Scan using an approximate Java reference-like orientation sweep.
 
         This backend is not a bit-exact Mines JTK port. It uses SciPy
         interpolation to sample in each candidate strike/dip coordinate system,
         smooths planarity values along candidate fault-parallel directions,
         converts the smoothed response to likelihood with ``1 - smoothed**4``,
-        and keeps the best orientation. The default ``scan()`` derivative-bank
-        backend is unchanged.
+        and keeps the best orientation. It is the default :meth:`scan` backend.
         """
 
         phi_sampling = self.reference_like_strike_sampling(phi_min, phi_max)
@@ -225,6 +242,8 @@ class FaultOrientScanner3:
         theta_sampling: np.ndarray,
         image: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run the legacy derivative-bank scan used by :meth:`scan_fast`."""
+
         derivative_sigma = max(0.75, 0.5 * min(self.sigma1, self.sigma2))
         derivatives = _gaussian_derivatives(image, derivative_sigma)
         d1, d2, d3, d11, d22, d33, d12, d13, d23 = derivatives

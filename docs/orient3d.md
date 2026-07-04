@@ -43,11 +43,11 @@ interpretation workflows, but it is not an exact reproduction of
 replacement and does not add a runtime dependency on the JVM, Jython, Gradle,
 or Mines JTK.
 
-The implementation uses NumPy and SciPy derivative and smoothing operations as
-an intentional approximation of the Java/JTK workflow. Outputs may differ from
-the reference implementation because of filter kernels, boundary handling,
-interpolation behavior, sampled angle density, angle tie-breaking, and
-floating-point accumulation order.
+The default implementation uses NumPy and SciPy interpolation and smoothing
+operations as an intentional approximation of the Java/JTK workflow. Outputs
+may differ from the reference implementation because of filter kernels,
+boundary handling, interpolation behavior, sampled angle density, angle
+tie-breaking, and floating-point accumulation order.
 
 Tests and examples should check shape correctness, finite values, value ranges,
 synthetic localization, and deterministic Python behavior. They should not
@@ -55,13 +55,13 @@ require bitwise equality with Java or Mines JTK outputs.
 
 ## Reference-Like Scan
 
-`FaultOrientScanner3.scan_reference_like(...)` is an opt-in approximate backend
-for alignment experiments with the Java rotate/shear/smooth scan workflow. It
-validates angle ranges, finite 3D input volumes, interpolation order, optional
-smoothing sigma, and normalization mode, then runs a deterministic strike/dip
-orientation sweep.
+`FaultOrientScanner3.scan(...)` uses the approximate reference-like backend by
+default. `FaultOrientScanner3.scan_reference_like(...)` remains as a compatible
+explicit alias for callers that want to name the backend. It validates angle
+ranges, finite 3D input volumes, interpolation order, optional smoothing sigma,
+and normalization mode, then runs a deterministic strike/dip orientation sweep.
 
-Reference-like mode does not reuse the default derivative-bank scanner's
+Reference-like mode does not use the legacy derivative-bank scanner's
 sigma-derived dense sampling. Strike samples follow the Java scanner's fixed
 18-sample grid at 20 degree spacing from 0 degrees, clipped to the requested
 range. Dip samples use approximately 5 degree spacing while preserving the
@@ -75,8 +75,9 @@ semblance-power likelihood semantics more closely than the older Python
 ridge/contrast score. It remains a Pythonic SciPy approximation, not a
 bit-exact Mines JTK port.
 
-The reference-like backend is not used by default. Existing examples and F3
-validation scripts continue to call `FaultOrientScanner3.scan(...)`.
+`FaultOrientScanner3.scan_fast(...)` exposes the older derivative-bank scanner
+as an explicit practical backend for diagnostics or workflows that prefer its
+ridge/contrast score and sigma-derived dense angle sampling.
 
 ## Integration
 
@@ -127,9 +128,9 @@ reference-like smoothing.
 This is a compact Python scanner intended for deterministic local workflows and
 synthetic regression coverage. Current limitations include:
 
-- derivative-bank scoring instead of the full Java/JTK scanner;
 - SciPy smoothing and interpolation behavior rather than Mines JTK behavior;
-- approximate angle sampling controlled by `sigma1` and `sigma2`;
+- `scan_fast()` remains a derivative-bank approximation, not a Java/JTK
+  equivalent;
 - no committed real-data 3D reference thresholds;
 - sequential execution without acceleration-specific dependencies.
 

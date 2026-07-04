@@ -1,4 +1,4 @@
-"""Run 3D orientation scanning and voting on a synthetic planar fault."""
+"""Run 3D orientation scanning and voting on a synthetic low-planarity fault."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run pyosv 3D orientation scanning and optimal-surface voting on a "
-            "small synthetic Gaussian planar fault."
+            "small synthetic Gaussian low-planarity fault plane."
         ),
     )
     parser.add_argument(
@@ -217,7 +217,8 @@ def _synthetic_planar_fault(phi_degrees: float, theta_degrees: float) -> np.ndar
         theta_degrees,
     )
     distance = w1 * (i1 - center1) + w2 * (i2 - center2) + w3 * (i3 - center3)
-    image = np.exp(-0.5 * (distance / np.float32(1.0)) ** 2)
+    high_likelihood = np.exp(-0.5 * (distance / np.float32(1.0)) ** 2)
+    image = np.float32(1.0) - high_likelihood
     return image.astype(np.float32, copy=False)
 
 

@@ -114,6 +114,133 @@ def test_scan_constant_input_has_zero_finite_likelihood() -> None:
     assert np.isfinite(pt).all()
 
 
+def test_scan_backend_methods_exist() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+
+    assert callable(scanner.scan_reference_like)
+    assert callable(scanner.scan_fast)
+
+
+def test_scan_defaults_to_reference_like_backend() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _low_planarity_lineament(30.0, n2=48, n1=64)
+
+    scan_ft, scan_pt = scanner.scan(0.0, 60.0, image)
+    reference_ft, reference_pt = scanner.scan_reference_like(0.0, 60.0, image)
+
+    np.testing.assert_array_equal(scan_ft, reference_ft)
+    np.testing.assert_array_equal(scan_pt, reference_pt)
+
+
+def test_scan_reference_like_returns_float32_normalized_outputs() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _low_planarity_lineament(30.0, n2=48, n1=64)
+
+    ft, pt = scanner.scan_reference_like(0.0, 60.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert float(ft.min()) >= 0.0
+    assert float(ft.max()) <= 1.0
+
+
+def test_scan_normalizes_unscaled_finite_input_for_reference_like_default() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, distance = _low_planarity_lineament(30.0, n2=48, n1=64)
+    unscaled_image = image * np.float32(20.0) + np.float32(5.0)
+
+    ft, pt = scanner.scan(0.0, 60.0, unscaled_image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert float(ft.max()) > 0.0
+
+    near_line = np.abs(distance) <= 1.5
+    far_from_line = np.abs(distance) >= 12.0
+    assert float(np.mean(ft[near_line])) > float(np.mean(ft[far_from_line])) + 0.35
+
+
+def test_scan_reference_like_constant_input_has_zero_finite_likelihood() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.full((24, 20), 3.0, dtype=np.float64)
+
+    ft, pt = scanner.scan_reference_like(-60.0, 60.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    np.testing.assert_array_equal(ft, np.zeros(image.shape, dtype=np.float32))
+    assert np.isfinite(pt).all()
+
+
+@pytest.mark.parametrize("interpolation_order", [-1, 6, 1.5, True])
+def test_scan_reference_like_validates_interpolation_order(
+    interpolation_order: object,
+) -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.zeros((8, 9), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="interpolation_order"):
+        scanner.scan_reference_like(
+            -45.0,
+            45.0,
+            image,
+            interpolation_order=interpolation_order,  # type: ignore[arg-type]
+        )
+
+
+def test_scan_reference_like_validates_normalize() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.zeros((8, 9), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="normalize"):
+        scanner.scan_reference_like(
+            -45.0,
+            45.0,
+            image,
+            normalize=1,  # type: ignore[arg-type]
+        )
+
+
+def test_scan_reference_like_is_deterministic() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _low_planarity_lineament(30.0, n2=48, n1=64)
+
+    first = scanner.scan_reference_like(0.0, 60.0, image)
+    second = scanner.scan_reference_like(0.0, 60.0, image)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
+def test_scan_reference_like_localizes_synthetic_lineament_orientation() -> None:
+    theta = 30.0
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, distance = _low_planarity_lineament(theta)
+
+    ft, pt = scanner.scan_reference_like(0.0, 60.0, image)
+
+    near_line = np.abs(distance) <= 1.5
+    far_from_line = np.abs(distance) >= 12.0
+    assert float(np.mean(ft[near_line])) > float(np.mean(ft[far_from_line])) + 0.5
+
+    high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
+    assert np.count_nonzero(high_likelihood) > 0
+    expected_pt = _voter_angle_from_feature_angle(theta)
+    angle_error = _orientation_error_degrees(pt[high_likelihood], expected_pt)
+    sample_step = float(np.diff(scanner.theta_sampling(0.0, 60.0)).max())
+    assert float(np.median(angle_error)) <= sample_step
+
+
 @pytest.mark.parametrize(
     ("theta", "theta_min", "theta_max"),
     [
@@ -122,7 +249,7 @@ def test_scan_constant_input_has_zero_finite_likelihood() -> None:
         (90.0, -90.0, 90.0),
     ],
 )
-def test_scan_detects_synthetic_lineament_orientation(
+def test_scan_fast_detects_synthetic_lineament_orientation(
     theta: float,
     theta_min: float,
     theta_max: float,
@@ -130,7 +257,7 @@ def test_scan_detects_synthetic_lineament_orientation(
     scanner = FaultOrientScanner2(sigma1=2.0)
     image, distance = _dipping_gaussian_lineament(theta)
 
-    ft, pt = scanner.scan(theta_min, theta_max, image)
+    ft, pt = scanner.scan_fast(theta_min, theta_max, image)
 
     near_line = np.abs(distance) <= 1.5
     far_from_line = np.abs(distance) >= 12.0
@@ -143,11 +270,11 @@ def test_scan_detects_synthetic_lineament_orientation(
     assert float(np.median(angle_error)) <= 15.0
 
 
-def test_scan_outputs_voting_angle_for_down_right_diagonal_lineament() -> None:
+def test_scan_fast_outputs_voting_angle_for_down_right_diagonal_lineament() -> None:
     scanner = FaultOrientScanner2(sigma1=2.0)
     image, distance = _dipping_gaussian_lineament(45.0, n2=48, n1=48)
 
-    ft, pt = scanner.scan(30.0, 60.0, image)
+    ft, pt = scanner.scan_fast(30.0, 60.0, image)
 
     near_line = np.abs(distance) <= 1.5
     high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
@@ -166,7 +293,7 @@ def test_scan_outputs_voting_angle_for_down_right_diagonal_lineament() -> None:
 
 def test_scan_output_feeds_apply_voting_on_synthetic_lineament() -> None:
     scanner = FaultOrientScanner2(sigma1=2.0)
-    image, distance = _dipping_gaussian_lineament(25.0, n2=48, n1=64)
+    image, distance = _low_planarity_lineament(25.0, n2=48, n1=64)
     ft, pt = scanner.scan(-75.0, 75.0, image)
     near_line = np.abs(distance) <= 1.5
     far_from_line = np.abs(distance) >= 10.0
@@ -189,15 +316,58 @@ def test_scan_output_feeds_apply_voting_on_synthetic_lineament() -> None:
     assert float(np.mean(fv[near_line])) > float(np.mean(fv[far_from_line])) + 0.35
 
 
-def test_scan_dip_matches_scan() -> None:
+def test_scan_dip_selects_higher_likelihood_from_two_scan_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scanner = FaultOrientScanner2(sigma1=2.0)
-    image, _ = _dipping_gaussian_lineament(-20.0)
+    image = np.zeros((2, 2), dtype=np.float32)
+    calls: list[tuple[float, float, bool]] = []
 
-    scan_ft, scan_pt = scanner.scan(-45.0, 45.0, image)
-    dip_ft, dip_pt = scanner.scan_dip(-45.0, 45.0, image)
+    def fake_scan(
+        theta_min: float,
+        theta_max: float,
+        g: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        calls.append((theta_min, theta_max, g is image))
+        if len(calls) == 1:
+            return (
+                np.array([[0.2, 0.8], [0.5, 0.5]], dtype=np.float32),
+                np.full((2, 2), 10.0, dtype=np.float32),
+            )
+        return (
+            np.array([[0.7, 0.1], [0.6, 0.5]], dtype=np.float32),
+            np.full((2, 2), 20.0, dtype=np.float32),
+        )
 
-    np.testing.assert_array_equal(dip_ft, scan_ft)
-    np.testing.assert_array_equal(dip_pt, scan_pt)
+    monkeypatch.setattr(scanner, "scan", fake_scan)
+
+    dip_ft, dip_pt = scanner.scan_dip(20.0, 40.0, image)
+
+    assert calls == [(50.0, 70.0, True), (110.0, 130.0, True)]
+    np.testing.assert_array_equal(
+        dip_ft,
+        np.array([[0.7, 0.8], [0.6, 0.5]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        dip_pt,
+        np.array([[20.0, 10.0], [20.0, 10.0]], dtype=np.float32),
+    )
+
+
+def test_scan_dip_returns_scan_like_shape_dtype_and_range() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _low_planarity_lineament(25.0, n2=48, n1=64)
+
+    dip_ft, dip_pt = scanner.scan_dip(20.0, 40.0, image)
+
+    assert dip_ft.shape == image.shape
+    assert dip_pt.shape == image.shape
+    assert dip_ft.dtype == np.float32
+    assert dip_pt.dtype == np.float32
+    assert np.isfinite(dip_ft).all()
+    assert np.isfinite(dip_pt).all()
+    assert float(dip_ft.min()) >= 0.0
+    assert float(dip_ft.max()) <= 1.0
 
 
 def test_thin_returns_float32_arrays_without_modifying_inputs() -> None:
@@ -348,3 +518,13 @@ def _dipping_gaussian_lineament(
     distance = x2 * np.cos(theta_radians) - x1 * np.sin(theta_radians)
     image = np.exp(-0.5 * (distance / np.float32(1.2)) ** 2)
     return image.astype(np.float32), distance.astype(np.float32)
+
+
+def _low_planarity_lineament(
+    theta_degrees: float,
+    *,
+    n2: int = 96,
+    n1: int = 128,
+) -> tuple[np.ndarray, np.ndarray]:
+    high_ridge, distance = _dipping_gaussian_lineament(theta_degrees, n2=n2, n1=n1)
+    return (np.float32(1.0) - high_ridge).astype(np.float32), distance

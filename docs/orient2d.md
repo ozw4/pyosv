@@ -1,7 +1,8 @@
 # 2D Orientation Scanning
 
 `pyosv.orient2d.FaultOrientScanner2` is the Python 2D orientation scanner used
-to produce fault-likelihood and dip-angle images for `OptimalPathVoter`.
+to produce fault-likelihood and dip-angle images for `OptimalPathVoter`. All
+2D arrays use the repository shape convention `(n2, n1)`.
 
 ## Reference-First Alignment
 
@@ -11,10 +12,13 @@ interpretation workflows, but it is not an exact reproduction of
 deterministic localization and orientation sanity, but they do not require
 bitwise equality with Java, Jython, or Mines JTK output.
 
-The implementation uses NumPy and SciPy image derivatives. This is an
-intentional approximation of the Java/JTK implementation and can differ in
-filter kernels, boundary handling, angle tie-breaking, and floating-point
-accumulation.
+`FaultOrientScanner2.scan()` is the reference-like default. It uses NumPy and
+SciPy to approximate the reference rotate, separable smooth, unrotate, and
+likelihood-scoring flow. It can differ from Java/JTK in interpolation, filter
+kernels, boundary handling, angle tie-breaking, and floating-point
+accumulation. The legacy derivative-bank scanner remains available as
+`scan_fast()` only for explicit fallback use, diagnostics, and comparisons
+against the older practical backend.
 
 ## Angle Convention
 
@@ -44,7 +48,19 @@ corresponding voter-compatible `pt` for the strongest local score.
   shape `(n2, n1)`.
 
 Input images must be finite 2D numeric arrays and are converted to `float32`.
-Constant images return zero likelihood and a finite angle image.
+With the default `normalize=True` reference-like path, nonconstant inputs are
+linearly scaled to `[0, 1]` before the `1 - smoothed**4` likelihood score is
+computed. Constant images return zero likelihood and a finite angle image.
+
+`FaultOrientScanner2.scan_fast(theta_min, theta_max, g)` exposes the older
+derivative-bank scanner with the same output contract. It is not the default
+backend and should be selected only when a caller specifically wants the faster
+legacy scoring path for diagnosis or fallback behavior.
+
+`FaultOrientScanner2.scan_dip(theta_min, theta_max, g)` follows the reference
+API shape by scanning both feature-angle branches, `90 - theta_max` to
+`90 - theta_min` and `90 + theta_min` to `90 + theta_max`, then keeping the
+higher-likelihood `(ft, pt)` pair at each sample.
 
 `FaultOrientScanner2.thin(ft, pt)` keeps local likelihood maxima across the
 local normal direction implied by `pt`. It returns `(thinned_ft, thinned_pt)` as
@@ -70,11 +86,14 @@ This module does not add a runtime dependency on the JVM, Jython, Mines JTK, or
 Gradle. It is not a drop-in numerical clone of the reference scanner. Current
 limitations include:
 
-- derivative-based scoring instead of the full Java/JTK filter stack;
+- SciPy interpolation and Gaussian smoothing instead of the full Java/JTK
+  filter stack;
 - SciPy boundary behavior rather than Mines JTK boundary behavior;
 - approximate orientation sampling based on `sigma1`;
 - no committed real-data equivalence thresholds against `reference_osv`.
 
 Use the scanner for deterministic Python workflows and synthetic regression
-coverage. Treat reference-data comparisons as practical reports unless a future
-issue defines feature-specific acceptance thresholds.
+coverage. Treat optional reference-data comparisons as reports using finite
+value summaries, correlation, ridge-overlap, or similar practical metrics
+rather than fixed pass/fail thresholds, unless a future issue defines
+feature-specific acceptance thresholds.
