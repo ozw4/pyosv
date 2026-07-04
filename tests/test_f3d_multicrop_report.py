@@ -51,6 +51,8 @@ def _synthetic_outputs(shape: tuple[int, int, int]) -> dict[str, np.ndarray]:
         "fpt_py.dat": np.full(shape, 10.0, dtype=np.float32),
         "ftt_py.dat": np.full(shape, 70.0, dtype=np.float32),
         "fv_py.dat": base.copy(),
+        "vp_py.dat": np.full(shape, 10.0, dtype=np.float32),
+        "vt_py.dat": np.full(shape, 70.0, dtype=np.float32),
         "fvt_py.dat": base.copy(),
     }
 

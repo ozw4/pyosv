@@ -34,7 +34,13 @@ def _synthetic_outputs(shape: tuple[int, int, int] = (4, 4, 4)) -> dict[str, np.
     ft[center] = 1.0
     fv[center] = 1.0
     fvt[center] = 1.0
-    return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}
+    return {
+        "ft_py.dat": ft,
+        "fv_py.dat": fv,
+        "vp_py.dat": np.full(shape, 10.0, dtype=np.float32),
+        "vt_py.dat": np.full(shape, 70.0, dtype=np.float32),
+        "fvt_py.dat": fvt,
+    }
 
 
 def _full_synthetic_outputs(shape: tuple[int, int, int] = (4, 4, 4)) -> dict[str, np.ndarray]:
@@ -293,7 +299,13 @@ def test_reuse_mode_reads_each_full_stage_output_set(
         module.VOTING_OUTPUT_NAMES,
         ("fvt_py.dat",),
     ]
-    assert tuple(outputs) == module.REPORT_OUTPUT_NAMES
+    assert tuple(outputs) == (
+        "ft_py.dat",
+        "fv_py.dat",
+        "vp_py.dat",
+        "vt_py.dat",
+        "fvt_py.dat",
+    )
     assert runtime["mode"] == "reuse_existing"
     assert runtime["reused_stages"] == ["scanner", "scanner_thin", "voting", "voter_thin"]
     assert runtime["computed_stages"] == []
@@ -526,6 +538,8 @@ def test_build_metrics_report_on_small_synthetic_arrays(
         config=config,
         pyosv_ft=outputs["ft_py.dat"],
         pyosv_fv=outputs["fv_py.dat"],
+        pyosv_vp=outputs["vp_py.dat"],
+        pyosv_vt=outputs["vt_py.dat"],
         pyosv_fvt=outputs["fvt_py.dat"],
         reference_fl=outputs["ft_py.dat"].copy(),
         reference_fv=outputs["fv_py.dat"].copy(),
@@ -537,6 +551,9 @@ def test_build_metrics_report_on_small_synthetic_arrays(
     assert loaded["data"]["shape"] == list(module.F3D_SHAPE)
     assert loaded["scanner"]["parameters"]["sigma1"] == 8.0
     assert loaded["scanner"]["ft_py_vs_fl"]["normalized_correlation"] == pytest.approx(1.0)
+    assert loaded["voting"]["orientation"]["likelihood_mask_count"] == 1
+    assert loaded["voting"]["orientation"]["strike"]["finite_count"] == 64
+    assert loaded["voting"]["orientation"]["dip"]["high_likelihood"]["median"] == 70.0
     assert loaded["voting"]["fv_py_vs_fv"]["nonzero_fraction_ratio"] == pytest.approx(1.0)
     assert loaded["thinning"]["fvt_py_vs_fvt"]["buffered_ridge_overlap"]["buffered_f1"] == (
         pytest.approx(1.0)

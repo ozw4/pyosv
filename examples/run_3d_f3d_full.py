@@ -19,6 +19,7 @@ from pyosv.metrics import (
     buffered_ridge_overlap,
     finite_value_report,
     normalized_correlation,
+    orientation_field_report,
     sparse_ridge_distance_metrics,
     top_percentile_overlap,
 )
@@ -265,6 +266,8 @@ def run_example(
         config=config,
         pyosv_ft=outputs["ft_py.dat"],
         pyosv_fv=outputs["fv_py.dat"],
+        pyosv_vp=outputs["vp_py.dat"],
+        pyosv_vt=outputs["vt_py.dat"],
         pyosv_fvt=outputs["fvt_py.dat"],
         reference_fl=reference_fl,
         reference_fv=reference_fv,
@@ -502,10 +505,15 @@ def run_or_reuse_pipeline(
                 ("fvt_py.dat",),
                 skip_intermediates=skip_save_intermediates,
             )
-    del vp, vt
     finalize_runtime_mode(runtime, reuse_existing)
 
-    return {"ft_py.dat": ft, "fv_py.dat": fv, "fvt_py.dat": fvt}, runtime
+    return {
+        "ft_py.dat": ft,
+        "fv_py.dat": fv,
+        "vp_py.dat": vp,
+        "vt_py.dat": vt,
+        "fvt_py.dat": fvt,
+    }, runtime
 
 
 def should_reuse_stage_outputs(
@@ -606,6 +614,8 @@ def build_metrics_report(
     config: Mapping[str, Any],
     pyosv_ft: np.ndarray,
     pyosv_fv: np.ndarray,
+    pyosv_vp: np.ndarray,
+    pyosv_vt: np.ndarray,
     pyosv_fvt: np.ndarray,
     reference_fl: np.ndarray,
     reference_fv: np.ndarray,
@@ -626,6 +636,13 @@ def build_metrics_report(
         },
         "voting": {
             "parameters": config["voter"],
+            "orientation": orientation_field_report(
+                pyosv_fv,
+                pyosv_vp,
+                pyosv_vt,
+                percentile=RIDGE_PERCENTILE,
+                nonzero_epsilon=NONZERO_EPSILON,
+            ),
             "fv_py_vs_fv": {
                 **comparison_metrics(pyosv_fv, reference_fv),
                 "nonzero_fraction_ratio": nonzero_fraction_ratio(pyosv_fv, reference_fv),
@@ -652,6 +669,8 @@ def build_metrics_report(
         "pyosv": {
             "ft": summarize_array(pyosv_ft),
             "fv": summarize_array(pyosv_fv),
+            "vp": summarize_array(pyosv_vp),
+            "vt": summarize_array(pyosv_vt),
             "fvt": summarize_array(pyosv_fvt),
         },
         "reference": {
@@ -663,6 +682,8 @@ def build_metrics_report(
             "pyosv": {
                 "ft_py": finite_report(pyosv_ft),
                 "fv_py": finite_report(pyosv_fv),
+                "vp_py": finite_report(pyosv_vp),
+                "vt_py": finite_report(pyosv_vt),
                 "fvt_py": finite_report(pyosv_fvt),
             },
             "reference": {

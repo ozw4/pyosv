@@ -152,6 +152,26 @@ python examples/report_3d_f3d_thinning_ablation.py \
   --write-markdown-index
 ```
 
+The crop and full F3 reports also include `voting.orientation`, a report-only
+summary for `vp_py.dat` and `vt_py.dat`. It records finite and nonzero sample
+counts plus strike/dip mean, standard deviation, median, and median absolute
+deviation on the high-`fv_py.dat` mask. To inspect the effect of surface
+orientation smoothing, run the same crop twice and compare that block:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/run_3d_f3d_crop_validation.py \
+  --output-dir outputs/3d/f3d/orientation_smoothing_default \
+  --pretty
+
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/run_3d_f3d_crop_validation.py \
+  --output-dir outputs/3d/f3d/orientation_smoothing_off \
+  --surface-smoothing1 0 \
+  --surface-smoothing2 0 \
+  --pretty
+```
+
 Do not document generated report outputs as committed artifacts. Generated
 JSON, PNG, markdown, and `.dat` outputs belong under `outputs/` or another
 ignored working directory.

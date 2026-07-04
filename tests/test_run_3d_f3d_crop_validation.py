@@ -44,6 +44,8 @@ def _synthetic_outputs(shape: tuple[int, int, int] = (6, 6, 6)) -> dict[str, np.
         "fpt_py.dat": np.full(shape, 10.0, dtype=np.float32),
         "ftt_py.dat": np.full(shape, 70.0, dtype=np.float32),
         "fv_py.dat": base.copy(),
+        "vp_py.dat": np.full(shape, 10.0, dtype=np.float32),
+        "vt_py.dat": np.full(shape, 70.0, dtype=np.float32),
         "fvt_py.dat": base.copy(),
     }
 
@@ -177,6 +179,13 @@ def test_metrics_helper_on_synthetic_arrays(monkeypatch: pytest.MonkeyPatch) -> 
         {"axis": "i1", "start": 1, "stop": 5},
     ]
     assert report["pyosv"]["fv"]["max"] == 1.0
+    assert report["pyosv"]["vp"]["mean"] == 10.0
+    assert report["pyosv"]["vt"]["mean"] == 70.0
+    assert report["voting"]["orientation"]["likelihood_mask_count"] == 1
+    assert report["voting"]["orientation"]["strike"]["finite_count"] == 216
+    assert report["voting"]["orientation"]["strike"]["nonzero_count"] == 216
+    assert report["voting"]["orientation"]["dip"]["high_likelihood"]["median"] == 70.0
+    assert report["voting"]["orientation"]["paired_high_likelihood"]["strike"]["mean"] == 10.0
     assert report["reference"]["fvt"]["nonzero_fraction"] == pytest.approx(1.0 / 216.0)
     assert report["normalized_correlation"]["full_crop"]["fv"] == pytest.approx(1.0)
     assert report["normalized_correlation"]["interior"]["fvt"] == pytest.approx(1.0)
@@ -295,6 +304,8 @@ def test_small_pipeline_accepts_reference_thinning(monkeypatch: pytest.MonkeyPat
     )
 
     assert outputs["fet_py.dat"].shape == (4, 4, 4)
+    assert outputs["vp_py.dat"].shape == (4, 4, 4)
+    assert outputs["vt_py.dat"].shape == (4, 4, 4)
     assert outputs["fvt_py.dat"].shape == (4, 4, 4)
 
 

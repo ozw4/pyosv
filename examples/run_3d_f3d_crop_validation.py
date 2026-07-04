@@ -26,6 +26,7 @@ from pyosv.metrics import (
     buffered_ridge_overlap,
     finite_value_report,
     normalized_correlation,
+    orientation_field_report,
     sparse_ridge_distance_metrics,
     top_percentile_overlap,
 )
@@ -46,6 +47,8 @@ VOLUME_NAMES = (
     "fpt_py.dat",
     "ftt_py.dat",
     "fv_py.dat",
+    "vp_py.dat",
+    "vt_py.dat",
     "fvt_py.dat",
 )
 THIN_MODES = ("normal", "reference")
@@ -476,6 +479,8 @@ def run_pipeline(
         "fpt_py.dat": fpt,
         "ftt_py.dat": ftt,
         "fv_py.dat": fv,
+        "vp_py.dat": vp,
+        "vt_py.dat": vt,
         "fvt_py.dat": fvt,
     }
 
@@ -497,6 +502,8 @@ def build_crop_report(
         for crop_slice, local_slice in zip(slices, local_interior_slices, strict=True)
     )
     py_fv = np.asarray(outputs["fv_py.dat"])
+    py_vp = np.asarray(outputs["vp_py.dat"])
+    py_vt = np.asarray(outputs["vt_py.dat"])
     py_fvt = np.asarray(outputs["fvt_py.dat"])
     py_fv_interior = py_fv[local_interior_slices]
     py_fvt_interior = py_fvt[local_interior_slices]
@@ -513,7 +520,18 @@ def build_crop_report(
         "crop_shape": [int(size) for size in crop_shape],
         "pyosv": {
             "fv": summarize_array(py_fv),
+            "vp": summarize_array(py_vp),
+            "vt": summarize_array(py_vt),
             "fvt": summarize_array(py_fvt),
+        },
+        "voting": {
+            "orientation": orientation_field_report(
+                py_fv,
+                py_vp,
+                py_vt,
+                percentile=RIDGE_PERCENTILE,
+                nonzero_epsilon=NONZERO_EPSILON,
+            ),
         },
         "reference": {
             "fv": summarize_array(reference_fv),
