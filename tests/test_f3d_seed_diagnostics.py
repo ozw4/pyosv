@@ -40,7 +40,7 @@ def _synthetic_reference_arrays(shape: tuple[int, int, int] = (8, 8, 8)) -> dict
 
 def _pipeline_outputs(module: object, shape: tuple[int, int, int]) -> dict[str, dict[str, object]]:
     outputs = {}
-    for case in module.build_case_definitions(("current",), ("normal", "reference")):
+    for case in module.build_case_definitions(("fast",), ("normal", "reference")):
         fet = np.zeros(shape, dtype=np.float32)
         fet[2, 2, 2] = 0.8
         fet[5, 5, 5] = 0.5
@@ -134,7 +134,7 @@ def test_cli_parsing_of_backend_mode_combinations(monkeypatch: pytest.MonkeyPatc
     module = _import_seed_module(monkeypatch)
 
     defaults = module.build_parser().parse_args([])
-    assert defaults.scanner_backends == ("current", "reference-like")
+    assert defaults.scanner_backends == ("fast", "reference-like")
     assert defaults.scanner_thin_modes == ("normal", "reference")
     assert defaults.reference_percentile == 99.0
     assert defaults.count == 3
@@ -144,19 +144,19 @@ def test_cli_parsing_of_backend_mode_combinations(monkeypatch: pytest.MonkeyPatc
     args = module.build_parser().parse_args(
         [
             "--scanner-backends",
-            "current",
+            "fast",
             "--scanner-thin-modes",
             "reference,normal",
             "--reference-percentile",
             "98.5",
         ]
     )
-    assert args.scanner_backends == ("current",)
+    assert args.scanner_backends == ("fast",)
     assert args.scanner_thin_modes == ("reference", "normal")
     assert args.reference_percentile == 98.5
 
     cases = module.build_case_definitions(args.scanner_backends, args.scanner_thin_modes)
-    assert [case["name"] for case in cases] == ["current_reference", "current_normal"]
+    assert [case["name"] for case in cases] == ["fast_reference", "fast_normal"]
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--scanner-backends", "bad"])
 
@@ -186,22 +186,22 @@ def test_run_example_writes_seed_diagnostic_json_schema(
         crop_shape=(6, 6, 6),
         interior_margin=1,
         centers=[(2, 2, 2)],
-        scanner_backends=("current",),
+        scanner_backends=("fast",),
         scanner_thin_modes=("normal", "reference"),
         reference_percentile=100.0,
     )
 
     loaded = json.loads(output_json.read_text(encoding="utf-8"))
     cases = loaded["crops"][0]["cases"]
-    diagnostics = cases["current_normal"]["seed_diagnostics"]
+    diagnostics = cases["fast_normal"]["seed_diagnostics"]
     assert report == loaded
     assert loaded["format_version"] == 1
     assert loaded["config"]["comparison"] == "f3d_seed_diagnostics"
     assert [case["name"] for case in loaded["config"]["cases"]] == [
-        "current_normal",
-        "current_reference",
+        "fast_normal",
+        "fast_reference",
     ]
-    assert set(cases) == {"current_normal", "current_reference"}
+    assert set(cases) == {"fast_normal", "fast_reference"}
     assert diagnostics["seed_count"] == 2
     assert diagnostics["seed_density"] == pytest.approx(2 / 216)
     assert diagnostics["seed_likelihood_percentiles"]["p50"] is not None
@@ -209,19 +209,18 @@ def test_run_example_writes_seed_diagnostic_json_schema(
     assert diagnostics["distance"]["reference_high_fv_to_seed"]["reference_count"] == 1
     assert diagnostics["distance"]["reference_high_fv_to_seed"]["seed_count"] == 2
     assert (
-        "seed_diagnostics.seed_count"
-        in loaded["aggregate"]["cases"]["current_normal"]["metric_paths"]
+        "seed_diagnostics.seed_count" in loaded["aggregate"]["cases"]["fast_normal"]["metric_paths"]
     )
 
 
-def test_current_backend_works_without_reference_like(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fast_backend_works_without_reference_like(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _import_seed_module(monkeypatch)
     ep = np.zeros((4, 4, 4), dtype=np.float32)
     ep[2, 2, 2] = 1.0
 
     outputs = module.run_seed_diagnostic_pipeline(
         ep,
-        scanner_backends=("current",),
+        scanner_backends=("fast",),
         scanner_thin_modes=("normal",),
         sigma1=2.0,
         sigma2=2.0,
@@ -237,8 +236,70 @@ def test_current_backend_works_without_reference_like(monkeypatch: pytest.Monkey
         reference_thin_sigma=1.0,
     )
 
-    assert set(outputs) == {"current_normal"}
-    assert isinstance(outputs["current_normal"]["seeds"], list)
+    assert set(outputs) == {"fast_normal"}
+    assert isinstance(outputs["fast_normal"]["seeds"], list)
+
+
+def test_scan_backend_dispatch_uses_fast_and_explicit_reference_like(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_seed_module(monkeypatch)
+    calls: list[tuple[str, object]] = []
+
+    class RecordingScanner:
+        def scan_fast(
+            self,
+            phi_min: float,
+            phi_max: float,
+            theta_min: float,
+            theta_max: float,
+            ep: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            calls.append(("scan_fast", (phi_min, phi_max, theta_min, theta_max)))
+            values = np.zeros_like(ep)
+            return values, values, values
+
+        def scan_reference_like(
+            self,
+            phi_min: float,
+            phi_max: float,
+            theta_min: float,
+            theta_max: float,
+            ep: np.ndarray,
+            *,
+            backend: str,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            calls.append(("scan_reference_like", backend))
+            values = np.zeros_like(ep)
+            return values, values, values
+
+        def scan(self, *args: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            raise AssertionError("diagnostic backend dispatch must not call scan()")
+
+    ep = np.zeros((2, 2, 2), dtype=np.float32)
+    module._scan_backend(
+        RecordingScanner(),
+        backend="fast",
+        phi_min=0.0,
+        phi_max=1.0,
+        theta_min=2.0,
+        theta_max=3.0,
+        ep=ep,
+    )
+    module._scan_backend(
+        RecordingScanner(),
+        backend="reference-like",
+        phi_min=0.0,
+        phi_max=1.0,
+        theta_min=2.0,
+        theta_max=3.0,
+        ep=ep,
+    )
+
+    assert calls == [
+        ("scan_fast", (0.0, 1.0, 2.0, 3.0)),
+        ("scan_reference_like", "rotate_shear"),
+    ]
 
 
 def test_reference_like_backend_unavailable_fails_clearly(
@@ -280,7 +341,7 @@ def test_output_path_safety_rejects_data_root(
             output_json=data_root / "outputs" / "metrics.json",
             crop_shape=(6, 6, 6),
             interior_margin=1,
-            scanner_backends=("current",),
+            scanner_backends=("fast",),
             scanner_thin_modes=("normal",),
         )
 
@@ -314,17 +375,17 @@ def test_visual_report_writes_markdown_and_seed_overlay_pngs(
         crop_shape=(6, 6, 6),
         interior_margin=1,
         centers=[(2, 2, 2)],
-        scanner_backends=("current",),
+        scanner_backends=("fast",),
         scanner_thin_modes=("normal",),
     )
 
-    figures_dir = output_json.parent / "crop_001" / "current_normal" / "figures"
+    figures_dir = output_json.parent / "crop_001" / "fast_normal" / "figures"
     markdown = (output_json.parent / "visual_report.md").read_text(encoding="utf-8")
     assert (figures_dir / "fet_seed_overlay_i3_3.png").is_file()
     assert (figures_dir / "reference_fv_high_seed_overlay_i3_3.png").is_file()
     assert (figures_dir / "reference_fvt_high_seed_overlay_i3_3.png").is_file()
-    assert "current_normal" in markdown
-    assert "crop_001/current_normal/figures/fet_seed_overlay_i3_3.png" in markdown
+    assert "fast_normal" in markdown
+    assert "crop_001/fast_normal/figures/fet_seed_overlay_i3_3.png" in markdown
 
 
 @pytest.mark.f3d_reference
@@ -339,10 +400,10 @@ def test_gated_real_data_seed_diagnostics(monkeypatch: pytest.MonkeyPatch) -> No
         interior_margin=8,
         percentile=99.9,
         min_separation=16.0,
-        scanner_backends=("current",),
+        scanner_backends=("fast",),
         scanner_thin_modes=("normal",),
     )
 
     assert len(report["crops"]) == 1
-    assert set(report["crops"][0]["cases"]) == {"current_normal"}
+    assert set(report["crops"][0]["cases"]) == {"fast_normal"}
     assert report["aggregate"]["crop_count"] == 1

@@ -137,7 +137,7 @@ python examples/report_3d_f3d_multicrop.py \
   --write-markdown-index
 ```
 
-Run the thinning ablation report to compare current/current, mixed, and
+Run the thinning ablation report to compare normal/normal, mixed, and
 reference/reference thinning cases:
 
 ```bash
@@ -237,7 +237,7 @@ necessarily high voxel-wise correlation. The main checks are:
 - ridge overlay figures showing fewer far-away candidate-only ridges.
 - exact overlap remaining interpretable even when it is low for sparse ridges.
 
-Previous current/current baseline context:
+Previous normal/normal baseline context:
 
 ```text
 normalized_correlation.interior.fvt.mean ~= 0.224

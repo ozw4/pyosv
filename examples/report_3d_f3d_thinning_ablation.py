@@ -28,22 +28,22 @@ DEFAULT_INTERIOR_MARGIN = 16
 DEFAULT_PERCENTILE = 99.9
 DEFAULT_MIN_SEPARATION = 48.0
 REFERENCE_OSV_DIR = Path(__file__).resolve().parents[1] / "reference_osv"
-DEFAULT_SCANNER_BACKENDS = ("current",)
-SUPPORTED_SCANNER_BACKENDS = ("current", "reference-like")
+DEFAULT_SCANNER_BACKENDS = ("fast",)
+SUPPORTED_SCANNER_BACKENDS = ("fast", "reference-like")
 
 CASE_DEFINITIONS: tuple[dict[str, str], ...] = (
     {
-        "name": "case_01_current_current",
+        "name": "case_01_normal_normal",
         "scanner_thin_mode": "normal",
         "voter_thin_mode": "normal",
     },
     {
-        "name": "case_02_current_reference_voter",
+        "name": "case_02_normal_reference_voter",
         "scanner_thin_mode": "normal",
         "voter_thin_mode": "reference",
     },
     {
-        "name": "case_03_reference_scanner_current",
+        "name": "case_03_reference_scanner_normal",
         "scanner_thin_mode": "reference",
         "voter_thin_mode": "normal",
     },
@@ -128,7 +128,10 @@ def build_parser() -> argparse.ArgumentParser:
         dest="scanner_backends",
         type=parse_scanner_backends,
         default=DEFAULT_SCANNER_BACKENDS,
-        help="Comma-separated scanner backends: current,reference-like.",
+        help=(
+            "Comma-separated scanner backends: fast=legacy scan_fast, "
+            "reference-like=rotate/shear scan_reference_like."
+        ),
     )
     parser.add_argument(
         "--center",
@@ -346,13 +349,13 @@ def run_example(
             "interior_margin": int(interior_margin),
             "backends": backend_reports,
         }
-        if backend_names == ("current",):
-            crop_report["cases"] = backend_reports["current"]["cases"]
+        if backend_names == ("fast",):
+            crop_report["cases"] = backend_reports["fast"]["cases"]
         crops.append(crop_report)
 
     aggregate = aggregate_backend_case_metrics(crops, scanner_backends=backend_names)
-    if backend_names == ("current",):
-        aggregate["cases"] = aggregate["backends"]["current"]["cases"]
+    if backend_names == ("fast",):
+        aggregate["cases"] = aggregate["backends"]["fast"]["cases"]
     report = _json_compatible(
         {
             "format_version": 1,
@@ -374,7 +377,7 @@ def run_example(
 def run_ablation_pipeline(
     ep: np.ndarray,
     *,
-    scanner_backend: str = "current",
+    scanner_backend: str = "fast",
     sigma1: float,
     sigma2: float,
     phi_min: float,
@@ -498,13 +501,20 @@ def _scan_backend(
     theta_max: float,
     ep: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if backend == "current":
-        return scanner.scan(phi_min, phi_max, theta_min, theta_max, ep)
+    if backend == "fast":
+        return scanner.scan_fast(phi_min, phi_max, theta_min, theta_max, ep)
     if backend == "reference-like":
         scan_reference_like = getattr(scanner, "scan_reference_like", None)
         if not callable(scan_reference_like):
             raise ValueError("reference-like scanner backend is unavailable")
-        return scan_reference_like(phi_min, phi_max, theta_min, theta_max, ep)
+        return scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            ep,
+            backend="rotate_shear",
+        )
     raise ValueError(f"unknown scanner backend: {backend}")
 
 
@@ -610,7 +620,7 @@ def aggregate_backend_case_metrics(
             for crop in crop_list:
                 crop_map = _as_mapping(crop)
                 backend_report = _as_mapping(crop_map.get("backends", {})).get(backend)
-                if backend_report is None and backend == "current":
+                if backend_report is None and backend == "fast":
                     case_report = _as_mapping(crop_map.get("cases", {})).get(case_name)
                 else:
                     case_report = _as_mapping(_as_mapping(backend_report).get("cases", {})).get(
@@ -625,7 +635,7 @@ def aggregate_backend_case_metrics(
 
 def aggregate_case_metrics(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     aggregate = aggregate_backend_case_metrics(crops, scanner_backends=DEFAULT_SCANNER_BACKENDS)
-    aggregate["cases"] = aggregate["backends"]["current"]["cases"]
+    aggregate["cases"] = aggregate["backends"]["fast"]["cases"]
     return aggregate
 
 
@@ -764,10 +774,10 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
     aggregate = _as_mapping(report.get("aggregate", {}))
     aggregate_backends = _as_mapping(aggregate.get("backends", {}))
     if not aggregate_backends and "cases" in aggregate:
-        aggregate_backends = {"current": {"cases": aggregate.get("cases", {})}}
+        aggregate_backends = {"fast": {"cases": aggregate.get("cases", {})}}
     backend_names = list(config.get("scanner_backends", aggregate_backends.keys()))
     if not backend_names:
-        backend_names = ["current"]
+        backend_names = ["fast"]
     crops = list(report.get("crops", []))
     lines = [
         "# F3 Thinning Ablation Visual Report",
@@ -840,7 +850,7 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
         crop_id = f"crop_{int(crop_map.get('index', 0)):03d}"
         crop_backends = _as_mapping(crop_map.get("backends", {}))
         if not crop_backends and "cases" in crop_map:
-            crop_backends = {"current": {"cases": crop_map.get("cases", {})}}
+            crop_backends = {"fast": {"cases": crop_map.get("cases", {})}}
         for backend in backend_names:
             backend_report = _as_mapping(crop_backends.get(backend, {}))
             cases = _as_mapping(backend_report.get("cases", {}))

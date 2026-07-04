@@ -23,7 +23,7 @@ F3 data is external and optional. Normal tests must not require the F3 data root
 or the `reference_osv/` bind mount. Use `docs/f3d_validation.md` for optional
 smoke, crop, multi-crop, ablation, and full-volume commands.
 
-Current comparisons are report-oriented. The previous current/current baseline
+Current comparisons are report-oriented. The previous normal/normal baseline
 context documented for thinned `fvt` is:
 
 ```text

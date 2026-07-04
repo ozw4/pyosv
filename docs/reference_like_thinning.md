@@ -53,7 +53,7 @@ necessarily high voxel-wise correlation. Check whether:
 - ridge overlay figures show fewer far-away candidate-only ridges.
 - exact overlap remains plausible even if it is low for sparse ridges.
 
-The previous current/current baseline is useful context:
+The previous normal/normal baseline is useful context:
 
 ```text
 normalized_correlation.interior.fvt.mean ~= 0.224
