@@ -47,6 +47,15 @@ the inputs. `fv` is a normalized `float32` vote volume in `[0, 1]`; `vp` and
 `vt` store the strike and dip angles associated with the strongest local vote at
 each sample.
 
+Surface orientation is re-estimated from each extracted local surface before
+votes are accumulated. By default, `OptimalSurfaceVoter` smooths that surface
+with `surface_orientation_smoothing=max(rv, rw)` before computing the
+center-difference strike and dip. This setting is separate from
+`surface_smoothing1` and `surface_smoothing2`, which affect dynamic-programming
+surface extraction. Use `voter.set_surface_orientation_smoothing(0.0)` to
+disable this orientation-only smoothing; negative, nonfinite, boolean, and
+nonnumeric values are rejected.
+
 `OptimalSurfaceVoter.thin` keeps local maxima from `fv` along the fault-normal
 field derived from `vp` and `vt`. It returns a thinned `float32` vote volume
 with the same shape. The current default uses SciPy interpolation along fault
