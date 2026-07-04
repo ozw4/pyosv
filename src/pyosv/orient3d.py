@@ -205,7 +205,7 @@ class FaultOrientScanner3:
         pt: np.ndarray,
         tt: np.ndarray,
         *,
-        mode: str = "normal",
+        mode: str = "reference",
         reference_sigma: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Keep likelihood maxima using the selected 3D thinning mode.
@@ -216,10 +216,11 @@ class FaultOrientScanner3:
         orientation values match the input, and non-retained samples use zero
         as the orientation sentinel.
 
-        ``mode="normal"`` preserves the default local fault-normal thinning.
-        ``mode="reference"`` applies reference-like strike-binned local-maximum
-        suppression in the ``i2-i3`` plane, using ``reference_sigma`` for
-        smoothing inside the shared helper.
+        ``mode="reference"`` applies the default reference-like strike-binned
+        local-maximum suppression in the ``i2-i3`` plane, using
+        ``reference_sigma`` for smoothing inside the shared helper.
+        ``mode="normal"`` preserves the legacy local fault-normal thinning as
+        an explicit opt-in mode.
         """
 
         ft_array, pt_array, tt_array = _validate_matching_finite_images3(

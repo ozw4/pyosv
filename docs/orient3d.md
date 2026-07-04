@@ -120,14 +120,19 @@ fvt = voter.thin(fv, vp, vt)
 `fv` is a normalized vote volume, and `vp`/`vt` store the strike and dip angles
 associated with the strongest local vote at each sample.
 
-`FaultOrientScanner3.thin(ft, pt, tt, mode="normal")` is the current default
-and keeps the fault-normal local maxima used by existing workflows. The opt-in
-`mode="reference"` path instead applies reference-like strike-binned
-non-maximum suppression in the `i2-i3` plane using `pt` as the strike-angle
-volume:
+`FaultOrientScanner3.thin(ft, pt, tt)` defaults to reference-like
+strike-binned non-maximum suppression in the `i2-i3` plane using `pt` as the
+strike-angle volume:
 
 ```python
-fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="reference", reference_sigma=1.0)
+fet, fpt, ftt = scanner.thin(ft, pt, tt, reference_sigma=1.0)
+```
+
+The legacy fault-normal local maximum path remains available as an explicit
+opt-in:
+
+```python
+fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
 ```
 
 Both modes return `float32` arrays with zeros outside retained samples. In

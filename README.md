@@ -142,10 +142,11 @@ Public F3 3D reference-data validation is documented in
 crop validation, and the manual full-volume pipeline.
 
 Reference-like 3D thinning is documented in
-`docs/reference_like_thinning.md`. The current implementation still defaults
-to `mode="normal"` for scanner and voter thinning; use `mode="reference"`
-explicitly for reference-like strike-binned thinning until that path is
-promoted in a later issue.
+`docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
+to reference-like strike-binned thinning; pass `mode="normal"` explicitly for
+the legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` still
+defaults to `mode="normal"`, with `mode="reference"` available for
+reference-like voter thinning.
 
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.

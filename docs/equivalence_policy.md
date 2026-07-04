@@ -48,15 +48,13 @@ components unless a specific reference behavior is shown to be defective.
 
 ## Current 3D Thinning Direction
 
-`FaultOrientScanner3.thin` and `OptimalSurfaceVoter.thin` currently default to
-`mode="normal"`, the existing fault-normal non-maximum suppression path used by
-current tests and examples. This is the current implementation state, not the
-reference-first end state for 3D thinning.
+`FaultOrientScanner3.thin` defaults to `mode="reference"`, the reference-like
+strike-binned non-maximum suppression path. Its legacy fault-normal path remains
+available with `mode="normal"`.
 
-The reference-first direction is to validate `mode="reference"` and promote it
-in a later issue if it is suitable for normal workflows. Until that default
-changes, callers that need reference-like strike-binned thinning must pass
-`mode="reference"` explicitly.
+`OptimalSurfaceVoter.thin` still defaults to `mode="normal"`, the existing
+fault-normal non-maximum suppression path. Callers that need reference-like
+strike-binned voter thinning must pass `mode="reference"` explicitly.
 
 ## Testing Policy
 

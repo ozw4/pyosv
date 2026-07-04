@@ -679,7 +679,7 @@ def test_scan_fast_constant_input_uses_derivative_bank_sampling() -> None:
     )
 
 
-def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
+def test_thin_normal_mode_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((7, 9, 7), dtype=np.float32)
     ft[1:6, 3, 1:6] = 0.6
@@ -691,16 +691,12 @@ def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
     pt_before = pt.copy()
     tt_before = tt.copy()
 
-    thinned_ft, thinned_pt, thinned_tt = scanner.thin(ft, pt, tt)
-    normal_ft, normal_pt, normal_tt = scanner.thin(ft, pt, tt, mode="normal")
+    thinned_ft, thinned_pt, thinned_tt = scanner.thin(ft, pt, tt, mode="normal")
 
     for array in (thinned_ft, thinned_pt, thinned_tt):
         assert array.shape == ft.shape
         assert array.dtype == np.float32
         assert np.isfinite(array).all()
-    np.testing.assert_array_equal(normal_ft, thinned_ft)
-    np.testing.assert_array_equal(normal_pt, thinned_pt)
-    np.testing.assert_array_equal(normal_tt, thinned_tt)
     np.testing.assert_array_equal(ft, ft_before)
     np.testing.assert_array_equal(pt, pt_before)
     np.testing.assert_array_equal(tt, tt_before)
@@ -712,6 +708,27 @@ def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
     np.testing.assert_array_equal(thinned_tt[thinned_ft > 0.0], tt[thinned_ft > 0.0])
     np.testing.assert_array_equal(thinned_pt[thinned_ft == 0.0], 0.0)
     np.testing.assert_array_equal(thinned_tt[thinned_ft == 0.0], 0.0)
+
+
+def test_thin_default_matches_reference_mode() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((7, 7, 2), dtype=np.float32)
+    ft[3, 2:5, :] = np.array([[0.4, 0.2], [1.0, 0.8], [0.3, 0.1]], dtype=np.float32)
+    pt = np.full_like(ft, 10.0)
+    tt = np.full_like(ft, 55.0)
+
+    default_ft, default_pt, default_tt = scanner.thin(ft, pt, tt)
+    reference_ft, reference_pt, reference_tt = scanner.thin(ft, pt, tt, mode="reference")
+
+    for array in (default_ft, default_pt, default_tt):
+        assert array.shape == ft.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert float(default_ft.min()) >= 0.0
+    assert float(default_ft.max()) <= 1.0
+    np.testing.assert_array_equal(default_ft, reference_ft)
+    np.testing.assert_array_equal(default_pt, reference_pt)
+    np.testing.assert_array_equal(default_tt, reference_tt)
 
 
 def test_thin_reference_mode_returns_float32_arrays_and_preserves_values() -> None:
@@ -824,7 +841,7 @@ def test_thin_validates_inputs_for_modes(
         scanner.thin(ft, pt, tt, mode=mode)
 
 
-def test_thin_reference_mode_uses_reference_45_degree_diagonal() -> None:
+def test_thin_default_uses_reference_45_degree_diagonal() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((4, 4, 1), dtype=np.float32)
     ft[1, 1, 0] = 1.0
@@ -836,7 +853,6 @@ def test_thin_reference_mode_uses_reference_45_degree_diagonal() -> None:
         ft,
         pt,
         tt,
-        mode="reference",
         reference_sigma=0.0,
     )
 
