@@ -1548,6 +1548,65 @@ def test_surface_strike_and_dip_smoothing_changes_spiky_center_derivatives() -> 
     assert abs(smooth_dip - plane_dip) < abs(raw_dip - plane_dip)
 
 
+def test_surface_strike_and_dip_smoothing_reduces_stair_step_jitter() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    w, v = np.indices((9, 9), dtype=np.float32)
+    plane = 0.12 * (v - 4.0) - 0.18 * (w - 4.0)
+    ideal_strike, ideal_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        plane,
+        sigma=None,
+    )
+    raw_orientations: list[tuple[float, float]] = []
+    smoothed_orientations: list[tuple[float, float]] = []
+
+    for shift_w, shift_v in [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (-1, 0),
+        (0, -1),
+        (2, -1),
+        (-2, 1),
+    ]:
+        checker = (((w + shift_w) + (v + shift_v)) % 2.0) * 2.0 - 1.0
+        stair = np.where(v + shift_v >= 4.0, 1.0, -1.0) + np.where(
+            w + shift_w >= 4.0,
+            -1.0,
+            1.0,
+        )
+        surface = (plane + 0.5 * checker + 0.35 * stair).astype(np.float32)
+        raw_orientations.append(
+            _surface_strike_and_dip(normal, dip, strike, surface, sigma=0.0),
+        )
+        smoothed_orientations.append(
+            _surface_strike_and_dip(normal, dip, strike, surface, sigma=2.0),
+        )
+
+    raw = np.asarray(raw_orientations, dtype=np.float32)
+    smoothed = np.asarray(smoothed_orientations, dtype=np.float32)
+    raw_strike_error = np.asarray(
+        [_angle_distance_degrees(value, ideal_strike) for value in raw[:, 0]],
+    )
+    smoothed_strike_error = np.asarray(
+        [_angle_distance_degrees(value, ideal_strike) for value in smoothed[:, 0]],
+    )
+    raw_dip_error = np.abs(raw[:, 1] - ideal_dip)
+    smoothed_dip_error = np.abs(smoothed[:, 1] - ideal_dip)
+
+    assert np.isfinite(raw).all()
+    assert np.isfinite(smoothed).all()
+    assert np.median(smoothed_strike_error) <= np.median(raw_strike_error)
+    assert np.median(smoothed_dip_error) <= np.median(raw_dip_error)
+    assert np.std(smoothed[:, 0]) < np.std(raw[:, 0])
+    assert np.std(smoothed[:, 1]) < np.std(raw[:, 1])
+
+
 def test_surface_strike_and_dip_does_not_mutate_surface() -> None:
     normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
     dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
