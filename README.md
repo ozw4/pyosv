@@ -128,6 +128,12 @@ self-contained example:
 python examples/run_3d_synthetic_scan_vote.py
 ```
 
+`FaultOrientScanner3.scan()` is the reference-like default and uses Java-style
+strike and dip sampling for normal scanner-to-voting workflows.
+`scan_reference_like()` remains as an explicit compatible alias, while
+`scan_fast()` exposes the older derivative-bank backend for diagnostics or
+practical comparisons.
+
 Public F3 3D reference-data validation is documented in
 `docs/f3d_validation.md`, including the external data layout, smoke checks,
 crop validation, and the manual full-volume pipeline.

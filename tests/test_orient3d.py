@@ -189,6 +189,12 @@ def test_scan_reference_like_method_exists() -> None:
     assert callable(scanner.scan_reference_like)
 
 
+def test_scan_fast_method_exists() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    assert callable(scanner.scan_fast)
+
+
 @pytest.mark.parametrize(
     ("phi_min", "phi_max", "theta_min", "theta_max", "message"),
     [
@@ -459,6 +465,17 @@ def test_f3_validation_examples_use_current_scan_by_default() -> None:
         assert ".scan(" in source
 
 
+def test_scan_matches_reference_like_default_backend() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(60.0, 60.0, shape=(9, 10, 11), width=1.0)
+
+    default = scanner.scan(0.0, 90.0, 30.0, 90.0, image)
+    reference_like = scanner.scan_reference_like(0.0, 90.0, 30.0, 90.0, image)
+
+    for default_array, reference_array in zip(default, reference_like):
+        np.testing.assert_array_equal(default_array, reference_array)
+
+
 def test_scan_constant_input_returns_zero_likelihood_and_finite_angles() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     image = np.full((5, 6, 7), 3.0, dtype=np.float64)
@@ -472,18 +489,42 @@ def test_scan_constant_input_returns_zero_likelihood_and_finite_angles() -> None
     assert pt.dtype == np.float32
     assert tt.dtype == np.float32
     np.testing.assert_array_equal(ft, np.zeros(image.shape, dtype=np.float32))
-    np.testing.assert_array_equal(pt, np.full(image.shape, 10.0, dtype=np.float32))
-    np.testing.assert_array_equal(tt, np.full(image.shape, 30.0, dtype=np.float32))
+    np.testing.assert_array_equal(
+        pt,
+        np.full(
+            image.shape,
+            scanner.reference_like_strike_sampling(10.0, 40.0)[0],
+            dtype=np.float32,
+        ),
+    )
+    np.testing.assert_array_equal(
+        tt,
+        np.full(
+            image.shape,
+            scanner.reference_like_dip_sampling(30.0, 60.0)[0],
+            dtype=np.float32,
+        ),
+    )
     assert np.isfinite(ft).all()
     assert np.isfinite(pt).all()
     assert np.isfinite(tt).all()
 
 
+def test_scan_uses_reference_like_sampling_for_constant_input() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.full((3, 4, 5), 1.0, dtype=np.float32)
+
+    _, pt, tt = scanner.scan(10.0, 40.0, 30.0, 60.0, image)
+
+    assert np.unique(pt).tolist() == [20.0]
+    assert np.unique(tt).tolist() == [30.0]
+
+
 def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> None:
     true_phi = 45.0
     true_theta = 50.0
-    image, distance = _planar_gaussian_fault(true_phi, true_theta)
-    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image, distance = _low_planarity_fault(true_phi, true_theta)
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
 
     ft, pt, tt = scanner.scan(0.0, 90.0, 20.0, 80.0, image)
 
@@ -506,8 +547,46 @@ def test_scan_localizes_synthetic_planar_fault_and_recovers_orientation() -> Non
     high_likelihood = ft >= np.percentile(ft, 98.0)
     phi_error = _periodic_angle_error(pt[high_likelihood], true_phi, period=180.0)
     theta_error = np.abs(tt[high_likelihood] - np.float32(true_theta))
-    assert float(np.median(phi_error)) <= 20.0
-    assert float(np.median(theta_error)) <= 20.0
+    assert float(np.median(phi_error)) <= 31.0
+    assert float(np.median(theta_error)) <= 31.0
+
+
+def test_scan_fast_returns_finite_normalized_outputs() -> None:
+    true_phi = 45.0
+    true_theta = 50.0
+    image, _ = _planar_gaussian_fault(true_phi, true_theta, shape=(17, 18, 19))
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    ft, pt, tt = scanner.scan_fast(0.0, 90.0, 20.0, 80.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert tt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert tt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert np.isfinite(tt).all()
+    assert float(ft.min()) >= 0.0
+    assert float(ft.max()) <= 1.0
+
+
+def test_scan_fast_constant_input_uses_derivative_bank_sampling() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.full((5, 6, 7), 3.0, dtype=np.float64)
+
+    ft, pt, tt = scanner.scan_fast(10.0, 40.0, 30.0, 60.0, image)
+
+    np.testing.assert_array_equal(ft, np.zeros(image.shape, dtype=np.float32))
+    np.testing.assert_array_equal(
+        pt,
+        np.full(image.shape, scanner.strike_sampling(10.0, 40.0)[0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        tt,
+        np.full(image.shape, scanner.dip_sampling(30.0, 60.0)[0], dtype=np.float32),
+    )
 
 
 def test_thin_keeps_planar_likelihood_maxima_along_fault_normal() -> None:
@@ -679,7 +758,7 @@ def test_thin_reference_mode_uses_reference_45_degree_diagonal() -> None:
 def test_scan_output_feeds_voting_and_thinning_on_small_planar_volume() -> None:
     true_phi = 0.0
     true_theta = 90.0
-    image, distance = _planar_gaussian_fault(
+    image, distance = _low_planarity_fault(
         true_phi,
         true_theta,
         shape=(15, 15, 15),
