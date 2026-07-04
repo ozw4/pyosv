@@ -7,6 +7,7 @@ from pyosv.geometry import (
     fault_dip_vector_from_strike_and_dip,
     fault_normal_vector_from_strike_and_dip,
     fault_strike_vector_from_strike_and_dip,
+    strike_and_dip_from_local_surface_derivatives,
 )
 from pyosv.orient3d import FaultOrientScanner3
 from pyosv.thinning3d import reference_like_3d_thin_values
@@ -27,6 +28,10 @@ def _java_style_round(value: float) -> int:
 def _axis_aligned_ramp_volume(shape: tuple[int, int, int]) -> np.ndarray:
     i3, i2, i1 = np.indices(shape, dtype=np.float32)
     return (0.2 + 0.01 * i1 + 0.02 * i2 + 0.04 * i3).astype(np.float32)
+
+
+def _angle_distance_degrees(a: float, b: float) -> float:
+    return abs(((a - b + 180.0) % 360.0) - 180.0)
 
 
 def _expected_uvw_costs(
@@ -1367,14 +1372,30 @@ def test_surface_strike_and_dip_flat_surface_recovers_seed_orientation() -> None
     assert actual_dip == pytest.approx(dip_angle, abs=1e-5)
 
 
-def test_surface_strike_and_dip_sloped_surface_returns_finite_angles() -> None:
-    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+def test_surface_strike_and_dip_linear_surface_matches_geometry_convention() -> None:
+    normal = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
     strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
     w, v = np.indices((5, 5), dtype=np.float32)
-    surface = 0.25 * (v - 2.0) - 0.5 * (w - 2.0)
+    du_dv = 0.25
+    du_dw = -0.5
+    surface = du_dv * (v - 2.0) + du_dw * (w - 2.0)
 
-    actual_strike, actual_dip = _surface_strike_and_dip(
+    expected_strike, expected_dip = strike_and_dip_from_local_surface_derivatives(
+        normal,
+        dip,
+        strike,
+        du_dv,
+        du_dw,
+    )
+    strike_none, dip_none = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=None,
+    )
+    strike_zero, dip_zero = _surface_strike_and_dip(
         normal,
         dip,
         strike,
@@ -1382,7 +1403,97 @@ def test_surface_strike_and_dip_sloped_surface_returns_finite_angles() -> None:
         sigma=0.0,
     )
 
-    assert np.isfinite(actual_strike)
-    assert np.isfinite(actual_dip)
-    assert 0.0 <= actual_strike < 360.0
-    assert 0.0 <= actual_dip <= 180.0
+    assert np.isfinite(strike_none)
+    assert np.isfinite(dip_none)
+    assert strike_none == pytest.approx(expected_strike, abs=1e-5)
+    assert dip_none == pytest.approx(expected_dip, abs=1e-5)
+    assert strike_zero == pytest.approx(strike_none)
+    assert dip_zero == pytest.approx(dip_none)
+    assert 0.0 <= strike_none < 360.0
+    assert 0.0 <= dip_none <= 180.0
+
+
+def test_surface_strike_and_dip_smoothing_changes_spiky_center_derivatives() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    w, v = np.indices((7, 7), dtype=np.float32)
+    plane = 0.1 * (v - 3.0) + 0.2 * (w - 3.0)
+    surface = plane.copy()
+    surface[3, 2] -= 4.0
+    surface[3, 4] += 4.0
+
+    raw_strike, raw_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=None,
+    )
+    smooth_strike, smooth_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=2.0,
+    )
+    plane_strike, plane_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        plane,
+        sigma=None,
+    )
+
+    assert np.isfinite([raw_strike, raw_dip, smooth_strike, smooth_dip]).all()
+    assert smooth_strike != pytest.approx(raw_strike)
+    assert smooth_dip != pytest.approx(raw_dip)
+    assert _angle_distance_degrees(smooth_strike, plane_strike) < _angle_distance_degrees(
+        raw_strike,
+        plane_strike,
+    )
+    assert abs(smooth_dip - plane_dip) < abs(raw_dip - plane_dip)
+
+
+def test_surface_strike_and_dip_does_not_mutate_surface() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    surface = np.zeros((5, 5), dtype=np.float32)
+    surface[2, 1] = -2.0
+    surface[2, 3] = 3.0
+    expected = surface.copy()
+
+    _surface_strike_and_dip(normal, dip, strike, surface, sigma=1.0)
+
+    np.testing.assert_array_equal(surface, expected)
+
+
+@pytest.mark.parametrize("shape", [(2, 3), (3, 2)])
+def test_surface_strike_and_dip_rejects_too_small_surfaces(
+    shape: tuple[int, int],
+) -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    surface = np.zeros(shape, dtype=np.float32)
+
+    with pytest.raises(ValueError, match="at least three samples"):
+        _surface_strike_and_dip(normal, dip, strike, surface, sigma=None)
+
+
+@pytest.mark.parametrize("sigma", [-0.1, np.nan, np.inf, True])
+def test_surface_strike_and_dip_rejects_invalid_sigma(sigma: object) -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    surface = np.zeros((3, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="sigma"):
+        _surface_strike_and_dip(
+            normal,
+            dip,
+            strike,
+            surface,
+            sigma=sigma,  # type: ignore[arg-type]
+        )
