@@ -114,6 +114,101 @@ def test_scan_constant_input_has_zero_finite_likelihood() -> None:
     assert np.isfinite(pt).all()
 
 
+def test_scan_reference_like_method_exists() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+
+    assert callable(scanner.scan_reference_like)
+
+
+def test_scan_reference_like_returns_float32_normalized_outputs() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _low_planarity_lineament(30.0, n2=48, n1=64)
+
+    ft, pt = scanner.scan_reference_like(0.0, 60.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert float(ft.min()) >= 0.0
+    assert float(ft.max()) <= 1.0
+
+
+def test_scan_reference_like_constant_input_has_zero_finite_likelihood() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.full((24, 20), 3.0, dtype=np.float64)
+
+    ft, pt = scanner.scan_reference_like(-60.0, 60.0, image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    np.testing.assert_array_equal(ft, np.zeros(image.shape, dtype=np.float32))
+    assert np.isfinite(pt).all()
+
+
+@pytest.mark.parametrize("interpolation_order", [-1, 6, 1.5, True])
+def test_scan_reference_like_validates_interpolation_order(
+    interpolation_order: object,
+) -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.zeros((8, 9), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="interpolation_order"):
+        scanner.scan_reference_like(
+            -45.0,
+            45.0,
+            image,
+            interpolation_order=interpolation_order,  # type: ignore[arg-type]
+        )
+
+
+def test_scan_reference_like_validates_normalize() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image = np.zeros((8, 9), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="normalize"):
+        scanner.scan_reference_like(
+            -45.0,
+            45.0,
+            image,
+            normalize=1,  # type: ignore[arg-type]
+        )
+
+
+def test_scan_reference_like_is_deterministic() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, _ = _low_planarity_lineament(30.0, n2=48, n1=64)
+
+    first = scanner.scan_reference_like(0.0, 60.0, image)
+    second = scanner.scan_reference_like(0.0, 60.0, image)
+
+    for first_array, second_array in zip(first, second):
+        np.testing.assert_array_equal(first_array, second_array)
+
+
+def test_scan_reference_like_localizes_synthetic_lineament_orientation() -> None:
+    theta = 30.0
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, distance = _low_planarity_lineament(theta)
+
+    ft, pt = scanner.scan_reference_like(0.0, 60.0, image)
+
+    near_line = np.abs(distance) <= 1.5
+    far_from_line = np.abs(distance) >= 12.0
+    assert float(np.mean(ft[near_line])) > float(np.mean(ft[far_from_line])) + 0.5
+
+    high_likelihood = near_line & (ft >= np.percentile(ft, 90.0))
+    assert np.count_nonzero(high_likelihood) > 0
+    expected_pt = _voter_angle_from_feature_angle(theta)
+    angle_error = _orientation_error_degrees(pt[high_likelihood], expected_pt)
+    sample_step = float(np.diff(scanner.theta_sampling(0.0, 60.0)).max())
+    assert float(np.median(angle_error)) <= sample_step
+
+
 @pytest.mark.parametrize(
     ("theta", "theta_min", "theta_max"),
     [
@@ -348,3 +443,13 @@ def _dipping_gaussian_lineament(
     distance = x2 * np.cos(theta_radians) - x1 * np.sin(theta_radians)
     image = np.exp(-0.5 * (distance / np.float32(1.2)) ** 2)
     return image.astype(np.float32), distance.astype(np.float32)
+
+
+def _low_planarity_lineament(
+    theta_degrees: float,
+    *,
+    n2: int = 96,
+    n1: int = 128,
+) -> tuple[np.ndarray, np.ndarray]:
+    high_ridge, distance = _dipping_gaussian_lineament(theta_degrees, n2=n2, n1=n1)
+    return (np.float32(1.0) - high_ridge).astype(np.float32), distance
