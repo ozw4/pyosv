@@ -1,7 +1,8 @@
 # 2D Orientation Scanning
 
 `pyosv.orient2d.FaultOrientScanner2` is the Python 2D orientation scanner used
-to produce fault-likelihood and dip-angle images for `OptimalPathVoter`.
+to produce fault-likelihood and dip-angle images for `OptimalPathVoter`. All
+2D arrays use the repository shape convention `(n2, n1)`.
 
 ## Reference-First Alignment
 
@@ -11,12 +12,13 @@ interpretation workflows, but it is not an exact reproduction of
 deterministic localization and orientation sanity, but they do not require
 bitwise equality with Java, Jython, or Mines JTK output.
 
-The default implementation uses NumPy and SciPy to approximate the reference
-rotate, separable smooth, unrotate, and likelihood-scoring flow. It can differ
-from Java/JTK in interpolation, filter kernels, boundary handling, angle
-tie-breaking, and floating-point accumulation. The legacy derivative-bank
-scanner remains available as `scan_fast()` for practical workflows that prefer
-that scoring behavior.
+`FaultOrientScanner2.scan()` is the reference-like default. It uses NumPy and
+SciPy to approximate the reference rotate, separable smooth, unrotate, and
+likelihood-scoring flow. It can differ from Java/JTK in interpolation, filter
+kernels, boundary handling, angle tie-breaking, and floating-point
+accumulation. The legacy derivative-bank scanner remains available as
+`scan_fast()` only for explicit fallback use, diagnostics, and comparisons
+against the older practical backend.
 
 ## Angle Convention
 
@@ -49,11 +51,14 @@ Input images must be finite 2D numeric arrays and are converted to `float32`.
 Constant images return zero likelihood and a finite angle image.
 
 `FaultOrientScanner2.scan_fast(theta_min, theta_max, g)` exposes the older
-derivative-bank scanner with the same output contract. `scan_dip(theta_min,
-theta_max, g)` follows the reference API shape by scanning both feature-angle
-branches, `90 - theta_max` to `90 - theta_min` and `90 + theta_min` to
-`90 + theta_max`, then keeping the higher-likelihood `(ft, pt)` pair at each
-sample.
+derivative-bank scanner with the same output contract. It is not the default
+backend and should be selected only when a caller specifically wants the faster
+legacy scoring path for diagnosis or fallback behavior.
+
+`FaultOrientScanner2.scan_dip(theta_min, theta_max, g)` follows the reference
+API shape by scanning both feature-angle branches, `90 - theta_max` to
+`90 - theta_min` and `90 + theta_min` to `90 + theta_max`, then keeping the
+higher-likelihood `(ft, pt)` pair at each sample.
 
 `FaultOrientScanner2.thin(ft, pt)` keeps local likelihood maxima across the
 local normal direction implied by `pt`. It returns `(thinned_ft, thinned_pt)` as
@@ -86,5 +91,7 @@ limitations include:
 - no committed real-data equivalence thresholds against `reference_osv`.
 
 Use the scanner for deterministic Python workflows and synthetic regression
-coverage. Treat reference-data comparisons as practical reports unless a future
-issue defines feature-specific acceptance thresholds.
+coverage. Treat optional reference-data comparisons as reports using finite
+value summaries, correlation, ridge-overlap, or similar practical metrics
+rather than fixed pass/fail thresholds, unless a future issue defines
+feature-specific acceptance thresholds.

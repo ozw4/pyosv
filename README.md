@@ -35,7 +35,7 @@ The local `reference_osv/` directory is a read-only bind mount and is not commit
 
 See `docs/dat_io.md` for detailed I/O behavior and reference fixture test policy.
 
-## 2D Voting
+## 2D Orientation Scanning And Voting
 
 Install the package in development mode before running examples:
 
@@ -43,9 +43,34 @@ Install the package in development mode before running examples:
 python -m pip install -e ".[dev]"
 ```
 
-The 2D workflow can run from existing reference `ft.dat` and `pt.dat` files.
-`reference_osv/` is a read-only bind mount for reference inputs only; it is
-optional for normal tests and must not be used for generated outputs.
+The normal 2D workflow scans a finite image shaped `(n2, n1)` and passes the
+result directly to optimal-path voting. `FaultOrientScanner2.scan()` is the
+reference-like default: it approximates the reference rotate, separable smooth,
+unrotate, and likelihood-scoring flow with NumPy and SciPy. The output `pt`
+angle convention is compatible with `FaultCell2` and `OptimalPathVoter`.
+
+```python
+from pyosv.orient2d import FaultOrientScanner2
+from pyosv.voting2d import OptimalPathVoter
+
+scanner = FaultOrientScanner2(sigma1=2.0)
+ft, pt = scanner.scan(-75.0, 75.0, image)
+
+voter = OptimalPathVoter(ru=2, rv=5)
+fv, w1, w2 = voter.apply_voting(d=3, fm=0.45, ft=ft, pt=pt)
+fvt = voter.thin(fv, w1, w2)
+```
+
+`scan_fast()` exposes the older derivative-bank backend only as an explicit
+fallback or diagnostic path. Use `scan()` for reference-first examples and
+normal scanner-to-voting workflows. `scan_dip()` follows the reference API
+shape by running the two dip-angle scan branches and keeping the stronger
+sample at each location.
+
+The 2D voting workflow can also run from existing reference `ft.dat` and
+`pt.dat` files. `reference_osv/` is a read-only bind mount for reference inputs
+only; it is optional for normal tests and must not be used for generated
+outputs.
 
 ```python
 from pyosv.io import read_dat
