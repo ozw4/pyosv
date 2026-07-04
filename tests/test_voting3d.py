@@ -1,12 +1,14 @@
 import numpy as np
 import pytest
 
+import pyosv.voting3d as voting3d
 from pyosv.cells import FaultCell
 from pyosv.dp import update_shift_ranges_3d
 from pyosv.geometry import (
     fault_dip_vector_from_strike_and_dip,
     fault_normal_vector_from_strike_and_dip,
     fault_strike_vector_from_strike_and_dip,
+    strike_and_dip_from_local_surface_derivatives,
 )
 from pyosv.orient3d import FaultOrientScanner3
 from pyosv.thinning3d import reference_like_3d_thin_values
@@ -27,6 +29,10 @@ def _java_style_round(value: float) -> int:
 def _axis_aligned_ramp_volume(shape: tuple[int, int, int]) -> np.ndarray:
     i3, i2, i1 = np.indices(shape, dtype=np.float32)
     return (0.2 + 0.01 * i1 + 0.02 * i2 + 0.04 * i3).astype(np.float32)
+
+
+def _angle_distance_degrees(a: float, b: float) -> float:
+    return abs(((a - b + 180.0) % 360.0) - 180.0)
 
 
 def _expected_uvw_costs(
@@ -73,6 +79,7 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
     assert voter.attribute_smoothing == 1
     assert voter.surface_smoothing1 == 2.0
     assert voter.surface_smoothing2 == 2.0
+    assert voter.surface_orientation_smoothing == 2.0
     np.testing.assert_array_equal(
         voter.lmins,
         np.array(
@@ -87,6 +94,18 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
         ),
     )
     np.testing.assert_array_equal(voter.lmaxs, -voter.lmins)
+
+
+def test_constructor_initializes_surface_orientation_smoothing_from_max_radius() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=5)
+
+    assert voter.surface_orientation_smoothing == 5.0
+
+
+def test_constructor_allows_zero_surface_orientation_smoothing_default() -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=0, rw=0)
+
+    assert voter.surface_orientation_smoothing == 0.0
 
 
 def test_shift_range_arrays_match_surface_radius_shape() -> None:
@@ -240,6 +259,33 @@ def test_set_surface_smoothing_rejects_invalid_second_value(
 
     with pytest.raises(ValueError, match="surface_smoothing2"):
         voter.set_surface_smoothing(0.0, surface_smoothing)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("surface_orientation_smoothing", [0.0, np.float32(2.5)])
+def test_set_surface_orientation_smoothing_accepts_nonnegative_finite_numbers(
+    surface_orientation_smoothing: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
+
+    assert voter.surface_orientation_smoothing == float(surface_orientation_smoothing)
+    assert isinstance(voter.surface_orientation_smoothing, float)
+
+
+@pytest.mark.parametrize(
+    "surface_orientation_smoothing",
+    [-0.1, np.nan, np.inf, True, "1.0"],
+)
+def test_set_surface_orientation_smoothing_rejects_invalid_values(
+    surface_orientation_smoothing: object,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="surface_orientation_smoothing"):
+        voter.set_surface_orientation_smoothing(
+            surface_orientation_smoothing,  # type: ignore[arg-type]
+        )
 
 
 def test_pick_seeds_returns_no_seeds_when_no_sample_exceeds_threshold() -> None:
@@ -634,6 +680,58 @@ def test_surface_voting_adds_votes_on_high_likelihood_plane() -> None:
     for array in (fe, vp, vt, vm):
         assert array.shape == ft.shape
         assert array.dtype == np.float32
+
+
+@pytest.mark.parametrize(
+    ("surface_orientation_smoothing", "expected_sigma"),
+    [(None, 3.0), (0.0, 0.0)],
+)
+def test_surface_voting_passes_configured_orientation_smoothing(
+    monkeypatch: pytest.MonkeyPatch,
+    surface_orientation_smoothing: float | None,
+    expected_sigma: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=3, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    if surface_orientation_smoothing is not None:
+        voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 2:9] = 0.8
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+    sigmas: list[float | None] = []
+
+    def wrapped_surface_strike_and_dip(
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        surface: np.ndarray,
+        *,
+        sigma: float | None = None,
+    ) -> tuple[float, float]:
+        sigmas.append(sigma)
+        return _surface_strike_and_dip(
+            normal,
+            dip,
+            strike,
+            surface,
+            sigma=sigma,
+        )
+
+    monkeypatch.setattr(
+        voting3d,
+        "_surface_strike_and_dip",
+        wrapped_surface_strike_and_dip,
+    )
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    assert sigmas == [expected_sigma]
+    assert np.isfinite(vp[fe > 0.0]).all()
+    assert np.isfinite(vt[fe > 0.0]).all()
 
 
 def test_surface_voting_keeps_stronger_orientation_when_later_vote_is_weaker() -> None:
@@ -1367,14 +1465,30 @@ def test_surface_strike_and_dip_flat_surface_recovers_seed_orientation() -> None
     assert actual_dip == pytest.approx(dip_angle, abs=1e-5)
 
 
-def test_surface_strike_and_dip_sloped_surface_returns_finite_angles() -> None:
-    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+def test_surface_strike_and_dip_linear_surface_matches_geometry_convention() -> None:
+    normal = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
     strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
     w, v = np.indices((5, 5), dtype=np.float32)
-    surface = 0.25 * (v - 2.0) - 0.5 * (w - 2.0)
+    du_dv = 0.25
+    du_dw = -0.5
+    surface = du_dv * (v - 2.0) + du_dw * (w - 2.0)
 
-    actual_strike, actual_dip = _surface_strike_and_dip(
+    expected_strike, expected_dip = strike_and_dip_from_local_surface_derivatives(
+        normal,
+        dip,
+        strike,
+        du_dv,
+        du_dw,
+    )
+    strike_none, dip_none = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=None,
+    )
+    strike_zero, dip_zero = _surface_strike_and_dip(
         normal,
         dip,
         strike,
@@ -1382,7 +1496,156 @@ def test_surface_strike_and_dip_sloped_surface_returns_finite_angles() -> None:
         sigma=0.0,
     )
 
-    assert np.isfinite(actual_strike)
-    assert np.isfinite(actual_dip)
-    assert 0.0 <= actual_strike < 360.0
-    assert 0.0 <= actual_dip <= 180.0
+    assert np.isfinite(strike_none)
+    assert np.isfinite(dip_none)
+    assert strike_none == pytest.approx(expected_strike, abs=1e-5)
+    assert dip_none == pytest.approx(expected_dip, abs=1e-5)
+    assert strike_zero == pytest.approx(strike_none)
+    assert dip_zero == pytest.approx(dip_none)
+    assert 0.0 <= strike_none < 360.0
+    assert 0.0 <= dip_none <= 180.0
+
+
+def test_surface_strike_and_dip_smoothing_changes_spiky_center_derivatives() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    w, v = np.indices((7, 7), dtype=np.float32)
+    plane = 0.1 * (v - 3.0) + 0.2 * (w - 3.0)
+    surface = plane.copy()
+    surface[3, 2] -= 4.0
+    surface[3, 4] += 4.0
+
+    raw_strike, raw_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=None,
+    )
+    smooth_strike, smooth_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=2.0,
+    )
+    plane_strike, plane_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        plane,
+        sigma=None,
+    )
+
+    assert np.isfinite([raw_strike, raw_dip, smooth_strike, smooth_dip]).all()
+    assert smooth_strike != pytest.approx(raw_strike)
+    assert smooth_dip != pytest.approx(raw_dip)
+    assert _angle_distance_degrees(smooth_strike, plane_strike) < _angle_distance_degrees(
+        raw_strike,
+        plane_strike,
+    )
+    assert abs(smooth_dip - plane_dip) < abs(raw_dip - plane_dip)
+
+
+def test_surface_strike_and_dip_smoothing_reduces_stair_step_jitter() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    w, v = np.indices((9, 9), dtype=np.float32)
+    plane = 0.12 * (v - 4.0) - 0.18 * (w - 4.0)
+    ideal_strike, ideal_dip = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        plane,
+        sigma=None,
+    )
+    raw_orientations: list[tuple[float, float]] = []
+    smoothed_orientations: list[tuple[float, float]] = []
+
+    for shift_w, shift_v in [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (-1, 0),
+        (0, -1),
+        (2, -1),
+        (-2, 1),
+    ]:
+        checker = (((w + shift_w) + (v + shift_v)) % 2.0) * 2.0 - 1.0
+        stair = np.where(v + shift_v >= 4.0, 1.0, -1.0) + np.where(
+            w + shift_w >= 4.0,
+            -1.0,
+            1.0,
+        )
+        surface = (plane + 0.5 * checker + 0.35 * stair).astype(np.float32)
+        raw_orientations.append(
+            _surface_strike_and_dip(normal, dip, strike, surface, sigma=0.0),
+        )
+        smoothed_orientations.append(
+            _surface_strike_and_dip(normal, dip, strike, surface, sigma=2.0),
+        )
+
+    raw = np.asarray(raw_orientations, dtype=np.float32)
+    smoothed = np.asarray(smoothed_orientations, dtype=np.float32)
+    raw_strike_error = np.asarray(
+        [_angle_distance_degrees(value, ideal_strike) for value in raw[:, 0]],
+    )
+    smoothed_strike_error = np.asarray(
+        [_angle_distance_degrees(value, ideal_strike) for value in smoothed[:, 0]],
+    )
+    raw_dip_error = np.abs(raw[:, 1] - ideal_dip)
+    smoothed_dip_error = np.abs(smoothed[:, 1] - ideal_dip)
+
+    assert np.isfinite(raw).all()
+    assert np.isfinite(smoothed).all()
+    assert np.median(smoothed_strike_error) <= np.median(raw_strike_error)
+    assert np.median(smoothed_dip_error) <= np.median(raw_dip_error)
+    assert np.std(smoothed[:, 0]) < np.std(raw[:, 0])
+    assert np.std(smoothed[:, 1]) < np.std(raw[:, 1])
+
+
+def test_surface_strike_and_dip_does_not_mutate_surface() -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    surface = np.zeros((5, 5), dtype=np.float32)
+    surface[2, 1] = -2.0
+    surface[2, 3] = 3.0
+    expected = surface.copy()
+
+    _surface_strike_and_dip(normal, dip, strike, surface, sigma=1.0)
+
+    np.testing.assert_array_equal(surface, expected)
+
+
+@pytest.mark.parametrize("shape", [(2, 3), (3, 2)])
+def test_surface_strike_and_dip_rejects_too_small_surfaces(
+    shape: tuple[int, int],
+) -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    surface = np.zeros(shape, dtype=np.float32)
+
+    with pytest.raises(ValueError, match="at least three samples"):
+        _surface_strike_and_dip(normal, dip, strike, surface, sigma=None)
+
+
+@pytest.mark.parametrize("sigma", [-0.1, np.nan, np.inf, True])
+def test_surface_strike_and_dip_rejects_invalid_sigma(sigma: object) -> None:
+    normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    surface = np.zeros((3, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="sigma"):
+        _surface_strike_and_dip(
+            normal,
+            dip,
+            strike,
+            surface,
+            sigma=sigma,  # type: ignore[arg-type]
+        )

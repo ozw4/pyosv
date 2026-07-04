@@ -38,6 +38,7 @@ class OptimalSurfaceVoter:
         self.attribute_smoothing = 1
         self.surface_smoothing1 = 2.0
         self.surface_smoothing2 = 2.0
+        self.surface_orientation_smoothing = float(max(self.rv, self.rw))
         self.lmins: np.ndarray
         self.lmaxs: np.ndarray
         self._update_shift_ranges()
@@ -75,6 +76,17 @@ class OptimalSurfaceVoter:
         )
         self.surface_smoothing1 = smoothing1
         self.surface_smoothing2 = smoothing2
+
+    def set_surface_orientation_smoothing(
+        self,
+        surface_orientation_smoothing: float,
+    ) -> None:
+        """Set smoothing for surface orientation re-estimation."""
+
+        self.surface_orientation_smoothing = _validate_nonnegative_float(
+            surface_orientation_smoothing,
+            "surface_orientation_smoothing",
+        )
 
     def _update_shift_ranges(self) -> None:
         self.lmins, self.lmaxs = update_shift_ranges_3d(self.ru, self.rv, self.rw)
@@ -360,7 +372,7 @@ class OptimalSurfaceVoter:
             dip,
             strike,
             surface,
-            sigma=None,
+            sigma=self.surface_orientation_smoothing,
         )
         vp_value = np.float32(strike_angle)
         vt_value = np.float32(dip_angle)
@@ -930,29 +942,21 @@ def _surface_strike_and_dip(
     *,
     sigma: float | None = None,
 ) -> tuple[float, float]:
+    """Return orientation from center differences of a local ``u(w,v)`` surface.
+
+    ``surface`` must be a finite 2D ``(nw, nv)`` array with at least three
+    samples along both axes. If ``sigma`` is ``None`` or ``0.0``, derivatives
+    are computed from the raw surface. If ``sigma`` is positive, the surface is
+    smoothed before computing centered ``du/dv`` and ``du/dw``. The input
+    surface is never modified. Strike/dip signs are delegated to
+    ``strike_and_dip_from_local_surface_derivatives``.
+    """
+
     normal_array = _validate_finite_vector3(normal, "normal")
     dip_array = _validate_finite_vector3(dip, "dip")
     strike_array = _validate_finite_vector3(strike, "strike")
-    surface_array = _validate_finite_array2(surface, "surface").astype(
-        np.float32,
-        copy=True,
-    )
-    if surface_array.shape[0] < 3 or surface_array.shape[1] < 3:
-        raise ValueError("surface must have at least three samples along w and v")
-
-    if sigma is not None:
-        sigma_float = _validate_nonnegative_float(sigma, "sigma")
-        if sigma_float > 0.0:
-            surface_array = smooth_surface_2d(
-                surface_array,
-                sigma1=sigma_float,
-                sigma2=sigma_float,
-            ).astype(np.float32, copy=False)
-
-    iw = surface_array.shape[0] // 2
-    iv = surface_array.shape[1] // 2
-    du_dv = float(0.5 * (surface_array[iw, iv + 1] - surface_array[iw, iv - 1]))
-    du_dw = float(0.5 * (surface_array[iw + 1, iv] - surface_array[iw - 1, iv]))
+    surface_array = _smooth_surface_for_orientation(surface, sigma)
+    du_dv, du_dw = _surface_center_derivatives(surface_array)
     return strike_and_dip_from_local_surface_derivatives(
         normal_array,
         dip_array,
@@ -960,6 +964,39 @@ def _surface_strike_and_dip(
         du_dv,
         du_dw,
     )
+
+
+def _smooth_surface_for_orientation(
+    surface: np.ndarray,
+    sigma: float | None,
+) -> np.ndarray:
+    surface_array = _validate_finite_array2(surface, "surface").astype(
+        np.float32,
+        copy=True,
+    )
+    if surface_array.shape[0] < 3 or surface_array.shape[1] < 3:
+        raise ValueError("surface must have at least three samples along w and v")
+
+    if sigma is None:
+        return surface_array
+
+    sigma_float = _validate_nonnegative_float(sigma, "sigma")
+    if sigma_float == 0.0:
+        return surface_array
+
+    return smooth_surface_2d(
+        surface_array,
+        sigma1=sigma_float,
+        sigma2=sigma_float,
+    ).astype(np.float32, copy=False)
+
+
+def _surface_center_derivatives(surface: np.ndarray) -> tuple[float, float]:
+    iw = surface.shape[0] // 2
+    iv = surface.shape[1] // 2
+    du_dv = float(0.5 * (surface[iw, iv + 1] - surface[iw, iv - 1]))
+    du_dw = float(0.5 * (surface[iw + 1, iv] - surface[iw - 1, iv]))
+    return du_dv, du_dw
 
 
 def _normalize_unit_range_in_place(x: np.ndarray) -> None:
