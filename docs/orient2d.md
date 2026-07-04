@@ -48,7 +48,9 @@ corresponding voter-compatible `pt` for the strongest local score.
   shape `(n2, n1)`.
 
 Input images must be finite 2D numeric arrays and are converted to `float32`.
-Constant images return zero likelihood and a finite angle image.
+With the default `normalize=True` reference-like path, nonconstant inputs are
+linearly scaled to `[0, 1]` before the `1 - smoothed**4` likelihood score is
+computed. Constant images return zero likelihood and a finite angle image.
 
 `FaultOrientScanner2.scan_fast(theta_min, theta_max, g)` exposes the older
 derivative-bank scanner with the same output contract. It is not the default

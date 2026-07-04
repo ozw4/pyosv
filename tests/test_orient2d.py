@@ -148,6 +148,26 @@ def test_scan_reference_like_returns_float32_normalized_outputs() -> None:
     assert float(ft.max()) <= 1.0
 
 
+def test_scan_normalizes_unscaled_finite_input_for_reference_like_default() -> None:
+    scanner = FaultOrientScanner2(sigma1=2.0)
+    image, distance = _low_planarity_lineament(30.0, n2=48, n1=64)
+    unscaled_image = image * np.float32(20.0) + np.float32(5.0)
+
+    ft, pt = scanner.scan(0.0, 60.0, unscaled_image)
+
+    assert ft.shape == image.shape
+    assert pt.shape == image.shape
+    assert ft.dtype == np.float32
+    assert pt.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert np.isfinite(pt).all()
+    assert float(ft.max()) > 0.0
+
+    near_line = np.abs(distance) <= 1.5
+    far_from_line = np.abs(distance) >= 12.0
+    assert float(np.mean(ft[near_line])) > float(np.mean(ft[far_from_line])) + 0.35
+
+
 def test_scan_reference_like_constant_input_has_zero_finite_likelihood() -> None:
     scanner = FaultOrientScanner2(sigma1=2.0)
     image = np.full((24, 20), 3.0, dtype=np.float64)

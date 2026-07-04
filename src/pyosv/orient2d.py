@@ -111,14 +111,18 @@ class FaultOrientScanner2:
         approximation of Mines JTK interpolation and recursive exponential
         filtering, and is the default :meth:`scan` backend. Returned
         orientations use the existing ``FaultCell2``/voting-compatible angle
-        convention.
+        convention. With the default ``normalize=True``, nonconstant finite
+        inputs are linearly scaled to ``[0, 1]`` before scoring and the output
+        likelihood is clipped to ``[0, 1]``. Set ``normalize=False`` only for
+        pre-scaled inputs that should be scored directly.
         """
 
         theta_sampling = self.theta_sampling(theta_min, theta_max)
         image = self.validate_image(g, "g")
         order = _validate_interpolation_order(interpolation_order)
         normalize_output = _validate_bool(normalize, "normalize")
-        if float(np.max(image) - np.min(image)) == 0.0:
+        image_min, image_max = _finite_min_max(image)
+        if image_max - image_min == 0.0:
             ft = np.zeros_like(image, dtype=np.float32)
             pt = np.full_like(
                 image,
@@ -127,9 +131,14 @@ class FaultOrientScanner2:
             )
             return ft, pt
 
+        scan_image = (
+            _normalize_reference_like_input(image, image_min=image_min, image_max=image_max)
+            if normalize_output
+            else image
+        )
         return self._scan_theta_reference_like(
             theta_sampling,
-            image,
+            scan_image,
             interpolation_order=order,
             normalize=normalize_output,
         )
@@ -330,6 +339,21 @@ def _validate_matching_finite_images2(
         raise ValueError(f"{first_name} and {second_name} shapes must match")
 
     return first_array, second_array
+
+
+def _finite_min_max(image: np.ndarray) -> tuple[float, float]:
+    return float(np.min(image)), float(np.max(image))
+
+
+def _normalize_reference_like_input(
+    image: np.ndarray,
+    *,
+    image_min: float,
+    image_max: float,
+) -> np.ndarray:
+    scale = image_max - image_min
+    normalized = (image.astype(np.float64, copy=False) - image_min) / scale
+    return np.clip(normalized, 0.0, 1.0).astype(np.float32)
 
 
 def _gaussian_derivatives(

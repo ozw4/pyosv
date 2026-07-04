@@ -48,6 +48,8 @@ result directly to optimal-path voting. `FaultOrientScanner2.scan()` is the
 reference-like default: it approximates the reference rotate, separable smooth,
 unrotate, and likelihood-scoring flow with NumPy and SciPy. The output `pt`
 angle convention is compatible with `FaultCell2` and `OptimalPathVoter`.
+Nonconstant finite inputs are linearly scaled to `[0, 1]` before the
+reference-like likelihood score is computed.
 
 ```python
 from pyosv.orient2d import FaultOrientScanner2
