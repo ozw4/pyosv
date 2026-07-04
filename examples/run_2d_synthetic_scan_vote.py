@@ -12,7 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run pyosv 2D orientation scanning and optimal-path voting on a "
-            "synthetic Gaussian lineament."
+            "synthetic low-planarity Gaussian lineament."
         ),
     )
     parser.add_argument(
@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--theta",
         type=float,
         default=25.0,
-        help="Synthetic lineament orientation in degrees.",
+        help="Synthetic low-planarity lineament orientation in degrees.",
     )
     parser.add_argument(
         "--theta-min",
@@ -167,7 +167,8 @@ def _synthetic_lineament(theta_degrees: float) -> np.ndarray:
 
     theta_radians = np.deg2rad(theta_degrees)
     distance = x2 * np.cos(theta_radians) - x1 * np.sin(theta_radians)
-    image = np.exp(-0.5 * (distance / np.float32(1.2)) ** 2)
+    ridge = np.exp(-0.5 * (distance / np.float32(1.2)) ** 2)
+    image = np.float32(1.0) - ridge
     return image.astype(np.float32)
 
 

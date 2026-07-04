@@ -11,10 +11,12 @@ interpretation workflows, but it is not an exact reproduction of
 deterministic localization and orientation sanity, but they do not require
 bitwise equality with Java, Jython, or Mines JTK output.
 
-The implementation uses NumPy and SciPy image derivatives. This is an
-intentional approximation of the Java/JTK implementation and can differ in
-filter kernels, boundary handling, angle tie-breaking, and floating-point
-accumulation.
+The default implementation uses NumPy and SciPy to approximate the reference
+rotate, separable smooth, unrotate, and likelihood-scoring flow. It can differ
+from Java/JTK in interpolation, filter kernels, boundary handling, angle
+tie-breaking, and floating-point accumulation. The legacy derivative-bank
+scanner remains available as `scan_fast()` for practical workflows that prefer
+that scoring behavior.
 
 ## Angle Convention
 
@@ -46,6 +48,13 @@ corresponding voter-compatible `pt` for the strongest local score.
 Input images must be finite 2D numeric arrays and are converted to `float32`.
 Constant images return zero likelihood and a finite angle image.
 
+`FaultOrientScanner2.scan_fast(theta_min, theta_max, g)` exposes the older
+derivative-bank scanner with the same output contract. `scan_dip(theta_min,
+theta_max, g)` follows the reference API shape by scanning both feature-angle
+branches, `90 - theta_max` to `90 - theta_min` and `90 + theta_min` to
+`90 + theta_max`, then keeping the higher-likelihood `(ft, pt)` pair at each
+sample.
+
 `FaultOrientScanner2.thin(ft, pt)` keeps local likelihood maxima across the
 local normal direction implied by `pt`. It returns `(thinned_ft, thinned_pt)` as
 `float32` arrays with the same `(n2, n1)` shape; non-retained samples use zero
@@ -70,7 +79,8 @@ This module does not add a runtime dependency on the JVM, Jython, Mines JTK, or
 Gradle. It is not a drop-in numerical clone of the reference scanner. Current
 limitations include:
 
-- derivative-based scoring instead of the full Java/JTK filter stack;
+- SciPy interpolation and Gaussian smoothing instead of the full Java/JTK
+  filter stack;
 - SciPy boundary behavior rather than Mines JTK boundary behavior;
 - approximate orientation sampling based on `sigma1`;
 - no committed real-data equivalence thresholds against `reference_osv`.

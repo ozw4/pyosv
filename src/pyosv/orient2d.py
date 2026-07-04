@@ -14,7 +14,7 @@ __all__ = ["FaultOrientScanner2"]
 
 
 class FaultOrientScanner2:
-    """Configuration holder for approximate 2D fault-orientation scanning."""
+    """Configuration holder for reference-first 2D fault-orientation scanning."""
 
     def __init__(self, sigma1: float) -> None:
         self.sigma1 = _validate_positive_float(sigma1, "sigma1")
@@ -59,11 +59,27 @@ class FaultOrientScanner2:
         theta_max: float,
         g: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Scan a 2D image for approximate fault likelihood and dip.
+        """Scan a 2D image with the reference-like backend.
 
         The returned arrays have shape ``(n2, n1)``. ``ft`` is normalized to
         ``[0, 1]`` and ``pt`` contains the selected voter-compatible fault
         orientation angle in degrees.
+        """
+
+        return self.scan_reference_like(theta_min, theta_max, g)
+
+    def scan_fast(
+        self,
+        theta_min: float,
+        theta_max: float,
+        g: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Scan with the legacy derivative-bank backend.
+
+        This practical backend is faster than :meth:`scan_reference_like` but
+        does not follow the Java reference scanner's rotate/smooth/unrotate
+        control flow. Returned orientations use the same
+        ``FaultCell2``/voting-compatible angle convention as :meth:`scan`.
         """
 
         image = self.validate_image(g, "g")
@@ -77,7 +93,7 @@ class FaultOrientScanner2:
             )
             return ft, pt
 
-        return self._scan_theta(theta_sampling, image)
+        return self._scan_theta_fast(theta_sampling, image)
 
     def scan_reference_like(
         self,
@@ -88,14 +104,14 @@ class FaultOrientScanner2:
         interpolation_order: int = 1,
         normalize: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Scan using an opt-in approximate Java reference-like theta sweep.
+        """Scan using an approximate Java reference-like theta sweep.
 
         This backend follows the reference scanner's rotate, separable smooth,
-        unrotate, and ``1 - smoothed**4`` control flow. It remains a SciPy-based
+        unrotate, and ``1 - smoothed**4`` control flow. It is a SciPy-based
         approximation of Mines JTK interpolation and recursive exponential
-        filtering; the default :meth:`scan` derivative-bank backend is unchanged.
-        Returned orientations use the existing ``FaultCell2``/voting-compatible
-        angle convention.
+        filtering, and is the default :meth:`scan` backend. Returned
+        orientations use the existing ``FaultCell2``/voting-compatible angle
+        convention.
         """
 
         theta_sampling = self.theta_sampling(theta_min, theta_max)
@@ -124,9 +140,20 @@ class FaultOrientScanner2:
         theta_max: float,
         g: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Alias for :meth:`scan` using Python naming for the reference API."""
+        """Scan the two reference dip-angle branches and keep the stronger sample.
 
-        return self.scan(theta_min, theta_max, g)
+        The two feature-angle scans cover ``90 - theta_max`` to
+        ``90 - theta_min`` and ``90 + theta_min`` to ``90 + theta_max``. Both
+        scans return voter-compatible orientations; this method selects the
+        ``(ft, pt)`` pair with larger likelihood at each sample.
+        """
+
+        ft_left, pt_left = self.scan(90.0 - theta_max, 90.0 - theta_min, g)
+        ft_right, pt_right = self.scan(90.0 + theta_min, 90.0 + theta_max, g)
+        use_right = ft_right > ft_left
+        ft = np.where(use_right, ft_right, ft_left).astype(np.float32, copy=False)
+        pt = np.where(use_right, pt_right, pt_left).astype(np.float32, copy=False)
+        return ft, pt
 
     def thin(self, ft: np.ndarray, pt: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Keep likelihood maxima across local dip and zero orientation elsewhere.
@@ -156,7 +183,7 @@ class FaultOrientScanner2:
         thinned_pt[keep] = pt_array[keep]
         return thinned_ft, thinned_pt
 
-    def _scan_theta(
+    def _scan_theta_fast(
         self,
         theta_sampling: np.ndarray,
         image: np.ndarray,
