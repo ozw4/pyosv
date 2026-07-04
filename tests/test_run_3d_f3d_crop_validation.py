@@ -81,12 +81,16 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.strain_max2 == 0.25
     assert args.surface_smoothing1 == 2.0
     assert args.surface_smoothing2 == 2.0
+    assert args.surface_orientation_smoothing is None
     assert args.d == 4
     assert args.fm == 0.3
     assert args.interior_margin is None
     assert args.scanner_thin_mode == "reference"
     assert args.voter_thin_mode == "normal"
     assert args.reference_thin_sigma == 1.0
+
+    override_args = module.build_parser().parse_args(["--surface-orientation-smoothing", "0"])
+    assert override_args.surface_orientation_smoothing == 0.0
 
 
 def test_parser_accepts_and_rejects_thinning_modes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,15 +271,18 @@ def test_run_example_records_selected_thinning_modes(
         scanner_thin_mode="reference",
         voter_thin_mode="reference",
         reference_thin_sigma=1.25,
+        surface_orientation_smoothing=0.0,
     )
 
     assert report["config"]["scanner"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["thin_mode"] == "reference"
+    assert report["config"]["voter"]["surface_orientation_smoothing"] == 0.0
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
     assert received_kwargs["scanner_thin_mode"] == "reference"
     assert received_kwargs["voter_thin_mode"] == "reference"
     assert received_kwargs["reference_thin_sigma"] == 1.25
+    assert received_kwargs["surface_orientation_smoothing"] == 0.0
 
 
 def test_small_pipeline_accepts_reference_thinning(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -296,6 +303,7 @@ def test_small_pipeline_accepts_reference_thinning(monkeypatch: pytest.MonkeyPat
         strain_max2=0.25,
         surface_smoothing1=1.0,
         surface_smoothing2=1.0,
+        surface_orientation_smoothing=0.0,
         d=1,
         fm=0.3,
         scanner_thin_mode="reference",

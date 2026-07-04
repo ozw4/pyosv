@@ -156,7 +156,10 @@ The crop and full F3 reports also include `voting.orientation`, a report-only
 summary for `vp_py.dat` and `vt_py.dat`. It records finite and nonzero sample
 counts plus strike/dip mean, standard deviation, median, and median absolute
 deviation on the high-`fv_py.dat` mask. To inspect the effect of surface
-orientation smoothing, run the same crop twice and compare that block:
+orientation smoothing, run the same crop twice and compare that block. Keep
+`--surface-smoothing1` and `--surface-smoothing2` unchanged for this check;
+those flags control dynamic-programming surface extraction, not orientation
+re-estimation:
 
 ```bash
 PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
@@ -167,8 +170,7 @@ python examples/run_3d_f3d_crop_validation.py \
 PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
 python examples/run_3d_f3d_crop_validation.py \
   --output-dir outputs/3d/f3d/orientation_smoothing_off \
-  --surface-smoothing1 0 \
-  --surface-smoothing2 0 \
+  --surface-orientation-smoothing 0 \
   --pretty
 ```
 

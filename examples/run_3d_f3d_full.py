@@ -141,6 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Surface smoothing in the second voting dimension.",
     )
     parser.add_argument(
+        "--surface-orientation-smoothing",
+        type=float,
+        default=None,
+        help=(
+            "Optional smoothing applied only before vote strike/dip re-estimation; "
+            "defaults to max(rv, rw). Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--reuse-existing",
         action="store_true",
         help="Reuse the full existing pyosv DAT output set in --output-dir.",
@@ -189,6 +198,7 @@ def run_example(
     strain_max2: float = 0.25,
     surface_smoothing1: float = 2.0,
     surface_smoothing2: float = 2.0,
+    surface_orientation_smoothing: float | None = None,
     reuse_existing: bool = False,
     skip_save_intermediates: bool = False,
     save_volumes: bool = True,
@@ -220,6 +230,7 @@ def run_example(
         strain_max2=strain_max2,
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
+        surface_orientation_smoothing=surface_orientation_smoothing,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
@@ -249,6 +260,7 @@ def run_example(
         strain_max2=strain_max2,
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
+        surface_orientation_smoothing=surface_orientation_smoothing,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
@@ -301,6 +313,7 @@ def build_run_config(
     skip_save_intermediates: bool,
     save_volumes: bool,
     output_json: str | PathLike[str],
+    surface_orientation_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
@@ -333,6 +346,11 @@ def build_run_config(
             "strain_max2": float(strain_max2),
             "surface_smoothing1": float(surface_smoothing1),
             "surface_smoothing2": float(surface_smoothing2),
+            "surface_orientation_smoothing": float(
+                max(rv, rw)
+                if surface_orientation_smoothing is None
+                else surface_orientation_smoothing
+            ),
             "thin_mode": voter_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
         },
@@ -369,6 +387,7 @@ def run_or_reuse_pipeline(
     reuse_existing: bool,
     skip_save_intermediates: bool,
     save_volumes: bool,
+    surface_orientation_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "normal",
     reference_thin_sigma: float = 1.0,
@@ -389,6 +408,8 @@ def run_or_reuse_pipeline(
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
+    if surface_orientation_smoothing is not None:
+        voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
 
     if should_reuse_stage_outputs(output_path, SCANNER_OUTPUT_NAMES, reuse_existing, "scanner"):
         scanner_outputs = read_outputs(output_path, SCANNER_OUTPUT_NAMES)
@@ -838,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
             strain_max2=args.strain_max2,
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
+            surface_orientation_smoothing=args.surface_orientation_smoothing,
             reuse_existing=args.reuse_existing,
             skip_save_intermediates=args.skip_save_intermediates,
             save_volumes=args.save_volumes,

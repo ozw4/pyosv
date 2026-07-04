@@ -102,6 +102,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert args.strain_max2 == 0.25
     assert args.surface_smoothing1 == 2.0
     assert args.surface_smoothing2 == 2.0
+    assert args.surface_orientation_smoothing is None
     assert args.reuse_existing is False
     assert args.skip_save_intermediates is False
     assert args.save_volumes is True
@@ -113,6 +114,11 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         ["--output-dir", str(tmp_path), "--no-save-volumes"]
     )
     assert no_save_args.save_volumes is False
+
+    override_args = module.build_parser().parse_args(
+        ["--output-dir", str(tmp_path), "--surface-orientation-smoothing", "0"]
+    )
+    assert override_args.surface_orientation_smoothing == 0.0
 
     reference_args = module.build_parser().parse_args(
         [
@@ -193,6 +199,7 @@ def test_build_run_config_is_serializable(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert loaded["reference"] == ["fl.dat", "fv.dat", "fvt.dat"]
     assert loaded["scanner"]["theta_min"] == 65.0
     assert loaded["voter"]["ru"] == 10
+    assert loaded["voter"]["surface_orientation_smoothing"] == 30.0
     assert loaded["scanner"]["thin_mode"] == "reference"
     assert loaded["voter"]["thin_mode"] == "normal"
     assert loaded["scanner"]["reference_thin_sigma"] == 1.0
@@ -454,15 +461,18 @@ def test_run_example_records_selected_thinning_modes(
         scanner_thin_mode="reference",
         voter_thin_mode="reference",
         reference_thin_sigma=1.25,
+        surface_orientation_smoothing=0.0,
     )
 
     assert report["config"]["scanner"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["thin_mode"] == "reference"
+    assert report["config"]["voter"]["surface_orientation_smoothing"] == 0.0
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
     assert received_kwargs["scanner_thin_mode"] == "reference"
     assert received_kwargs["voter_thin_mode"] == "reference"
     assert received_kwargs["reference_thin_sigma"] == 1.25
+    assert received_kwargs["surface_orientation_smoothing"] == 0.0
 
 
 def test_run_example_writes_final_outputs_and_metrics_without_f3_data(
