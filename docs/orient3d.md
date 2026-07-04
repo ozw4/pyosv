@@ -57,9 +57,10 @@ require bitwise equality with Java or Mines JTK outputs.
 
 `FaultOrientScanner3.scan(...)` uses the approximate reference-like backend by
 default. `FaultOrientScanner3.scan_reference_like(...)` remains as a compatible
-explicit alias for callers that want to name the backend. It validates angle
-ranges, finite 3D input volumes, interpolation order, optional smoothing sigma,
-and normalization mode, then runs a deterministic strike/dip orientation sweep.
+explicit alias for callers that want to configure that backend. It validates
+angle ranges, finite 3D input volumes, `backend`, interpolation order, optional
+smoothing sigma, and normalization mode, then runs a deterministic strike/dip
+orientation sweep.
 
 Reference-like mode does not use the legacy derivative-bank scanner's
 sigma-derived dense sampling. Strike samples follow the Java scanner's fixed
@@ -67,13 +68,25 @@ sigma-derived dense sampling. Strike samples follow the Java scanner's fixed
 range. Dip samples use approximately 5 degree spacing while preserving the
 requested endpoints.
 
-For each candidate orientation, it samples in an orientation-dependent coordinate
-system, smooths the input planarity values along candidate fault-parallel
-directions, clips the smoothed response to `[0, 1]`, and converts it to
-likelihood with `1 - smoothed**4`. This matches the Java scanner's smooth-then
-semblance-power likelihood semantics more closely than the older Python
-ridge/contrast score. It remains a Pythonic SciPy approximation, not a
-bit-exact Mines JTK port.
+The default `backend="rotate_shear"` path approximates the Java scanner's
+strike loop more directly: for each strike it rotates the input volume around
+axis 1, smooths along the rotated strike axis, shears each rotated slice for
+each dip, smooths along the dip axis, unshears, converts planarity to
+likelihood, unrotates the candidate likelihood back to global coordinates, clips
+it to `[0, 1]`, and keeps the best strike/dip. Dip angles are clipped to the
+requested dip range in the returned `tt` volume.
+
+`backend="directional"` keeps the previous practical approximation. It samples
+in an orientation-dependent coordinate system and smooths the input planarity
+values directly along candidate fault-parallel directions. This backend is
+useful for comparisons with older `pyosv` results but is less structurally
+aligned with the Java rotate/shear/smooth workflow.
+
+Both reference-like backends clip smoothed planarity responses to `[0, 1]` and
+convert them to likelihood with `1 - smoothed**4`. This matches the Java
+scanner's smooth-then-semblance-power likelihood semantics more closely than
+the older Python ridge/contrast score. They remain Pythonic SciPy
+approximations, not bit-exact Mines JTK ports.
 
 `FaultOrientScanner3.scan_fast(...)` exposes the older derivative-bank scanner
 as an explicit practical backend for diagnostics or workflows that prefer its

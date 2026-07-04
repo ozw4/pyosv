@@ -5,7 +5,14 @@ import pytest
 
 import pyosv
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
-from pyosv.orient3d import FaultOrientScanner3
+from pyosv.orient3d import (
+    FaultOrientScanner3,
+    _dip_shear_from_theta,
+    _rotate3_axis1,
+    _shear2,
+    _unrotate3_axis1,
+    _unshear2,
+)
 from pyosv.thinning3d import reference_like_3d_thin_values
 from pyosv.voting3d import OptimalSurfaceVoter
 
@@ -289,6 +296,89 @@ def test_scan_reference_like_validates_normalize() -> None:
             image,
             normalize=1,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize("backend", ["missing", 1])
+def test_scan_reference_like_validates_backend(backend: object) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="backend"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            backend=backend,  # type: ignore[arg-type]
+        )
+
+
+def test_scan_reference_like_backend_selector_keeps_directional_approximation() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(60.0, 60.0, shape=(9, 10, 11), width=1.0)
+
+    rotate_shear = scanner.scan_reference_like(
+        0.0,
+        80.0,
+        40.0,
+        80.0,
+        image,
+        backend="rotate_shear",
+        smoothing_sigma=0.75,
+    )
+    directional = scanner.scan_reference_like(
+        0.0,
+        80.0,
+        40.0,
+        80.0,
+        image,
+        backend="directional",
+        smoothing_sigma=0.75,
+    )
+
+    for outputs in (rotate_shear, directional):
+        for array in outputs:
+            assert array.shape == image.shape
+            assert array.dtype == np.float32
+            assert np.isfinite(array).all()
+        assert float(outputs[0].min()) >= 0.0
+        assert float(outputs[0].max()) <= 1.0
+
+
+def test_rotate3_axis1_unrotate3_axis1_return_finite_float32_shapes() -> None:
+    volume = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+
+    rotated = _rotate3_axis1(volume, 35.0, interpolation_order=1)
+    unrotated = _unrotate3_axis1(rotated, volume.shape, 35.0, interpolation_order=1)
+
+    assert rotated.ndim == 3
+    assert rotated.shape[0] >= volume.shape[0]
+    assert rotated.shape[1] >= volume.shape[1]
+    assert rotated.shape[2] == volume.shape[2]
+    assert rotated.dtype == np.float32
+    assert unrotated.shape == volume.shape
+    assert unrotated.dtype == np.float32
+    assert np.isfinite(rotated).all()
+    assert np.isfinite(unrotated).all()
+
+
+def test_shear2_unshear2_are_deterministic_and_near_vertical_shear_is_stable() -> None:
+    image = np.arange(5 * 6, dtype=np.float32).reshape(5, 6)
+    shear = _dip_shear_from_theta(90.0)
+
+    first = _shear2(image, float(shear), interpolation_order=1)
+    second = _shear2(image, float(shear), interpolation_order=1)
+    restored = _unshear2(first, float(shear), interpolation_order=1)
+
+    assert shear == np.float32(0.0)
+    assert first.shape == image.shape
+    assert restored.shape == image.shape
+    assert first.dtype == np.float32
+    assert restored.dtype == np.float32
+    assert np.isfinite(first).all()
+    assert np.isfinite(restored).all()
+    np.testing.assert_array_equal(first, second)
 
 
 def test_scan_reference_like_constant_input_returns_zero_likelihood_and_finite_angles() -> None:
