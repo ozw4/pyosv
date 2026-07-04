@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+import pyosv.voting3d as voting3d
 from pyosv.cells import FaultCell
 from pyosv.dp import update_shift_ranges_3d
 from pyosv.geometry import (
@@ -679,6 +680,58 @@ def test_surface_voting_adds_votes_on_high_likelihood_plane() -> None:
     for array in (fe, vp, vt, vm):
         assert array.shape == ft.shape
         assert array.dtype == np.float32
+
+
+@pytest.mark.parametrize(
+    ("surface_orientation_smoothing", "expected_sigma"),
+    [(None, 3.0), (0.0, 0.0)],
+)
+def test_surface_voting_passes_configured_orientation_smoothing(
+    monkeypatch: pytest.MonkeyPatch,
+    surface_orientation_smoothing: float | None,
+    expected_sigma: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=3, rw=2)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    if surface_orientation_smoothing is not None:
+        voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 2:9] = 0.8
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+    sigmas: list[float | None] = []
+
+    def wrapped_surface_strike_and_dip(
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        surface: np.ndarray,
+        *,
+        sigma: float | None = None,
+    ) -> tuple[float, float]:
+        sigmas.append(sigma)
+        return _surface_strike_and_dip(
+            normal,
+            dip,
+            strike,
+            surface,
+            sigma=sigma,
+        )
+
+    monkeypatch.setattr(
+        voting3d,
+        "_surface_strike_and_dip",
+        wrapped_surface_strike_and_dip,
+    )
+
+    voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    assert sigmas == [expected_sigma]
+    assert np.isfinite(vp[fe > 0.0]).all()
+    assert np.isfinite(vt[fe > 0.0]).all()
 
 
 def test_surface_voting_keeps_stronger_orientation_when_later_vote_is_weaker() -> None:

@@ -372,7 +372,7 @@ class OptimalSurfaceVoter:
             dip,
             strike,
             surface,
-            sigma=None,
+            sigma=self.surface_orientation_smoothing,
         )
         vp_value = np.float32(strike_angle)
         vt_value = np.float32(dip_angle)
