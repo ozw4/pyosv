@@ -8,7 +8,11 @@ import numbers
 import numpy as np
 from scipy import ndimage
 
-__all__ = ["reference_like_3d_nms_mask", "reference_like_3d_thin_values"]
+__all__ = [
+    "reference_like_3d_nms_mask",
+    "reference_like_3d_thin_values",
+    "remove_reference_edge_effects_3d",
+]
 
 
 def reference_like_3d_nms_mask(
@@ -75,6 +79,60 @@ def reference_like_3d_thin_values(
             thinned[np.maximum(i3 - 1, 0), i2, i1] = smoothed[i3, i2, i1]
 
     return thinned, keep
+
+
+def remove_reference_edge_effects_3d(
+    values: np.ndarray,
+    strike: np.ndarray,
+    dip: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Remove scanner-style boundary artifacts from thinned 3D fault samples.
+
+    The Java ``FaultOrientScanner3.removeEdgeEffects`` cleanup removes retained
+    samples within five samples of the ``i3`` faces when ``w3**2`` exceeds
+    ``cos(30 deg)**2``, and within five samples of the ``i2`` faces when
+    ``w2**2`` exceeds the same threshold. Here ``w`` is the fault normal
+    derived from strike and dip. No ``i1`` face cleanup is applied.
+    """
+
+    values_array, strike_array, dip_array = _validate_matching_finite_arrays3(
+        (values, strike, dip),
+        ("values", "strike", "dip"),
+    )
+
+    cleaned_values = values_array.astype(np.float32, copy=True)
+    cleaned_strike = strike_array.astype(np.float32, copy=True)
+    cleaned_dip = dip_array.astype(np.float32, copy=True)
+    retained = cleaned_values != np.float32(0.0)
+
+    n3, n2, n1 = cleaned_values.shape
+    if cleaned_values.size == 0:
+        return cleaned_values, cleaned_strike, cleaned_dip, retained.astype(np.bool_, copy=False)
+
+    edge_width = 5
+    cos_min_angle = np.float32(math.cos(math.radians(30.0)))
+    component_threshold = cos_min_angle * cos_min_angle
+
+    strike_radians = np.deg2rad(strike_array)
+    dip_radians = np.deg2rad(dip_array)
+    sin_dip = np.sin(dip_radians).astype(np.float32, copy=False)
+    w2 = sin_dip * np.cos(strike_radians).astype(np.float32, copy=False)
+    w3 = -sin_dip * np.sin(strike_radians).astype(np.float32, copy=False)
+
+    i3 = np.arange(n3, dtype=np.int32)[:, np.newaxis, np.newaxis]
+    i2 = np.arange(n2, dtype=np.int32)[np.newaxis, :, np.newaxis]
+    near_i3_face = (i3 < edge_width) | (i3 >= max(n3 - edge_width, 0))
+    near_i2_face = (i2 < edge_width) | (i2 >= max(n2 - edge_width, 0))
+    remove = retained & (
+        (near_i3_face & (w3 * w3 > component_threshold))
+        | (near_i2_face & (w2 * w2 > component_threshold))
+    )
+    keep = retained & ~remove
+
+    cleaned_values[~keep] = np.float32(0.0)
+    cleaned_strike[~keep] = np.float32(0.0)
+    cleaned_dip[~keep] = np.float32(0.0)
+    return cleaned_values, cleaned_strike, cleaned_dip, keep.astype(np.bool_, copy=False)
 
 
 def _reference_like_3d_nms_mask_from_smoothed(
