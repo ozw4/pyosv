@@ -144,10 +144,11 @@ crop validation, and the manual full-volume pipeline.
 
 Reference-like 3D thinning is documented in
 `docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
-to reference-like strike-binned thinning; pass `mode="normal"` explicitly for
-the legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` still
-defaults to `mode="normal"`, with `mode="reference"` available for
-reference-like voter thinning.
+to reference-like strike-binned thinning with scanner edge-effect removal; pass
+`remove_edge_effects=False` only for diagnostics, or `mode="normal"` for the
+legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` still defaults
+to `mode="normal"`, with `mode="reference"` available for reference-like voter
+thinning.
 
 `OptimalSurfaceVoter` smooths extracted local surfaces before recomputing vote
 strike/dip, matching the reference-first surface-orientation path. Use

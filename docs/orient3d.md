@@ -126,10 +126,22 @@ associated with the strongest local vote at each sample.
 
 `FaultOrientScanner3.thin(ft, pt, tt)` defaults to reference-like
 strike-binned non-maximum suppression in the `i2-i3` plane using `pt` as the
-strike-angle volume:
+strike-angle volume. Scanner-style edge-effect removal is applied by default:
 
 ```python
 fet, fpt, ftt = scanner.thin(ft, pt, tt, reference_sigma=1.0)
+```
+
+Disable edge cleanup only for diagnostics:
+
+```python
+fet, fpt, ftt = scanner.thin(
+    ft,
+    pt,
+    tt,
+    reference_sigma=1.0,
+    remove_edge_effects=False,
+)
 ```
 
 The legacy fault-normal local maximum path remains available as an explicit
@@ -141,9 +153,10 @@ fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
 
 Both modes return `float32` arrays with zeros outside retained samples. In
 `normal` mode, kept likelihood samples retain the original `ft` values. In
-`reference` mode, kept likelihood samples use the smoothed comparison values;
-`pt` and `tt` are copied at retained samples. `reference_sigma` controls that
-reference-like smoothing.
+`reference` mode, kept likelihood samples use the smoothed comparison values
+after scanner edge cleanup; `pt` and `tt` are copied only at retained samples.
+`reference_sigma` controls that reference-like smoothing. Voter reference
+thinning has separate reinforcement and edge-handling semantics.
 
 ## Synthetic Validation
 

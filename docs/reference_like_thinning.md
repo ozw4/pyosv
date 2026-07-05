@@ -5,12 +5,14 @@
 - `reference`: reference-like behavior. It smooths the comparison volume, bins
   samples by strike angle, and keeps local maxima in the `i2-i3` plane. Kept
   likelihood samples write the smoothed comparison values, matching the current
-  Python reference-like helper.
+  Python reference-like helper. Scanner reference thinning also applies
+  scanner-style edge-effect removal by default.
 - `normal`: existing pyosv behavior. It uses 3D normal-vector interpolation for
   non-maximum suppression.
 
-`FaultOrientScanner3.thin(...)` defaults to `mode="reference"`. The legacy
-fault-normal scanner thinning path remains available with `mode="normal"`.
+`FaultOrientScanner3.thin(...)` defaults to `mode="reference"` with edge-effect
+removal enabled. The legacy fault-normal scanner thinning path remains
+available with `mode="normal"`.
 `OptimalSurfaceVoter.thin(...)` still defaults to `mode="normal"`; pass
 `mode="reference"` explicitly for reference-like voter thinning reports or
 diagnostics.
@@ -32,9 +34,10 @@ but they are not identical call sites:
   separate from scanner thinning.
 
 Keep scanner and voter reference-like thinning as separate call sites over the
-shared helper. If edge-effect removal is implemented later, it should be wired
-only into scanner-compatible paths unless a separate reference finding justifies
-using it for voter outputs.
+shared helper. Scanner reference thinning applies edge-effect removal and keeps
+voter-specific vertical reinforcement disabled. Voter reference thinning may
+use voter-specific retained-sample reinforcement and does not apply scanner
+edge cleanup.
 
 Java writes `NO_STRIKE` / `NO_DIP` (`-0.00001`) for rejected orientations before
 scanner edge-effect cleanup may zero some retained/rejected samples. Python's
@@ -56,6 +59,18 @@ fet, fpt, ftt = scanner.thin(
     pt,
     tt,
     reference_sigma=1.0,
+)
+```
+
+For diagnostics, disable scanner edge cleanup explicitly:
+
+```python
+fet, fpt, ftt = scanner.thin(
+    ft,
+    pt,
+    tt,
+    reference_sigma=1.0,
+    remove_edge_effects=False,
 )
 ```
 
