@@ -142,6 +142,9 @@ Public F3 3D reference-data validation is documented in
 `docs/f3d_validation.md`, including the external data layout, smoke checks,
 crop validation, and the manual full-volume pipeline.
 
+Controlled synthetic 3D truth-quality checks are documented in
+`docs/synthetic_quality.md`.
+
 Reference-like 3D thinning is documented in
 `docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
 to reference-like strike-binned thinning with scanner edge-effect removal; pass
