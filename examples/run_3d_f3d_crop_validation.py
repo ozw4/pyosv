@@ -64,8 +64,8 @@ def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--voter-thin-mode",
         choices=THIN_MODES,
-        default="normal",
-        help="Voter thinning mode.",
+        default="reference",
+        help="Voter thinning mode. Defaults to the reference-like voter thinning path.",
     )
     parser.add_argument(
         "--reference-thin-sigma",
@@ -245,7 +245,7 @@ def run_example(
     fm: float = 0.3,
     interior_margin: int | None = None,
     scanner_thin_mode: str = "reference",
-    voter_thin_mode: str = "normal",
+    voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
@@ -460,7 +460,7 @@ def run_pipeline(
     fm: float,
     surface_orientation_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
-    voter_thin_mode: str = "normal",
+    voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, np.ndarray]:
     from pyosv.orient3d import FaultOrientScanner3

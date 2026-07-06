@@ -3,7 +3,11 @@ import pytest
 from scipy import ndimage
 
 from pyosv.orient3d import FaultOrientScanner3
-from pyosv.thinning3d import reference_like_3d_nms_mask, reference_like_3d_thin_values
+from pyosv.thinning3d import (
+    reference_like_3d_nms_mask,
+    reference_like_3d_thin_values,
+    remove_reference_edge_effects_3d,
+)
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -252,6 +256,153 @@ def test_reference_like_3d_thin_values_without_reinforcement_keeps_only_mask(
     assert keep[2, 2, 0]
     assert thinned[2, 2, 0] == np.float32(3.0)
     assert thinned[1, 2, 0] == np.float32(0.0)
+
+
+def test_remove_reference_edge_effects_3d_removes_boundary_only_i3_ridge() -> None:
+    values = np.zeros((12, 12, 2), dtype=np.float32)
+    strike = np.full_like(values, 90.0)
+    dip = np.full_like(values, 90.0)
+    values[1, :, :] = 2.0
+
+    cleaned, cleaned_strike, cleaned_dip, keep = remove_reference_edge_effects_3d(
+        values,
+        strike,
+        dip,
+    )
+
+    assert cleaned.dtype == np.float32
+    assert cleaned_strike.dtype == np.float32
+    assert cleaned_dip.dtype == np.float32
+    assert keep.dtype == np.bool_
+    assert not keep.any()
+    assert not cleaned.any()
+    assert not cleaned_strike.any()
+    assert not cleaned_dip.any()
+
+
+def test_remove_reference_edge_effects_3d_preserves_interior_ridge() -> None:
+    values = np.zeros((12, 12, 1), dtype=np.float32)
+    strike = np.full_like(values, 90.0)
+    dip = np.full_like(values, 90.0)
+    values[6, 6, 0] = 3.0
+
+    cleaned, cleaned_strike, cleaned_dip, keep = remove_reference_edge_effects_3d(
+        values,
+        strike,
+        dip,
+    )
+
+    assert keep[6, 6, 0]
+    assert cleaned[6, 6, 0] == np.float32(3.0)
+    assert cleaned_strike[6, 6, 0] == np.float32(90.0)
+    assert cleaned_dip[6, 6, 0] == np.float32(90.0)
+    assert np.count_nonzero(cleaned) == 1
+
+
+@pytest.mark.parametrize("strike_value", [90.0, 270.0])
+def test_remove_reference_edge_effects_3d_uses_folded_strike_for_i3_faces(
+    strike_value: float,
+) -> None:
+    values = np.zeros((12, 12, 1), dtype=np.float32)
+    strike = np.full_like(values, strike_value)
+    dip = np.full_like(values, 90.0)
+    values[1, 6, 0] = 3.0
+
+    cleaned, _, _, keep = remove_reference_edge_effects_3d(values, strike, dip)
+
+    assert not keep[1, 6, 0]
+    assert cleaned[1, 6, 0] == np.float32(0.0)
+
+
+def test_remove_reference_edge_effects_3d_keeps_non_parallel_i3_face_sample() -> None:
+    values = np.zeros((12, 12, 1), dtype=np.float32)
+    strike = np.zeros_like(values)
+    dip = np.full_like(values, 90.0)
+    values[1, 6, 0] = 3.0
+
+    cleaned, _, _, keep = remove_reference_edge_effects_3d(values, strike, dip)
+
+    assert keep[1, 6, 0]
+    assert cleaned[1, 6, 0] == np.float32(3.0)
+
+
+@pytest.mark.parametrize("strike_value", [0.0, 180.0])
+def test_remove_reference_edge_effects_3d_removes_i2_face_parallel_samples(
+    strike_value: float,
+) -> None:
+    values = np.zeros((12, 12, 1), dtype=np.float32)
+    strike = np.full_like(values, strike_value)
+    dip = np.full_like(values, 90.0)
+    values[6, 1, 0] = 3.0
+
+    cleaned, _, _, keep = remove_reference_edge_effects_3d(values, strike, dip)
+
+    assert not keep[6, 1, 0]
+    assert cleaned[6, 1, 0] == np.float32(0.0)
+
+
+def test_remove_reference_edge_effects_3d_does_not_modify_inputs() -> None:
+    values = np.zeros((12, 12, 1), dtype=np.float32)
+    strike = np.full_like(values, 90.0)
+    dip = np.full_like(values, 90.0)
+    values[1, 6, 0] = 3.0
+    values_before = values.copy()
+    strike_before = strike.copy()
+    dip_before = dip.copy()
+
+    remove_reference_edge_effects_3d(values, strike, dip)
+
+    np.testing.assert_array_equal(values, values_before)
+    np.testing.assert_array_equal(strike, strike_before)
+    np.testing.assert_array_equal(dip, dip_before)
+
+
+def test_remove_reference_edge_effects_3d_empty_volume_is_safe_noop() -> None:
+    values = np.zeros((0, 3, 2), dtype=np.float32)
+    strike = np.zeros_like(values)
+    dip = np.zeros_like(values)
+
+    cleaned, cleaned_strike, cleaned_dip, keep = remove_reference_edge_effects_3d(
+        values,
+        strike,
+        dip,
+    )
+
+    assert cleaned.shape == values.shape
+    assert cleaned_strike.shape == values.shape
+    assert cleaned_dip.shape == values.shape
+    assert keep.shape == values.shape
+    assert cleaned.dtype == np.float32
+    assert keep.dtype == np.bool_
+
+
+def test_remove_reference_edge_effects_3d_small_volume_does_not_crash() -> None:
+    values = np.ones((3, 3, 1), dtype=np.float32)
+    strike = np.full_like(values, 45.0)
+    dip = np.zeros_like(values)
+
+    cleaned, cleaned_strike, cleaned_dip, keep = remove_reference_edge_effects_3d(
+        values,
+        strike,
+        dip,
+    )
+
+    np.testing.assert_array_equal(cleaned, values)
+    np.testing.assert_array_equal(cleaned_strike, strike)
+    np.testing.assert_array_equal(cleaned_dip, dip)
+    assert keep.all()
+
+
+def test_remove_reference_edge_effects_3d_validates_like_thinning_helper() -> None:
+    values = np.zeros((3, 4, 2), dtype=np.float32)
+    strike = np.zeros((3, 4), dtype=np.float32)
+    dip = np.zeros_like(values)
+
+    with pytest.raises(ValueError, match="3D array"):
+        remove_reference_edge_effects_3d(values, strike, dip)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        remove_reference_edge_effects_3d(values, np.zeros((3, 5, 2), dtype=np.float32), dip)
 
 
 def test_optimal_surface_voter_reference_thin_reinforces_folded_vertical_strike() -> None:

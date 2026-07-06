@@ -60,24 +60,25 @@ JTK clone. This setting is separate from `surface_smoothing1` and
 smoothing for diagnostics that need raw-surface behavior; negative, nonfinite,
 boolean, and nonnumeric values are rejected.
 
-`OptimalSurfaceVoter.thin` keeps local maxima from `fv` along the fault-normal
-field derived from `vp` and `vt`. It returns a thinned `float32` vote volume
-with the same shape. The current default uses SciPy interpolation along fault
-normals; the opt-in reference-like mode uses SciPy smoothing before
-strike-binned comparison. Neither mode is a bit-exact Mines JTK implementation.
+`OptimalSurfaceVoter.thin` keeps local maxima from `fv` and returns a thinned
+`float32` vote volume with the same shape. The default is the reference-like
+strike-bin mode: it uses SciPy smoothing before strike-binned comparison in
+the `i2-i3` plane. The legacy pyosv path remains available with
+`mode="normal"` and uses SciPy interpolation along fault normals derived from
+`vp` and `vt`. Neither mode is a bit-exact Mines JTK implementation.
 
-The default `voter.thin(fv, vp, vt, mode="normal")` preserves that fault-normal
-path. For F3 diagnostics and other reference-style comparisons, use the opt-in
-strike-bin mode:
+For F3 diagnostics and other reference-style comparisons, the default call is
+the reference-like strike-bin path:
 
 ```python
-fvt = voter.thin(fv, vp, vt, mode="reference", reference_sigma=1.0)
+fvt = voter.thin(fv, vp, vt, reference_sigma=1.0)
 ```
 
 Reference-like thinning uses `fv` for values and `vp` for strike-angle bins,
 compares local maxima in the `i2-i3` plane, and writes the smoothed comparison
 values to retained samples. `reference_sigma` controls smoothing inside the
-comparison helper.
+comparison helper. Code that needs the old fault-normal voter thinning should
+pass `mode="normal"` explicitly.
 
 ## MVP Limitations
 

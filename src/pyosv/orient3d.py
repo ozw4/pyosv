@@ -14,7 +14,7 @@ from pyosv.geometry import (
     fault_strike_vector_from_strike_and_dip,
 )
 from pyosv.interp import sample3
-from pyosv.thinning3d import reference_like_3d_thin_values
+from pyosv.thinning3d import reference_like_3d_thin_values, remove_reference_edge_effects_3d
 
 __all__ = ["FaultOrientScanner3"]
 
@@ -207,6 +207,7 @@ class FaultOrientScanner3:
         *,
         mode: str = "reference",
         reference_sigma: float = 1.0,
+        remove_edge_effects: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Keep likelihood maxima using the selected 3D thinning mode.
 
@@ -218,7 +219,9 @@ class FaultOrientScanner3:
 
         ``mode="reference"`` applies the default reference-like strike-binned
         local-maximum suppression in the ``i2-i3`` plane, using
-        ``reference_sigma`` for smoothing inside the shared helper.
+        ``reference_sigma`` for smoothing inside the shared helper. It also
+        applies scanner-style edge-effect removal by default; set
+        ``remove_edge_effects=False`` only for diagnostics.
         ``mode="normal"`` preserves the legacy local fault-normal thinning as
         an explicit opt-in mode.
         """
@@ -227,6 +230,7 @@ class FaultOrientScanner3:
             (ft, pt, tt),
             ("ft", "pt", "tt"),
         )
+        remove_edges = _validate_bool(remove_edge_effects, "remove_edge_effects")
         n3, n2, n1 = ft_array.shape
         if mode == "normal":
             i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
@@ -244,6 +248,13 @@ class FaultOrientScanner3:
                 sigma=reference_sigma,
                 reinforce_vertical=False,
             )
+            if remove_edges:
+                thinned_ft, thinned_pt, thinned_tt, keep = remove_reference_edge_effects_3d(
+                    thinned_ft,
+                    pt_array,
+                    tt_array,
+                )
+                return thinned_ft, thinned_pt, thinned_tt
         else:
             raise ValueError("mode must be 'normal' or 'reference'")
 

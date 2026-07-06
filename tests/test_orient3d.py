@@ -14,7 +14,7 @@ from pyosv.orient3d import (
     _unrotate3_axis1,
     _unshear2,
 )
-from pyosv.thinning3d import reference_like_3d_thin_values
+from pyosv.thinning3d import reference_like_3d_thin_values, remove_reference_edge_effects_3d
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -861,6 +861,38 @@ def test_thin_default_matches_reference_mode() -> None:
     np.testing.assert_array_equal(default_tt, reference_tt)
 
 
+def test_thin_default_reference_mode_applies_edge_effect_removal() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((12, 12, 1), dtype=np.float32)
+    ft[0, 6, 0] = 1.0
+    ft[1, 6, 0] = 3.0
+    ft[2, 6, 0] = 1.0
+    pt = np.full_like(ft, 90.0)
+    tt = np.full_like(ft, 90.0)
+
+    default_ft, default_pt, default_tt = scanner.thin(
+        ft,
+        pt,
+        tt,
+        reference_sigma=0.0,
+    )
+    reference_ft, reference_pt, reference_tt = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode="reference",
+        reference_sigma=0.0,
+        remove_edge_effects=True,
+    )
+
+    assert default_ft[1, 6, 0] == np.float32(0.0)
+    assert default_pt[1, 6, 0] == np.float32(0.0)
+    assert default_tt[1, 6, 0] == np.float32(0.0)
+    np.testing.assert_array_equal(default_ft, reference_ft)
+    np.testing.assert_array_equal(default_pt, reference_pt)
+    np.testing.assert_array_equal(default_tt, reference_tt)
+
+
 def test_thin_reference_mode_returns_float32_arrays_and_preserves_values() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((5, 5, 1), dtype=np.float32)
@@ -896,6 +928,63 @@ def test_thin_reference_mode_returns_float32_arrays_and_preserves_values() -> No
     np.testing.assert_array_equal(thinned_tt[thinned_ft == 0.0], 0.0)
 
 
+def test_thin_reference_mode_can_keep_boundary_artifact_for_diagnostics() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((12, 12, 1), dtype=np.float32)
+    ft[0, 6, 0] = 1.0
+    ft[1, 6, 0] = 3.0
+    ft[2, 6, 0] = 1.0
+    pt = np.full_like(ft, 90.0)
+    tt = np.full_like(ft, 90.0)
+
+    cleaned_ft, cleaned_pt, cleaned_tt = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode="reference",
+        reference_sigma=0.0,
+        remove_edge_effects=True,
+    )
+    diagnostic_ft, diagnostic_pt, diagnostic_tt = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode="reference",
+        reference_sigma=0.0,
+        remove_edge_effects=False,
+    )
+
+    assert cleaned_ft[1, 6, 0] == np.float32(0.0)
+    assert cleaned_pt[1, 6, 0] == np.float32(0.0)
+    assert cleaned_tt[1, 6, 0] == np.float32(0.0)
+    assert diagnostic_ft[1, 6, 0] == np.float32(3.0)
+    assert diagnostic_pt[1, 6, 0] == np.float32(90.0)
+    assert diagnostic_tt[1, 6, 0] == np.float32(90.0)
+
+
+def test_thin_reference_mode_preserves_interior_sample_with_edge_effect_removal() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((12, 12, 1), dtype=np.float32)
+    ft[5, 6, 0] = 1.0
+    ft[6, 6, 0] = 3.0
+    ft[7, 6, 0] = 1.0
+    pt = np.full_like(ft, 90.0)
+    tt = np.full_like(ft, 90.0)
+
+    thinned_ft, thinned_pt, thinned_tt = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode="reference",
+        reference_sigma=0.0,
+        remove_edge_effects=True,
+    )
+
+    assert thinned_ft[6, 6, 0] == np.float32(3.0)
+    assert thinned_pt[6, 6, 0] == np.float32(90.0)
+    assert thinned_tt[6, 6, 0] == np.float32(90.0)
+
+
 def test_thin_reference_mode_matches_smoothed_value_helper_mask() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     ft = np.zeros((7, 7, 1), dtype=np.float32)
@@ -908,6 +997,11 @@ def test_thin_reference_mode_matches_smoothed_value_helper_mask() -> None:
         sigma=1.0,
         reinforce_vertical=False,
     )
+    expected_ft, expected_pt, expected_tt, keep = remove_reference_edge_effects_3d(
+        expected_ft,
+        pt,
+        tt,
+    )
 
     thinned_ft, thinned_pt, thinned_tt = scanner.thin(
         ft,
@@ -918,10 +1012,38 @@ def test_thin_reference_mode_matches_smoothed_value_helper_mask() -> None:
     )
 
     np.testing.assert_allclose(thinned_ft, expected_ft)
-    np.testing.assert_array_equal(thinned_pt[keep], pt[keep])
-    np.testing.assert_array_equal(thinned_tt[keep], tt[keep])
+    np.testing.assert_array_equal(thinned_pt, expected_pt)
+    np.testing.assert_array_equal(thinned_tt, expected_tt)
     np.testing.assert_array_equal(thinned_pt[~keep], 0.0)
     np.testing.assert_array_equal(thinned_tt[~keep], 0.0)
+
+
+def test_thin_normal_mode_ignores_remove_edge_effects_flag() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    ft = np.zeros((12, 12, 1), dtype=np.float32)
+    ft[0, 6, 0] = 1.0
+    ft[1, 6, 0] = 3.0
+    ft[2, 6, 0] = 1.0
+    pt = np.full_like(ft, 90.0)
+    tt = np.full_like(ft, 90.0)
+
+    enabled = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode="normal",
+        remove_edge_effects=True,
+    )
+    disabled = scanner.thin(
+        ft,
+        pt,
+        tt,
+        mode="normal",
+        remove_edge_effects=False,
+    )
+
+    for enabled_array, disabled_array in zip(enabled, disabled):
+        np.testing.assert_array_equal(enabled_array, disabled_array)
 
 
 def test_thin_rejects_invalid_mode() -> None:

@@ -86,7 +86,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.fm == 0.3
     assert args.interior_margin is None
     assert args.scanner_thin_mode == "reference"
-    assert args.voter_thin_mode == "normal"
+    assert args.voter_thin_mode == "reference"
     assert args.reference_thin_sigma == 1.0
 
     override_args = module.build_parser().parse_args(["--surface-orientation-smoothing", "0"])
@@ -238,7 +238,7 @@ def test_run_example_writes_metrics_json_to_output_dir(
     assert loaded["crops"][0]["crop_center"] == [3, 3, 3]
     assert report["config"]["crop_shape"] == [6, 6, 6]
     assert loaded["config"]["scanner"]["thin_mode"] == "reference"
-    assert loaded["config"]["voter"]["thin_mode"] == "normal"
+    assert loaded["config"]["voter"]["thin_mode"] == "reference"
     assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
     assert not (output_dir / "crop_001" / "figures").exists()

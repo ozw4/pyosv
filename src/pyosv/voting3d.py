@@ -216,10 +216,10 @@ class OptimalSurfaceVoter:
         vp: np.ndarray,
         vt: np.ndarray,
         *,
-        mode: str = "normal",
+        mode: str = "reference",
         reference_sigma: float = 1.0,
     ) -> np.ndarray:
-        """Keep 3D voting-score maxima along the local fault-normal field."""
+        """Keep 3D voting-score maxima using the selected thinning mode."""
 
         fv_array, vp_array, vt_array = _validate_matching_finite_arrays3_many(
             (fv, vp, vt),

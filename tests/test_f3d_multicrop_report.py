@@ -108,7 +108,7 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.interior_margin == 40
     assert defaults.center is None
     assert defaults.scanner_thin_mode == "reference"
-    assert defaults.voter_thin_mode == "normal"
+    assert defaults.voter_thin_mode == "reference"
     assert defaults.reference_thin_sigma == 1.0
 
     args = module.build_parser().parse_args(
@@ -235,7 +235,7 @@ def test_run_example_writes_json_and_uses_explicit_centers(
     assert loaded["config"]["crop_selection"]["source"] == "explicit_centers"
     assert loaded["config"]["crop_selection"]["selected_count"] == 2
     assert loaded["config"]["scanner"]["thin_mode"] == "reference"
-    assert loaded["config"]["voter"]["thin_mode"] == "normal"
+    assert loaded["config"]["voter"]["thin_mode"] == "reference"
     assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
     assert [crop["crop_center"] for crop in loaded["crops"]] == [[2, 2, 2], [5, 5, 5]]
@@ -361,7 +361,7 @@ def test_visual_report_writes_markdown_pngs_and_metrics(
     assert "crop_001" in markdown
     assert "normalized_correlation" in markdown
     assert "scanner_thin_mode: `reference`" in markdown
-    assert "voter_thin_mode: `normal`" in markdown
+    assert "voter_thin_mode: `reference`" in markdown
     assert "reference_thin_sigma: `1.0`" in markdown
     assert "](crop_001/figures/" in markdown
     assert ".png)" in markdown
