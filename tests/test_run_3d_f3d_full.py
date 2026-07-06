@@ -103,6 +103,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert args.surface_smoothing1 == 2.0
     assert args.surface_smoothing2 == 2.0
     assert args.surface_orientation_smoothing is None
+    assert args.final_normalization_smoothing is None
     assert args.reuse_existing is False
     assert args.skip_save_intermediates is False
     assert args.save_volumes is True
@@ -119,6 +120,11 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         ["--output-dir", str(tmp_path), "--surface-orientation-smoothing", "0"]
     )
     assert override_args.surface_orientation_smoothing == 0.0
+    final_args = module.build_parser().parse_args(
+        ["--output-dir", str(tmp_path), "--final-normalization-smoothing", "1.0"]
+    )
+    assert final_args.final_normalization_smoothing == 1.0
+    assert "--final-normalization-smoothing" in module.build_parser().format_help()
 
     reference_args = module.build_parser().parse_args(
         [
@@ -200,6 +206,7 @@ def test_build_run_config_is_serializable(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert loaded["scanner"]["theta_min"] == 65.0
     assert loaded["voter"]["ru"] == 10
     assert loaded["voter"]["surface_orientation_smoothing"] == 30.0
+    assert loaded["voter"]["final_normalization_smoothing"] == 0.0
     assert loaded["scanner"]["thin_mode"] == "reference"
     assert loaded["voter"]["thin_mode"] == "reference"
     assert loaded["scanner"]["reference_thin_sigma"] == 1.0
@@ -267,8 +274,15 @@ def test_reuse_mode_reads_each_full_stage_output_set(
     module = _import_full_module(monkeypatch)
     for name in module.OUTPUT_NAMES:
         (tmp_path / name).write_bytes(b"data")
+    from pyosv.voting3d import OptimalSurfaceVoter
 
     read_names: list[tuple[str, ...]] = []
+    received_sigmas: list[float] = []
+    original_setter = OptimalSurfaceVoter.set_final_normalization_smoothing
+
+    def recording_setter(self: object, sigma: float) -> None:
+        received_sigmas.append(float(sigma))
+        original_setter(self, sigma)  # type: ignore[arg-type]
 
     def fake_read_outputs(output_dir: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
         read_names.append(names)
@@ -276,6 +290,11 @@ def test_reuse_mode_reads_each_full_stage_output_set(
         return {name: full_outputs[name] for name in names}
 
     monkeypatch.setattr(module, "read_outputs", fake_read_outputs)
+    monkeypatch.setattr(
+        OptimalSurfaceVoter,
+        "set_final_normalization_smoothing",
+        recording_setter,
+    )
 
     outputs, runtime = module.run_or_reuse_pipeline(
         data_root=tmp_path / "f3_reference",
@@ -298,6 +317,7 @@ def test_reuse_mode_reads_each_full_stage_output_set(
         reuse_existing=True,
         skip_save_intermediates=False,
         save_volumes=False,
+        final_normalization_smoothing=1.0,
     )
 
     assert read_names == [
@@ -316,6 +336,7 @@ def test_reuse_mode_reads_each_full_stage_output_set(
     assert runtime["mode"] == "reuse_existing"
     assert runtime["reused_stages"] == ["scanner", "scanner_thin", "voting", "voter_thin"]
     assert runtime["computed_stages"] == []
+    assert received_sigmas == [1.0]
 
 
 def test_reuse_mode_rejects_completed_scanner_stage_only(
@@ -462,17 +483,20 @@ def test_run_example_records_selected_thinning_modes(
         voter_thin_mode="reference",
         reference_thin_sigma=1.25,
         surface_orientation_smoothing=0.0,
+        final_normalization_smoothing=1.0,
     )
 
     assert report["config"]["scanner"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["surface_orientation_smoothing"] == 0.0
+    assert report["config"]["voter"]["final_normalization_smoothing"] == 1.0
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
     assert received_kwargs["scanner_thin_mode"] == "reference"
     assert received_kwargs["voter_thin_mode"] == "reference"
     assert received_kwargs["reference_thin_sigma"] == 1.25
     assert received_kwargs["surface_orientation_smoothing"] == 0.0
+    assert received_kwargs["final_normalization_smoothing"] == 1.0
 
 
 def test_run_example_writes_final_outputs_and_metrics_without_f3_data(

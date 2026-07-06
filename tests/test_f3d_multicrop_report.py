@@ -111,6 +111,8 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.voter_thin_mode == "reference"
     assert defaults.reference_thin_sigma == 1.0
     assert defaults.remove_scanner_edge_effects is True
+    assert defaults.final_normalization_smoothing is None
+    assert "--final-normalization-smoothing" in module.build_parser().format_help()
 
     args = module.build_parser().parse_args(
         [
@@ -131,6 +133,8 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
             "--reference-thin-sigma",
             "1.5",
             "--keep-scanner-edge-effects",
+            "--final-normalization-smoothing",
+            "1.0",
         ]
     )
     assert args.crop_shape == (16, 14, 12)
@@ -141,6 +145,7 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert args.voter_thin_mode == "reference"
     assert args.reference_thin_sigma == 1.5
     assert args.remove_scanner_edge_effects is False
+    assert args.final_normalization_smoothing == 1.0
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--voter-thin-mode", "bad"])
 
@@ -242,6 +247,7 @@ def test_run_example_writes_json_and_uses_explicit_centers(
     assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
     assert loaded["config"]["scanner"]["remove_edge_effects"] is True
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["voter"]["final_normalization_smoothing"] == 0.0
     assert loaded["config"]["voter"]["surface_voting_boundary_policy"] == (
         "reference-like-i2-i3-interior"
     )
@@ -283,6 +289,7 @@ def test_run_example_records_selected_thinning_modes(
         voter_thin_mode="reference",
         reference_thin_sigma=1.25,
         remove_scanner_edge_effects=False,
+        final_normalization_smoothing=1.0,
     )
 
     assert report["config"]["scanner"]["thin_mode"] == "reference"
@@ -290,6 +297,7 @@ def test_run_example_records_selected_thinning_modes(
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
     assert report["config"]["scanner"]["remove_edge_effects"] is False
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["voter"]["final_normalization_smoothing"] == 1.0
     assert report["config"]["voter"]["surface_voting_boundary_policy"] == (
         "reference-like-i2-i3-interior"
     )
@@ -297,6 +305,7 @@ def test_run_example_records_selected_thinning_modes(
     assert received_kwargs["voter_thin_mode"] == "reference"
     assert received_kwargs["reference_thin_sigma"] == 1.25
     assert received_kwargs["remove_scanner_edge_effects"] is False
+    assert received_kwargs["final_normalization_smoothing"] == 1.0
 
 
 def test_save_volumes_writes_crop_outputs(

@@ -95,6 +95,8 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
     assert defaults.scanner_backends == ("fast",)
     assert defaults.remove_scanner_edge_effects is True
     assert defaults.center is None
+    assert defaults.final_normalization_smoothing is None
+    assert "--final-normalization-smoothing" in module.build_parser().format_help()
 
     args = module.build_parser().parse_args(
         [
@@ -114,6 +116,8 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
             "--keep-scanner-edge-effects",
             "--center",
             "2,3,4",
+            "--final-normalization-smoothing",
+            "1.0",
         ]
     )
     assert args.output_json == Path("outputs/3d/f3d/thinning_ablation_001/metrics.json")
@@ -126,6 +130,7 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
     assert args.write_markdown_index is True
     assert args.remove_scanner_edge_effects is False
     assert args.center == [(2, 3, 4)]
+    assert args.final_normalization_smoothing == 1.0
 
     singular = module.build_parser().parse_args(["--scanner-backend", "reference-like"])
     assert singular.scanner_backends == ("reference-like",)
@@ -191,6 +196,7 @@ def test_run_example_writes_four_case_json_without_f3_data(
     assert loaded["config"]["scanner_backends"] == ["fast"]
     assert [case["name"] for case in loaded["config"]["cases"]] == expected_case_names
     assert loaded["config"]["scanner"]["reference_remove_edge_effects"] is True
+    assert loaded["config"]["voter"]["final_normalization_smoothing"] == 0.0
     assert loaded["config"]["voter"]["surface_voting_boundary_policy"] == (
         "reference-like-i2-i3-interior"
     )
@@ -271,16 +277,18 @@ def test_case_names_and_thinning_modes_are_recorded_in_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _import_ablation_module(monkeypatch)
+    received_kwargs = {}
     monkeypatch.setattr(
         module.crop_validation,
         "read_reference_arrays",
         lambda root: _synthetic_reference_arrays(),
     )
-    monkeypatch.setattr(
-        module,
-        "run_ablation_pipeline",
-        lambda ep, **kwargs: _case_outputs(module, ep.shape),
-    )
+
+    def fake_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, dict[str, np.ndarray]]:
+        received_kwargs.update(kwargs)
+        return _case_outputs(module, ep.shape)
+
+    monkeypatch.setattr(module, "run_ablation_pipeline", fake_pipeline)
 
     report = module.run_example(
         data_root_arg=tmp_path / "f3_reference",
@@ -288,8 +296,11 @@ def test_case_names_and_thinning_modes_are_recorded_in_config(
         crop_shape=(6, 6, 6),
         interior_margin=1,
         centers=[(2, 2, 2)],
+        final_normalization_smoothing=1.0,
     )
 
+    assert report["config"]["voter"]["final_normalization_smoothing"] == 1.0
+    assert received_kwargs["final_normalization_smoothing"] == 1.0
     cases = {case["name"]: case for case in report["config"]["cases"]}
     assert cases["case_01_normal_normal"] == {
         "name": "case_01_normal_normal",

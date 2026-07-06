@@ -56,6 +56,10 @@ OUTPUT_NAMES = (
     "fvt_py.dat",
 )
 THIN_MODES = ("normal", "reference")
+FINAL_NORMALIZATION_SMOOTHING_HELP = (
+    "Default uses reference-like final normalization with no final vote-map smoothing. "
+    "Use 1.0 to compare the older practical smoothing behavior."
+)
 
 
 def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
@@ -76,6 +80,15 @@ def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=1.0,
         help="Smoothing sigma used by reference-like thinning.",
+    )
+
+
+def add_final_normalization_smoothing_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--final-normalization-smoothing",
+        type=float,
+        default=None,
+        help=FINAL_NORMALIZATION_SMOOTHING_HELP,
     )
 
 
@@ -149,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
             "defaults to max(rv, rw). Use 0 to disable."
         ),
     )
+    add_final_normalization_smoothing_argument(parser)
     parser.add_argument(
         "--reuse-existing",
         action="store_true",
@@ -199,6 +213,7 @@ def run_example(
     surface_smoothing1: float = 2.0,
     surface_smoothing2: float = 2.0,
     surface_orientation_smoothing: float | None = None,
+    final_normalization_smoothing: float | None = None,
     reuse_existing: bool = False,
     skip_save_intermediates: bool = False,
     save_volumes: bool = True,
@@ -231,6 +246,7 @@ def run_example(
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
         surface_orientation_smoothing=surface_orientation_smoothing,
+        final_normalization_smoothing=final_normalization_smoothing,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
@@ -261,6 +277,7 @@ def run_example(
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
         surface_orientation_smoothing=surface_orientation_smoothing,
+        final_normalization_smoothing=final_normalization_smoothing,
         reuse_existing=reuse_existing,
         skip_save_intermediates=skip_save_intermediates,
         save_volumes=save_volumes,
@@ -314,6 +331,7 @@ def build_run_config(
     save_volumes: bool,
     output_json: str | PathLike[str],
     surface_orientation_smoothing: float | None = None,
+    final_normalization_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
@@ -350,6 +368,9 @@ def build_run_config(
                 max(rv, rw)
                 if surface_orientation_smoothing is None
                 else surface_orientation_smoothing
+            ),
+            "final_normalization_smoothing": float(
+                0.0 if final_normalization_smoothing is None else final_normalization_smoothing
             ),
             "thin_mode": voter_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
@@ -388,6 +409,7 @@ def run_or_reuse_pipeline(
     skip_save_intermediates: bool,
     save_volumes: bool,
     surface_orientation_smoothing: float | None = None,
+    final_normalization_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
@@ -410,6 +432,8 @@ def run_or_reuse_pipeline(
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
     if surface_orientation_smoothing is not None:
         voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
+    if final_normalization_smoothing is not None:
+        voter.set_final_normalization_smoothing(final_normalization_smoothing)
 
     if should_reuse_stage_outputs(output_path, SCANNER_OUTPUT_NAMES, reuse_existing, "scanner"):
         scanner_outputs = read_outputs(output_path, SCANNER_OUTPUT_NAMES)
@@ -860,6 +884,7 @@ def main(argv: list[str] | None = None) -> int:
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
             surface_orientation_smoothing=args.surface_orientation_smoothing,
+            final_normalization_smoothing=args.final_normalization_smoothing,
             reuse_existing=args.reuse_existing,
             skip_save_intermediates=args.skip_save_intermediates,
             save_volumes=args.save_volumes,
