@@ -152,13 +152,33 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert case["shape"] == [17, 17, 17]
         assert set(case["variants"]) == {"current_default"}
         assert case["truth"]["surface_voxel_count"] > 0
+        variant = case["variants"]["current_default"]
+        fvt = variant["pyosv"]["fvt"]
+        assert fvt["shape"] == [17, 17, 17]
+        assert fvt["finite_count"] == 17 * 17 * 17
+        assert fvt["finite_fraction"] == 1.0
+        assert math.isfinite(fvt["max"])
+        assert fvt["max"] > 0.0
+
+        fvt_quality = variant["quality"]["fvt_top_truth_count"]
+        assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
+        assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
+        assert "strike_median" in fvt_quality["orientation_error"]
+        assert "dip_median" in fvt_quality["orientation_error"]
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert [(row["case_id"], row["variant"]) for row in rows] == [
         (case_id, "current_default") for case_id in GEOMETRY_CASE_IDS
     ]
-    assert all(float(row["fvt_buffered_f1_r2"]) >= 0.0 for row in rows)
+    for row in rows:
+        assert math.isfinite(float(row["fvt_max"]))
+        assert float(row["fvt_max"]) > 0.0
+        assert math.isfinite(float(row["fvt_buffered_f1_r2"]))
+        assert float(row["fvt_buffered_f1_r2"]) >= 0.0
+        assert math.isfinite(float(row["fvt_distance_p95"]))
+        assert math.isfinite(float(row["fvt_strike_median_error"]))
+        assert math.isfinite(float(row["fvt_dip_median_error"]))
 
 
 def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
