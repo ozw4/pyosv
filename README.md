@@ -146,9 +146,9 @@ Reference-like 3D thinning is documented in
 `docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
 to reference-like strike-binned thinning with scanner edge-effect removal; pass
 `remove_edge_effects=False` only for diagnostics, or `mode="normal"` for the
-legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` still defaults
-to `mode="normal"`, with `mode="reference"` available for reference-like voter
-thinning.
+legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` also defaults
+to reference-like strike-binned thinning, with `mode="normal"` available for
+the legacy fault-normal voter path.
 
 `OptimalSurfaceVoter` smooths extracted local surfaces before recomputing vote
 strike/dip, matching the reference-first surface-orientation path. Use
@@ -158,7 +158,9 @@ older raw-surface behavior.
 Migration note: code that relied on the older derivative-bank scanner should
 call `scan_fast()` explicitly. Code that relied on old 3D scanner
 fault-normal thinning should pass `mode="normal"` explicitly, or use
-`--scanner-thin-mode normal` in F3 validation examples.
+`--scanner-thin-mode normal` in F3 validation examples. Code that relied on
+old 3D voter fault-normal thinning should pass `mode="normal"` explicitly, or
+use `--voter-thin-mode normal` in F3 validation examples.
 
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.

@@ -96,16 +96,16 @@ a specific manual crop.
 The 3D scanner and voter thinning steps support two modes:
 
 - `normal`: existing pyosv behavior. It uses 3D normal-vector interpolation for
-  non-maximum suppression. For scanner thinning this is now the legacy opt-in
-  mode; for voter thinning it remains the default.
+  non-maximum suppression. For scanner and voter thinning this is now the
+  legacy opt-in mode.
 - `reference`: reference-like behavior. It smooths the comparison volume, bins
   samples by strike angle, and compares local maxima in the `i2-i3` plane.
 
-Scanner thinning defaults to `reference`; pass `--scanner-thin-mode normal`
-only when comparing against older pyosv runs. Voter thinning still defaults to
-`normal`; pass `--voter-thin-mode reference` for reference-like voter thinning
-reports. Both modes are Pythonic approximations, not bit-exact Mines JTK ports.
-See `docs/reference_like_thinning.md` for the API-level details.
+Scanner and voter thinning default to `reference`; pass
+`--scanner-thin-mode normal` or `--voter-thin-mode normal` only when comparing
+against older pyosv runs. Both modes are Pythonic approximations, not bit-exact
+Mines JTK ports. See `docs/reference_like_thinning.md` for the API-level
+details.
 
 Run one crop with reference-like scanner and voter thinning:
 

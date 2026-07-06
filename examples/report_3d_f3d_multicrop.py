@@ -211,7 +211,7 @@ def run_example(
     d: int = 4,
     fm: float = 0.3,
     scanner_thin_mode: str = "reference",
-    voter_thin_mode: str = "normal",
+    voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
@@ -442,7 +442,7 @@ def build_config(
     d: int,
     fm: float,
     scanner_thin_mode: str = "reference",
-    voter_thin_mode: str = "normal",
+    voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
 ) -> dict[str, Any]:
     config: dict[str, Any] = {

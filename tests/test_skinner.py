@@ -746,7 +746,7 @@ def test_connected_component_find_skins_keeps_legacy_voting_plane_component() ->
     ft[3:8, 5, 3:8] = 0.9
 
     fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
-    fvt = voter.thin(fv, vp, vt)
+    fvt = voter.thin(fv, vp, vt, mode="normal")
     skins = FaultSkinner(
         method="connected_component",
         min_likelihood=0.7,

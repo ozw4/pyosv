@@ -13,9 +13,8 @@
 `FaultOrientScanner3.thin(...)` defaults to `mode="reference"` with edge-effect
 removal enabled. The legacy fault-normal scanner thinning path remains
 available with `mode="normal"`.
-`OptimalSurfaceVoter.thin(...)` still defaults to `mode="normal"`; pass
-`mode="reference"` explicitly for reference-like voter thinning reports or
-diagnostics.
+`OptimalSurfaceVoter.thin(...)` also defaults to `mode="reference"`. Its legacy
+fault-normal voter thinning path remains available with `mode="normal"`.
 
 ## Reference Audit Notes
 
@@ -81,10 +80,11 @@ fvt = voter.thin(
     fv,
     vp,
     vt,
-    mode="reference",
     reference_sigma=1.0,
 )
 ```
+
+Pass `mode="normal"` explicitly for the older fault-normal voter thinning path.
 
 For F3 crop, multi-crop, and ablation commands, see
 `docs/f3d_validation.md#reference-like-thinning-validation`.

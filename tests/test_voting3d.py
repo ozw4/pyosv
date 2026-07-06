@@ -11,7 +11,7 @@ from pyosv.geometry import (
     strike_and_dip_from_local_surface_derivatives,
 )
 from pyosv.orient3d import FaultOrientScanner3
-from pyosv.thinning3d import reference_like_3d_thin_values
+from pyosv.thinning3d import reference_like_3d_thin_values, remove_reference_edge_effects_3d
 from pyosv.voting3d import (
     OptimalSurfaceVoter,
     _accumulate_surface_votes,
@@ -1003,7 +1003,7 @@ def test_thin_returns_finite_float32_volume_without_modifying_inputs() -> None:
     np.testing.assert_array_equal(vt, vt_before)
 
 
-def test_thin_normal_mode_matches_default_behavior() -> None:
+def test_thin_default_matches_reference_mode() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     fv = np.zeros((5, 5, 5), dtype=np.float32)
     fv[:, 1, :] = 0.5
@@ -1013,9 +1013,28 @@ def test_thin_normal_mode_matches_default_behavior() -> None:
     vt = np.full_like(fv, 45.0)
 
     default = voter.thin(fv, vp, vt)
-    normal = voter.thin(fv, vp, vt, mode="normal")
+    reference = voter.thin(fv, vp, vt, mode="reference")
 
-    np.testing.assert_array_equal(normal, default)
+    np.testing.assert_array_equal(reference, default)
+
+
+def test_thin_normal_mode_remains_explicit_fault_normal_path() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    normal = voter.thin(fv, vp, vt, mode="normal")
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+
+    assert np.count_nonzero(normal) > 0
+    assert np.count_nonzero(reference) > 0
+    assert np.count_nonzero(normal[:, :, 2]) == np.count_nonzero(normal)
+    assert np.count_nonzero(reference[:, 2, :]) == np.count_nonzero(reference)
+    assert np.count_nonzero(reference != normal) > 0
 
 
 def test_thin_reference_mode_returns_float32_shape_and_original_values() -> None:
@@ -1057,7 +1076,7 @@ def test_thin_reference_mode_reinforces_vertical_strike_neighbor() -> None:
         reinforce_vertical=True,
     )
 
-    fvt = voter.thin(fv, vp, vt, mode="reference", reference_sigma=1.0)
+    fvt = voter.thin(fv, vp, vt)
     scanner_ft, _, _ = scanner.thin(
         fv,
         vp,
@@ -1070,6 +1089,29 @@ def test_thin_reference_mode_reinforces_vertical_strike_neighbor() -> None:
     np.testing.assert_allclose(fvt, expected)
     assert fvt[2, 3, 0] == pytest.approx(float(fvt[3, 3, 0]))
     assert scanner_ft[2, 3, 0] == np.float32(0.0)
+
+
+def test_thin_default_reference_mode_does_not_apply_scanner_edge_cleanup() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((11, 11, 1), dtype=np.float32)
+    fv[2, 5, 0] = 10.0
+    vp = np.full_like(fv, 90.0)
+    vt = np.full_like(fv, 90.0)
+    expected, keep = reference_like_3d_thin_values(
+        fv,
+        vp,
+        sigma=1.0,
+        reinforce_vertical=True,
+    )
+
+    fvt = voter.thin(fv, vp, vt)
+    edge_cleaned, _, _, edge_keep = remove_reference_edge_effects_3d(fvt, vp, vt)
+
+    assert keep[2, 5, 0]
+    assert fvt[2, 5, 0] > np.float32(0.0)
+    np.testing.assert_array_equal(fvt, expected)
+    assert not edge_keep[2, 5, 0]
+    assert edge_cleaned[2, 5, 0] == np.float32(0.0)
 
 
 def test_thin_rejects_invalid_mode() -> None:
@@ -1091,7 +1133,7 @@ def test_thin_reference_mode_uses_strike_bin_nms_in_i2_i3_plane() -> None:
     vp = np.zeros_like(fv)
     vt = np.zeros_like(fv)
 
-    normal = voter.thin(fv, vp, vt)
+    normal = voter.thin(fv, vp, vt, mode="normal")
     reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
 
     assert np.count_nonzero(reference) > 0
@@ -1110,7 +1152,7 @@ def test_thin_narrows_planar_ridge_along_fault_normal() -> None:
     vp = np.zeros_like(fv)
     vt = np.full_like(fv, 90.0)
 
-    fvt = voter.thin(fv, vp, vt)
+    fvt = voter.thin(fv, vp, vt, mode="normal")
 
     assert fvt.shape == fv.shape
     assert fvt.dtype == np.float32
@@ -1129,7 +1171,7 @@ def test_thin_suppresses_broad_planar_ridge_to_center_plane() -> None:
     vp = np.zeros_like(fv)
     vt = np.full_like(fv, 90.0)
 
-    fvt = voter.thin(fv, vp, vt)
+    fvt = voter.thin(fv, vp, vt, mode="normal")
 
     assert fvt.shape == fv.shape
     assert fvt.dtype == np.float32
@@ -1148,7 +1190,7 @@ def test_thin_returns_zero_for_flat_volume() -> None:
     vt = np.full_like(fv, 90.0)
 
     with np.errstate(all="raise"):
-        fvt = voter.thin(fv, vp, vt)
+        fvt = voter.thin(fv, vp, vt, mode="normal")
 
     assert fvt.shape == fv.shape
     assert fvt.dtype == np.float32
@@ -1164,7 +1206,7 @@ def test_thin_zero_orientation_angles_return_finite_scores() -> None:
     vt = np.zeros_like(fv)
 
     with np.errstate(all="raise"):
-        fvt = voter.thin(fv, vp, vt)
+        fvt = voter.thin(fv, vp, vt, mode="normal")
 
     assert fvt.shape == fv.shape
     assert fvt.dtype == np.float32

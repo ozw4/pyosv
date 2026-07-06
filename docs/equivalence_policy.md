@@ -52,9 +52,9 @@ components unless a specific reference behavior is shown to be defective.
 strike-binned non-maximum suppression path. Its legacy fault-normal path remains
 available with `mode="normal"`.
 
-`OptimalSurfaceVoter.thin` still defaults to `mode="normal"`, the existing
-fault-normal non-maximum suppression path. Callers that need reference-like
-strike-binned voter thinning must pass `mode="reference"` explicitly.
+`OptimalSurfaceVoter.thin` defaults to `mode="reference"`, the reference-like
+strike-binned non-maximum suppression path with voter-specific reinforcement.
+Its legacy fault-normal path remains available with `mode="normal"`.
 
 ## Testing Policy
 
