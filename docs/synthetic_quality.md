@@ -13,9 +13,9 @@ controlled synthetic: is the result correct against known truth?
 F3 visual/multicrop: does the workflow avoid obvious failures on real data?
 ```
 
-## Current PR1 Scope
+## Current Scope
 
-PR1 includes:
+The controlled synthetic API includes:
 
 - `SyntheticPlaneSpec`
 - `Synthetic3DCase`
@@ -27,10 +27,14 @@ PR1 includes:
 - surface distance metrics
 - masked orientation error
 - minimal oracle pipeline smoke test
+- `examples/report_3d_synthetic_quality.py`
 
-PR1 does not include:
+The current report CLI includes the `minimal` case set, which contains only
+`single_vertical_plane`. It runs oracle `ft` / `pt` / `tt` attributes through
+`OptimalSurfaceVoter`, applies thinning, and writes truth-quality report files.
 
-- `report_3d_synthetic_quality.py`
+The current scope does not include:
+
 - extended cases: dipping, curved, crossing, boundary, weak noisy
 - skin topology metrics
 - synthetic seismic generation
@@ -61,16 +65,54 @@ mask = top_truth_count_mask(case.ft_oracle, case.truth_fault_mask)
 metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 ```
 
+## Report CLI
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set minimal \
+  --output-dir outputs/3d/synthetic_quality/minimal_001 \
+  --pretty
+```
+
+The CLI writes these files under `--output-dir`:
+
+```text
+metrics.json
+summary.csv
+```
+
+The stable minimum JSON contract is:
+
+```json
+{
+  "format_version": 1,
+  "config": {
+    "case_set": "minimal",
+    "shape": [33, 33, 33]
+  },
+  "cases": [
+    {
+      "case_id": "single_vertical_plane",
+      "shape": [33, 33, 33]
+    }
+  ]
+}
+```
+
+Additional per-case metric fields may be present. `--save-volumes` writes DAT
+volumes under `OUTPUT_DIR/volumes`. `--save-figures` and
+`--write-markdown-index` are accepted CLI flags for later report expansion.
+
 ## Test Commands
 
 ```bash
-PYTHONPATH=src python -m pytest -q tests/test_synthetic3d.py tests/test_synthetic_metrics.py tests/test_synthetic_oracle_pipeline.py
+PYTHONPATH=src python -m pytest -q tests/test_synthetic3d.py tests/test_synthetic_metrics.py tests/test_synthetic_oracle_pipeline.py tests/test_report_3d_synthetic_quality.py
 ```
 
-The broader PR1 acceptance checks are:
+The broader synthetic acceptance checks are:
 
 ```bash
 PYTHONPATH=src python -m pytest -q tests/test_voting3d.py
-PYTHONPATH=src python -m ruff check src tests
-PYTHONPATH=src python -m ruff format --check src tests
+PYTHONPATH=src python -m ruff check src tests examples
+PYTHONPATH=src python -m ruff format --check src tests examples
 ```
