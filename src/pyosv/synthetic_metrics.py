@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import numpy as np
+from collections.abc import Sequence
 from scipy.ndimage import distance_transform_edt
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pyosv.skin import FaultSkin
 
 __all__ = [
     "buffered_surface_overlap",
     "masked_orientation_error",
+    "skin_mask_from_skins",
+    "skin_orientation_error",
+    "skin_topology_metrics",
+    "skin_truth_metrics",
     "surface_distance_metrics",
     "top_k_mask",
     "top_truth_count_mask",
@@ -173,6 +182,146 @@ def masked_orientation_error(
     }
 
 
+def skin_mask_from_skins(
+    skins: Sequence[FaultSkin],
+    shape: tuple[int, int, int],
+) -> np.ndarray:
+    """Return a ``(n3, n2, n1)`` boolean mask for skin cell indices."""
+
+    volume_shape = _validate_3d_shape(shape)
+    mask = np.zeros(volume_shape, dtype=bool)
+    for skin in skins:
+        for cell in skin:
+            i1, i2, i3 = _cell_index_i123(cell)
+            _validate_cell_bounds((i1, i2, i3), volume_shape)
+            mask[i3, i2, i1] = True
+    return mask
+
+
+def skin_topology_metrics(
+    skins: Sequence[FaultSkin],
+    shape: tuple[int, int, int],
+    *,
+    small_skin_size: int = 10,
+) -> dict[str, float | int]:
+    """Return size and duplicate-index summaries for fault skins."""
+
+    volume_shape = _validate_3d_shape(shape)
+    small_size = _validate_nonnegative_int(small_skin_size, "small_skin_size")
+    skin_list = list(skins)
+
+    cell_count = 0
+    unique_indices: set[tuple[int, int, int]] = set()
+    largest_skin_size = 0
+    small_skin_count = 0
+    small_skin_cell_count = 0
+
+    for skin in skin_list:
+        skin_size = len(skin)
+        cell_count += skin_size
+        largest_skin_size = max(largest_skin_size, skin_size)
+        if skin_size < small_size:
+            small_skin_count += 1
+            small_skin_cell_count += skin_size
+        for cell in skin:
+            index = _cell_index_i123(cell)
+            _validate_cell_bounds(index, volume_shape)
+            unique_indices.add(index)
+
+    unique_cell_count = len(unique_indices)
+    return {
+        "skin_count": len(skin_list),
+        "cell_count": cell_count,
+        "unique_cell_count": unique_cell_count,
+        "duplicate_cell_count": cell_count - unique_cell_count,
+        "largest_skin_size": largest_skin_size,
+        "largest_skin_fraction": float(largest_skin_size / cell_count) if cell_count else 0.0,
+        "small_skin_size": small_size,
+        "small_skin_count": small_skin_count,
+        "small_skin_cell_count": small_skin_cell_count,
+        "small_skin_cell_fraction": (
+            float(small_skin_cell_count / cell_count) if cell_count else 0.0
+        ),
+    }
+
+
+def skin_orientation_error(
+    skins: Sequence[FaultSkin],
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+) -> dict[str, float | int]:
+    """Return strike and dip error summaries for skin cells against truth volumes."""
+
+    true_strike, true_dip = _validate_orientation_truth_arrays(truth_strike, truth_dip)
+
+    predicted_strikes: list[float] = []
+    predicted_dips: list[float] = []
+    sampled_strikes: list[float] = []
+    sampled_dips: list[float] = []
+
+    for skin in skins:
+        for cell in skin:
+            i1, i2, i3 = _cell_index_i123(cell)
+            _validate_cell_bounds((i1, i2, i3), true_strike.shape)
+            fp = _finite_cell_orientation(getattr(cell, "fp"), "fp")
+            ft = _finite_cell_orientation(getattr(cell, "ft"), "ft")
+            predicted_strikes.append(fp)
+            predicted_dips.append(ft)
+            sampled_strikes.append(float(true_strike[i3, i2, i1]))
+            sampled_dips.append(float(true_dip[i3, i2, i1]))
+
+    if not predicted_strikes:
+        empty_mask = np.zeros(true_strike.shape, dtype=bool)
+        return masked_orientation_error(true_strike, true_dip, true_strike, true_dip, empty_mask)
+
+    mask = np.ones(len(predicted_strikes), dtype=bool)
+    return masked_orientation_error(
+        np.asarray(predicted_strikes, dtype=np.float32),
+        np.asarray(predicted_dips, dtype=np.float32),
+        np.asarray(sampled_strikes, dtype=np.float32),
+        np.asarray(sampled_dips, dtype=np.float32),
+        mask,
+    )
+
+
+def skin_truth_metrics(
+    skins: Sequence[FaultSkin],
+    *,
+    shape: tuple[int, int, int],
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+    buffer_radius: float,
+    small_skin_size: int = 10,
+) -> dict[str, Any]:
+    """Return topology, overlap, distance, and orientation metrics for skins."""
+
+    volume_shape = _validate_3d_shape(shape)
+    skin_list = list(skins)
+    candidate_mask = skin_mask_from_skins(skin_list, volume_shape)
+    fault_mask = _validate_mask_shape(truth_fault_mask, volume_shape, "truth_fault_mask")
+    surface_mask = _validate_mask_shape(truth_surface_mask, volume_shape, "truth_surface_mask")
+    true_strike, true_dip = _validate_orientation_truth_arrays(truth_strike, truth_dip)
+    _validate_same_shape(candidate_mask, true_strike, true_dip)
+    buffer_key = _buffered_overlap_key(buffer_radius)
+
+    return {
+        "topology": skin_topology_metrics(
+            skin_list,
+            volume_shape,
+            small_skin_size=small_skin_size,
+        ),
+        buffer_key: buffered_surface_overlap(
+            candidate_mask,
+            fault_mask,
+            radius=buffer_radius,
+        ),
+        "surface_distance": surface_distance_metrics(candidate_mask, surface_mask),
+        "orientation_error": skin_orientation_error(skin_list, true_strike, true_dip),
+    }
+
+
 def _validate_finite_array(values: np.ndarray, name: str) -> np.ndarray:
     array = np.asarray(values)
     try:
@@ -220,6 +369,106 @@ def _validate_nonnegative_finite_scalar(value: float, name: str) -> float:
     if result < 0.0:
         raise ValueError(f"{name} must be non-negative")
     return result
+
+
+def _validate_3d_shape(shape: tuple[int, int, int]) -> tuple[int, int, int]:
+    if not isinstance(shape, tuple) or len(shape) != 3:
+        raise ValueError("shape must be a positive 3D tuple")
+    return tuple(_validate_positive_int(value, "shape") for value in shape)
+
+
+def _validate_positive_int(value: int, name: str) -> int:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} entries must be positive integers")
+    if not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} entries must be positive integers")
+    result = int(value)
+    if result <= 0:
+        raise ValueError(f"{name} entries must be positive integers")
+    return result
+
+
+def _validate_nonnegative_int(value: int, name: str) -> int:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a non-negative integer")
+    if not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be a non-negative integer")
+    result = int(value)
+    if result < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return result
+
+
+def _cell_index_i123(cell: object) -> tuple[int, int, int]:
+    index = getattr(cell, "index", None)
+    if index is None:
+        index = (getattr(cell, "i1"), getattr(cell, "i2"), getattr(cell, "i3"))
+    try:
+        i1, i2, i3 = tuple(index)
+    except (TypeError, ValueError) as error:
+        raise ValueError("cell index must contain three entries in (i1, i2, i3) order") from error
+    return (
+        _validate_index_component(i1, "i1"),
+        _validate_index_component(i2, "i2"),
+        _validate_index_component(i3, "i3"),
+    )
+
+
+def _validate_index_component(value: int, name: str) -> int:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"cell {name} index must be an integer")
+    if not isinstance(value, (int, np.integer)):
+        raise ValueError(f"cell {name} index must be an integer")
+    return int(value)
+
+
+def _validate_cell_bounds(
+    index: tuple[int, int, int],
+    shape: tuple[int, int, int],
+) -> None:
+    i1, i2, i3 = index
+    n3, n2, n1 = shape
+    if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+        raise ValueError(f"cell index {index} is outside volume shape {shape}")
+
+
+def _validate_orientation_truth_arrays(
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    true_strike = _validate_finite_array(truth_strike, "truth_strike")
+    true_dip = _validate_finite_array(truth_dip, "truth_dip")
+    _validate_same_shape(true_strike, true_dip)
+    if true_strike.ndim != 3:
+        raise ValueError(f"truth arrays must be 3D, got shape {true_strike.shape}")
+    return true_strike, true_dip
+
+
+def _validate_mask_shape(
+    mask: np.ndarray,
+    shape: tuple[int, int, int],
+    name: str,
+) -> np.ndarray:
+    result = np.asarray(mask, dtype=bool)
+    if result.shape != shape:
+        raise ValueError(f"{name} shape must match {shape}, got {result.shape}")
+    return result
+
+
+def _finite_cell_orientation(value: float, name: str) -> float:
+    result = float(value)
+    if not np.isfinite(result):
+        raise ValueError(f"cell {name} orientation must be finite")
+    return result
+
+
+def _buffered_overlap_key(radius: float) -> str:
+    value = _validate_nonnegative_finite_scalar(radius, "buffer_radius")
+    if value.is_integer():
+        suffix = str(int(value))
+    else:
+        suffix = str(value).replace(".", "p")
+    return f"buffered_overlap_radius{suffix}"
 
 
 def _distance_buffer(mask: np.ndarray, radius: float) -> np.ndarray:

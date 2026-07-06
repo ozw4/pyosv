@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -32,12 +33,73 @@ EXPECTED_VOLUME_FILES = (
     "vp_py.dat",
     "vt_py.dat",
     "fvt_py.dat",
+    "skin_mask_py.dat",
 )
 EXPECTED_I3_FIGURES = (
     "ft_oracle_i3_center.png",
     "fv_py_i3_center.png",
     "fvt_py_i3_center.png",
+    "skin_mask_py_i3_center.png",
     "truth_vs_fvt_overlay_i3_center.png",
+    "truth_vs_skin_overlay_i3_center.png",
+)
+EXPECTED_SKIN_SUMMARY_FIELDS = (
+    "skin_enabled",
+    "skin_count",
+    "skin_cell_count",
+    "skin_unique_cell_count",
+    "skin_duplicate_cell_count",
+    "skin_largest_size",
+    "skin_largest_fraction",
+    "skin_small_count",
+    "skin_small_cell_fraction",
+    "skin_buffered_f1_r2",
+    "skin_buffered_precision_r2",
+    "skin_buffered_recall_r2",
+    "skin_distance_candidate_to_truth_p95",
+    "skin_distance_truth_to_candidate_p95",
+    "skin_distance_hausdorff_p95",
+    "skin_strike_median_error",
+    "skin_dip_median_error",
+    "skin_buffered_f1_delta_vs_baseline",
+    "skin_distance_p95_delta_vs_baseline",
+    "skin_strike_median_error_delta_vs_baseline",
+    "skin_dip_median_error_delta_vs_baseline",
+    "skin_count_delta_vs_baseline",
+)
+SKIN_NUMERIC_SUMMARY_FIELDS = (
+    "skin_count",
+    "skin_cell_count",
+    "skin_unique_cell_count",
+    "skin_duplicate_cell_count",
+    "skin_largest_size",
+    "skin_largest_fraction",
+    "skin_small_count",
+    "skin_small_cell_fraction",
+    "skin_buffered_f1_r2",
+    "skin_buffered_precision_r2",
+    "skin_buffered_recall_r2",
+    "skin_distance_candidate_to_truth_p95",
+    "skin_distance_truth_to_candidate_p95",
+    "skin_distance_hausdorff_p95",
+    "skin_strike_median_error",
+    "skin_dip_median_error",
+)
+SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
+    "skin_buffered_f1_r2",
+    "skin_buffered_precision_r2",
+    "skin_buffered_recall_r2",
+    "skin_distance_p95",
+    "skin_distance_candidate_to_truth_p95",
+    "skin_distance_truth_to_candidate_p95",
+    "skin_distance_hausdorff_p95",
+    "skin_strike_median_error",
+    "skin_dip_median_error",
+    "skin_buffered_f1_delta_vs_baseline",
+    "skin_distance_p95_delta_vs_baseline",
+    "skin_strike_median_error_delta_vs_baseline",
+    "skin_dip_median_error_delta_vs_baseline",
+    "skin_count_delta_vs_baseline",
 )
 
 
@@ -52,6 +114,14 @@ def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _assert_enabled_skin_summary_row(row: dict[str, str]) -> None:
+    for field in EXPECTED_SKIN_SUMMARY_FIELDS:
+        assert field in row
+    assert row["skin_enabled"] == "True"
+    for field in SKIN_NUMERIC_SUMMARY_FIELDS:
+        assert math.isfinite(float(row[field]))
 
 
 def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
@@ -70,6 +140,11 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--voter-thin-mode" in result.stdout
     assert "--truth-surface-half-width" in result.stdout
     assert "--buffer-radius" in result.stdout
+    assert "--skip-skinning" in result.stdout
+    assert "--skinner-min-likelihood" in result.stdout
+    assert "--skinner-ru" in result.stdout
+    assert "--no-skinner-reskin" in result.stdout
+    assert "--small-skin-size" in result.stdout
 
 
 def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
@@ -107,6 +182,17 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
     assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
     assert "strike_median" in fvt_quality["orientation_error"]
+    skin_quality = quality["skin"]
+    assert skin_quality is not None
+    assert "buffered_f1" in skin_quality["buffered_overlap_radius2"]
+    assert "candidate_to_truth_p95" in skin_quality["surface_distance"]
+    assert "strike_median" in skin_quality["orientation_error"]
+    skins = case["pyosv"]["skins"]
+    assert isinstance(skins["skin_count"], int)
+    assert isinstance(skins["cell_count"], int)
+    assert skins["skin_count"] >= 0
+    assert skins["cell_count"] >= 0
+    assert skins == skin_quality["topology"]
     for name in ("fv", "fvt"):
         summary = case["pyosv"][name]
         assert summary["shape"] == [17, 17, 17]
@@ -132,6 +218,14 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fvt_distance_p95"]) >= 0.0
     assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
     assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
+    assert rows[0]["skinning_enabled"] == "True"
+    _assert_enabled_skin_summary_row(rows[0])
+    assert int(rows[0]["skin_count"]) >= 0
+    assert int(rows[0]["skin_cell_count"]) >= 0
+    assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
+    assert math.isfinite(float(rows[0]["skin_distance_p95"]))
+    assert math.isfinite(float(rows[0]["skin_strike_median_error"]))
+    assert math.isfinite(float(rows[0]["skin_dip_median_error"]))
 
 
 def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
@@ -171,6 +265,10 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
         assert "strike_median" in fvt_quality["orientation_error"]
         assert "dip_median" in fvt_quality["orientation_error"]
+        skin_quality = variant["quality"]["skin"]
+        assert skin_quality is not None
+        assert "topology" in skin_quality
+        assert variant["pyosv"]["skins"]["skin_count"] >= 0
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
@@ -185,6 +283,7 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert math.isfinite(float(row["fvt_distance_p95"]))
         assert math.isfinite(float(row["fvt_strike_median_error"]))
         assert math.isfinite(float(row["fvt_dip_median_error"]))
+        _assert_enabled_skin_summary_row(row)
 
 
 def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
@@ -211,7 +310,11 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
     case = metrics["cases"][0]
     assert set(case["variants"]) == set(DIAGNOSTIC_VARIANTS)
     for variant in DIAGNOSTIC_VARIANTS:
-        assert case["variants"][variant]["pyosv"]["fvt"]["max"] > 0.0
+        variant_report = case["variants"][variant]
+        assert variant_report["pyosv"]["fvt"]["max"] > 0.0
+        assert variant_report["skinning"] == {"enabled": True}
+        assert variant_report["quality"]["skin"] is not None
+        assert variant_report["pyosv"]["skins"] == variant_report["quality"]["skin"]["topology"]
 
     comparison = case["variant_comparison"]
     assert comparison["baseline_variant"] == "current_default"
@@ -222,6 +325,11 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         "fvt_strike_median_error_delta_vs_current",
         "fvt_dip_median_error_delta_vs_current",
         "fv_buffered_f1_r2_delta_vs_current",
+        "skin_buffered_f1_r2_delta_vs_current",
+        "skin_candidate_to_truth_p95_delta_vs_current",
+        "skin_strike_median_error_delta_vs_current",
+        "skin_dip_median_error_delta_vs_current",
+        "skin_count_delta_vs_current",
     )
     assert all(
         comparison["variants"]["current_default"][field] == 0.0 for field in comparison_fields
@@ -240,10 +348,16 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         "fvt_distance_p95_delta_vs_baseline",
         "fvt_strike_median_error_delta_vs_baseline",
         "fvt_dip_median_error_delta_vs_baseline",
+        "skin_buffered_f1_delta_vs_baseline",
+        "skin_distance_p95_delta_vs_baseline",
+        "skin_strike_median_error_delta_vs_baseline",
+        "skin_dip_median_error_delta_vs_baseline",
+        "skin_count_delta_vs_baseline",
     )
     assert all(row["baseline_variant"] == "current_default" for row in rows)
     assert all(float(rows[0][field]) == 0.0 for field in csv_delta_fields)
     for row in rows[1:]:
+        _assert_enabled_skin_summary_row(row)
         for field in csv_delta_fields:
             assert math.isfinite(float(row[field]))
 
@@ -281,6 +395,8 @@ def test_report_3d_synthetic_quality_diagnostic_variants_pass(tmp_path: Path) ->
         rows = list(csv.DictReader(file))
     assert [row["baseline_variant"] for row in rows] == ["", ""]
     assert [row["fvt_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
+    assert [row["skin_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
+    assert [row["skin_count_delta_vs_baseline"] for row in rows] == ["", ""]
 
 
 def test_report_3d_synthetic_quality_unknown_variant_fails(tmp_path: Path) -> None:
@@ -361,6 +477,177 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
     }
 
 
+def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skinner-min-likelihood",
+        "0.4",
+        "--skinner-min-skin-size",
+        "2",
+        "--skinner-d",
+        "2",
+        "--skinner-ru",
+        "6",
+        "--skinner-rv",
+        "7",
+        "--skinner-rw",
+        "8",
+        "--skinner-max-steps",
+        "3",
+        "--skinner-du",
+        "4.5",
+        "--skinner-max-delta-strike",
+        "20",
+        "--no-skinner-reskin",
+        "--small-skin-size",
+        "5",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["skinning"] == {
+        "enabled": True,
+        "min_likelihood": 0.4,
+        "min_skin_size": 2,
+        "d": 2,
+        "ru": 6,
+        "rv": 7,
+        "rw": 8,
+        "max_steps": 3,
+        "du": 4.5,
+        "max_delta_strike": 20.0,
+        "reskin": False,
+        "small_skin_size": 5,
+    }
+
+
+def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--buffer-radius",
+        "1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    skin_quality = metrics["cases"][0]["quality"]["skin"]
+    assert "buffered_overlap_radius2" in skin_quality
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
+
+
+def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_contract(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["skinning"]["enabled"] is False
+    assert variant["skinning"] == {"enabled": False}
+    assert variant["quality"]["skin"] is None
+    assert variant["pyosv"]["skins"]["skin_count"] == 0
+    assert variant["pyosv"]["skins"]["cell_count"] == 0
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["skinning_enabled"] == "False"
+    assert rows[0]["skin_enabled"] == "False"
+    assert rows[0]["skin_count"] == "0"
+    assert rows[0]["skin_cell_count"] == "0"
+    assert rows[0]["skin_unique_cell_count"] == "0"
+    assert rows[0]["skin_duplicate_cell_count"] == "0"
+    assert rows[0]["skin_largest_size"] == "0"
+    assert rows[0]["skin_largest_fraction"] == "0.0"
+    assert rows[0]["skin_small_count"] == "0"
+    assert rows[0]["skin_small_cell_fraction"] == "0.0"
+    for field in SKIN_EMPTY_WHEN_DISABLED_FIELDS:
+        assert rows[0][field] == ""
+
+
+def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_skins_json(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--save-volumes",
+        "--write-markdown-index",
+    )
+
+    assert result.returncode == 0, result.stderr
+    skins = json.loads(
+        (output_dir / "single_vertical_plane" / "skins.json").read_text(encoding="utf-8")
+    )
+    assert skins == {
+        "format_version": 1,
+        "skinning_enabled": False,
+        "skin_count": 0,
+        "skins": [],
+    }
+    mask = np.fromfile(
+        output_dir / "single_vertical_plane" / "skin_mask_py.dat",
+        dtype=">f4",
+    )
+    assert np.count_nonzero(mask) == 0
+    markdown = (output_dir / "visual_report.md").read_text(encoding="utf-8")
+    assert "skinning disabled" in markdown
+
+
+def test_report_3d_synthetic_quality_invalid_skinner_options_fail(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skinner-ru",
+        "1",
+    )
+
+    assert result.returncode != 0
+    assert "skinner_ru must be at least 2" in result.stderr
+
+
 def test_report_3d_synthetic_quality_save_volumes_writes_expected_dat_files(
     tmp_path: Path,
 ) -> None:
@@ -384,6 +671,29 @@ def test_report_3d_synthetic_quality_save_volumes_writes_expected_dat_files(
         path = case_dir / name
         assert path.is_file()
         assert path.stat().st_size == expected_size
+    skin_mask = np.fromfile(case_dir / "skin_mask_py.dat", dtype=">f4").astype(np.float32)
+    assert set(np.unique(skin_mask)).issubset({0.0, 1.0})
+    skins = json.loads((case_dir / "skins.json").read_text(encoding="utf-8"))
+    assert skins["format_version"] == 1
+    assert skins["skinning_enabled"] is True
+    assert isinstance(skins["skin_count"], int)
+    assert isinstance(skins["skins"], list)
+    if skins["skins"]:
+        first_skin = skins["skins"][0]
+        assert first_skin["skin_index"] == 0
+        assert first_skin["cell_count"] == len(first_skin["cells"])
+        if first_skin["cells"]:
+            assert set(first_skin["cells"][0]) == {
+                "x1",
+                "x2",
+                "x3",
+                "i1",
+                "i2",
+                "i3",
+                "fl",
+                "fp",
+                "ft",
+            }
 
 
 def test_report_3d_synthetic_quality_geometry_save_volumes_splits_case_directories(
@@ -410,6 +720,35 @@ def test_report_3d_synthetic_quality_geometry_save_volumes_splits_case_directori
             path = case_dir / name
             assert path.is_file()
             assert path.stat().st_size == expected_size
+        assert (case_dir / "skins.json").is_file()
+
+
+def test_report_3d_synthetic_quality_variants_save_volumes_split_skin_outputs(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+    shape = (17, 17, 17)
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        ",".join(str(size) for size in shape),
+        "--output-dir",
+        str(output_dir),
+        "--variants",
+        "current_default,no_surface_orientation_smoothing",
+        "--save-volumes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected_size = shape[0] * shape[1] * shape[2] * 4
+    for variant in ("current_default", "no_surface_orientation_smoothing"):
+        variant_dir = output_dir / "single_vertical_plane" / variant
+        assert (variant_dir / "skins.json").is_file()
+        mask_path = variant_dir / "skin_mask_py.dat"
+        assert mask_path.is_file()
+        assert mask_path.stat().st_size == expected_size
 
 
 def test_report_3d_synthetic_quality_write_markdown_index_includes_case_and_metrics(
@@ -435,7 +774,14 @@ def test_report_3d_synthetic_quality_write_markdown_index_includes_case_and_metr
     assert "distance_p95" in markdown
     assert "strike_median_error" in markdown
     assert "dip_median_error" in markdown
+    assert "skin_count" in markdown
+    assert "skin_cell_count" in markdown
+    assert "skin_buffered_f1_r2" in markdown
+    assert "skin_distance_p95" in markdown
+    assert "skin_strike_median_error" in markdown
+    assert "skin_dip_median_error" in markdown
     assert "single_vertical_plane/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
+    assert "single_vertical_plane/figures/truth_vs_skin_overlay_i3_center.png" in markdown
 
 
 def test_report_3d_synthetic_quality_geometry_markdown_index_includes_each_case(
@@ -458,6 +804,7 @@ def test_report_3d_synthetic_quality_geometry_markdown_index_includes_each_case(
     for case_id in GEOMETRY_CASE_IDS:
         assert f"## {case_id}" in markdown
         assert f"{case_id}/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
+        assert f"{case_id}/figures/truth_vs_skin_overlay_i3_center.png" in markdown
 
 
 def test_report_3d_synthetic_quality_save_figures_writes_expected_pngs(
@@ -505,6 +852,10 @@ def test_report_3d_synthetic_quality_geometry_save_figures_splits_case_directori
         figures_dir = output_dir / case_id / "figures"
         for name in EXPECTED_I3_FIGURES:
             path = figures_dir / name
+            assert path.is_file()
+            assert path.stat().st_size > 0
+        for axis in ("i2", "i1"):
+            path = figures_dir / f"truth_vs_skin_overlay_{axis}_center.png"
             assert path.is_file()
             assert path.stat().st_size > 0
 
