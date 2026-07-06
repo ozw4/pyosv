@@ -38,7 +38,7 @@ def test_single_vertical_plane_oracle_pipeline_smoke() -> None:
     candidate_mask = top_truth_count_mask(fvt, truth_surface_mask)
 
     overlap = buffered_surface_overlap(candidate_mask, case.truth_fault_mask, radius=2.0)
-    distances = surface_distance_metrics(candidate_mask, case.truth_fault_mask)
+    distances = surface_distance_metrics(candidate_mask, truth_surface_mask)
     orientation = masked_orientation_error(
         vp,
         vt,
@@ -81,7 +81,7 @@ def test_single_dipping_plane_oracle_pipeline_smoke() -> None:
         case.truth_fault_mask,
         radius=2.0,
     )
-    distances = surface_distance_metrics(fvt_top_truth_count, case.truth_fault_mask)
+    distances = surface_distance_metrics(fvt_top_truth_count, truth_surface_mask)
     orientation = masked_orientation_error(
         vp,
         vt,
@@ -124,7 +124,7 @@ def test_curved_surface_oracle_pipeline_smoke() -> None:
         case.truth_fault_mask,
         radius=2.0,
     )
-    distances = surface_distance_metrics(fvt_top_truth_count, case.truth_fault_mask)
+    distances = surface_distance_metrics(fvt_top_truth_count, truth_surface_mask)
     orientation = masked_orientation_error(
         vp,
         vt,
