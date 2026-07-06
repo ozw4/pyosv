@@ -736,7 +736,7 @@ def test_reference_find_skins_box_marks_accepted_skin_to_skip_nearby_seed() -> N
     assert [[cell.index for cell in skin] for skin in box_occupancy_skins] == [[(10, 10, 10)]]
 
 
-def test_connected_component_find_skins_keeps_legacy_voting_plane_component() -> None:
+def test_connected_component_find_skins_keeps_reference_voting_plane_component() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     voter.set_attribute_smoothing(0)
     voter.set_surface_smoothing(0.0, 0.0)
@@ -754,7 +754,7 @@ def test_connected_component_find_skins_keeps_legacy_voting_plane_component() ->
         connectivity="corner",
     ).find_skins(fvt, vp, vt)
 
-    assert [len(skin) for skin in skins] == [105]
+    assert [len(skin) for skin in skins] == [81]
 
 
 def test_reference_like_find_skin_grows_dominant_planar_seed_skin() -> None:

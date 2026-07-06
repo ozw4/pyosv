@@ -1489,7 +1489,7 @@ def test_normalize_and_power_3d_zero_dynamic_range_returns_finite_zeros() -> Non
 def test_normalize_and_power_3d_simple_ramp_uses_min_max_and_power() -> None:
     volume = np.array([[[2.0, 3.0, 4.0]]], dtype=np.float32)
 
-    scores = _normalize_and_power_3d(volume, sigma=0.0, power=4)
+    scores = _normalize_and_power_3d(volume, power=4)
 
     expected = np.array([[[0.0, 0.9375, 1.0]]], dtype=np.float32)
     assert scores.dtype == np.float32
@@ -1499,7 +1499,7 @@ def test_normalize_and_power_3d_simple_ramp_uses_min_max_and_power() -> None:
 def test_normalize_and_power_3d_reference_audit_range_and_monotonicity() -> None:
     volume = np.array([[[-2.0, 0.0, 2.0], [4.0, 6.0, 8.0]]], dtype=np.float32)
 
-    scores = _normalize_and_power_3d(volume, sigma=0.0, power=2)
+    scores = _normalize_and_power_3d(volume, power=2)
 
     assert scores.shape == volume.shape
     assert scores.dtype == np.float32
@@ -1520,6 +1520,40 @@ def test_normalize_and_power_3d_reference_audit_all_constant_input() -> None:
     assert scores.dtype == np.float32
     assert np.isfinite(scores).all()
     np.testing.assert_array_equal(scores, np.zeros_like(volume))
+
+
+def test_normalize_and_power_3d_default_matches_reference_formula() -> None:
+    volume = np.array(
+        [
+            [[-2.0, -1.0], [0.0, 1.5]],
+            [[3.0, 4.5], [6.0, 8.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    scores = _normalize_and_power_3d(volume)
+
+    expected = volume.copy()
+    expected -= expected.min()
+    expected /= expected.max()
+    expected = np.float32(1.0) - np.power(np.float32(1.0) - expected, 8)
+    assert scores.dtype == np.float32
+    np.testing.assert_allclose(scores, expected.astype(np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_normalize_and_power_3d_explicit_sigma_opts_into_smoothing() -> None:
+    volume = np.zeros((5, 5, 5), dtype=np.float32)
+    volume[2, 2, 2] = 1.0
+
+    default_scores = _normalize_and_power_3d(volume)
+    smoothed_scores = _normalize_and_power_3d(volume, sigma=1.0)
+
+    assert smoothed_scores.shape == volume.shape
+    assert smoothed_scores.dtype == np.float32
+    assert np.isfinite(smoothed_scores).all()
+    assert smoothed_scores.min() >= np.float32(0.0)
+    assert smoothed_scores.max() <= np.float32(1.0)
+    assert not np.allclose(smoothed_scores, default_scores)
 
 
 def test_smooth_fault_likelihood_3d_preserves_shape_and_bounds() -> None:
