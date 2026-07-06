@@ -71,6 +71,7 @@ metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set minimal \
   --output-dir outputs/3d/synthetic_quality/minimal_001 \
+  --variants current_default \
   --truth-surface-half-width 0.5 \
   --buffer-radius 2.0 \
   --pretty
@@ -113,7 +114,8 @@ The stable minimum JSON contract is:
   "format_version": 1,
   "config": {
     "case_set": "minimal",
-    "shape": [33, 33, 33]
+    "shape": [33, 33, 33],
+    "variants": ["current_default"]
   },
   "cases": [
     {
@@ -123,15 +125,23 @@ The stable minimum JSON contract is:
         "fault_voxel_count": 2277,
         "surface_voxel_count": 1089
       },
-      "quality": {
-        "fv_top_truth_count": {
-          "buffered_overlap_radius2": {},
-          "surface_distance": {}
-        },
-        "fvt_top_truth_count": {
-          "buffered_overlap_radius2": {},
-          "surface_distance": {},
-          "orientation_error": {}
+      "variants": {
+        "current_default": {
+          "pyosv": {
+            "fv": {},
+            "fvt": {}
+          },
+          "quality": {
+            "fv_top_truth_count": {
+              "buffered_overlap_radius2": {},
+              "surface_distance": {}
+            },
+            "fvt_top_truth_count": {
+              "buffered_overlap_radius2": {},
+              "surface_distance": {},
+              "orientation_error": {}
+            }
+          }
         }
       }
     }
@@ -139,15 +149,32 @@ The stable minimum JSON contract is:
 }
 ```
 
-`quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
-the truth target. `quality.*.surface_distance` uses the thin truth surface mask
-defined by `abs(truth_distance) <= --truth-surface-half-width`.
-`summary.csv` includes buffered F1, candidate-to-truth p95 distance, and fvt
-median orientation error columns. `--save-volumes` writes float32 big-endian
-DAT volumes under each case directory, with `truth_fault_mask.dat` stored as
-0/1 float32 values. `--save-figures` writes static center-slice PNGs under each
-case `figures/` directory. `--write-markdown-index` writes
-`visual_report.md` with relative links to the case figures.
+Each case stores per-variant metrics under `cases[].variants`. For backward
+compatibility, `current_default` is also duplicated at the case top level when
+that variant is present. `quality.*.buffered_overlap_radius2` uses the wider
+`truth_fault_mask` band as the truth target. `quality.*.surface_distance` uses
+the thin truth surface mask defined by
+`abs(truth_distance) <= --truth-surface-half-width`.
+
+`--variants` accepts a comma-separated list:
+
+```text
+current_default
+no_surface_orientation_smoothing
+final_norm_smoothing_1
+voter_thin_normal
+```
+
+The default is `current_default`. Diagnostic variants do not add pass/fail
+judgments; they make the same truth metrics comparable across voter settings.
+`summary.csv` writes one row per `(case_id, variant)` and includes the variant
+column, buffered F1, candidate-to-truth p95 distance, and fvt median
+orientation error columns. `--save-volumes` writes float32 big-endian DAT
+volumes under each case directory, with `truth_fault_mask.dat` stored as 0/1
+float32 values. With more than one variant, volumes and figures are written
+under `case_id/variant/`. `--save-figures` writes static center-slice PNGs.
+`--write-markdown-index` writes `visual_report.md` with relative links to the
+case figures.
 
 ## Test Commands
 
