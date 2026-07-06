@@ -272,10 +272,13 @@ truth cases with one fault, values closer to zero are generally preferable, but
 skin count alone should not be treated as a good/bad judgment.
 
 `--save-volumes` writes float32 big-endian DAT volumes under each case
-directory, with `truth_fault_mask.dat` stored as 0/1 float32 values. With more
-than one variant, volumes and figures are written under `case_id/variant/`.
-`--save-figures` writes static center-slice PNGs. `--write-markdown-index`
-writes `visual_report.md` with relative links to the case figures.
+directory, with `truth_fault_mask.dat` and `skin_mask_py.dat` stored as 0/1
+float32 values. It also writes `skins.json` with deterministic skin cell
+records, or a disabled zero-count object when `--skip-skinning` is used. With
+more than one variant, volumes, `skins.json`, and figures are written under
+`case_id/variant/`. `--save-figures` writes static center-slice PNGs, including
+skin mask and truth-vs-skin overlays. `--write-markdown-index` writes
+`visual_report.md` with relative links to the case figures and skin metrics.
 
 ## Test Commands
 

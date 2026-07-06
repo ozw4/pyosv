@@ -35,6 +35,7 @@ from pyosv.synthetic3d import (
 from pyosv.synthetic_metrics import (
     buffered_surface_overlap,
     masked_orientation_error,
+    skin_mask_from_skins,
     skin_topology_metrics,
     skin_truth_metrics,
     surface_distance_metrics,
@@ -57,6 +58,7 @@ VOLUME_NAMES = (
     "vp_py",
     "vt_py",
     "fvt_py",
+    "skin_mask_py",
 )
 FIGURE_VOLUME_NAMES = ("ft_oracle", "fv_py", "fvt_py")
 NONZERO_EPSILON = 1.0e-6
@@ -547,7 +549,7 @@ def run_case(
         raise ValueError(
             f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
         )
-    variant_report, volumes = _run_case_variant(
+    variant_report, volumes, _ = _run_case_variant(
         case,
         voting_config=voting_config,
         truth_metric_config=truth_metric_config,
@@ -573,7 +575,7 @@ def _run_case_variant(
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
     variant: str,
-) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     if variant not in VARIANT_NAMES:
         raise ValueError(f"unknown variant: {variant}")
 
@@ -673,6 +675,8 @@ def _run_case_variant(
         skin_metrics = _normalize_report_skin_metric_keys(skin_metrics)
         report["pyosv"]["skins"] = skin_metrics["topology"]
         report["quality"]["skin"] = skin_metrics
+        skin_mask = skin_mask_from_skins(skins, case.shape)
+        skins_output = _skins_json_payload(skins)
     else:
         report["pyosv"]["skins"] = skin_topology_metrics(
             [],
@@ -680,6 +684,8 @@ def _run_case_variant(
             small_skin_size=skinning_config.small_skin_size,
         )
         report["quality"]["skin"] = None
+        skin_mask = np.zeros(case.shape, dtype=bool)
+        skins_output = _disabled_skins_json_payload()
 
     volumes = {
         "truth_fault_mask": case.truth_fault_mask.astype(np.float32),
@@ -693,8 +699,51 @@ def _run_case_variant(
         "vp_py": vp,
         "vt_py": vt,
         "fvt_py": fvt,
+        "skin_mask_py": skin_mask.astype(np.float32),
     }
-    return report, volumes
+    return report, volumes, skins_output
+
+
+def _skins_json_payload(skins: Sequence[Any]) -> dict[str, Any]:
+    serialized_skins = []
+    for skin_index, skin in enumerate(skins):
+        cells = sorted(skin, key=lambda cell: (int(cell.i3), int(cell.i2), int(cell.i1)))
+        serialized_skins.append(
+            {
+                "skin_index": int(skin_index),
+                "cell_count": int(len(cells)),
+                "cells": [_skin_cell_json(cell) for cell in cells],
+            }
+        )
+    return {
+        "format_version": FORMAT_VERSION,
+        "skinning_enabled": True,
+        "skin_count": int(len(serialized_skins)),
+        "skins": serialized_skins,
+    }
+
+
+def _disabled_skins_json_payload() -> dict[str, Any]:
+    return {
+        "format_version": FORMAT_VERSION,
+        "skinning_enabled": False,
+        "skin_count": 0,
+        "skins": [],
+    }
+
+
+def _skin_cell_json(cell: Any) -> dict[str, float | int]:
+    return {
+        "x1": float(cell.x1),
+        "x2": float(cell.x2),
+        "x3": float(cell.x3),
+        "i1": int(cell.i1),
+        "i2": int(cell.i2),
+        "i3": int(cell.i3),
+        "fl": float(cell.fl),
+        "fp": float(cell.fp),
+        "ft": float(cell.ft),
+    }
 
 
 def _truth_report(
@@ -722,7 +771,7 @@ def build_report(
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
 ) -> dict[str, Any]:
-    report, _ = _build_report_and_volumes(
+    report, _, _ = _build_report_and_volumes(
         case_set=case_set,
         shape=shape,
         voting_config=voting_config,
@@ -741,7 +790,11 @@ def _build_report_and_volumes(
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
-) -> tuple[dict[str, Any], dict[str, dict[str, dict[str, np.ndarray]]]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, dict[str, dict[str, np.ndarray]]],
+    dict[str, dict[str, dict[str, Any]]],
+]:
     valid_shape = validate_shape3(shape)
     valid_variants = _validate_variants(variants)
     try:
@@ -751,6 +804,7 @@ def _build_report_and_volumes(
 
     cases = []
     volume_outputs = {}
+    skin_outputs = {}
     for case_definition in case_definitions:
         case = case_definition.factory(valid_shape)
         if case.case_id != case_definition.case_id:
@@ -759,8 +813,9 @@ def _build_report_and_volumes(
             )
         variant_reports = {}
         variant_volumes = {}
+        variant_skins = {}
         for variant in valid_variants:
-            variant_report, volumes = _run_case_variant(
+            variant_report, volumes, skins_output = _run_case_variant(
                 case,
                 voting_config=voting_config,
                 truth_metric_config=truth_metric_config,
@@ -769,6 +824,7 @@ def _build_report_and_volumes(
             )
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
+            variant_skins[variant] = skins_output
         case_report = {
             "case_id": case.case_id,
             "shape": [int(size) for size in case.shape],
@@ -780,6 +836,7 @@ def _build_report_and_volumes(
             case_report.update(variant_reports[BASELINE_VARIANT])
         cases.append(case_report)
         volume_outputs[case_definition.case_id] = variant_volumes
+        skin_outputs[case_definition.case_id] = variant_skins
 
     report = {
         "format_version": FORMAT_VERSION,
@@ -793,7 +850,7 @@ def _build_report_and_volumes(
         },
         "cases": cases,
     }
-    return report, volume_outputs
+    return report, volume_outputs, skin_outputs
 
 
 def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:
@@ -1127,6 +1184,25 @@ def write_case_volumes(
     return written
 
 
+def write_case_skins_json(
+    skin_outputs: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    output_dir: str | PathLike[str],
+) -> list[Path]:
+    written = []
+    output_root = Path(output_dir)
+    for case_id, variants in skin_outputs.items():
+        case_dir = _case_output_dir(output_root, case_id)
+        for variant, skins_output in variants.items():
+            output_dir_for_variant = _variant_output_dir(case_dir, variant, len(variants) == 1)
+            output_path = output_dir_for_variant / "skins.json"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps(skins_output, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            written.append(output_path)
+    return written
+
+
 def write_case_figures(
     volume_outputs: Mapping[str, Mapping[str, Mapping[str, np.ndarray]]],
     output_dir: str | PathLike[str],
@@ -1154,6 +1230,15 @@ def write_case_figures(
                             title=f"{case_id} {variant} {name} {axis}=center",
                         )
                     )
+                if axis == "i3":
+                    written.append(
+                        viz.save_slice_panel(
+                            figures_dir / "skin_mask_py_i3_center.png",
+                            [("skin_mask_py", viz.slice_2d(volumes["skin_mask_py"], axis, index))],
+                            title=f"{case_id} {variant} skin_mask_py {axis}=center",
+                            clip_percentiles=(0.0, 100.0),
+                        )
+                    )
                 written.append(
                     viz.save_ridge_overlay_slice(
                         figures_dir / f"truth_vs_fvt_overlay_{axis}_center.png",
@@ -1164,6 +1249,18 @@ def write_case_figures(
                         percentile=99.0,
                         buffer_radius=buffer_radius,
                         title=f"{case_id} {variant} truth vs fvt {axis}=center",
+                    )
+                )
+                written.append(
+                    viz.save_ridge_overlay_slice(
+                        figures_dir / f"truth_vs_skin_overlay_{axis}_center.png",
+                        reference=volumes["truth_fault_mask"],
+                        candidate=volumes["skin_mask_py"].astype(np.float32),
+                        axis=axis,
+                        index=index,
+                        percentile=99.0,
+                        buffer_radius=buffer_radius,
+                        title=f"{case_id} {variant} truth vs skin {axis}=center",
                     )
                 )
     return written
@@ -1200,6 +1297,11 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
                 overlay_parts.append(variant)
             overlay_parts.extend(("figures", "truth_vs_fvt_overlay_i3_center.png"))
             overlay_path = PurePosixPath(*overlay_parts)
+            skin_overlay_parts = [case_id]
+            if len(variants) > 1:
+                skin_overlay_parts.append(variant)
+            skin_overlay_parts.extend(("figures", "truth_vs_skin_overlay_i3_center.png"))
+            skin_overlay_path = PurePosixPath(*skin_overlay_parts)
             lines.extend(
                 [
                     f"### {variant}",
@@ -1215,6 +1317,31 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
                     "",
                 ]
             )
+            if bool(variant_report["skinning"]["enabled"]):
+                skin_quality = variant_report["quality"]["skin"]
+                skin_topology = skin_quality["topology"]
+                skin_overlap = skin_quality["buffered_overlap_radius2"]
+                skin_distance = skin_quality["surface_distance"]
+                skin_orientation = skin_quality["orientation_error"]
+                lines.extend(
+                    [
+                        f"- skin_count: {_format_markdown_metric(skin_topology['skin_count'])}",
+                        f"- skin_cell_count: {_format_markdown_metric(skin_topology['cell_count'])}",
+                        "- skin_buffered_f1_r2: "
+                        f"{_format_markdown_metric(skin_overlap['buffered_f1'])}",
+                        "- skin_distance_p95: "
+                        f"{_format_markdown_metric(skin_distance['candidate_to_truth_p95'])}",
+                        "- skin_strike_median_error: "
+                        f"{_format_markdown_metric(skin_orientation['strike_median'])}",
+                        "- skin_dip_median_error: "
+                        f"{_format_markdown_metric(skin_orientation['dip_median'])}",
+                        "",
+                        f"![skin overlay]({skin_overlay_path.as_posix()})",
+                        "",
+                    ]
+                )
+            else:
+                lines.extend(["- skinning disabled", ""])
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1257,7 +1384,7 @@ def run_example(
     save_figures: bool = False,
     write_markdown_index: bool = False,
 ) -> dict[str, Any]:
-    report, volume_outputs = _build_report_and_volumes(
+    report, volume_outputs, skin_outputs = _build_report_and_volumes(
         case_set=case_set,
         shape=shape,
         voting_config=voting_config,
@@ -1269,6 +1396,7 @@ def run_example(
     write_summary_csv(report, output_dir)
     if save_volumes:
         write_case_volumes(volume_outputs, output_dir)
+        write_case_skins_json(skin_outputs, output_dir)
     if save_figures:
         write_case_figures(
             volume_outputs,
