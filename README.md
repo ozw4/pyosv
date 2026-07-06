@@ -144,7 +144,18 @@ crop validation, and the manual full-volume pipeline.
 
 Controlled synthetic 3D truth-quality checks are documented in
 `docs/synthetic_quality.md`, including the default `minimal` case set and the
-PR3 `geometry` set for vertical, dipping, and curved faults.
+`geometry` set for vertical, dipping, and curved faults, voter variants, and
+skinning metrics. A typical report run is:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set geometry \
+  --shape 33,33,33 \
+  --variants current_default,no_surface_orientation_smoothing,final_norm_smoothing_1,voter_thin_normal \
+  --output-dir outputs/3d/synthetic_quality/geometry_001 \
+  --save-figures \
+  --write-markdown-index
+```
 
 Reference-like 3D thinning is documented in
 `docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
