@@ -153,6 +153,18 @@ The stable minimum JSON contract is:
             }
           }
         }
+      },
+      "variant_comparison": {
+        "baseline_variant": "current_default",
+        "variants": {
+          "current_default": {
+            "fvt_buffered_f1_r2_delta_vs_current": 0.0,
+            "fvt_candidate_to_truth_p95_delta_vs_current": 0.0,
+            "fvt_strike_median_error_delta_vs_current": 0.0,
+            "fvt_dip_median_error_delta_vs_current": 0.0,
+            "fv_buffered_f1_r2_delta_vs_current": 0.0
+          }
+        }
       }
     }
   ]
@@ -161,9 +173,12 @@ The stable minimum JSON contract is:
 
 Each case stores per-variant metrics under `cases[].variants`. For backward
 compatibility, `current_default` is also duplicated at the case top level when
-that variant is present. `quality.*.buffered_overlap_radius2` uses the wider
-`truth_fault_mask` band as the truth target. `quality.*.surface_distance` uses
-the thin truth surface mask defined by
+that variant is present. `cases[].variant_comparison` stores per-variant deltas
+against `current_default` when that baseline variant is present; when it is not
+present, `baseline_variant` is `null` and the comparison map is empty.
+`quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
+the truth target. `quality.*.surface_distance` uses the thin truth surface mask
+defined by
 `abs(truth_distance) <= --truth-surface-half-width`.
 
 The `geometry` case set keeps the same top-level JSON contract and writes one
@@ -183,13 +198,15 @@ voter_thin_normal
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
-column, buffered F1, candidate-to-truth p95 distance, and fvt median
-orientation error columns. `--save-volumes` writes float32 big-endian DAT
-volumes under each case directory, with `truth_fault_mask.dat` stored as 0/1
-float32 values. With more than one variant, volumes and figures are written
-under `case_id/variant/`. `--save-figures` writes static center-slice PNGs.
-`--write-markdown-index` writes `visual_report.md` with relative links to the
-case figures.
+column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
+median orientation error columns, and fvt delta columns against the baseline.
+Delta signs use `variant_value - current_default_value`: positive F1 deltas are
+improvements, while negative distance and orientation-error deltas are
+improvements. `--save-volumes` writes float32 big-endian DAT volumes under each
+case directory, with `truth_fault_mask.dat` stored as 0/1 float32 values. With
+more than one variant, volumes and figures are written under `case_id/variant/`.
+`--save-figures` writes static center-slice PNGs. `--write-markdown-index`
+writes `visual_report.md` with relative links to the case figures.
 
 ## Test Commands
 

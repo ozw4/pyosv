@@ -53,6 +53,47 @@ VARIANT_NAMES = (
     "voter_thin_normal",
 )
 DEFAULT_VARIANTS = ("current_default",)
+BASELINE_VARIANT = "current_default"
+VARIANT_COMPARISON_METRICS = (
+    (
+        "fvt_buffered_f1_r2_delta_vs_current",
+        ("quality", "fvt_top_truth_count", "buffered_overlap_radius2", "buffered_f1"),
+    ),
+    (
+        "fvt_candidate_to_truth_p95_delta_vs_current",
+        ("quality", "fvt_top_truth_count", "surface_distance", "candidate_to_truth_p95"),
+    ),
+    (
+        "fvt_strike_median_error_delta_vs_current",
+        ("quality", "fvt_top_truth_count", "orientation_error", "strike_median"),
+    ),
+    (
+        "fvt_dip_median_error_delta_vs_current",
+        ("quality", "fvt_top_truth_count", "orientation_error", "dip_median"),
+    ),
+    (
+        "fv_buffered_f1_r2_delta_vs_current",
+        ("quality", "fv_top_truth_count", "buffered_overlap_radius2", "buffered_f1"),
+    ),
+)
+CSV_VARIANT_COMPARISON_FIELDS = (
+    (
+        "fvt_buffered_f1_delta_vs_baseline",
+        "fvt_buffered_f1_r2_delta_vs_current",
+    ),
+    (
+        "fvt_distance_p95_delta_vs_baseline",
+        "fvt_candidate_to_truth_p95_delta_vs_current",
+    ),
+    (
+        "fvt_strike_median_error_delta_vs_baseline",
+        "fvt_strike_median_error_delta_vs_current",
+    ),
+    (
+        "fvt_dip_median_error_delta_vs_baseline",
+        "fvt_dip_median_error_delta_vs_current",
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,8 +315,9 @@ def run_case(
         "shape": [int(size) for size in case.shape],
         "truth": _truth_report(case, truth_metric_config),
         "variants": {variant: variant_report},
+        "variant_comparison": _variant_comparison({variant: variant_report}),
     }
-    if variant == "current_default":
+    if variant == BASELINE_VARIANT:
         report.update(variant_report)
     return report, volumes
 
@@ -454,9 +496,10 @@ def _build_report_and_volumes(
             "shape": [int(size) for size in case.shape],
             "truth": _truth_report(case, truth_metric_config),
             "variants": variant_reports,
+            "variant_comparison": _variant_comparison(variant_reports),
         }
-        if "current_default" in variant_reports:
-            case_report.update(variant_reports["current_default"])
+        if BASELINE_VARIANT in variant_reports:
+            case_report.update(variant_reports[BASELINE_VARIANT])
         cases.append(case_report)
         volume_outputs[case_definition.case_id] = variant_volumes
 
@@ -487,6 +530,44 @@ def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:
     return valid_variants
 
 
+def _variant_comparison(
+    variant_reports: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    if BASELINE_VARIANT not in variant_reports:
+        return {"baseline_variant": None, "variants": {}}
+
+    baseline_report = variant_reports[BASELINE_VARIANT]
+    baseline_values = {
+        metric_name: _metric_value(baseline_report, path)
+        for metric_name, path in VARIANT_COMPARISON_METRICS
+    }
+    comparison = {}
+    for variant, variant_report in variant_reports.items():
+        comparison[variant] = {
+            metric_name: _delta_or_none(
+                _metric_value(variant_report, path),
+                baseline_values[metric_name],
+            )
+            for metric_name, path in VARIANT_COMPARISON_METRICS
+        }
+    return {"baseline_variant": BASELINE_VARIANT, "variants": comparison}
+
+
+def _metric_value(report: Mapping[str, Any], path: Sequence[str]) -> float | None:
+    value: Any = report
+    for key in path:
+        value = value[key]
+    if value is None:
+        return None
+    return float(value)
+
+
+def _delta_or_none(value: float | None, baseline_value: float | None) -> float | None:
+    if value is None or baseline_value is None:
+        return None
+    return float(value - baseline_value)
+
+
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
     indent = 2 if pretty else None
     return json.dumps(report, indent=indent, sort_keys=True) + "\n"
@@ -513,6 +594,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
             fieldnames=(
                 "case_id",
                 "variant",
+                "baseline_variant",
                 "shape_n3",
                 "shape_n2",
                 "shape_n1",
@@ -528,11 +610,18 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fvt_distance_p95",
                 "fvt_strike_median_error",
                 "fvt_dip_median_error",
+                "fvt_buffered_f1_delta_vs_baseline",
+                "fvt_distance_p95_delta_vs_baseline",
+                "fvt_strike_median_error_delta_vs_baseline",
+                "fvt_dip_median_error_delta_vs_baseline",
             ),
         )
         writer.writeheader()
         for case in report["cases"]:
             n3, n2, n1 = case["shape"]
+            variant_comparison = case["variant_comparison"]
+            baseline_variant = variant_comparison["baseline_variant"]
+            comparison_variants = variant_comparison["variants"]
             for variant, variant_report in case["variants"].items():
                 pyosv = variant_report["pyosv"]
                 fv = pyosv["fv"]
@@ -540,10 +629,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 quality = variant_report["quality"]
                 fv_quality = quality["fv_top_truth_count"]
                 fvt_quality = quality["fvt_top_truth_count"]
+                comparison_row = _summary_csv_comparison_row(
+                    comparison_variants.get(variant, {}),
+                )
                 writer.writerow(
                     {
                         "case_id": case["case_id"],
                         "variant": variant,
+                        "baseline_variant": baseline_variant,
                         "shape_n3": n3,
                         "shape_n2": n2,
                         "shape_n1": n1,
@@ -565,9 +658,17 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "strike_median"
                         ],
                         "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
+                        **comparison_row,
                     }
                 )
     return output_path
+
+
+def _summary_csv_comparison_row(comparison: Mapping[str, Any]) -> dict[str, float | None]:
+    return {
+        csv_field: comparison.get(json_field)
+        for csv_field, json_field in CSV_VARIANT_COMPARISON_FIELDS
+    }
 
 
 def _array_summary(array: np.ndarray) -> dict[str, Any]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import subprocess
 import sys
@@ -173,22 +174,61 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         "--output-dir",
         str(output_dir),
         "--variants",
-        "current_default,voter_thin_normal",
+        (
+            "current_default,no_surface_orientation_smoothing,"
+            "final_norm_smoothing_1,voter_thin_normal"
+        ),
     )
 
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     case = metrics["cases"][0]
-    assert list(case["variants"]) == ["current_default", "voter_thin_normal"]
-    assert case["variants"]["current_default"]["pyosv"]["fvt"]["max"] > 0.0
-    assert case["variants"]["voter_thin_normal"]["pyosv"]["fvt"]["max"] > 0.0
+    variants = [
+        "current_default",
+        "no_surface_orientation_smoothing",
+        "final_norm_smoothing_1",
+        "voter_thin_normal",
+    ]
+    assert set(case["variants"]) == set(variants)
+    for variant in variants:
+        assert case["variants"][variant]["pyosv"]["fvt"]["max"] > 0.0
+
+    comparison = case["variant_comparison"]
+    assert comparison["baseline_variant"] == "current_default"
+    assert set(comparison["variants"]) == set(variants)
+    comparison_fields = (
+        "fvt_buffered_f1_r2_delta_vs_current",
+        "fvt_candidate_to_truth_p95_delta_vs_current",
+        "fvt_strike_median_error_delta_vs_current",
+        "fvt_dip_median_error_delta_vs_current",
+        "fv_buffered_f1_r2_delta_vs_current",
+    )
+    assert all(
+        comparison["variants"]["current_default"][field] == 0.0 for field in comparison_fields
+    )
+    for variant in variants[1:]:
+        for field in comparison_fields:
+            assert math.isfinite(comparison["variants"][variant][field])
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert [(row["case_id"], row["variant"]) for row in rows] == [
         ("single_vertical_plane", "current_default"),
+        ("single_vertical_plane", "no_surface_orientation_smoothing"),
+        ("single_vertical_plane", "final_norm_smoothing_1"),
         ("single_vertical_plane", "voter_thin_normal"),
     ]
+    csv_delta_fields = (
+        "fvt_buffered_f1_delta_vs_baseline",
+        "fvt_distance_p95_delta_vs_baseline",
+        "fvt_strike_median_error_delta_vs_baseline",
+        "fvt_dip_median_error_delta_vs_baseline",
+    )
+    assert all(row["baseline_variant"] == "current_default" for row in rows)
+    assert all(float(rows[0][field]) == 0.0 for field in csv_delta_fields)
+    for row in rows[1:]:
+        for field in csv_delta_fields:
+            assert math.isfinite(float(row[field]))
 
 
 def test_report_3d_synthetic_quality_diagnostic_variants_pass(tmp_path: Path) -> None:
@@ -215,6 +255,15 @@ def test_report_3d_synthetic_quality_diagnostic_variants_pass(tmp_path: Path) ->
         "no_surface_orientation_smoothing",
         "final_norm_smoothing_1",
     }
+    assert metrics["cases"][0]["variant_comparison"] == {
+        "baseline_variant": None,
+        "variants": {},
+    }
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [row["baseline_variant"] for row in rows] == ["", ""]
+    assert [row["fvt_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
 
 
 def test_report_3d_synthetic_quality_unknown_variant_fails(tmp_path: Path) -> None:
