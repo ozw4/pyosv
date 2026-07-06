@@ -250,7 +250,7 @@ judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
 column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
 median orientation error columns, skin topology and truth metric columns, and
-fvt delta columns against the baseline.
+fvt and skin delta columns against the baseline.
 
 Read diagnostic variant comparison as "same case, same truth, different voter
 setting." JSON delta fields under `variant_comparison.variants.*` and CSV delta
@@ -262,6 +262,14 @@ Delta signs use `variant_value - current_default_value`. That means positive
 buffered-F1 deltas are improvements, while negative distance and
 orientation-error deltas are improvements. The report does not encode this
 good/bad direction; consumers should interpret each metric family explicitly.
+For skin metrics, `skin_buffered_f1_r2_delta_vs_current` follows the same
+positive-is-better interpretation, while
+`skin_candidate_to_truth_p95_delta_vs_current`,
+`skin_strike_median_error_delta_vs_current`, and
+`skin_dip_median_error_delta_vs_current` are better when negative.
+`skin_count_delta_vs_current` is useful context: for minimal and geometry
+truth cases with one fault, values closer to zero are generally preferable, but
+skin count alone should not be treated as a good/bad judgment.
 
 `--save-volumes` writes float32 big-endian DAT volumes under each case
 directory, with `truth_fault_mask.dat` stored as 0/1 float32 values. With more

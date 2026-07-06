@@ -89,6 +89,26 @@ VARIANT_COMPARISON_METRICS = (
         "fv_buffered_f1_r2_delta_vs_current",
         ("quality", "fv_top_truth_count", "buffered_overlap_radius2", "buffered_f1"),
     ),
+    (
+        "skin_buffered_f1_r2_delta_vs_current",
+        ("quality", "skin", "buffered_overlap_radius2", "buffered_f1"),
+    ),
+    (
+        "skin_candidate_to_truth_p95_delta_vs_current",
+        ("quality", "skin", "surface_distance", "candidate_to_truth_p95"),
+    ),
+    (
+        "skin_strike_median_error_delta_vs_current",
+        ("quality", "skin", "orientation_error", "strike_median"),
+    ),
+    (
+        "skin_dip_median_error_delta_vs_current",
+        ("quality", "skin", "orientation_error", "dip_median"),
+    ),
+    (
+        "skin_count_delta_vs_current",
+        ("quality", "skin", "topology", "skin_count"),
+    ),
 )
 CSV_VARIANT_COMPARISON_FIELDS = (
     (
@@ -106,6 +126,26 @@ CSV_VARIANT_COMPARISON_FIELDS = (
     (
         "fvt_dip_median_error_delta_vs_baseline",
         "fvt_dip_median_error_delta_vs_current",
+    ),
+    (
+        "skin_buffered_f1_delta_vs_baseline",
+        "skin_buffered_f1_r2_delta_vs_current",
+    ),
+    (
+        "skin_distance_p95_delta_vs_baseline",
+        "skin_candidate_to_truth_p95_delta_vs_current",
+    ),
+    (
+        "skin_strike_median_error_delta_vs_baseline",
+        "skin_strike_median_error_delta_vs_current",
+    ),
+    (
+        "skin_dip_median_error_delta_vs_baseline",
+        "skin_dip_median_error_delta_vs_current",
+    ),
+    (
+        "skin_count_delta_vs_baseline",
+        "skin_count_delta_vs_current",
     ),
 )
 
@@ -795,6 +835,10 @@ def _variant_comparison(
 def _metric_value(report: Mapping[str, Any], path: Sequence[str]) -> float | None:
     value: Any = report
     for key in path:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping) or key not in value:
+            return None
         value = value[key]
     if value is None:
         return None
@@ -850,16 +894,33 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fvt_strike_median_error",
                 "fvt_dip_median_error",
                 "skinning_enabled",
+                "skin_enabled",
                 "skin_count",
                 "skin_cell_count",
+                "skin_unique_cell_count",
+                "skin_duplicate_cell_count",
+                "skin_largest_size",
+                "skin_largest_fraction",
+                "skin_small_count",
+                "skin_small_cell_fraction",
                 "skin_buffered_f1_r2",
+                "skin_buffered_precision_r2",
+                "skin_buffered_recall_r2",
                 "skin_distance_p95",
+                "skin_distance_candidate_to_truth_p95",
+                "skin_distance_truth_to_candidate_p95",
+                "skin_distance_hausdorff_p95",
                 "skin_strike_median_error",
                 "skin_dip_median_error",
                 "fvt_buffered_f1_delta_vs_baseline",
                 "fvt_distance_p95_delta_vs_baseline",
                 "fvt_strike_median_error_delta_vs_baseline",
                 "fvt_dip_median_error_delta_vs_baseline",
+                "skin_buffered_f1_delta_vs_baseline",
+                "skin_distance_p95_delta_vs_baseline",
+                "skin_strike_median_error_delta_vs_baseline",
+                "skin_dip_median_error_delta_vs_baseline",
+                "skin_count_delta_vs_baseline",
             ),
         )
         writer.writeheader()
@@ -925,10 +986,22 @@ def _summary_csv_skin_row(
     if quality is None:
         return {
             "skinning_enabled": enabled,
+            "skin_enabled": enabled,
             "skin_count": 0,
             "skin_cell_count": 0,
+            "skin_unique_cell_count": 0,
+            "skin_duplicate_cell_count": 0,
+            "skin_largest_size": 0,
+            "skin_largest_fraction": 0.0,
+            "skin_small_count": 0,
+            "skin_small_cell_fraction": 0.0,
             "skin_buffered_f1_r2": None,
+            "skin_buffered_precision_r2": None,
+            "skin_buffered_recall_r2": None,
             "skin_distance_p95": None,
+            "skin_distance_candidate_to_truth_p95": None,
+            "skin_distance_truth_to_candidate_p95": None,
+            "skin_distance_hausdorff_p95": None,
             "skin_strike_median_error": None,
             "skin_dip_median_error": None,
         }
@@ -939,10 +1012,22 @@ def _summary_csv_skin_row(
     orientation = quality["orientation_error"]
     return {
         "skinning_enabled": enabled,
+        "skin_enabled": enabled,
         "skin_count": topology["skin_count"],
         "skin_cell_count": topology["cell_count"],
+        "skin_unique_cell_count": topology["unique_cell_count"],
+        "skin_duplicate_cell_count": topology["duplicate_cell_count"],
+        "skin_largest_size": topology["largest_skin_size"],
+        "skin_largest_fraction": topology["largest_skin_fraction"],
+        "skin_small_count": topology["small_skin_count"],
+        "skin_small_cell_fraction": topology["small_skin_cell_fraction"],
         "skin_buffered_f1_r2": overlap["buffered_f1"],
+        "skin_buffered_precision_r2": overlap["buffered_precision"],
+        "skin_buffered_recall_r2": overlap["buffered_recall"],
         "skin_distance_p95": distance["candidate_to_truth_p95"],
+        "skin_distance_candidate_to_truth_p95": distance["candidate_to_truth_p95"],
+        "skin_distance_truth_to_candidate_p95": distance["truth_to_candidate_p95"],
+        "skin_distance_hausdorff_p95": distance["hausdorff_p95"],
         "skin_strike_median_error": orientation["strike_median"],
         "skin_dip_median_error": orientation["dip_median"],
     }

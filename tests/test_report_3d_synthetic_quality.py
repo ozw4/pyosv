@@ -39,6 +39,64 @@ EXPECTED_I3_FIGURES = (
     "fvt_py_i3_center.png",
     "truth_vs_fvt_overlay_i3_center.png",
 )
+EXPECTED_SKIN_SUMMARY_FIELDS = (
+    "skin_enabled",
+    "skin_count",
+    "skin_cell_count",
+    "skin_unique_cell_count",
+    "skin_duplicate_cell_count",
+    "skin_largest_size",
+    "skin_largest_fraction",
+    "skin_small_count",
+    "skin_small_cell_fraction",
+    "skin_buffered_f1_r2",
+    "skin_buffered_precision_r2",
+    "skin_buffered_recall_r2",
+    "skin_distance_candidate_to_truth_p95",
+    "skin_distance_truth_to_candidate_p95",
+    "skin_distance_hausdorff_p95",
+    "skin_strike_median_error",
+    "skin_dip_median_error",
+    "skin_buffered_f1_delta_vs_baseline",
+    "skin_distance_p95_delta_vs_baseline",
+    "skin_strike_median_error_delta_vs_baseline",
+    "skin_dip_median_error_delta_vs_baseline",
+    "skin_count_delta_vs_baseline",
+)
+SKIN_NUMERIC_SUMMARY_FIELDS = (
+    "skin_count",
+    "skin_cell_count",
+    "skin_unique_cell_count",
+    "skin_duplicate_cell_count",
+    "skin_largest_size",
+    "skin_largest_fraction",
+    "skin_small_count",
+    "skin_small_cell_fraction",
+    "skin_buffered_f1_r2",
+    "skin_buffered_precision_r2",
+    "skin_buffered_recall_r2",
+    "skin_distance_candidate_to_truth_p95",
+    "skin_distance_truth_to_candidate_p95",
+    "skin_distance_hausdorff_p95",
+    "skin_strike_median_error",
+    "skin_dip_median_error",
+)
+SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
+    "skin_buffered_f1_r2",
+    "skin_buffered_precision_r2",
+    "skin_buffered_recall_r2",
+    "skin_distance_p95",
+    "skin_distance_candidate_to_truth_p95",
+    "skin_distance_truth_to_candidate_p95",
+    "skin_distance_hausdorff_p95",
+    "skin_strike_median_error",
+    "skin_dip_median_error",
+    "skin_buffered_f1_delta_vs_baseline",
+    "skin_distance_p95_delta_vs_baseline",
+    "skin_strike_median_error_delta_vs_baseline",
+    "skin_dip_median_error_delta_vs_baseline",
+    "skin_count_delta_vs_baseline",
+)
 
 
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
@@ -52,6 +110,14 @@ def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _assert_enabled_skin_summary_row(row: dict[str, str]) -> None:
+    for field in EXPECTED_SKIN_SUMMARY_FIELDS:
+        assert field in row
+    assert row["skin_enabled"] == "True"
+    for field in SKIN_NUMERIC_SUMMARY_FIELDS:
+        assert math.isfinite(float(row[field]))
 
 
 def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
@@ -149,6 +215,7 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
     assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
     assert rows[0]["skinning_enabled"] == "True"
+    _assert_enabled_skin_summary_row(rows[0])
     assert int(rows[0]["skin_count"]) >= 0
     assert int(rows[0]["skin_cell_count"]) >= 0
     assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
@@ -212,6 +279,7 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert math.isfinite(float(row["fvt_distance_p95"]))
         assert math.isfinite(float(row["fvt_strike_median_error"]))
         assert math.isfinite(float(row["fvt_dip_median_error"]))
+        _assert_enabled_skin_summary_row(row)
 
 
 def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
@@ -253,6 +321,11 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         "fvt_strike_median_error_delta_vs_current",
         "fvt_dip_median_error_delta_vs_current",
         "fv_buffered_f1_r2_delta_vs_current",
+        "skin_buffered_f1_r2_delta_vs_current",
+        "skin_candidate_to_truth_p95_delta_vs_current",
+        "skin_strike_median_error_delta_vs_current",
+        "skin_dip_median_error_delta_vs_current",
+        "skin_count_delta_vs_current",
     )
     assert all(
         comparison["variants"]["current_default"][field] == 0.0 for field in comparison_fields
@@ -271,10 +344,16 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         "fvt_distance_p95_delta_vs_baseline",
         "fvt_strike_median_error_delta_vs_baseline",
         "fvt_dip_median_error_delta_vs_baseline",
+        "skin_buffered_f1_delta_vs_baseline",
+        "skin_distance_p95_delta_vs_baseline",
+        "skin_strike_median_error_delta_vs_baseline",
+        "skin_dip_median_error_delta_vs_baseline",
+        "skin_count_delta_vs_baseline",
     )
     assert all(row["baseline_variant"] == "current_default" for row in rows)
     assert all(float(rows[0][field]) == 0.0 for field in csv_delta_fields)
     for row in rows[1:]:
+        _assert_enabled_skin_summary_row(row)
         for field in csv_delta_fields:
             assert math.isfinite(float(row[field]))
 
@@ -312,6 +391,8 @@ def test_report_3d_synthetic_quality_diagnostic_variants_pass(tmp_path: Path) ->
         rows = list(csv.DictReader(file))
     assert [row["baseline_variant"] for row in rows] == ["", ""]
     assert [row["fvt_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
+    assert [row["skin_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
+    assert [row["skin_count_delta_vs_baseline"] for row in rows] == ["", ""]
 
 
 def test_report_3d_synthetic_quality_unknown_variant_fails(tmp_path: Path) -> None:
@@ -496,8 +577,17 @@ def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_contract(
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert rows[0]["skinning_enabled"] == "False"
+    assert rows[0]["skin_enabled"] == "False"
     assert rows[0]["skin_count"] == "0"
-    assert rows[0]["skin_buffered_f1_r2"] == ""
+    assert rows[0]["skin_cell_count"] == "0"
+    assert rows[0]["skin_unique_cell_count"] == "0"
+    assert rows[0]["skin_duplicate_cell_count"] == "0"
+    assert rows[0]["skin_largest_size"] == "0"
+    assert rows[0]["skin_largest_fraction"] == "0.0"
+    assert rows[0]["skin_small_count"] == "0"
+    assert rows[0]["skin_small_cell_fraction"] == "0.0"
+    for field in SKIN_EMPTY_WHEN_DISABLED_FIELDS:
+        assert rows[0][field] == ""
 
 
 def test_report_3d_synthetic_quality_invalid_skinner_options_fail(tmp_path: Path) -> None:
