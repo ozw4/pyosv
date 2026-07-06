@@ -14,6 +14,12 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "examples" / "report_3d_synthetic_quality.py"
 GEOMETRY_CASE_IDS = ("single_vertical_plane", "single_dipping_plane", "curved_surface")
+DIAGNOSTIC_VARIANTS = (
+    "current_default",
+    "no_surface_orientation_smoothing",
+    "final_norm_smoothing_1",
+    "voter_thin_normal",
+)
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
     "truth_distance.dat",
@@ -152,13 +158,33 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert case["shape"] == [17, 17, 17]
         assert set(case["variants"]) == {"current_default"}
         assert case["truth"]["surface_voxel_count"] > 0
+        variant = case["variants"]["current_default"]
+        fvt = variant["pyosv"]["fvt"]
+        assert fvt["shape"] == [17, 17, 17]
+        assert fvt["finite_count"] == 17 * 17 * 17
+        assert fvt["finite_fraction"] == 1.0
+        assert math.isfinite(fvt["max"])
+        assert fvt["max"] > 0.0
+
+        fvt_quality = variant["quality"]["fvt_top_truth_count"]
+        assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
+        assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
+        assert "strike_median" in fvt_quality["orientation_error"]
+        assert "dip_median" in fvt_quality["orientation_error"]
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert [(row["case_id"], row["variant"]) for row in rows] == [
         (case_id, "current_default") for case_id in GEOMETRY_CASE_IDS
     ]
-    assert all(float(row["fvt_buffered_f1_r2"]) >= 0.0 for row in rows)
+    for row in rows:
+        assert math.isfinite(float(row["fvt_max"]))
+        assert float(row["fvt_max"]) > 0.0
+        assert math.isfinite(float(row["fvt_buffered_f1_r2"]))
+        assert float(row["fvt_buffered_f1_r2"]) >= 0.0
+        assert math.isfinite(float(row["fvt_distance_p95"]))
+        assert math.isfinite(float(row["fvt_strike_median_error"]))
+        assert math.isfinite(float(row["fvt_dip_median_error"]))
 
 
 def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
@@ -183,19 +209,13 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     case = metrics["cases"][0]
-    variants = [
-        "current_default",
-        "no_surface_orientation_smoothing",
-        "final_norm_smoothing_1",
-        "voter_thin_normal",
-    ]
-    assert set(case["variants"]) == set(variants)
-    for variant in variants:
+    assert set(case["variants"]) == set(DIAGNOSTIC_VARIANTS)
+    for variant in DIAGNOSTIC_VARIANTS:
         assert case["variants"][variant]["pyosv"]["fvt"]["max"] > 0.0
 
     comparison = case["variant_comparison"]
     assert comparison["baseline_variant"] == "current_default"
-    assert set(comparison["variants"]) == set(variants)
+    assert set(comparison["variants"]) == set(DIAGNOSTIC_VARIANTS)
     comparison_fields = (
         "fvt_buffered_f1_r2_delta_vs_current",
         "fvt_candidate_to_truth_p95_delta_vs_current",
@@ -206,17 +226,14 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
     assert all(
         comparison["variants"]["current_default"][field] == 0.0 for field in comparison_fields
     )
-    for variant in variants[1:]:
+    for variant in DIAGNOSTIC_VARIANTS[1:]:
         for field in comparison_fields:
             assert math.isfinite(comparison["variants"][variant][field])
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert [(row["case_id"], row["variant"]) for row in rows] == [
-        ("single_vertical_plane", "current_default"),
-        ("single_vertical_plane", "no_surface_orientation_smoothing"),
-        ("single_vertical_plane", "final_norm_smoothing_1"),
-        ("single_vertical_plane", "voter_thin_normal"),
+        ("single_vertical_plane", variant) for variant in DIAGNOSTIC_VARIANTS
     ]
     csv_delta_fields = (
         "fvt_buffered_f1_delta_vs_baseline",
