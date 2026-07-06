@@ -754,6 +754,9 @@ def test_connected_component_find_skins_keeps_reference_voting_plane_component()
         connectivity="corner",
     ).find_skins(fvt, vp, vt)
 
+    # Reference-style final normalization no longer smooths the vote map before
+    # the power transform, so this normal-thinning component is narrower than
+    # the older smoothed-final-normalization expectation.
     assert [len(skin) for skin in skins] == [81]
 
 

@@ -91,6 +91,12 @@ centers, candidates too close to the volume boundary are skipped instead of
 being silently shifted by `crop_slices()`. Pass `--center i3,i2,i1` to validate
 a specific manual crop.
 
+Final vote-map normalization defaults to the reference-like path with no final
+vote-map smoothing. F3 validation and report scripts record
+`final_normalization_smoothing` in their metadata. Pass
+`--final-normalization-smoothing 1.0` only when comparing against older pyosv
+runs that smoothed the final vote map before the power transform.
+
 ## Reference-Like Thinning Validation
 
 The 3D scanner and voter thinning steps support two modes:

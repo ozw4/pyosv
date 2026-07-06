@@ -47,6 +47,23 @@ the inputs. `fv` is a normalized `float32` vote volume in `[0, 1]`; `vp` and
 `vt` store the strike and dip angles associated with the strongest local vote at
 each sample.
 
+Final vote-map normalization follows the Java reference default. After all
+votes are accumulated, `apply_voting` subtracts the global minimum from the vote
+evidence, divides by the global maximum when it is nonzero, and applies the
+`1 - (1 - x) ** 8` power transform. This final normalization step does not
+smooth the vote map by default. The older practical behavior remains available
+as an explicit opt-in:
+
+```python
+voter.set_final_normalization_smoothing(1.0)
+```
+
+This setting is only for the final `fe -> fv` vote-map normalization before the
+power transform. It is separate from input-likelihood smoothing,
+`surface_smoothing1`, `surface_smoothing2`, and
+`surface_orientation_smoothing`. Negative, nonfinite, boolean, and nonnumeric
+values are rejected.
+
 Surface orientation is re-estimated from each extracted local surface before
 votes are accumulated. By default, `OptimalSurfaceVoter` smooths that surface
 with `surface_orientation_smoothing=max(rv, rw)` before computing the
