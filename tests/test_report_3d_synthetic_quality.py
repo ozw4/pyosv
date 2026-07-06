@@ -12,6 +12,26 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "examples" / "report_3d_synthetic_quality.py"
+GEOMETRY_CASE_IDS = ("single_vertical_plane", "single_dipping_plane", "curved_surface")
+EXPECTED_VOLUME_FILES = (
+    "truth_fault_mask.dat",
+    "truth_distance.dat",
+    "truth_strike.dat",
+    "truth_dip.dat",
+    "ft_oracle.dat",
+    "pt_oracle.dat",
+    "tt_oracle.dat",
+    "fv_py.dat",
+    "vp_py.dat",
+    "vt_py.dat",
+    "fvt_py.dat",
+)
+EXPECTED_I3_FIGURES = (
+    "ft_oracle_i3_center.png",
+    "fv_py_i3_center.png",
+    "fvt_py_i3_center.png",
+    "truth_vs_fvt_overlay_i3_center.png",
+)
 
 
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
@@ -33,6 +53,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert result.returncode == 0
     assert "usage:" in result.stdout
     assert "--case-set" in result.stdout
+    assert "geometry" in result.stdout
     assert "--output-dir" in result.stdout
     assert "--shape" in result.stdout
     assert "--variants" in result.stdout
@@ -104,6 +125,39 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fvt_distance_p95"]) >= 0.0
     assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
     assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
+
+
+def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["format_version"] == 1
+    assert metrics["config"]["case_set"] == "geometry"
+    assert metrics["config"]["shape"] == [17, 17, 17]
+    assert [case["case_id"] for case in metrics["cases"]] == list(GEOMETRY_CASE_IDS)
+    for case in metrics["cases"]:
+        assert case["shape"] == [17, 17, 17]
+        assert set(case["variants"]) == {"current_default"}
+        assert case["truth"]["surface_voxel_count"] > 0
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["case_id"], row["variant"]) for row in rows] == [
+        (case_id, "current_default") for case_id in GEOMETRY_CASE_IDS
+    ]
+    assert all(float(row["fvt_buffered_f1_r2"]) >= 0.0 for row in rows)
 
 
 def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
@@ -259,24 +313,37 @@ def test_report_3d_synthetic_quality_save_volumes_writes_expected_dat_files(
 
     assert result.returncode == 0, result.stderr
     case_dir = output_dir / "single_vertical_plane"
-    expected_files = (
-        "truth_fault_mask.dat",
-        "truth_distance.dat",
-        "truth_strike.dat",
-        "truth_dip.dat",
-        "ft_oracle.dat",
-        "pt_oracle.dat",
-        "tt_oracle.dat",
-        "fv_py.dat",
-        "vp_py.dat",
-        "vt_py.dat",
-        "fvt_py.dat",
-    )
     expected_size = shape[0] * shape[1] * shape[2] * 4
-    for name in expected_files:
+    for name in EXPECTED_VOLUME_FILES:
         path = case_dir / name
         assert path.is_file()
         assert path.stat().st_size == expected_size
+
+
+def test_report_3d_synthetic_quality_geometry_save_volumes_splits_case_directories(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+    shape = (17, 17, 17)
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        ",".join(str(size) for size in shape),
+        "--output-dir",
+        str(output_dir),
+        "--save-volumes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected_size = shape[0] * shape[1] * shape[2] * 4
+    for case_id in GEOMETRY_CASE_IDS:
+        case_dir = output_dir / case_id
+        for name in EXPECTED_VOLUME_FILES:
+            path = case_dir / name
+            assert path.is_file()
+            assert path.stat().st_size == expected_size
 
 
 def test_report_3d_synthetic_quality_write_markdown_index_includes_case_and_metrics(
@@ -305,6 +372,28 @@ def test_report_3d_synthetic_quality_write_markdown_index_includes_case_and_metr
     assert "single_vertical_plane/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
 
 
+def test_report_3d_synthetic_quality_geometry_markdown_index_includes_each_case(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--write-markdown-index",
+    )
+
+    assert result.returncode == 0, result.stderr
+    markdown = (output_dir / "visual_report.md").read_text(encoding="utf-8")
+    for case_id in GEOMETRY_CASE_IDS:
+        assert f"## {case_id}" in markdown
+        assert f"{case_id}/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
+
+
 def test_report_3d_synthetic_quality_save_figures_writes_expected_pngs(
     tmp_path: Path,
 ) -> None:
@@ -323,16 +412,35 @@ def test_report_3d_synthetic_quality_save_figures_writes_expected_pngs(
 
     assert result.returncode == 0, result.stderr
     figures_dir = output_dir / "single_vertical_plane" / "figures"
-    expected_pngs = (
-        "ft_oracle_i3_center.png",
-        "fv_py_i3_center.png",
-        "fvt_py_i3_center.png",
-        "truth_vs_fvt_overlay_i3_center.png",
-    )
-    for name in expected_pngs:
+    for name in EXPECTED_I3_FIGURES:
         path = figures_dir / name
         assert path.is_file()
         assert path.stat().st_size > 0
+
+
+def test_report_3d_synthetic_quality_geometry_save_figures_splits_case_directories(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("matplotlib")
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--save-figures",
+    )
+
+    assert result.returncode == 0, result.stderr
+    for case_id in GEOMETRY_CASE_IDS:
+        figures_dir = output_dir / case_id / "figures"
+        for name in EXPECTED_I3_FIGURES:
+            path = figures_dir / name
+            assert path.is_file()
+            assert path.stat().st_size > 0
 
 
 def test_report_3d_synthetic_quality_default_case_meets_smoke_thresholds(

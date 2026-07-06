@@ -16,6 +16,8 @@ import numpy as np
 
 from pyosv.synthetic3d import (
     Synthetic3DCase,
+    make_curved_surface_case,
+    make_single_dipping_plane_case,
     make_single_vertical_plane_case,
     validate_shape3,
 )
@@ -107,7 +109,21 @@ MINIMAL_CASES = (
         factory=make_single_vertical_plane_case,
     ),
 )
-CASE_SETS = {"minimal": MINIMAL_CASES}
+GEOMETRY_CASES = (
+    *MINIMAL_CASES,
+    SyntheticQualityCaseDefinition(
+        case_id="single_dipping_plane",
+        factory=make_single_dipping_plane_case,
+    ),
+    SyntheticQualityCaseDefinition(
+        case_id="curved_surface",
+        factory=make_curved_surface_case,
+    ),
+)
+CASE_SETS = {
+    "minimal": MINIMAL_CASES,
+    "geometry": GEOMETRY_CASES,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:

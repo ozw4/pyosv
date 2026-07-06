@@ -17,10 +17,13 @@ F3 visual/multicrop: does the workflow avoid obvious failures on real data?
 The controlled synthetic API includes:
 
 - `SyntheticPlaneSpec`
+- `SyntheticCurvedSurfaceSpec`
 - `Synthetic3DCase`
 - `generate_single_plane_case`
+- `generate_curved_surface_case`
 - `make_single_dipping_plane_case`
 - `make_single_vertical_plane_case`
+- `make_curved_surface_case`
 - `ft` / `pt` / `tt` oracle attributes
 - top-k / truth-count masks
 - buffered surface overlap
@@ -29,15 +32,19 @@ The controlled synthetic API includes:
 - minimal oracle pipeline smoke test
 - `examples/report_3d_synthetic_quality.py`
 
-The current report CLI includes the `minimal` case set, which contains only
-`single_vertical_plane`. The controlled synthetic tests cover the oracle
-`ft` / `pt` / `tt` path for vertical and dipping single-plane cases: they run
-those controlled attributes through `OptimalSurfaceVoter`, apply thinning, and
-check truth-quality metrics.
+The current report CLI includes these case sets:
+
+- `minimal`: `single_vertical_plane`
+- `geometry`: `single_vertical_plane`, `single_dipping_plane`, `curved_surface`
+
+The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for
+vertical and dipping single-plane cases and the analytic curved surface: they
+run those controlled attributes through `OptimalSurfaceVoter`, apply thinning,
+and check truth-quality metrics.
 
 The current scope does not include:
 
-- extended cases: curved, crossing, boundary, weak noisy
+- extended cases: crossing, boundary, weak noisy
 - skin metrics, including skin topology metrics
 - synthetic seismic generation
 - scanner-inclusive synthetic path
@@ -71,8 +78,8 @@ metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set minimal \
-  --output-dir outputs/3d/synthetic_quality/minimal_001 \
+  --case-set geometry \
+  --output-dir outputs/3d/synthetic_quality/geometry_001 \
   --variants current_default \
   --truth-surface-half-width 0.5 \
   --buffer-radius 2.0 \
@@ -158,6 +165,11 @@ that variant is present. `quality.*.buffered_overlap_radius2` uses the wider
 `truth_fault_mask` band as the truth target. `quality.*.surface_distance` uses
 the thin truth surface mask defined by
 `abs(truth_distance) <= --truth-surface-half-width`.
+
+The `geometry` case set keeps the same top-level JSON contract and writes one
+`cases[]` entry plus one `summary.csv` row per `(case_id, variant)`. Optional
+volumes and figures are split by case directory, for example
+`single_dipping_plane/` and `curved_surface/`.
 
 `--variants` accepts a comma-separated list:
 
