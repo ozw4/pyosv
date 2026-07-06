@@ -147,8 +147,19 @@ Reference-like 3D thinning is documented in
 to reference-like strike-binned thinning with scanner edge-effect removal; pass
 `remove_edge_effects=False` only for diagnostics, or `mode="normal"` for the
 legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` also defaults
-to reference-like strike-binned thinning, with `mode="normal"` available for
-the legacy fault-normal voter path.
+to reference-like strike-binned thinning, with voter-specific retained-sample
+reinforcement and no scanner edge-effect cleanup. Use `mode="normal"` for the
+legacy fault-normal voter path.
+
+Backward-compatible 3D thinning calls are explicit:
+
+```python
+fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
+fvt = voter.thin(fv, vp, vt, mode="normal")
+
+# Diagnostic opt-out for scanner edge cleanup:
+fet, fpt, ftt = scanner.thin(ft, pt, tt, remove_edge_effects=False)
+```
 
 `OptimalSurfaceVoter` smooths extracted local surfaces before recomputing vote
 strike/dip, matching the reference-first surface-orientation path. Use

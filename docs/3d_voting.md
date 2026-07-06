@@ -71,7 +71,9 @@ in-bounds boundary source samples.
 strike-bin mode: it uses SciPy smoothing before strike-binned comparison in
 the `i2-i3` plane. The legacy pyosv path remains available with
 `mode="normal"` and uses SciPy interpolation along fault normals derived from
-`vp` and `vt`. Neither mode is a bit-exact Mines JTK implementation.
+`vp` and `vt`. Voter reference-like thinning may reinforce retained
+near-vertical strike samples, and it does not apply scanner edge-effect cleanup.
+Neither mode is a bit-exact Mines JTK implementation.
 
 For F3 diagnostics and other reference-style comparisons, the default call is
 the reference-like strike-bin path:
@@ -85,6 +87,10 @@ compares local maxima in the `i2-i3` plane, and writes the smoothed comparison
 values to retained samples. `reference_sigma` controls smoothing inside the
 comparison helper. Code that needs the old fault-normal voter thinning should
 pass `mode="normal"` explicitly.
+
+```python
+fvt = voter.thin(fv, vp, vt, mode="normal")
+```
 
 ## MVP Limitations
 

@@ -13,6 +13,21 @@ add runtime dependencies on JVM, Jython, Mines JTK, or Gradle. Java
 `SincInterpolator`, `RecursiveExponentialFilter`, and related JTK filters are
 therefore approximation targets for Python/SciPy code, not dependencies.
 
+## Current Migration Notes
+
+- `OptimalSurfaceVoter.thin(...)` defaults to `mode="reference"`: a
+  reference-like, strike-binned thinning path. Pass `mode="normal"` to reproduce
+  the older fault-normal voter thinning behavior.
+- Voter reference-like thinning includes voter-specific retained-sample
+  reinforcement and does not apply scanner edge-effect cleanup.
+- Surface voting uses the Java-like target-point condition for vote averaging
+  and accumulation: `i1` may touch either face, but `i2` and `i3` must be
+  interior. Compared with older all-in-bounds handling, crop-boundary votes near
+  `i2` and `i3` faces can be weaker.
+- The mapping below is reference-first, not bit-exact. F3 reports and local
+  regression tests are comparison evidence, not acceptance thresholds for Java
+  equivalence.
+
 ## Method-Level Mapping
 
 | Java method | Python equivalent / status | Reference summary | Current Python summary | Known differences | Audit status | Suggested future parity test |

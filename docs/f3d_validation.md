@@ -114,7 +114,15 @@ pre-cleanup retained samples. Reports record this as
 `config.scanner.reference_remove_edge_effects` depending on the script.
 Reports also record the surface-voting boundary policy as
 `reference-like-i2-i3-interior`, meaning vote averaging and accumulation exclude
-`i2`/`i3` face-only surface samples.
+`i2`/`i3` face-only surface samples. This can suppress votes near crop
+boundaries compared with older all-in-bounds boundary handling.
+
+To reproduce older normal/normal thinning behavior in F3 diagnostics, pass both
+legacy flags explicitly:
+
+```bash
+--scanner-thin-mode normal --voter-thin-mode normal
+```
 
 Run one crop with reference-like scanner and voter thinning:
 

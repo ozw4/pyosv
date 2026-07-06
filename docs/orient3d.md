@@ -95,6 +95,8 @@ ridge/contrast score and sigma-derived dense angle sampling.
 Migration note: callers that used the old derivative-bank `scan()` behavior
 should call `scan_fast()` explicitly. Callers that used the old scanner
 fault-normal thinning default should pass `mode="normal"` explicitly.
+Callers that used the old voter fault-normal thinning default should pass
+`mode="normal"` to `OptimalSurfaceVoter.thin(...)`.
 
 ## Integration
 
@@ -123,6 +125,9 @@ fvt = voter.thin(fv, vp, vt)
 `fv`, `vp`, `vt`, and `fvt` all use the same global `(n3, n2, n1)` shape.
 `fv` is a normalized vote volume, and `vp`/`vt` store the strike and dip angles
 associated with the strongest local vote at each sample.
+`OptimalSurfaceVoter.thin(fv, vp, vt)` defaults to reference-like strike-binned
+voter thinning; pass `mode="normal"` only to reproduce the older fault-normal
+voter thinning path.
 
 `FaultOrientScanner3.thin(ft, pt, tt)` defaults to reference-like
 strike-binned non-maximum suppression in the `i2-i3` plane using `pt` as the
