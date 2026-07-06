@@ -97,6 +97,25 @@ vote-map smoothing. F3 validation and report scripts record
 `--final-normalization-smoothing 1.0` only when comparing against older pyosv
 runs that smoothed the final vote map before the power transform.
 
+Default reference-first comparison:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/run_3d_f3d_crop_validation.py \
+  --max-crops 1 \
+  --output-dir outputs/3d/f3d/crop_reference_default
+```
+
+Older pyosv-style final-normalization comparison:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/run_3d_f3d_crop_validation.py \
+  --max-crops 1 \
+  --output-dir outputs/3d/f3d/crop_final_norm_smoothing_1 \
+  --final-normalization-smoothing 1.0
+```
+
 ## Reference-Like Thinning Validation
 
 The 3D scanner and voter thinning steps support two modes:

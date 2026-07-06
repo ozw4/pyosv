@@ -24,6 +24,12 @@ therefore approximation targets for Python/SciPy code, not dependencies.
   and accumulation: `i1` may touch either face, but `i2` and `i3` must be
   interior. Compared with older all-in-bounds handling, crop-boundary votes near
   `i2` and `i3` faces can be weaker.
+- `OptimalSurfaceVoter.apply_voting()` defaults to reference-style final
+  normalization with no final vote-map smoothing: subtract min, divide by max
+  when `max > 0`, then apply `1 - (1 - x) ** 8`. Leave
+  `set_final_normalization_smoothing(...)` unset for reference-first workflows;
+  call `set_final_normalization_smoothing(1.0)` only to compare with older
+  pyosv runs that smoothed the final vote map before normalization.
 - The mapping below is reference-first, not bit-exact. F3 reports and local
   regression tests are comparison evidence, not acceptance thresholds for Java
   equivalence.
@@ -85,6 +91,10 @@ therefore approximation targets for Python/SciPy code, not dependencies.
   `surface_orientation_smoothing > 0.0`; this maps to the reference
   `surfaceStrikeAndDip` use of `RecursiveGaussianFilter(max(rv,rw))`, but
   Java recursive Gaussian behavior and boundary handling need direct fixtures.
+- Final normalization smoothing. Python does not smooth the final vote map by
+  default. The optional `set_final_normalization_smoothing(sigma)` path smooths
+  accumulated `fe` before min/max normalization and the `1 - (1 - x) ** 8`
+  transform; it is a practical comparison mode, not the reference default.
 - Surface-voting boundaries. Java permits all in-range `i1` samples but
   excludes `i2` and `i3` face samples before averaging and accumulating votes;
   Python voting helpers now use the same target-point predicate.

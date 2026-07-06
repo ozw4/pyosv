@@ -59,10 +59,20 @@ voter.set_final_normalization_smoothing(1.0)
 ```
 
 This setting is only for the final `fe -> fv` vote-map normalization before the
-power transform. It is separate from input-likelihood smoothing,
-`surface_smoothing1`, `surface_smoothing2`, and
-`surface_orientation_smoothing`. Negative, nonfinite, boolean, and nonnumeric
-values are rejected.
+power transform. It is separate from these other smoothing stages:
+
+- `_smooth_fault_likelihood_3d(ft, sigma=1.0)`: input fault-likelihood
+  smoothing before seeds and local voting are built.
+- `surface_smoothing1` and `surface_smoothing2`: dynamic-programming surface
+  extraction smoothing.
+- `surface_orientation_smoothing=max(rv, rw)`: extracted-surface smoothing used
+  only before vote strike/dip are re-estimated.
+
+Reference-first workflows should not call
+`set_final_normalization_smoothing(...)`. Use
+`set_final_normalization_smoothing(1.0)` only when comparing with older pyosv
+runs that smoothed the final vote map. Negative, nonfinite, boolean, and
+nonnumeric values are rejected.
 
 Surface orientation is re-estimated from each extracted local surface before
 votes are accumulated. By default, `OptimalSurfaceVoter` smooths that surface

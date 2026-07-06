@@ -168,9 +168,11 @@ older raw-surface behavior.
 
 `OptimalSurfaceVoter.apply_voting()` now uses reference-style final vote-map
 normalization by default: subtract the global minimum, divide by the global
-maximum, then apply the power transform without final vote-map smoothing. Use
-`set_final_normalization_smoothing(1.0)` to opt into the older practical
-smoothed final-normalization behavior, or pass
+maximum when it is positive, then apply `1 - (1 - x) ** 8` without final
+vote-map smoothing. This is separate from input fault-likelihood smoothing and
+surface-orientation smoothing. Reference-first workflows should leave it
+unset. Use `set_final_normalization_smoothing(1.0)` to opt into the older
+practical smoothed final-normalization behavior, or pass
 `--final-normalization-smoothing 1.0` in the F3 validation examples.
 
 Migration note: code that relied on the older derivative-bank scanner should
@@ -181,7 +183,8 @@ old 3D voter fault-normal thinning should pass `mode="normal"` explicitly, or
 use `--voter-thin-mode normal` in F3 validation examples. Code that relied on
 old final vote-map smoothing should call
 `set_final_normalization_smoothing(1.0)` explicitly, or use
-`--final-normalization-smoothing 1.0` in F3 validation examples.
+`--final-normalization-smoothing 1.0` in F3 validation examples. Code following
+the reference-first default should not configure final normalization smoothing.
 
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.

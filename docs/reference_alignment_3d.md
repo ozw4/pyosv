@@ -49,7 +49,7 @@ The same final `fvt` metric can move because of:
 - scanner thinning choices;
 - voter seed selection, local sampling, dynamic programming, or accumulation;
 - voter thinning choices;
-- normalization and post-processing differences.
+- final vote-map normalization and post-processing differences.
 
 Changing more than one stage at a time makes F3 metrics hard to interpret and
 can hide regressions in synthetic tests. Prefer method-level parity tests and
@@ -61,6 +61,13 @@ pattern, but remain Pythonic approximations with SciPy smoothing and repository
 shape conventions. The older fault-normal paths remain available only through
 explicit `mode="normal"` API calls or `--scanner-thin-mode normal` /
 `--voter-thin-mode normal` report flags for legacy comparisons.
+
+`OptimalSurfaceVoter.apply_voting()` uses reference-style final normalization by
+default: no final vote-map smoothing, then min subtraction, max scaling when
+`max > 0`, and the `1 - (1 - x) ** 8` transform. The optional
+`set_final_normalization_smoothing(sigma)` / `--final-normalization-smoothing`
+path smooths the accumulated vote map before that normalization and is only for
+older pyosv-style practical comparisons.
 
 This phase does not tune parameters to chase F3 metrics. Parameter changes are
 allowed only when they follow from an audited method difference and come with
@@ -104,7 +111,7 @@ validation, thinning ablation report, large crop validation, and full F3 run.
 | Local UVW sampling | Are seed-centered local boxes, axis lengths, and lag offsets sampled in the same order and with the same inclusion rules? |
 | Dynamic programming | Are accumulation direction, strain limits, lag ranges, smoothing, and backtracking rules isolated from voting accumulation? |
 | Thinning | Is the comparison along the fault normal or in strike-binned `i2-i3` neighborhoods? Are retained values copied from smoothed or original arrays? |
-| Normalization | Are max scaling, zero-volume behavior, clipping, and dtype conversion applied at the same stage? |
+| Normalization | Are min subtraction, max scaling when `max > 0`, zero-volume behavior, clipping, dtype conversion, and optional final vote-map smoothing applied at the same stage? |
 
 ## Follow-Up Documents
 
