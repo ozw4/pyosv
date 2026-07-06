@@ -13,9 +13,9 @@ controlled synthetic: is the result correct against known truth?
 F3 visual/multicrop: does the workflow avoid obvious failures on real data?
 ```
 
-## Current PR1 Scope
+## Current Scope
 
-PR1 includes:
+The controlled synthetic API includes:
 
 - `SyntheticPlaneSpec`
 - `Synthetic3DCase`
@@ -27,10 +27,14 @@ PR1 includes:
 - surface distance metrics
 - masked orientation error
 - minimal oracle pipeline smoke test
+- `examples/report_3d_synthetic_quality.py`
 
-PR1 does not include:
+The current report CLI includes the `minimal` case set, which contains only
+`single_vertical_plane`. It runs oracle `ft` / `pt` / `tt` attributes through
+`OptimalSurfaceVoter`, applies thinning, and writes truth-quality report files.
 
-- `report_3d_synthetic_quality.py`
+The current scope does not include:
+
 - extended cases: dipping, curved, crossing, boundary, weak noisy
 - skin topology metrics
 - synthetic seismic generation
@@ -61,16 +65,100 @@ mask = top_truth_count_mask(case.ft_oracle, case.truth_fault_mask)
 metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 ```
 
+## Report CLI
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set minimal \
+  --output-dir outputs/3d/synthetic_quality/minimal_001 \
+  --truth-surface-half-width 0.5 \
+  --buffer-radius 2.0 \
+  --pretty
+```
+
+The CLI writes these files under `--output-dir`:
+
+```text
+metrics.json
+summary.csv
+```
+
+With optional visual-report outputs enabled, each case also gets a case
+directory. For the `minimal` case set this is:
+
+```text
+single_vertical_plane/
+  truth_fault_mask.dat
+  truth_distance.dat
+  truth_strike.dat
+  truth_dip.dat
+  ft_oracle.dat
+  pt_oracle.dat
+  tt_oracle.dat
+  fv_py.dat
+  vp_py.dat
+  vt_py.dat
+  fvt_py.dat
+  figures/
+    ft_oracle_i3_center.png
+    fv_py_i3_center.png
+    fvt_py_i3_center.png
+    truth_vs_fvt_overlay_i3_center.png
+```
+
+The stable minimum JSON contract is:
+
+```json
+{
+  "format_version": 1,
+  "config": {
+    "case_set": "minimal",
+    "shape": [33, 33, 33]
+  },
+  "cases": [
+    {
+      "case_id": "single_vertical_plane",
+      "shape": [33, 33, 33],
+      "truth": {
+        "fault_voxel_count": 2277,
+        "surface_voxel_count": 1089
+      },
+      "quality": {
+        "fv_top_truth_count": {
+          "buffered_overlap_radius2": {},
+          "surface_distance": {}
+        },
+        "fvt_top_truth_count": {
+          "buffered_overlap_radius2": {},
+          "surface_distance": {},
+          "orientation_error": {}
+        }
+      }
+    }
+  ]
+}
+```
+
+`quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
+the truth target. `quality.*.surface_distance` uses the thin truth surface mask
+defined by `abs(truth_distance) <= --truth-surface-half-width`.
+`summary.csv` includes buffered F1, candidate-to-truth p95 distance, and fvt
+median orientation error columns. `--save-volumes` writes float32 big-endian
+DAT volumes under each case directory, with `truth_fault_mask.dat` stored as
+0/1 float32 values. `--save-figures` writes static center-slice PNGs under each
+case `figures/` directory. `--write-markdown-index` writes
+`visual_report.md` with relative links to the case figures.
+
 ## Test Commands
 
 ```bash
-PYTHONPATH=src python -m pytest -q tests/test_synthetic3d.py tests/test_synthetic_metrics.py tests/test_synthetic_oracle_pipeline.py
+PYTHONPATH=src python -m pytest -q tests/test_synthetic3d.py tests/test_synthetic_metrics.py tests/test_synthetic_oracle_pipeline.py tests/test_report_3d_synthetic_quality.py
 ```
 
-The broader PR1 acceptance checks are:
+The broader synthetic acceptance checks are:
 
 ```bash
 PYTHONPATH=src python -m pytest -q tests/test_voting3d.py
-PYTHONPATH=src python -m ruff check src tests
-PYTHONPATH=src python -m ruff format --check src tests
+PYTHONPATH=src python -m ruff check src tests examples
+PYTHONPATH=src python -m ruff format --check src tests examples
 ```

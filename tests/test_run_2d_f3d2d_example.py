@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -27,9 +28,15 @@ SYNTHETIC_OUTPUTS = (
 
 
 def _run_example(script_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    pythonpath_parts = [str(REPO_ROOT / "src")]
+    if env.get("PYTHONPATH"):
+        pythonpath_parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
     result = subprocess.run(
         [sys.executable, str(script_path.relative_to(REPO_ROOT)), *args],
         cwd=REPO_ROOT,
+        env=env,
         check=False,
         capture_output=True,
         text=True,
@@ -54,7 +61,10 @@ def test_example_help_exits_successfully(script_path: Path) -> None:
     assert result.returncode == 0
     assert "usage:" in result.stdout
     expected_output_arg = (
-        "--output-json" if script_path.name.startswith("report_") else "--output-dir"
+        "--output-json"
+        if script_path.name.startswith("report_")
+        and script_path.name != "report_3d_synthetic_quality.py"
+        else "--output-dir"
     )
     assert expected_output_arg in result.stdout
 
