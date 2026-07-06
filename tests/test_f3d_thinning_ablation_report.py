@@ -93,6 +93,7 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
     assert defaults.crop_shape == (64, 64, 64)
     assert defaults.interior_margin == 16
     assert defaults.scanner_backends == ("fast",)
+    assert defaults.remove_scanner_edge_effects is True
     assert defaults.center is None
 
     args = module.build_parser().parse_args(
@@ -110,6 +111,7 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
             "--pretty",
             "--save-figures",
             "--write-markdown-index",
+            "--keep-scanner-edge-effects",
             "--center",
             "2,3,4",
         ]
@@ -122,6 +124,7 @@ def test_parser_accepts_expected_arguments(monkeypatch: pytest.MonkeyPatch) -> N
     assert args.pretty is True
     assert args.save_figures is True
     assert args.write_markdown_index is True
+    assert args.remove_scanner_edge_effects is False
     assert args.center == [(2, 3, 4)]
 
     singular = module.build_parser().parse_args(["--scanner-backend", "reference-like"])
@@ -187,6 +190,10 @@ def test_run_example_writes_four_case_json_without_f3_data(
     assert loaded["config"]["comparison"] == "f3d_thinning_ablation"
     assert loaded["config"]["scanner_backends"] == ["fast"]
     assert [case["name"] for case in loaded["config"]["cases"]] == expected_case_names
+    assert loaded["config"]["scanner"]["reference_remove_edge_effects"] is True
+    assert loaded["config"]["voter"]["surface_voting_boundary_policy"] == (
+        "reference-like-i2-i3-interior"
+    )
     assert set(loaded["crops"][0]["cases"]) == set(expected_case_names)
     assert set(loaded["crops"][0]["backends"]) == {"fast"}
     assert set(loaded["crops"][0]["backends"]["fast"]["cases"]) == set(expected_case_names)
@@ -288,13 +295,18 @@ def test_case_names_and_thinning_modes_are_recorded_in_config(
         "name": "case_01_normal_normal",
         "scanner_thin_mode": "normal",
         "voter_thin_mode": "normal",
+        "scanner_remove_edge_effects": None,
+        "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
     }
     assert cases["case_02_normal_reference_voter"]["voter_thin_mode"] == "reference"
     assert cases["case_03_reference_scanner_normal"]["scanner_thin_mode"] == "reference"
+    assert cases["case_03_reference_scanner_normal"]["scanner_remove_edge_effects"] is True
     assert cases["case_04_reference_reference"] == {
         "name": "case_04_reference_reference",
         "scanner_thin_mode": "reference",
         "voter_thin_mode": "reference",
+        "scanner_remove_edge_effects": True,
+        "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
     }
 
 
@@ -334,6 +346,8 @@ def test_visual_report_writes_markdown_and_minimum_png_set(
     assert (figures_dir / "fvt_mip.png").is_file()
     assert "case_01_normal_normal" in markdown
     assert "buffered F1" in markdown
+    assert "scanner edge removal" in markdown
+    assert "reference-like-i2-i3-interior" in markdown
     assert "crop_001/case_01_normal_normal/figures/fvt_mip.png" in markdown
 
 

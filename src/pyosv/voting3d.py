@@ -573,7 +573,7 @@ def _surface_vote_average_python(
             i1 = math.floor(float(x1) + 0.5)
             i2 = math.floor(float(x2) + 0.5)
             i3 = math.floor(float(x3) + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
                 continue
 
             fa += ft[i3, i2, i1]
@@ -614,7 +614,7 @@ def _surface_vote_average_numba(
             i1 = math.floor(x1 + 0.5)
             i2 = math.floor(x2 + 0.5)
             i3 = math.floor(x3 + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
                 continue
 
             fa += ft[i3, i2, i1]
@@ -720,7 +720,7 @@ def _accumulate_surface_votes_python(
             i1 = math.floor(float(x1) + 0.5)
             i2 = math.floor(float(x2) + 0.5)
             i3 = math.floor(float(x3) + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
                 continue
 
             _add_surface_vote(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
@@ -767,7 +767,7 @@ def _accumulate_surface_votes_numba(
             i1 = math.floor(x1 + 0.5)
             i2 = math.floor(x2 + 0.5)
             i3 = math.floor(x3 + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
+            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
                 continue
 
             _add_surface_vote_numba(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
@@ -821,6 +821,18 @@ def _accumulate_surface_votes_numba(
                     vt,
                     vm,
                 )
+
+
+@njit(cache=True)
+def _is_valid_surface_vote_sample(
+    i1: int,
+    i2: int,
+    i3: int,
+    n1: int,
+    n2: int,
+    n3: int,
+) -> bool:
+    return 0 <= i1 < n1 and 0 < i2 < n2 - 1 and 0 < i3 < n3 - 1
 
 
 def _add_surface_vote(
