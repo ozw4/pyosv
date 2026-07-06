@@ -29,6 +29,7 @@ The controlled synthetic API includes:
 - buffered surface overlap
 - surface distance metrics
 - masked orientation error
+- skin metrics, including skin topology metrics
 - minimal oracle pipeline smoke test
 - `examples/report_3d_synthetic_quality.py`
 
@@ -56,7 +57,6 @@ and check truth-quality metrics.
 The current scope does not include:
 
 - extended cases: crossing, boundary, weak noisy
-- skin metrics, including skin topology metrics
 - synthetic seismic generation
 - scanner-inclusive synthetic path
 - FaultSeg3D loader
@@ -137,7 +137,21 @@ The stable minimum JSON contract is:
   "config": {
     "case_set": "minimal",
     "shape": [33, 33, 33],
-    "variants": ["current_default"]
+    "variants": ["current_default"],
+    "skinning": {
+      "enabled": true,
+      "min_likelihood": 0.5,
+      "min_skin_size": 1,
+      "d": 1,
+      "ru": 10,
+      "rv": null,
+      "rw": null,
+      "max_steps": 10,
+      "du": 5.0,
+      "max_delta_strike": 30.0,
+      "reskin": true,
+      "small_skin_size": 10
+    }
   },
   "cases": [
     {
@@ -151,7 +165,16 @@ The stable minimum JSON contract is:
         "current_default": {
           "pyosv": {
             "fv": {},
-            "fvt": {}
+            "fvt": {},
+            "skins": {
+              "skin_count": 1,
+              "cell_count": 1089,
+              "unique_cell_count": 1089,
+              "largest_skin_size": 1089
+            }
+          },
+          "skinning": {
+            "enabled": true
           },
           "quality": {
             "fv_top_truth_count": {
@@ -159,6 +182,12 @@ The stable minimum JSON contract is:
               "surface_distance": {}
             },
             "fvt_top_truth_count": {
+              "buffered_overlap_radius2": {},
+              "surface_distance": {},
+              "orientation_error": {}
+            },
+            "skin": {
+              "topology": {},
               "buffered_overlap_radius2": {},
               "surface_distance": {},
               "orientation_error": {}
@@ -192,6 +221,15 @@ present, `baseline_variant` is `null` and the comparison map is empty.
 the truth target. `quality.*.surface_distance` uses the thin truth surface mask
 defined by
 `abs(truth_distance) <= --truth-surface-half-width`.
+`quality.skin.buffered_overlap_radius2` and `quality.skin.surface_distance` use
+the same truth targets as the `fv` and `fvt` truth-count metrics. With
+`--skip-skinning`, each variant stores `"skinning": {"enabled": false}`,
+`pyosv.skins` is a zero-count topology summary, and `quality.skin` is `null`.
+
+The synthetic report default skinning configuration is intentionally small for
+controlled synthetic volumes: `--skinner-ru 10`, `--skinner-rv none`,
+`--skinner-rw none`, and `--skinner-max-steps 10`. These are report defaults,
+not the general `FaultSkinner` API defaults.
 
 The `geometry` case set keeps the same top-level JSON contract and writes one
 `cases[]` entry plus one `summary.csv` row per `(case_id, variant)`. Optional
@@ -211,7 +249,8 @@ The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
 column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
-median orientation error columns, and fvt delta columns against the baseline.
+median orientation error columns, skin topology and truth metric columns, and
+fvt delta columns against the baseline.
 
 Read diagnostic variant comparison as "same case, same truth, different voter
 setting." JSON delta fields under `variant_comparison.variants.*` and CSV delta

@@ -70,6 +70,11 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--voter-thin-mode" in result.stdout
     assert "--truth-surface-half-width" in result.stdout
     assert "--buffer-radius" in result.stdout
+    assert "--skip-skinning" in result.stdout
+    assert "--skinner-min-likelihood" in result.stdout
+    assert "--skinner-ru" in result.stdout
+    assert "--no-skinner-reskin" in result.stdout
+    assert "--small-skin-size" in result.stdout
 
 
 def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
@@ -107,6 +112,17 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
     assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
     assert "strike_median" in fvt_quality["orientation_error"]
+    skin_quality = quality["skin"]
+    assert skin_quality is not None
+    assert "buffered_f1" in skin_quality["buffered_overlap_radius2"]
+    assert "candidate_to_truth_p95" in skin_quality["surface_distance"]
+    assert "strike_median" in skin_quality["orientation_error"]
+    skins = case["pyosv"]["skins"]
+    assert isinstance(skins["skin_count"], int)
+    assert isinstance(skins["cell_count"], int)
+    assert skins["skin_count"] >= 0
+    assert skins["cell_count"] >= 0
+    assert skins == skin_quality["topology"]
     for name in ("fv", "fvt"):
         summary = case["pyosv"][name]
         assert summary["shape"] == [17, 17, 17]
@@ -132,6 +148,13 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fvt_distance_p95"]) >= 0.0
     assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
     assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
+    assert rows[0]["skinning_enabled"] == "True"
+    assert int(rows[0]["skin_count"]) >= 0
+    assert int(rows[0]["skin_cell_count"]) >= 0
+    assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
+    assert math.isfinite(float(rows[0]["skin_distance_p95"]))
+    assert math.isfinite(float(rows[0]["skin_strike_median_error"]))
+    assert math.isfinite(float(rows[0]["skin_dip_median_error"]))
 
 
 def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
@@ -171,6 +194,10 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
         assert "strike_median" in fvt_quality["orientation_error"]
         assert "dip_median" in fvt_quality["orientation_error"]
+        skin_quality = variant["quality"]["skin"]
+        assert skin_quality is not None
+        assert "topology" in skin_quality
+        assert variant["pyosv"]["skins"]["skin_count"] >= 0
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
@@ -211,7 +238,11 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
     case = metrics["cases"][0]
     assert set(case["variants"]) == set(DIAGNOSTIC_VARIANTS)
     for variant in DIAGNOSTIC_VARIANTS:
-        assert case["variants"][variant]["pyosv"]["fvt"]["max"] > 0.0
+        variant_report = case["variants"][variant]
+        assert variant_report["pyosv"]["fvt"]["max"] > 0.0
+        assert variant_report["skinning"] == {"enabled": True}
+        assert variant_report["quality"]["skin"] is not None
+        assert variant_report["pyosv"]["skins"] == variant_report["quality"]["skin"]["topology"]
 
     comparison = case["variant_comparison"]
     assert comparison["baseline_variant"] == "current_default"
@@ -359,6 +390,132 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
         "voter_thin_mode": "reference",
         "reference_thin_sigma": 1.5,
     }
+
+
+def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skinner-min-likelihood",
+        "0.4",
+        "--skinner-min-skin-size",
+        "2",
+        "--skinner-d",
+        "2",
+        "--skinner-ru",
+        "6",
+        "--skinner-rv",
+        "7",
+        "--skinner-rw",
+        "8",
+        "--skinner-max-steps",
+        "3",
+        "--skinner-du",
+        "4.5",
+        "--skinner-max-delta-strike",
+        "20",
+        "--no-skinner-reskin",
+        "--small-skin-size",
+        "5",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["skinning"] == {
+        "enabled": True,
+        "min_likelihood": 0.4,
+        "min_skin_size": 2,
+        "d": 2,
+        "ru": 6,
+        "rv": 7,
+        "rw": 8,
+        "max_steps": 3,
+        "du": 4.5,
+        "max_delta_strike": 20.0,
+        "reskin": False,
+        "small_skin_size": 5,
+    }
+
+
+def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--buffer-radius",
+        "1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    skin_quality = metrics["cases"][0]["quality"]["skin"]
+    assert "buffered_overlap_radius2" in skin_quality
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
+
+
+def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_contract(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["skinning"]["enabled"] is False
+    assert variant["skinning"] == {"enabled": False}
+    assert variant["quality"]["skin"] is None
+    assert variant["pyosv"]["skins"]["skin_count"] == 0
+    assert variant["pyosv"]["skins"]["cell_count"] == 0
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["skinning_enabled"] == "False"
+    assert rows[0]["skin_count"] == "0"
+    assert rows[0]["skin_buffered_f1_r2"] == ""
+
+
+def test_report_3d_synthetic_quality_invalid_skinner_options_fail(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skinner-ru",
+        "1",
+    )
+
+    assert result.returncode != 0
+    assert "skinner_ru must be at least 2" in result.stderr
 
 
 def test_report_3d_synthetic_quality_save_volumes_writes_expected_dat_files(
