@@ -44,6 +44,13 @@ VOLUME_NAMES = (
 )
 FIGURE_VOLUME_NAMES = ("ft_oracle", "fv_py", "fvt_py")
 NONZERO_EPSILON = 1.0e-6
+VARIANT_NAMES = (
+    "current_default",
+    "no_surface_orientation_smoothing",
+    "final_norm_smoothing_1",
+    "voter_thin_normal",
+)
+DEFAULT_VARIANTS = ("current_default",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +148,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write visual_report.md under OUTPUT_DIR.",
     )
+    parser.add_argument(
+        "--variants",
+        type=parse_variants,
+        default=DEFAULT_VARIANTS,
+        help=("Comma-separated diagnostic variants to run. Choices: " + ",".join(VARIANT_NAMES)),
+    )
     parser.add_argument("--ru", type=int, default=1, help="Voting shift radius in u.")
     parser.add_argument("--rv", type=int, default=2, help="Voting shift radius in v.")
     parser.add_argument("--rw", type=int, default=2, help="Voting shift radius in w.")
@@ -203,18 +216,63 @@ def parse_shape3(text: str) -> tuple[int, int, int]:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
+def parse_variants(text: str) -> tuple[str, ...]:
+    """Parse a comma-separated diagnostic variant list."""
+
+    variants = tuple(part.strip() for part in text.split(",") if part.strip())
+    if not variants:
+        raise argparse.ArgumentTypeError("variants must include at least one variant")
+    unknown = sorted(set(variants).difference(VARIANT_NAMES))
+    if unknown:
+        valid = ",".join(VARIANT_NAMES)
+        raise argparse.ArgumentTypeError(
+            f"unknown variant(s): {','.join(unknown)}; choices: {valid}"
+        )
+    duplicates = {variant for variant in variants if variants.count(variant) > 1}
+    if duplicates:
+        raise argparse.ArgumentTypeError(f"duplicate variant(s): {','.join(sorted(duplicates))}")
+    return variants
+
+
 def run_case(
     case_definition: SyntheticQualityCaseDefinition,
     *,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
+    variant: str = "current_default",
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     case = case_definition.factory(shape)
     if case.case_id != case_definition.case_id:
         raise ValueError(
             f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
         )
+    variant_report, volumes = _run_case_variant(
+        case,
+        voting_config=voting_config,
+        truth_metric_config=truth_metric_config,
+        variant=variant,
+    )
+    report = {
+        "case_id": case.case_id,
+        "shape": [int(size) for size in case.shape],
+        "truth": _truth_report(case, truth_metric_config),
+        "variants": {variant: variant_report},
+    }
+    if variant == "current_default":
+        report.update(variant_report)
+    return report, volumes
+
+
+def _run_case_variant(
+    case: Synthetic3DCase,
+    *,
+    voting_config: SyntheticVotingConfig,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    variant: str,
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    if variant not in VARIANT_NAMES:
+        raise ValueError(f"unknown variant: {variant}")
 
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
@@ -222,6 +280,10 @@ def run_case(
         rw=voting_config.rw,
     )
     voter.set_attribute_smoothing(voting_config.attribute_smoothing)
+    if variant == "no_surface_orientation_smoothing":
+        voter.set_surface_orientation_smoothing(0.0)
+    if variant == "final_norm_smoothing_1":
+        voter.set_final_normalization_smoothing(1.0)
     fv, vp, vt = voter.apply_voting(
         d=voting_config.seed_distance,
         fm=voting_config.seed_threshold,
@@ -229,11 +291,12 @@ def run_case(
         pt=case.pt_oracle,
         tt=case.tt_oracle,
     )
+    thin_mode = "normal" if variant == "voter_thin_normal" else voting_config.voter_thin_mode
     fvt = voter.thin(
         fv,
         vp,
         vt,
-        mode=voting_config.voter_thin_mode,
+        mode=thin_mode,
         reference_sigma=voting_config.reference_thin_sigma,
     )
 
@@ -250,15 +313,9 @@ def run_case(
     fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
     fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
     report = {
-        "case_id": case.case_id,
-        "shape": [int(size) for size in case.shape],
         "pyosv": {
             "fv": _array_summary(fv),
             "fvt": _array_summary(fvt),
-        },
-        "truth": {
-            "fault_voxel_count": int(np.count_nonzero(truth_fault_mask)),
-            "surface_voxel_count": int(np.count_nonzero(truth_surface_mask)),
         },
         "quality": {
             "fv_top_truth_count": {
@@ -308,18 +365,36 @@ def run_case(
     return report, volumes
 
 
+def _truth_report(
+    case: Synthetic3DCase,
+    truth_metric_config: SyntheticTruthMetricConfig,
+) -> dict[str, int]:
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width,
+        "truth_surface_half_width",
+    )
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+    return {
+        "fault_voxel_count": int(np.count_nonzero(truth_fault_mask)),
+        "surface_voxel_count": int(np.count_nonzero(truth_surface_mask)),
+    }
+
+
 def build_report(
     *,
     case_set: str,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
+    variants: Sequence[str] = DEFAULT_VARIANTS,
 ) -> dict[str, Any]:
     report, _ = _build_report_and_volumes(
         case_set=case_set,
         shape=shape,
         voting_config=voting_config,
         truth_metric_config=truth_metric_config,
+        variants=variants,
     )
     return report
 
@@ -330,8 +405,10 @@ def _build_report_and_volumes(
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
-) -> tuple[dict[str, Any], dict[str, Mapping[str, np.ndarray]]]:
+    variants: Sequence[str] = DEFAULT_VARIANTS,
+) -> tuple[dict[str, Any], dict[str, dict[str, dict[str, np.ndarray]]]]:
     valid_shape = validate_shape3(shape)
+    valid_variants = _validate_variants(variants)
     try:
         case_definitions = CASE_SETS[case_set]
     except KeyError as error:
@@ -340,26 +417,58 @@ def _build_report_and_volumes(
     cases = []
     volume_outputs = {}
     for case_definition in case_definitions:
-        case_report, case_volumes = run_case(
-            case_definition,
-            shape=valid_shape,
-            voting_config=voting_config,
-            truth_metric_config=truth_metric_config,
-        )
+        case = case_definition.factory(valid_shape)
+        if case.case_id != case_definition.case_id:
+            raise ValueError(
+                f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
+            )
+        variant_reports = {}
+        variant_volumes = {}
+        for variant in valid_variants:
+            variant_report, volumes = _run_case_variant(
+                case,
+                voting_config=voting_config,
+                truth_metric_config=truth_metric_config,
+                variant=variant,
+            )
+            variant_reports[variant] = variant_report
+            variant_volumes[variant] = volumes
+        case_report = {
+            "case_id": case.case_id,
+            "shape": [int(size) for size in case.shape],
+            "truth": _truth_report(case, truth_metric_config),
+            "variants": variant_reports,
+        }
+        if "current_default" in variant_reports:
+            case_report.update(variant_reports["current_default"])
         cases.append(case_report)
-        volume_outputs[case_definition.case_id] = case_volumes
+        volume_outputs[case_definition.case_id] = variant_volumes
 
     report = {
         "format_version": FORMAT_VERSION,
         "config": {
             "case_set": case_set,
             "shape": [int(size) for size in valid_shape],
+            "variants": list(valid_variants),
             "voting": voting_config.as_report_dict(),
             "truth_metrics": truth_metric_config.as_report_dict(),
         },
         "cases": cases,
     }
     return report, volume_outputs
+
+
+def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:
+    valid_variants = tuple(variants)
+    if not valid_variants:
+        raise ValueError("variants must include at least one variant")
+    unknown = sorted(set(valid_variants).difference(VARIANT_NAMES))
+    if unknown:
+        raise ValueError(f"unknown variant(s): {','.join(unknown)}")
+    duplicates = {variant for variant in valid_variants if valid_variants.count(variant) > 1}
+    if duplicates:
+        raise ValueError(f"duplicate variant(s): {','.join(sorted(duplicates))}")
+    return valid_variants
 
 
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
@@ -387,6 +496,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
             file,
             fieldnames=(
                 "case_id",
+                "variant",
                 "shape_n3",
                 "shape_n2",
                 "shape_n1",
@@ -407,32 +517,40 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
         writer.writeheader()
         for case in report["cases"]:
             n3, n2, n1 = case["shape"]
-            pyosv = case["pyosv"]
-            fv = pyosv["fv"]
-            fvt = pyosv["fvt"]
-            quality = case["quality"]
-            fv_quality = quality["fv_top_truth_count"]
-            fvt_quality = quality["fvt_top_truth_count"]
-            writer.writerow(
-                {
-                    "case_id": case["case_id"],
-                    "shape_n3": n3,
-                    "shape_n2": n2,
-                    "shape_n1": n1,
-                    "fv_max": fv["max"],
-                    "fv_mean": fv["mean"],
-                    "fv_nonzero_fraction": fv["nonzero_fraction"],
-                    "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"]["buffered_f1"],
-                    "fv_distance_p95": fv_quality["surface_distance"]["candidate_to_truth_p95"],
-                    "fvt_max": fvt["max"],
-                    "fvt_mean": fvt["mean"],
-                    "fvt_nonzero_fraction": fvt["nonzero_fraction"],
-                    "fvt_buffered_f1_r2": fvt_quality["buffered_overlap_radius2"]["buffered_f1"],
-                    "fvt_distance_p95": fvt_quality["surface_distance"]["candidate_to_truth_p95"],
-                    "fvt_strike_median_error": fvt_quality["orientation_error"]["strike_median"],
-                    "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
-                }
-            )
+            for variant, variant_report in case["variants"].items():
+                pyosv = variant_report["pyosv"]
+                fv = pyosv["fv"]
+                fvt = pyosv["fvt"]
+                quality = variant_report["quality"]
+                fv_quality = quality["fv_top_truth_count"]
+                fvt_quality = quality["fvt_top_truth_count"]
+                writer.writerow(
+                    {
+                        "case_id": case["case_id"],
+                        "variant": variant,
+                        "shape_n3": n3,
+                        "shape_n2": n2,
+                        "shape_n1": n1,
+                        "fv_max": fv["max"],
+                        "fv_mean": fv["mean"],
+                        "fv_nonzero_fraction": fv["nonzero_fraction"],
+                        "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"]["buffered_f1"],
+                        "fv_distance_p95": fv_quality["surface_distance"]["candidate_to_truth_p95"],
+                        "fvt_max": fvt["max"],
+                        "fvt_mean": fvt["mean"],
+                        "fvt_nonzero_fraction": fvt["nonzero_fraction"],
+                        "fvt_buffered_f1_r2": fvt_quality["buffered_overlap_radius2"][
+                            "buffered_f1"
+                        ],
+                        "fvt_distance_p95": fvt_quality["surface_distance"][
+                            "candidate_to_truth_p95"
+                        ],
+                        "fvt_strike_median_error": fvt_quality["orientation_error"][
+                            "strike_median"
+                        ],
+                        "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
+                    }
+                )
     return output_path
 
 
@@ -465,22 +583,24 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
 
 
 def write_case_volumes(
-    volume_outputs: Mapping[str, Mapping[str, np.ndarray]],
+    volume_outputs: Mapping[str, Mapping[str, Mapping[str, np.ndarray]]],
     output_dir: str | PathLike[str],
 ) -> list[Path]:
     from pyosv.io import write_dat
 
     written = []
     output_root = Path(output_dir)
-    for case_id, volumes in volume_outputs.items():
+    for case_id, variants in volume_outputs.items():
         case_dir = _case_output_dir(output_root, case_id)
-        for name in VOLUME_NAMES:
-            written.append(write_dat(case_dir / f"{name}.dat", volumes[name]))
+        for variant, volumes in variants.items():
+            output_dir_for_variant = _variant_output_dir(case_dir, variant, len(variants) == 1)
+            for name in VOLUME_NAMES:
+                written.append(write_dat(output_dir_for_variant / f"{name}.dat", volumes[name]))
     return written
 
 
 def write_case_figures(
-    volume_outputs: Mapping[str, Mapping[str, np.ndarray]],
+    volume_outputs: Mapping[str, Mapping[str, Mapping[str, np.ndarray]]],
     output_dir: str | PathLike[str],
     *,
     buffer_radius: float = 2.0,
@@ -489,33 +609,35 @@ def write_case_figures(
 
     written = []
     output_root = Path(output_dir)
-    for case_id, volumes in volume_outputs.items():
+    for case_id, variants in volume_outputs.items():
         case_dir = _case_output_dir(output_root, case_id)
-        figures_dir = case_dir / "figures"
-        indices = viz.select_center_slices(np.asarray(volumes["fvt_py"]).shape)
-        for axis in ("i3", "i2", "i1"):
-            index = indices[axis]
-            for name in FIGURE_VOLUME_NAMES:
-                figure_path = figures_dir / f"{name}_{axis}_center.png"
+        for variant, volumes in variants.items():
+            output_dir_for_variant = _variant_output_dir(case_dir, variant, len(variants) == 1)
+            figures_dir = output_dir_for_variant / "figures"
+            indices = viz.select_center_slices(np.asarray(volumes["fvt_py"]).shape)
+            for axis in ("i3", "i2", "i1"):
+                index = indices[axis]
+                for name in FIGURE_VOLUME_NAMES:
+                    figure_path = figures_dir / f"{name}_{axis}_center.png"
+                    written.append(
+                        viz.save_slice_panel(
+                            figure_path,
+                            [(name, viz.slice_2d(volumes[name], axis, index))],
+                            title=f"{case_id} {variant} {name} {axis}=center",
+                        )
+                    )
                 written.append(
-                    viz.save_slice_panel(
-                        figure_path,
-                        [(name, viz.slice_2d(volumes[name], axis, index))],
-                        title=f"{case_id} {name} {axis}=center",
+                    viz.save_ridge_overlay_slice(
+                        figures_dir / f"truth_vs_fvt_overlay_{axis}_center.png",
+                        reference=volumes["truth_fault_mask"],
+                        candidate=volumes["fvt_py"],
+                        axis=axis,
+                        index=index,
+                        percentile=99.0,
+                        buffer_radius=buffer_radius,
+                        title=f"{case_id} {variant} truth vs fvt {axis}=center",
                     )
                 )
-            written.append(
-                viz.save_ridge_overlay_slice(
-                    figures_dir / f"truth_vs_fvt_overlay_{axis}_center.png",
-                    reference=volumes["truth_fault_mask"],
-                    candidate=volumes["fvt_py"],
-                    axis=axis,
-                    index=index,
-                    percentile=99.0,
-                    buffer_radius=buffer_radius,
-                    title=f"{case_id} truth vs fvt {axis}=center",
-                )
-            )
     return written
 
 
@@ -533,28 +655,38 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
     lines = ["# Controlled Synthetic Quality Report", ""]
     for case in report["cases"]:
         case_id = str(case["case_id"])
-        quality = case["quality"]["fvt_top_truth_count"]
-        overlap = quality["buffered_overlap_radius2"]
-        distance = quality["surface_distance"]
-        orientation = quality["orientation_error"]
-        overlay_path = PurePosixPath(
-            case_id,
-            "figures",
-            "truth_vs_fvt_overlay_i3_center.png",
-        )
         lines.extend(
             [
                 f"## {case_id}",
                 "",
-                f"- buffered_f1_r2: {_format_markdown_metric(overlap['buffered_f1'])}",
-                f"- distance_p95: {_format_markdown_metric(distance['candidate_to_truth_p95'])}",
-                f"- strike_median_error: {_format_markdown_metric(orientation['strike_median'])}",
-                f"- dip_median_error: {_format_markdown_metric(orientation['dip_median'])}",
-                "",
-                f"![fvt overlay]({overlay_path.as_posix()})",
-                "",
             ]
         )
+        variants = case["variants"]
+        for variant, variant_report in variants.items():
+            quality = variant_report["quality"]["fvt_top_truth_count"]
+            overlap = quality["buffered_overlap_radius2"]
+            distance = quality["surface_distance"]
+            orientation = quality["orientation_error"]
+            overlay_parts = [case_id]
+            if len(variants) > 1:
+                overlay_parts.append(variant)
+            overlay_parts.extend(("figures", "truth_vs_fvt_overlay_i3_center.png"))
+            overlay_path = PurePosixPath(*overlay_parts)
+            lines.extend(
+                [
+                    f"### {variant}",
+                    "",
+                    f"- buffered_f1_r2: {_format_markdown_metric(overlap['buffered_f1'])}",
+                    "- distance_p95: "
+                    f"{_format_markdown_metric(distance['candidate_to_truth_p95'])}",
+                    "- strike_median_error: "
+                    f"{_format_markdown_metric(orientation['strike_median'])}",
+                    f"- dip_median_error: {_format_markdown_metric(orientation['dip_median'])}",
+                    "",
+                    f"![fvt overlay]({overlay_path.as_posix()})",
+                    "",
+                ]
+            )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -575,6 +707,14 @@ def _case_output_dir(output_dir: Path, case_id: str) -> Path:
     return output_dir.joinpath(*relative_case_path.parts)
 
 
+def _variant_output_dir(case_dir: Path, variant: str, is_single_variant: bool) -> Path:
+    if is_single_variant:
+        return case_dir
+    if variant not in VARIANT_NAMES:
+        raise ValueError(f"unknown variant: {variant}")
+    return case_dir / variant
+
+
 def _validate_nonnegative_finite_scalar(value: float, name: str) -> float:
     if not np.isscalar(value):
         raise ValueError(f"{name} must be a finite scalar")
@@ -593,6 +733,7 @@ def run_example(
     shape: tuple[int, int, int] = DEFAULT_SHAPE,
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
+    variants: Sequence[str] = DEFAULT_VARIANTS,
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -603,6 +744,7 @@ def run_example(
         shape=shape,
         voting_config=voting_config,
         truth_metric_config=truth_metric_config,
+        variants=variants,
     )
     write_metrics_json(report, output_dir, pretty=pretty)
     write_summary_csv(report, output_dir)
@@ -642,6 +784,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 truth_surface_half_width=args.truth_surface_half_width,
                 buffer_radius=args.buffer_radius,
             ),
+            variants=args.variants,
             pretty=args.pretty,
             save_volumes=args.save_volumes,
             save_figures=args.save_figures,
