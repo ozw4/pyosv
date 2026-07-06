@@ -443,6 +443,51 @@ def test_fault_orient_scanner_reference_thin_does_not_reinforce_folded_vertical_
     assert thinned_dip[1, 2, 0] == np.float32(0.0)
 
 
+def test_fault_orient_scanner_reference_thin_edge_cleanup_is_explicitly_diagnostic() -> None:
+    values = np.zeros((12, 12, 1), dtype=np.float32)
+    strike = np.full_like(values, 90.0)
+    dip = np.full_like(values, 90.0)
+    values[1, 6, 0] = 3.0
+    scanner = FaultOrientScanner3(1.0, 1.0)
+
+    cleaned, _, _ = scanner.thin(
+        values,
+        strike,
+        dip,
+        mode="reference",
+        reference_sigma=0.0,
+    )
+    retained, retained_strike, retained_dip = scanner.thin(
+        values,
+        strike,
+        dip,
+        mode="reference",
+        reference_sigma=0.0,
+        remove_edge_effects=False,
+    )
+
+    assert cleaned[1, 6, 0] == np.float32(0.0)
+    assert retained[1, 6, 0] == np.float32(3.0)
+    assert retained_strike[1, 6, 0] == np.float32(90.0)
+    assert retained_dip[1, 6, 0] == np.float32(90.0)
+
+
+def test_optimal_surface_voter_default_reference_thin_differs_from_normal_mode() -> None:
+    values = np.zeros((5, 5, 5), dtype=np.float32)
+    strike = np.full_like(values, 90.0)
+    dip = np.zeros_like(values)
+    values[2, 2, 2] = 3.0
+    voter = OptimalSurfaceVoter(1, 1, 1)
+
+    reference = voter.thin(values, strike, dip, reference_sigma=0.0)
+    normal = voter.thin(values, strike, dip, mode="normal", reference_sigma=0.0)
+
+    assert reference[2, 2, 2] == np.float32(3.0)
+    assert reference[1, 2, 2] == np.float32(3.0)
+    assert normal[2, 2, 2] == np.float32(3.0)
+    assert normal[1, 2, 2] == np.float32(0.0)
+
+
 @pytest.mark.parametrize(
     ("strike_value", "voter_neighbor", "scanner_neighbor"),
     [

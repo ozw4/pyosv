@@ -110,6 +110,7 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.scanner_thin_mode == "reference"
     assert defaults.voter_thin_mode == "reference"
     assert defaults.reference_thin_sigma == 1.0
+    assert defaults.remove_scanner_edge_effects is True
 
     args = module.build_parser().parse_args(
         [
@@ -129,6 +130,7 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
             "reference",
             "--reference-thin-sigma",
             "1.5",
+            "--keep-scanner-edge-effects",
         ]
     )
     assert args.crop_shape == (16, 14, 12)
@@ -138,6 +140,7 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert args.scanner_thin_mode == "reference"
     assert args.voter_thin_mode == "reference"
     assert args.reference_thin_sigma == 1.5
+    assert args.remove_scanner_edge_effects is False
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--voter-thin-mode", "bad"])
 
@@ -237,7 +240,11 @@ def test_run_example_writes_json_and_uses_explicit_centers(
     assert loaded["config"]["scanner"]["thin_mode"] == "reference"
     assert loaded["config"]["voter"]["thin_mode"] == "reference"
     assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["scanner"]["remove_edge_effects"] is True
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["voter"]["surface_voting_boundary_policy"] == (
+        "reference-like-i2-i3-interior"
+    )
     assert [crop["crop_center"] for crop in loaded["crops"]] == [[2, 2, 2], [5, 5, 5]]
     assert loaded["aggregate"]["crop_count"] == 2
     assert report == loaded
@@ -275,15 +282,21 @@ def test_run_example_records_selected_thinning_modes(
         scanner_thin_mode="reference",
         voter_thin_mode="reference",
         reference_thin_sigma=1.25,
+        remove_scanner_edge_effects=False,
     )
 
     assert report["config"]["scanner"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["thin_mode"] == "reference"
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["scanner"]["remove_edge_effects"] is False
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["voter"]["surface_voting_boundary_policy"] == (
+        "reference-like-i2-i3-interior"
+    )
     assert received_kwargs["scanner_thin_mode"] == "reference"
     assert received_kwargs["voter_thin_mode"] == "reference"
     assert received_kwargs["reference_thin_sigma"] == 1.25
+    assert received_kwargs["remove_scanner_edge_effects"] is False
 
 
 def test_save_volumes_writes_crop_outputs(
@@ -361,8 +374,10 @@ def test_visual_report_writes_markdown_pngs_and_metrics(
     assert "crop_001" in markdown
     assert "normalized_correlation" in markdown
     assert "scanner_thin_mode: `reference`" in markdown
+    assert "scanner_edge_effect_removal: `True`" in markdown
     assert "voter_thin_mode: `reference`" in markdown
     assert "reference_thin_sigma: `1.0`" in markdown
+    assert "surface_voting_boundary_policy: `reference-like-i2-i3-interior`" in markdown
     assert "](crop_001/figures/" in markdown
     assert ".png)" in markdown
     assert (figures_dir / "scanner_fl_vs_ftpy_i3_3.png").is_file()

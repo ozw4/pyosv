@@ -46,9 +46,8 @@ instead of introducing Java sentinel values into returned arrays.
 
 For surface voting, the Java reference accepts target points with
 `0 <= i1 < n1`, `0 < i2 < n2 - 1`, and `0 < i3 < n3 - 1`. Current Python
-surface-vote averaging and accumulation helpers accept `i2`/`i3` face samples.
-Future reference-mode voting work should narrow those point sets together so
-averaging and accumulation use the same Java boundary predicate.
+surface-vote averaging and accumulation helpers use the same reference-like
+boundary predicate, so edge-only `i2`/`i3` face samples do not contribute votes.
 
 Use scanner reference-like thinning:
 
@@ -73,6 +72,11 @@ fet, fpt, ftt = scanner.thin(
 )
 ```
 
+The optional F3 crop, multi-crop, and thinning-ablation scripts expose the same
+diagnostic switch as `--keep-scanner-edge-effects`. Leave it unset for
+reference-first validation; the reports record whether edge-effect removal was
+active.
+
 Use the same mode on voter thinning:
 
 ```python
@@ -92,8 +96,9 @@ For F3 crop, multi-crop, and ablation commands, see
 ## Interpreting F3 Results
 
 Do not treat the first reference-like thinning runs as proof that pyosv is
-equivalent to the Java reference. The first expected improvements are not
-necessarily high voxel-wise correlation. Check whether:
+equivalent to the Java reference. F3 metrics are comparison report fields, not
+acceptance thresholds. The first expected improvements are not necessarily high
+voxel-wise correlation. Check whether:
 
 - `fvt` `nonzero_fraction` moves closer to the reference.
 - `buffered_ridge_overlap.interior.fvt.buffered_f1` improves.

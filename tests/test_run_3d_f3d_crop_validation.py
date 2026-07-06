@@ -88,6 +88,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.scanner_thin_mode == "reference"
     assert args.voter_thin_mode == "reference"
     assert args.reference_thin_sigma == 1.0
+    assert args.remove_scanner_edge_effects is True
 
     override_args = module.build_parser().parse_args(["--surface-orientation-smoothing", "0"])
     assert override_args.surface_orientation_smoothing == 0.0
@@ -104,12 +105,14 @@ def test_parser_accepts_and_rejects_thinning_modes(monkeypatch: pytest.MonkeyPat
             "reference",
             "--reference-thin-sigma",
             "1.5",
+            "--keep-scanner-edge-effects",
         ]
     )
 
     assert args.scanner_thin_mode == "reference"
     assert args.voter_thin_mode == "reference"
     assert args.reference_thin_sigma == 1.5
+    assert args.remove_scanner_edge_effects is False
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--scanner-thin-mode", "bad"])
 
@@ -240,7 +243,11 @@ def test_run_example_writes_metrics_json_to_output_dir(
     assert loaded["config"]["scanner"]["thin_mode"] == "reference"
     assert loaded["config"]["voter"]["thin_mode"] == "reference"
     assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["scanner"]["remove_edge_effects"] is True
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["voter"]["surface_voting_boundary_policy"] == (
+        "reference-like-i2-i3-interior"
+    )
     assert not (output_dir / "crop_001" / "figures").exists()
 
 
@@ -271,6 +278,7 @@ def test_run_example_records_selected_thinning_modes(
         scanner_thin_mode="reference",
         voter_thin_mode="reference",
         reference_thin_sigma=1.25,
+        remove_scanner_edge_effects=False,
         surface_orientation_smoothing=0.0,
     )
 
@@ -278,10 +286,15 @@ def test_run_example_records_selected_thinning_modes(
     assert report["config"]["voter"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["surface_orientation_smoothing"] == 0.0
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["scanner"]["remove_edge_effects"] is False
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
+    assert report["config"]["voter"]["surface_voting_boundary_policy"] == (
+        "reference-like-i2-i3-interior"
+    )
     assert received_kwargs["scanner_thin_mode"] == "reference"
     assert received_kwargs["voter_thin_mode"] == "reference"
     assert received_kwargs["reference_thin_sigma"] == 1.25
+    assert received_kwargs["remove_scanner_edge_effects"] is False
     assert received_kwargs["surface_orientation_smoothing"] == 0.0
 
 

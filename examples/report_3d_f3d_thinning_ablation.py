@@ -187,6 +187,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
+    parser.add_argument(
+        "--keep-scanner-edge-effects",
+        dest="remove_scanner_edge_effects",
+        action="store_false",
+        default=True,
+        help=(
+            "Disable scanner reference-thinning edge-effect removal for diagnostics. "
+            "The default removes scanner edge effects."
+        ),
+    )
     return parser
 
 
@@ -221,6 +231,7 @@ def run_example(
     surface_smoothing2: float = 2.0,
     d: int = 4,
     fm: float = 0.3,
+    remove_scanner_edge_effects: bool = True,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_json is not None:
@@ -275,6 +286,7 @@ def run_example(
         surface_smoothing2=surface_smoothing2,
         d=d,
         fm=fm,
+        remove_scanner_edge_effects=remove_scanner_edge_effects,
     )
 
     crops = []
@@ -303,6 +315,7 @@ def run_example(
                 surface_smoothing2=surface_smoothing2,
                 d=d,
                 fm=fm,
+                remove_scanner_edge_effects=remove_scanner_edge_effects,
             )
 
             case_reports: dict[str, Any] = {}
@@ -319,7 +332,10 @@ def run_example(
                     reference_fvt=reference_fvt,
                     interior_margin=interior_margin,
                 )
-                case_report["case"] = dict(case)
+                case_report["case"] = case_metadata(
+                    case,
+                    remove_scanner_edge_effects=remove_scanner_edge_effects,
+                )
                 case_report["scanner_backend"] = backend_name
                 if save_figures:
                     if output_base_dir is None:
@@ -393,6 +409,7 @@ def run_ablation_pipeline(
     surface_smoothing2: float,
     d: int,
     fm: float,
+    remove_scanner_edge_effects: bool,
 ) -> dict[str, dict[str, np.ndarray]]:
     from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
@@ -410,7 +427,13 @@ def run_ablation_pipeline(
 
     thinned_by_scanner_mode: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for mode in ("normal", "reference"):
-        thinned_by_scanner_mode[mode] = scanner.thin(ft, pt, tt, mode=mode)
+        thinned_by_scanner_mode[mode] = scanner.thin(
+            ft,
+            pt,
+            tt,
+            mode=mode,
+            remove_edge_effects=remove_scanner_edge_effects,
+        )
 
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
@@ -491,6 +514,19 @@ def validate_scanner_backends(backends: Iterable[str]) -> tuple[str, ...]:
     return backend_tuple
 
 
+def case_metadata(
+    case: Mapping[str, str],
+    *,
+    remove_scanner_edge_effects: bool,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = dict(case)
+    metadata["scanner_remove_edge_effects"] = (
+        bool(remove_scanner_edge_effects) if case.get("scanner_thin_mode") == "reference" else None
+    )
+    metadata["surface_voting_boundary_policy"] = "reference-like-i2-i3-interior"
+    return metadata
+
+
 def _scan_backend(
     scanner: Any,
     *,
@@ -548,13 +584,17 @@ def build_config(
     surface_smoothing2: float,
     d: int,
     fm: float,
+    remove_scanner_edge_effects: bool,
 ) -> dict[str, Any]:
     return {
         "input": "ep.dat",
         "reference": ["fv.dat", "fvt.dat"],
         "comparison": "f3d_thinning_ablation",
         "scanner_backends": list(scanner_backends),
-        "cases": [dict(case) for case in CASE_DEFINITIONS],
+        "cases": [
+            case_metadata(case, remove_scanner_edge_effects=remove_scanner_edge_effects)
+            for case in CASE_DEFINITIONS
+        ],
         "crop_selection": {
             "source": "explicit_centers" if explicit_centers else "fv.dat",
             "count": int(count),
@@ -573,6 +613,7 @@ def build_config(
             "phi_max": float(phi_max),
             "theta_min": float(theta_min),
             "theta_max": float(theta_max),
+            "reference_remove_edge_effects": bool(remove_scanner_edge_effects),
         },
         "voter": {
             "ru": int(ru),
@@ -584,6 +625,7 @@ def build_config(
             "surface_smoothing2": float(surface_smoothing2),
             "d": int(d),
             "fm": float(fm),
+            "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
         },
         "overlap_percentiles": [float(p) for p in crop_validation.OVERLAP_PERCENTILES],
         "ridge_metrics": {
@@ -801,7 +843,9 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
             "- "
             f"`{case_map.get('name', '')}`: "
             f"scanner=`{case_map.get('scanner_thin_mode', '')}`, "
-            f"voter=`{case_map.get('voter_thin_mode', '')}`"
+            f"voter=`{case_map.get('voter_thin_mode', '')}`, "
+            f"scanner_edge_removal=`{case_map.get('scanner_remove_edge_effects', '')}`, "
+            f"surface_boundary=`{case_map.get('surface_voting_boundary_policy', '')}`"
         )
 
     lines.extend(
@@ -841,8 +885,9 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
             "## Crop Case Metrics",
             "",
             "| Crop | Center | Backend | Case | scanner thin | voter thin | interior fvt corr | "
-            "buffered F1 | reference ridges | candidate ridges | Key figures |",
-            "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+            "scanner edge removal | surface boundary | buffered F1 | reference ridges | "
+            "candidate ridges | Key figures |",
+            "| --- | --- | --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | --- |",
         ]
     )
     for crop in crops:
@@ -872,6 +917,8 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
                     f"`{case_config.get('scanner_thin_mode', '')}` | "
                     f"`{case_config.get('voter_thin_mode', '')}` | "
                     f"{_format_metric(_nested(case_report, 'normalized_correlation', 'interior', 'fvt'))} | "
+                    f"`{case_config.get('scanner_remove_edge_effects', '')}` | "
+                    f"`{case_config.get('surface_voting_boundary_policy', '')}` | "
                     f"{_format_metric(overlap.get('buffered_f1'))} | "
                     f"{_format_metric(overlap.get('reference_count'))} | "
                     f"{_format_metric(overlap.get('candidate_count'))} | "
@@ -1025,6 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
             surface_smoothing2=args.surface_smoothing2,
             d=args.d,
             fm=args.fm,
+            remove_scanner_edge_effects=args.remove_scanner_edge_effects,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

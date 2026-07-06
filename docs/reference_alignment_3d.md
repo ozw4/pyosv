@@ -55,12 +55,12 @@ Changing more than one stage at a time makes F3 metrics hard to interpret and
 can hide regressions in synthetic tests. Prefer method-level parity tests and
 small synthetic fixtures before changing scanner or voter logic.
 
-`scanner_thin_mode=reference` is not automatically adopted as the default. It
-is a diagnostic mode that is closer to the Java strike-binned thinning pattern,
-but it remains a Pythonic approximation with SciPy smoothing and repository
-shape conventions. The default `normal` mode preserves existing `pyosv`
-behavior, tests, and user expectations until a later issue explicitly changes
-the public contract.
+`scanner_thin_mode=reference` and `voter_thin_mode=reference` are the current
+reference-first defaults. They are closer to the Java strike-binned thinning
+pattern, but remain Pythonic approximations with SciPy smoothing and repository
+shape conventions. The older fault-normal paths remain available only through
+explicit `mode="normal"` API calls or `--scanner-thin-mode normal` /
+`--voter-thin-mode normal` report flags for legacy comparisons.
 
 This phase does not tune parameters to chase F3 metrics. Parameter changes are
 allowed only when they follow from an audited method difference and come with

@@ -107,6 +107,15 @@ against older pyosv runs. Both modes are Pythonic approximations, not bit-exact
 Mines JTK ports. See `docs/reference_like_thinning.md` for the API-level
 details.
 
+Scanner reference thinning removes scanner-style edge effects by default. Pass
+`--keep-scanner-edge-effects` only for diagnostics that need to compare the
+pre-cleanup retained samples. Reports record this as
+`config.scanner.remove_edge_effects` or
+`config.scanner.reference_remove_edge_effects` depending on the script.
+Reports also record the surface-voting boundary policy as
+`reference-like-i2-i3-interior`, meaning vote averaging and accumulation exclude
+`i2`/`i3` face-only surface samples.
+
 Run one crop with reference-like scanner and voter thinning:
 
 ```bash
@@ -245,6 +254,11 @@ Reference comparisons should use practical metrics and visual review:
 - top-percentile overlap
 - sparsity checks
 - visual checks of fault ridges and thinned volumes
+
+These F3 metrics are comparison report fields, not acceptance thresholds. A
+change is reviewed by reading the report in context with the targeted synthetic
+tests; do not promote a metric value into a pass/fail rule unless a later issue
+defines that threshold explicitly.
 
 For an operational figure-first workflow, including crop PNGs, ridge overlays,
 MIPs, histograms, and multi-crop markdown indexes, see

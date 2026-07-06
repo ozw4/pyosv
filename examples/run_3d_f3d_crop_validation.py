@@ -73,6 +73,16 @@ def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
         default=1.0,
         help="Smoothing sigma used by reference-like thinning.",
     )
+    parser.add_argument(
+        "--keep-scanner-edge-effects",
+        dest="remove_scanner_edge_effects",
+        action="store_false",
+        default=True,
+        help=(
+            "Disable scanner reference-thinning edge-effect removal for diagnostics. "
+            "The default removes scanner edge effects."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -247,6 +257,7 @@ def run_example(
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
+    remove_scanner_edge_effects: bool = True,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_dir is not None:
@@ -281,6 +292,7 @@ def run_example(
             "theta_max": float(theta_max),
             "thin_mode": scanner_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
+            "remove_edge_effects": bool(remove_scanner_edge_effects),
         },
         "voter": {
             "ru": int(ru),
@@ -299,6 +311,7 @@ def run_example(
             "fm": float(fm),
             "thin_mode": voter_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
+            "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
         },
         "interior_margin": int(interior_margin),
         "overlap_percentiles": [float(p) for p in OVERLAP_PERCENTILES],
@@ -350,6 +363,7 @@ def run_example(
             scanner_thin_mode=scanner_thin_mode,
             voter_thin_mode=voter_thin_mode,
             reference_thin_sigma=reference_thin_sigma,
+            remove_scanner_edge_effects=remove_scanner_edge_effects,
         )
 
         if output_dir is not None and save_volumes:
@@ -462,6 +476,7 @@ def run_pipeline(
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
+    remove_scanner_edge_effects: bool = True,
 ) -> dict[str, np.ndarray]:
     from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
@@ -474,6 +489,7 @@ def run_pipeline(
         tt,
         mode=scanner_thin_mode,
         reference_sigma=reference_thin_sigma,
+        remove_edge_effects=remove_scanner_edge_effects,
     )
 
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
@@ -867,6 +883,7 @@ def main(argv: list[str] | None = None) -> int:
             scanner_thin_mode=args.scanner_thin_mode,
             voter_thin_mode=args.voter_thin_mode,
             reference_thin_sigma=args.reference_thin_sigma,
+            remove_scanner_edge_effects=args.remove_scanner_edge_effects,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

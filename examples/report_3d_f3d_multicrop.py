@@ -213,6 +213,7 @@ def run_example(
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
+    remove_scanner_edge_effects: bool = True,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_json is not None:
@@ -280,6 +281,7 @@ def run_example(
         scanner_thin_mode=scanner_thin_mode,
         voter_thin_mode=voter_thin_mode,
         reference_thin_sigma=reference_thin_sigma,
+        remove_scanner_edge_effects=remove_scanner_edge_effects,
     )
     if save_figures and "fl.dat" not in arrays:
         arrays["fl.dat"] = crop_validation.read_f3d_file("fl.dat", data_root)
@@ -311,6 +313,7 @@ def run_example(
             scanner_thin_mode=scanner_thin_mode,
             voter_thin_mode=voter_thin_mode,
             reference_thin_sigma=reference_thin_sigma,
+            remove_scanner_edge_effects=remove_scanner_edge_effects,
         )
 
         if resolved_volume_dir is not None:
@@ -444,6 +447,7 @@ def build_config(
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
+    remove_scanner_edge_effects: bool = True,
 ) -> dict[str, Any]:
     config: dict[str, Any] = {
         "input": "ep.dat",
@@ -469,6 +473,7 @@ def build_config(
             "theta_max": float(theta_max),
             "thin_mode": scanner_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
+            "remove_edge_effects": bool(remove_scanner_edge_effects),
         },
         "voter": {
             "ru": int(ru),
@@ -482,6 +487,7 @@ def build_config(
             "fm": float(fm),
             "thin_mode": voter_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
+            "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
         },
         "overlap_percentiles": [float(p) for p in crop_validation.OVERLAP_PERCENTILES],
         "aggregate_metric_roots": list(AGGREGATE_ROOTS),
@@ -578,8 +584,10 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
         f"- crop_selection_source: `{crop_selection.get('source', '')}`",
         f"- selected_count: `{crop_selection.get('selected_count', len(crops))}`",
         f"- scanner_thin_mode: `{scanner.get('thin_mode', '')}`",
+        f"- scanner_edge_effect_removal: `{scanner.get('remove_edge_effects', '')}`",
         f"- voter_thin_mode: `{voter.get('thin_mode', '')}`",
         f"- reference_thin_sigma: `{scanner.get('reference_thin_sigma', '')}`",
+        f"- surface_voting_boundary_policy: `{voter.get('surface_voting_boundary_policy', '')}`",
         f"- scanner: `{scanner}`",
         f"- voter: `{voter}`",
     ]
@@ -792,6 +800,7 @@ def main(argv: list[str] | None = None) -> int:
             scanner_thin_mode=args.scanner_thin_mode,
             voter_thin_mode=args.voter_thin_mode,
             reference_thin_sigma=args.reference_thin_sigma,
+            remove_scanner_edge_effects=args.remove_scanner_edge_effects,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
