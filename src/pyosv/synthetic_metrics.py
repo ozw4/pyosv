@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import numpy as np
 from collections.abc import Sequence
-from scipy.ndimage import distance_transform_edt
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 if TYPE_CHECKING:
     from pyosv.skin import FaultSkin

@@ -33,6 +33,17 @@ The controlled synthetic API includes:
 - minimal oracle pipeline smoke test
 - `examples/report_3d_synthetic_quality.py`
 
+The controlled synthetic report pipeline is:
+
+```text
+truth geometry
+  -> oracle ft/pt/tt
+  -> OptimalSurfaceVoter
+  -> voter thin
+  -> FaultSkinner
+  -> fv/fvt/skin truth metrics
+```
+
 The current report CLI includes these case sets:
 
 - `minimal`: the default PR2-compatible smoke set containing only
@@ -122,11 +133,15 @@ single_vertical_plane/
   vp_py.dat
   vt_py.dat
   fvt_py.dat
+  skin_mask_py.dat
+  skins.json
   figures/
     ft_oracle_i3_center.png
     fv_py_i3_center.png
     fvt_py_i3_center.png
     truth_vs_fvt_overlay_i3_center.png
+    skin_mask_py_i3_center.png
+    truth_vs_skin_overlay_i3_center.png
 ```
 
 The stable minimum JSON contract is:
@@ -170,7 +185,13 @@ The stable minimum JSON contract is:
               "skin_count": 1,
               "cell_count": 1089,
               "unique_cell_count": 1089,
-              "largest_skin_size": 1089
+              "duplicate_cell_count": 0,
+              "largest_skin_size": 1089,
+              "largest_skin_fraction": 1.0,
+              "small_skin_size": 10,
+              "small_skin_count": 0,
+              "small_skin_cell_count": 0,
+              "small_skin_cell_fraction": 0.0
             }
           },
           "skinning": {
@@ -226,10 +247,49 @@ the same truth targets as the `fv` and `fvt` truth-count metrics. With
 `--skip-skinning`, each variant stores `"skinning": {"enabled": false}`,
 `pyosv.skins` is a zero-count topology summary, and `quality.skin` is `null`.
 
+When skinning is enabled, `quality.skin` has this stable structure:
+
+```json
+{
+  "topology": {
+    "skin_count": 1,
+    "cell_count": 1089,
+    "unique_cell_count": 1089,
+    "duplicate_cell_count": 0,
+    "largest_skin_size": 1089,
+    "largest_skin_fraction": 1.0,
+    "small_skin_size": 10,
+    "small_skin_count": 0,
+    "small_skin_cell_count": 0,
+    "small_skin_cell_fraction": 0.0
+  },
+  "buffered_overlap_radius2": {
+    "buffered_precision": 1.0,
+    "buffered_recall": 1.0,
+    "buffered_f1": 1.0
+  },
+  "surface_distance": {
+    "candidate_to_truth_p95": 0.0,
+    "truth_to_candidate_p95": 0.0,
+    "hausdorff_p95": 0.0
+  },
+  "orientation_error": {
+    "strike_median": 0.0,
+    "dip_median": 0.0
+  }
+}
+```
+
 The synthetic report default skinning configuration is intentionally small for
 controlled synthetic volumes: `--skinner-ru 10`, `--skinner-rv none`,
 `--skinner-rw none`, and `--skinner-max-steps 10`. These are report defaults,
 not the general `FaultSkinner` API defaults.
+
+Skinning can be disabled with `--skip-skinning`. Skin extraction is configured
+with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
+`--skinner-ru`, `--skinner-rv`, `--skinner-rw`, `--skinner-max-steps`,
+`--skinner-du`, `--skinner-max-delta-strike`, `--no-skinner-reskin`, and
+`--small-skin-size`.
 
 The `geometry` case set keeps the same top-level JSON contract and writes one
 `cases[]` entry plus one `summary.csv` row per `(case_id, variant)`. Optional
@@ -250,7 +310,35 @@ judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
 column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
 median orientation error columns, skin topology and truth metric columns, and
-fvt and skin delta columns against the baseline.
+fvt and skin delta columns against the baseline. The skin columns are written
+in deterministic order:
+
+```text
+skinning_enabled
+skin_enabled
+skin_count
+skin_cell_count
+skin_unique_cell_count
+skin_duplicate_cell_count
+skin_largest_size
+skin_largest_fraction
+skin_small_count
+skin_small_cell_fraction
+skin_buffered_f1_r2
+skin_buffered_precision_r2
+skin_buffered_recall_r2
+skin_distance_p95
+skin_distance_candidate_to_truth_p95
+skin_distance_truth_to_candidate_p95
+skin_distance_hausdorff_p95
+skin_strike_median_error
+skin_dip_median_error
+skin_buffered_f1_delta_vs_baseline
+skin_distance_p95_delta_vs_baseline
+skin_strike_median_error_delta_vs_baseline
+skin_dip_median_error_delta_vs_baseline
+skin_count_delta_vs_baseline
+```
 
 Read diagnostic variant comparison as "same case, same truth, different voter
 setting." JSON delta fields under `variant_comparison.variants.*` and CSV delta
@@ -262,14 +350,22 @@ Delta signs use `variant_value - current_default_value`. That means positive
 buffered-F1 deltas are improvements, while negative distance and
 orientation-error deltas are improvements. The report does not encode this
 good/bad direction; consumers should interpret each metric family explicitly.
-For skin metrics, `skin_buffered_f1_r2_delta_vs_current` follows the same
+Metric direction is:
+
+```text
+buffered F1: higher is better
+distance p95: lower is better
+orientation error: lower is better
+skin_count: depends on truth topology; do not judge it alone
+largest_skin_fraction: for single-fault cases, higher means less fragmentation
+```
+
+For skin deltas, `skin_buffered_f1_r2_delta_vs_current` follows the same
 positive-is-better interpretation, while
 `skin_candidate_to_truth_p95_delta_vs_current`,
 `skin_strike_median_error_delta_vs_current`, and
 `skin_dip_median_error_delta_vs_current` are better when negative.
-`skin_count_delta_vs_current` is useful context: for minimal and geometry
-truth cases with one fault, values closer to zero are generally preferable, but
-skin count alone should not be treated as a good/bad judgment.
+`skin_count_delta_vs_current` is useful topology context only.
 
 `--save-volumes` writes float32 big-endian DAT volumes under each case
 directory, with `truth_fault_mask.dat` and `skin_mask_py.dat` stored as 0/1
@@ -283,13 +379,24 @@ skin mask and truth-vs-skin overlays. `--write-markdown-index` writes
 ## Test Commands
 
 ```bash
-PYTHONPATH=src python -m pytest -q tests/test_synthetic3d.py tests/test_synthetic_metrics.py tests/test_synthetic_oracle_pipeline.py tests/test_report_3d_synthetic_quality.py
+PYTHONPATH=src python -m pytest -q \
+  tests/test_synthetic3d.py \
+  tests/test_synthetic_metrics.py \
+  tests/test_synthetic_oracle_pipeline.py \
+  tests/test_report_3d_synthetic_quality.py
 ```
 
-The broader synthetic acceptance checks are:
+The broader synthetic voting/skinning checks are:
 
 ```bash
-PYTHONPATH=src python -m pytest -q tests/test_voting3d.py
+PYTHONPATH=src python -m pytest -q \
+  tests/test_voting3d.py \
+  tests/test_skinner.py
+```
+
+If Ruff is installed:
+
+```bash
 PYTHONPATH=src python -m ruff check src tests examples
 PYTHONPATH=src python -m ruff format --check src tests examples
 ```
