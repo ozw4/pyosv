@@ -7,13 +7,16 @@ from numbers import Integral, Real
 
 import numpy as np
 
-from pyosv.geometry import fault_normal_vector_from_strike_and_dip
+from pyosv.geometry import fault_normal_vector_from_strike_and_dip, strike_and_dip_from_normal
 
 __all__ = [
     "Synthetic3DCase",
+    "SyntheticCurvedSurfaceSpec",
     "SyntheticPlaneSpec",
     "coordinate_grids3",
+    "generate_curved_surface_case",
     "generate_single_plane_case",
+    "make_curved_surface_case",
     "make_single_dipping_plane_case",
     "make_single_vertical_plane_case",
     "validate_center3",
@@ -39,6 +42,50 @@ class SyntheticPlaneSpec:
         object.__setattr__(self, "center", validate_center3(self.center, shape))
         object.__setattr__(self, "strike", _validate_finite_real("strike", self.strike))
         object.__setattr__(self, "dip", _validate_finite_real("dip", self.dip))
+        object.__setattr__(
+            self,
+            "likelihood_sigma",
+            _validate_finite_real(
+                "likelihood_sigma", self.likelihood_sigma, minimum=0.0, closed=False
+            ),
+        )
+        object.__setattr__(
+            self,
+            "mask_half_width",
+            _validate_finite_real("mask_half_width", self.mask_half_width, minimum=0.0),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SyntheticCurvedSurfaceSpec:
+    """Specification for a controlled analytic curved 3D synthetic fault case."""
+
+    case_id: str
+    shape: tuple[int, int, int]
+    center: tuple[float, float, float]
+    slope2: float
+    slope3: float
+    curvature2: float
+    curvature3: float
+    likelihood_sigma: float = 1.25
+    mask_half_width: float = 1.0
+
+    def __post_init__(self) -> None:
+        shape = validate_shape3(self.shape)
+        object.__setattr__(self, "shape", shape)
+        object.__setattr__(self, "center", validate_center3(self.center, shape))
+        object.__setattr__(self, "slope2", _validate_finite_real("slope2", self.slope2))
+        object.__setattr__(self, "slope3", _validate_finite_real("slope3", self.slope3))
+        object.__setattr__(
+            self,
+            "curvature2",
+            _validate_finite_real("curvature2", self.curvature2),
+        )
+        object.__setattr__(
+            self,
+            "curvature3",
+            _validate_finite_real("curvature3", self.curvature3),
+        )
         object.__setattr__(
             self,
             "likelihood_sigma",
@@ -167,6 +214,56 @@ def generate_single_plane_case(spec: SyntheticPlaneSpec) -> Synthetic3DCase:
     )
 
 
+def generate_curved_surface_case(spec: SyntheticCurvedSurfaceSpec) -> Synthetic3DCase:
+    """Generate a controlled analytic curved-surface 3D synthetic fault case."""
+    if not isinstance(spec, SyntheticCurvedSurfaceSpec):
+        raise ValueError("spec must be a SyntheticCurvedSurfaceSpec")
+
+    x1, x2, x3 = coordinate_grids3(spec.shape)
+    x1c, x2c, x3c = spec.center
+    scale2, scale3 = _curved_surface_scales(spec.shape)
+    dx2 = x2.astype(np.float64) - x2c
+    dx3 = x3.astype(np.float64) - x3c
+    x1_surface = (
+        x1c
+        + spec.slope2 * dx2
+        + spec.slope3 * dx3
+        + spec.curvature2 * (dx2**2 / scale2)
+        + spec.curvature3 * (dx3**2 / scale3)
+    )
+    truth_distance = x1.astype(np.float64) - x1_surface
+
+    dx1_dx2 = spec.slope2 + 2.0 * spec.curvature2 * dx2 / scale2
+    dx1_dx3 = spec.slope3 + 2.0 * spec.curvature3 * dx3 / scale3
+    normal1 = np.ones(spec.shape, dtype=np.float64)
+    normal2 = -dx1_dx2
+    normal3 = -dx1_dx3
+    normal_norm = np.sqrt(normal1**2 + normal2**2 + normal3**2)
+    truth_strike, truth_dip = strike_and_dip_from_normal(
+        (normal1 / normal_norm).astype(np.float32),
+        (normal2 / normal_norm).astype(np.float32),
+        (normal3 / normal_norm).astype(np.float32),
+    )
+
+    truth_fault_mask = np.abs(truth_distance) <= spec.mask_half_width
+    truth_fault_id = np.where(truth_fault_mask, 1, 0).astype(np.int32)
+    ft_oracle = np.exp(-0.5 * (truth_distance / spec.likelihood_sigma) ** 2)
+    ft_oracle = np.clip(ft_oracle, 0.0, 1.0).astype(np.float32)
+
+    return Synthetic3DCase(
+        case_id=spec.case_id,
+        shape=spec.shape,
+        truth_fault_mask=truth_fault_mask,
+        truth_fault_id=truth_fault_id,
+        truth_distance=truth_distance.astype(np.float32),
+        truth_strike=truth_strike,
+        truth_dip=truth_dip,
+        ft_oracle=ft_oracle,
+        pt_oracle=truth_strike,
+        tt_oracle=truth_dip,
+    )
+
+
 def make_single_vertical_plane_case(
     shape: tuple[int, int, int] = (64, 64, 64),
 ) -> Synthetic3DCase:
@@ -201,6 +298,25 @@ def make_single_dipping_plane_case(
     return generate_single_plane_case(spec)
 
 
+def make_curved_surface_case(
+    shape: tuple[int, int, int] = (64, 64, 64),
+) -> Synthetic3DCase:
+    """Return the default controlled analytic curved-surface synthetic case."""
+    n3, n2, n1 = validate_shape3(shape)
+    spec = SyntheticCurvedSurfaceSpec(
+        case_id="curved_surface",
+        shape=(n3, n2, n1),
+        center=((n1 - 1) / 2.0, (n2 - 1) / 2.0, (n3 - 1) / 2.0),
+        slope2=0.18,
+        slope3=-0.12,
+        curvature2=0.35,
+        curvature3=-0.25,
+        likelihood_sigma=1.25,
+        mask_half_width=1.0,
+    )
+    return generate_curved_surface_case(spec)
+
+
 def _validate_finite_real(
     name: str,
     value: object,
@@ -225,6 +341,11 @@ def _validate_finite_real(
             raise ValueError(f"{name} must be finite and {comparator} {minimum:g}")
 
     return result
+
+
+def _curved_surface_scales(shape: tuple[int, int, int]) -> tuple[float, float]:
+    n3, n2, _ = validate_shape3(shape)
+    return float(max(n2 - 1, 1)), float(max(n3 - 1, 1))
 
 
 def _validate_case_array(
