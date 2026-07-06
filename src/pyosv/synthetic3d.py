@@ -14,6 +14,7 @@ __all__ = [
     "SyntheticPlaneSpec",
     "coordinate_grids3",
     "generate_single_plane_case",
+    "make_single_dipping_plane_case",
     "make_single_vertical_plane_case",
     "validate_center3",
     "validate_shape3",
@@ -177,6 +178,23 @@ def make_single_vertical_plane_case(
         center=((n1 - 1) / 2.0, (n2 - 1) / 2.0, (n3 - 1) / 2.0),
         strike=0.0,
         dip=90.0,
+        likelihood_sigma=1.25,
+        mask_half_width=1.0,
+    )
+    return generate_single_plane_case(spec)
+
+
+def make_single_dipping_plane_case(
+    shape: tuple[int, int, int] = (64, 64, 64),
+) -> Synthetic3DCase:
+    """Return the default controlled dipping single-plane synthetic case."""
+    n3, n2, n1 = validate_shape3(shape)
+    spec = SyntheticPlaneSpec(
+        case_id="single_dipping_plane",
+        shape=(n3, n2, n1),
+        center=((n1 - 1) / 2.0, (n2 - 1) / 2.0, (n3 - 1) / 2.0),
+        strike=45.0,
+        dip=65.0,
         likelihood_sigma=1.25,
         mask_half_width=1.0,
     )

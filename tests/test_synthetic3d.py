@@ -1,11 +1,13 @@
 import numpy as np
 import pytest
 
+from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.synthetic3d import (
     Synthetic3DCase,
     SyntheticPlaneSpec,
     coordinate_grids3,
     generate_single_plane_case,
+    make_single_dipping_plane_case,
     make_single_vertical_plane_case,
     validate_center3,
     validate_shape3,
@@ -200,6 +202,28 @@ def test_make_single_vertical_plane_case_returns_expected_arrays() -> None:
         assert array.dtype == dtype
 
 
+def test_make_single_dipping_plane_case_returns_expected_arrays() -> None:
+    case = make_single_dipping_plane_case(shape=(5, 7, 9))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "single_dipping_plane"
+    assert case.shape == (5, 7, 9)
+    expected_dtypes = {
+        "truth_fault_mask": np.bool_,
+        "truth_fault_id": np.int32,
+        "truth_distance": np.float32,
+        "truth_strike": np.float32,
+        "truth_dip": np.float32,
+        "ft_oracle": np.float32,
+        "pt_oracle": np.float32,
+        "tt_oracle": np.float32,
+    }
+    for name, dtype in expected_dtypes.items():
+        array = getattr(case, name)
+        assert array.shape == case.shape
+        assert array.dtype == dtype
+
+
 def test_single_plane_case_truth_mask_ids_and_oracle_likelihood_are_consistent() -> None:
     spec = SyntheticPlaneSpec(
         case_id="plane-a",
@@ -236,6 +260,34 @@ def test_single_vertical_plane_case_has_constant_truth_orientation() -> None:
     np.testing.assert_array_equal(case.truth_dip, np.full(case.shape, 90.0, dtype=np.float32))
     np.testing.assert_array_equal(case.pt_oracle, case.truth_strike)
     np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
+
+
+def test_single_dipping_plane_case_has_constant_truth_orientation() -> None:
+    case = make_single_dipping_plane_case(shape=(5, 7, 9))
+
+    np.testing.assert_array_equal(case.truth_strike, np.full(case.shape, 45.0, dtype=np.float32))
+    np.testing.assert_array_equal(case.truth_dip, np.full(case.shape, 65.0, dtype=np.float32))
+    np.testing.assert_array_equal(case.pt_oracle, case.truth_strike)
+    np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
+
+
+def test_single_dipping_plane_case_distance_follows_analytic_normal() -> None:
+    case = make_single_dipping_plane_case(shape=(9, 9, 9))
+    normal = fault_normal_vector_from_strike_and_dip(45.0, 65.0).astype(np.float64)
+    center = np.array((4.0, 4.0, 4.0), dtype=np.float64)
+
+    samples = [
+        center,
+        center + normal,
+        center - normal,
+        center + 2.0 * normal,
+        center - 2.0 * normal,
+    ]
+    for sample in samples:
+        x1, x2, x3 = sample
+        nearest = (int(round(x3)), int(round(x2)), int(round(x1)))
+        expected = float(np.dot(np.array((nearest[2], nearest[1], nearest[0])) - center, normal))
+        assert case.truth_distance[nearest] == pytest.approx(expected, abs=1.0e-6)
 
 
 def test_generate_single_plane_case_rejects_invalid_spec() -> None:

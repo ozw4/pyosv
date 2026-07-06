@@ -19,6 +19,7 @@ The controlled synthetic API includes:
 - `SyntheticPlaneSpec`
 - `Synthetic3DCase`
 - `generate_single_plane_case`
+- `make_single_dipping_plane_case`
 - `make_single_vertical_plane_case`
 - `ft` / `pt` / `tt` oracle attributes
 - top-k / truth-count masks
@@ -29,13 +30,14 @@ The controlled synthetic API includes:
 - `examples/report_3d_synthetic_quality.py`
 
 The current report CLI includes the `minimal` case set, which contains only
-`single_vertical_plane`. PR2 covers only the oracle `ft` / `pt` / `tt` path: it
-runs those controlled attributes through `OptimalSurfaceVoter`, applies
-thinning, and writes truth-quality report files.
+`single_vertical_plane`. The controlled synthetic tests cover the oracle
+`ft` / `pt` / `tt` path for vertical and dipping single-plane cases: they run
+those controlled attributes through `OptimalSurfaceVoter`, apply thinning, and
+check truth-quality metrics.
 
 The current scope does not include:
 
-- extended cases: dipping, curved, crossing, boundary, weak noisy
+- extended cases: curved, crossing, boundary, weak noisy
 - skin metrics, including skin topology metrics
 - synthetic seismic generation
 - scanner-inclusive synthetic path
