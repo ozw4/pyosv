@@ -1,4 +1,15 @@
-"""Report controlled 3D synthetic truth quality metrics."""
+r"""Report controlled 3D synthetic truth quality metrics.
+
+Example:
+    PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+      --case-set geometry \
+      --shape 33,33,33 \
+      --variants current_default \
+      --output-dir outputs/3d/synthetic_quality/geometry_001 \
+      --pretty \
+      --save-figures \
+      --write-markdown-index
+"""
 
 from __future__ import annotations
 
@@ -170,6 +181,19 @@ CASE_SETS = {
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run controlled 3D synthetic oracle voting and write quality reports.",
+        epilog=(
+            "Example:\n"
+            "  PYTHONPATH=src python examples/report_3d_synthetic_quality.py \\\n"
+            "    --case-set geometry \\\n"
+            "    --shape 33,33,33 \\\n"
+            "    --variants current_default,no_surface_orientation_smoothing,"
+            "final_norm_smoothing_1,voter_thin_normal \\\n"
+            "    --output-dir outputs/3d/synthetic_quality/geometry_001 \\\n"
+            "    --pretty \\\n"
+            "    --save-figures \\\n"
+            "    --write-markdown-index"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--case-set",
@@ -209,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--variants",
         type=parse_variants,
         default=DEFAULT_VARIANTS,
-        help=("Comma-separated diagnostic variants to run. Choices: " + ",".join(VARIANT_NAMES)),
+        help="Comma-separated diagnostic variants to run; see the example below.",
     )
     parser.add_argument("--ru", type=int, default=1, help="Voting shift radius in u.")
     parser.add_argument("--rv", type=int, default=2, help="Voting shift radius in v.")

@@ -34,8 +34,19 @@ The controlled synthetic API includes:
 
 The current report CLI includes these case sets:
 
-- `minimal`: `single_vertical_plane`
-- `geometry`: `single_vertical_plane`, `single_dipping_plane`, `curved_surface`
+- `minimal`: the default PR2-compatible smoke set containing only
+  `single_vertical_plane`.
+- `geometry`: the PR3 geometry set containing `single_vertical_plane`,
+  `single_dipping_plane`, and `curved_surface`.
+
+The individual cases are:
+
+- `single_vertical_plane`: a planar fault centered near constant `x2`, with
+  constant strike and dip truth orientation.
+- `single_dipping_plane`: a planar fault generated from a strike/dip normal,
+  with constant truth orientation and nonzero dip geometry.
+- `curved_surface`: an analytic surface whose `x1` position varies with `x2`
+  and `x3`; truth strike and dip vary spatially with the local normal.
 
 The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for
 vertical and dipping single-plane cases and the analytic curved surface: they
@@ -79,11 +90,12 @@ metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set geometry \
+  --shape 33,33,33 \
+  --variants current_default,no_surface_orientation_smoothing,final_norm_smoothing_1,voter_thin_normal \
   --output-dir outputs/3d/synthetic_quality/geometry_001 \
-  --variants current_default \
-  --truth-surface-half-width 0.5 \
-  --buffer-radius 2.0 \
-  --pretty
+  --pretty \
+  --save-figures \
+  --write-markdown-index
 ```
 
 The CLI writes these files under `--output-dir`:
@@ -200,11 +212,21 @@ judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
 column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
 median orientation error columns, and fvt delta columns against the baseline.
-Delta signs use `variant_value - current_default_value`: positive F1 deltas are
-improvements, while negative distance and orientation-error deltas are
-improvements. `--save-volumes` writes float32 big-endian DAT volumes under each
-case directory, with `truth_fault_mask.dat` stored as 0/1 float32 values. With
-more than one variant, volumes and figures are written under `case_id/variant/`.
+
+Read diagnostic variant comparison as "same case, same truth, different voter
+setting." JSON delta fields under `variant_comparison.variants.*` and CSV delta
+fields ending in `_delta_vs_baseline` are only populated when `current_default`
+is included. If the baseline is omitted, `baseline_variant` is `null` in JSON,
+empty in CSV, and the delta fields are empty.
+
+Delta signs use `variant_value - current_default_value`. That means positive
+buffered-F1 deltas are improvements, while negative distance and
+orientation-error deltas are improvements. The report does not encode this
+good/bad direction; consumers should interpret each metric family explicitly.
+
+`--save-volumes` writes float32 big-endian DAT volumes under each case
+directory, with `truth_fault_mask.dat` stored as 0/1 float32 values. With more
+than one variant, volumes and figures are written under `case_id/variant/`.
 `--save-figures` writes static center-slice PNGs. `--write-markdown-index`
 writes `visual_report.md` with relative links to the case figures.
 

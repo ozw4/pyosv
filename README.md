@@ -143,7 +143,8 @@ Public F3 3D reference-data validation is documented in
 crop validation, and the manual full-volume pipeline.
 
 Controlled synthetic 3D truth-quality checks are documented in
-`docs/synthetic_quality.md`.
+`docs/synthetic_quality.md`, including the default `minimal` case set and the
+PR3 `geometry` set for vertical, dipping, and curved faults.
 
 Reference-like 3D thinning is documented in
 `docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
