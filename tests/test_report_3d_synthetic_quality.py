@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "examples" / "report_3d_synthetic_quality.py"
@@ -155,6 +157,100 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
         "voter_thin_mode": "reference",
         "reference_thin_sigma": 1.5,
     }
+
+
+def test_report_3d_synthetic_quality_save_volumes_writes_expected_dat_files(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+    shape = (17, 17, 17)
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        ",".join(str(size) for size in shape),
+        "--output-dir",
+        str(output_dir),
+        "--save-volumes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    case_dir = output_dir / "single_vertical_plane"
+    expected_files = (
+        "truth_fault_mask.dat",
+        "truth_distance.dat",
+        "truth_strike.dat",
+        "truth_dip.dat",
+        "ft_oracle.dat",
+        "pt_oracle.dat",
+        "tt_oracle.dat",
+        "fv_py.dat",
+        "vp_py.dat",
+        "vt_py.dat",
+        "fvt_py.dat",
+    )
+    expected_size = shape[0] * shape[1] * shape[2] * 4
+    for name in expected_files:
+        path = case_dir / name
+        assert path.is_file()
+        assert path.stat().st_size == expected_size
+
+
+def test_report_3d_synthetic_quality_write_markdown_index_includes_case_and_metrics(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--write-markdown-index",
+    )
+
+    assert result.returncode == 0, result.stderr
+    markdown = (output_dir / "visual_report.md").read_text(encoding="utf-8")
+    assert "# Controlled Synthetic Quality Report" in markdown
+    assert "## single_vertical_plane" in markdown
+    assert "buffered_f1_r2" in markdown
+    assert "distance_p95" in markdown
+    assert "strike_median_error" in markdown
+    assert "dip_median_error" in markdown
+    assert "single_vertical_plane/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
+
+
+def test_report_3d_synthetic_quality_save_figures_writes_expected_pngs(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("matplotlib")
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--save-figures",
+    )
+
+    assert result.returncode == 0, result.stderr
+    figures_dir = output_dir / "single_vertical_plane" / "figures"
+    expected_pngs = (
+        "ft_oracle_i3_center.png",
+        "fv_py_i3_center.png",
+        "fvt_py_i3_center.png",
+        "truth_vs_fvt_overlay_i3_center.png",
+    )
+    for name in expected_pngs:
+        path = figures_dir / name
+        assert path.is_file()
+        assert path.stat().st_size > 0
 
 
 def test_report_3d_synthetic_quality_default_case_meets_smoke_thresholds(

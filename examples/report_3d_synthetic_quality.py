@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
@@ -29,7 +29,20 @@ from pyosv.voting3d import OptimalSurfaceVoter
 
 DEFAULT_SHAPE = (33, 33, 33)
 FORMAT_VERSION = 1
-VOLUME_NAMES = ("ft", "pt", "tt", "fv", "vp", "vt", "fvt")
+VOLUME_NAMES = (
+    "truth_fault_mask",
+    "truth_distance",
+    "truth_strike",
+    "truth_dip",
+    "ft_oracle",
+    "pt_oracle",
+    "tt_oracle",
+    "fv_py",
+    "vp_py",
+    "vt_py",
+    "fvt_py",
+)
+FIGURE_VOLUME_NAMES = ("ft_oracle", "fv_py", "fvt_py")
 NONZERO_EPSILON = 1.0e-6
 
 
@@ -116,17 +129,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--save-volumes",
         action="store_true",
-        help="Write intermediate DAT volumes under OUTPUT_DIR/volumes.",
+        help="Write truth, oracle, and Python DAT volumes under each case directory.",
     )
     parser.add_argument(
         "--save-figures",
         action="store_true",
-        help="Accepted for the public CLI contract; figure output is added later.",
+        help="Write static PNG center-slice figures under each case directory.",
     )
     parser.add_argument(
         "--write-markdown-index",
         action="store_true",
-        help="Accepted for the public CLI contract; markdown output is added later.",
+        help="Write visual_report.md under OUTPUT_DIR.",
     )
     parser.add_argument("--ru", type=int, default=1, help="Voting shift radius in u.")
     parser.add_argument("--rv", type=int, default=2, help="Voting shift radius in v.")
@@ -280,13 +293,17 @@ def run_case(
         },
     }
     volumes = {
-        "ft": case.ft_oracle,
-        "pt": case.pt_oracle,
-        "tt": case.tt_oracle,
-        "fv": fv,
-        "vp": vp,
-        "vt": vt,
-        "fvt": fvt,
+        "truth_fault_mask": case.truth_fault_mask.astype(np.float32),
+        "truth_distance": case.truth_distance,
+        "truth_strike": case.truth_strike,
+        "truth_dip": case.truth_dip,
+        "ft_oracle": case.ft_oracle,
+        "pt_oracle": case.pt_oracle,
+        "tt_oracle": case.tt_oracle,
+        "fv_py": fv,
+        "vp_py": vp,
+        "vt_py": vt,
+        "fvt_py": fvt,
     }
     return report, volumes
 
@@ -454,12 +471,108 @@ def write_case_volumes(
     from pyosv.io import write_dat
 
     written = []
-    volume_root = Path(output_dir) / "volumes"
+    output_root = Path(output_dir)
     for case_id, volumes in volume_outputs.items():
-        case_dir = volume_root / case_id
+        case_dir = _case_output_dir(output_root, case_id)
         for name in VOLUME_NAMES:
             written.append(write_dat(case_dir / f"{name}.dat", volumes[name]))
     return written
+
+
+def write_case_figures(
+    volume_outputs: Mapping[str, Mapping[str, np.ndarray]],
+    output_dir: str | PathLike[str],
+    *,
+    buffer_radius: float = 2.0,
+) -> list[Path]:
+    from pyosv import viz
+
+    written = []
+    output_root = Path(output_dir)
+    for case_id, volumes in volume_outputs.items():
+        case_dir = _case_output_dir(output_root, case_id)
+        figures_dir = case_dir / "figures"
+        indices = viz.select_center_slices(np.asarray(volumes["fvt_py"]).shape)
+        for axis in ("i3", "i2", "i1"):
+            index = indices[axis]
+            for name in FIGURE_VOLUME_NAMES:
+                figure_path = figures_dir / f"{name}_{axis}_center.png"
+                written.append(
+                    viz.save_slice_panel(
+                        figure_path,
+                        [(name, viz.slice_2d(volumes[name], axis, index))],
+                        title=f"{case_id} {name} {axis}=center",
+                    )
+                )
+            written.append(
+                viz.save_ridge_overlay_slice(
+                    figures_dir / f"truth_vs_fvt_overlay_{axis}_center.png",
+                    reference=volumes["truth_fault_mask"],
+                    candidate=volumes["fvt_py"],
+                    axis=axis,
+                    index=index,
+                    percentile=99.0,
+                    buffer_radius=buffer_radius,
+                    title=f"{case_id} truth vs fvt {axis}=center",
+                )
+            )
+    return written
+
+
+def write_visual_report_markdown(
+    report: Mapping[str, Any],
+    output_dir: str | PathLike[str],
+) -> Path:
+    output_path = Path(output_dir) / "visual_report.md"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(visual_report_markdown(report), encoding="utf-8")
+    return output_path
+
+
+def visual_report_markdown(report: Mapping[str, Any]) -> str:
+    lines = ["# Controlled Synthetic Quality Report", ""]
+    for case in report["cases"]:
+        case_id = str(case["case_id"])
+        quality = case["quality"]["fvt_top_truth_count"]
+        overlap = quality["buffered_overlap_radius2"]
+        distance = quality["surface_distance"]
+        orientation = quality["orientation_error"]
+        overlay_path = PurePosixPath(
+            case_id,
+            "figures",
+            "truth_vs_fvt_overlay_i3_center.png",
+        )
+        lines.extend(
+            [
+                f"## {case_id}",
+                "",
+                f"- buffered_f1_r2: {_format_markdown_metric(overlap['buffered_f1'])}",
+                f"- distance_p95: {_format_markdown_metric(distance['candidate_to_truth_p95'])}",
+                f"- strike_median_error: {_format_markdown_metric(orientation['strike_median'])}",
+                f"- dip_median_error: {_format_markdown_metric(orientation['dip_median'])}",
+                "",
+                f"![fvt overlay]({overlay_path.as_posix()})",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_markdown_metric(value: object) -> str:
+    if isinstance(value, int | float | np.floating | np.integer):
+        return f"{float(value):.6g}"
+    return str(value)
+
+
+def _case_output_dir(output_dir: Path, case_id: str) -> Path:
+    relative_case_path = PurePosixPath(case_id)
+    if (
+        relative_case_path.is_absolute()
+        or not relative_case_path.parts
+        or any(part in {"", ".", ".."} for part in relative_case_path.parts)
+    ):
+        raise ValueError(f"case_id must be a relative path inside output_dir: {case_id!r}")
+    return output_dir.joinpath(*relative_case_path.parts)
 
 
 def _validate_nonnegative_finite_scalar(value: float, name: str) -> float:
@@ -485,8 +598,6 @@ def run_example(
     save_figures: bool = False,
     write_markdown_index: bool = False,
 ) -> dict[str, Any]:
-    del save_figures, write_markdown_index
-
     report, volume_outputs = _build_report_and_volumes(
         case_set=case_set,
         shape=shape,
@@ -497,6 +608,14 @@ def run_example(
     write_summary_csv(report, output_dir)
     if save_volumes:
         write_case_volumes(volume_outputs, output_dir)
+    if save_figures:
+        write_case_figures(
+            volume_outputs,
+            output_dir,
+            buffer_radius=truth_metric_config.buffer_radius,
+        )
+    if write_markdown_index:
+        write_visual_report_markdown(report, output_dir)
     return report
 
 

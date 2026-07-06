@@ -83,6 +83,29 @@ metrics.json
 summary.csv
 ```
 
+With optional visual-report outputs enabled, each case also gets a case
+directory. For the `minimal` case set this is:
+
+```text
+single_vertical_plane/
+  truth_fault_mask.dat
+  truth_distance.dat
+  truth_strike.dat
+  truth_dip.dat
+  ft_oracle.dat
+  pt_oracle.dat
+  tt_oracle.dat
+  fv_py.dat
+  vp_py.dat
+  vt_py.dat
+  fvt_py.dat
+  figures/
+    ft_oracle_i3_center.png
+    fv_py_i3_center.png
+    fvt_py_i3_center.png
+    truth_vs_fvt_overlay_i3_center.png
+```
+
 The stable minimum JSON contract is:
 
 ```json
@@ -120,9 +143,11 @@ The stable minimum JSON contract is:
 the truth target. `quality.*.surface_distance` uses the thin truth surface mask
 defined by `abs(truth_distance) <= --truth-surface-half-width`.
 `summary.csv` includes buffered F1, candidate-to-truth p95 distance, and fvt
-median orientation error columns. `--save-volumes` writes DAT volumes under
-`OUTPUT_DIR/volumes`. `--save-figures` and `--write-markdown-index` are
-accepted CLI flags for later report expansion.
+median orientation error columns. `--save-volumes` writes float32 big-endian
+DAT volumes under each case directory, with `truth_fault_mask.dat` stored as
+0/1 float32 values. `--save-figures` writes static center-slice PNGs under each
+case `figures/` directory. `--write-markdown-index` writes
+`visual_report.md` with relative links to the case figures.
 
 ## Test Commands
 
