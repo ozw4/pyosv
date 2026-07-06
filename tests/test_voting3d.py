@@ -756,7 +756,7 @@ def test_surface_voting_keeps_stronger_orientation_when_later_vote_is_weaker() -
     assert vt[5, 5, 5] == pytest.approx(90.0, abs=1e-5)
 
 
-def test_surface_voting_accepts_boundary_surface_samples() -> None:
+def test_surface_voting_excludes_boundary_surface_samples() -> None:
     voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
     voter.set_attribute_smoothing(0)
     voter.set_surface_smoothing(0.0, 0.0)
@@ -768,16 +768,48 @@ def test_surface_voting_accepts_boundary_surface_samples() -> None:
 
     voter._surface_voting(FaultCell(0, 0, 0, 1.0, 0.0, 90.0), ft, fe, vp, vt, vm)
 
-    expected_mask = np.zeros_like(ft, dtype=np.bool_)
-    expected_mask[0:2, 0:2, 0:2] = True
-    np.testing.assert_allclose(fe[expected_mask], 1.0)
-    np.testing.assert_allclose(vm[expected_mask], 1.0)
-    np.testing.assert_allclose(vp[expected_mask], 0.0, atol=1e-7)
-    np.testing.assert_allclose(vt[expected_mask], 90.0, atol=1e-5)
-    np.testing.assert_array_equal(fe[~expected_mask], np.zeros_like(fe[~expected_mask]))
-    np.testing.assert_array_equal(vm[~expected_mask], np.zeros_like(vm[~expected_mask]))
-    np.testing.assert_array_equal(vp[~expected_mask], np.full_like(vp[~expected_mask], -1.0))
-    np.testing.assert_array_equal(vt[~expected_mask], np.full_like(vt[~expected_mask], -1.0))
+    np.testing.assert_array_equal(fe, np.zeros_like(fe))
+    np.testing.assert_array_equal(vm, np.zeros_like(vm))
+    np.testing.assert_array_equal(vp, np.full_like(vp, -1.0))
+    np.testing.assert_array_equal(vt, np.full_like(vt, -1.0))
+
+
+def test_surface_vote_average_reference_audit_returns_zero_for_edge_only_surface() -> None:
+    ft = np.ones((3, 3, 3), dtype=np.float32)
+
+    fa, valid_count = _surface_vote_average(
+        1,
+        0,
+        1,
+        0,
+        0,
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        np.zeros((1, 1), dtype=np.float32),
+        ft,
+    )
+
+    assert valid_count == 0
+    assert fa == np.float32(0.0)
+
+
+def test_surface_voting_no_ops_when_surface_has_no_valid_samples() -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=0, rw=0)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.ones((3, 3, 3), dtype=np.float32)
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+
+    voter._surface_voting(FaultCell(1, 0, 1, 1.0, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    np.testing.assert_array_equal(fe, np.zeros_like(fe))
+    np.testing.assert_array_equal(vm, np.zeros_like(vm))
+    np.testing.assert_array_equal(vp, np.full_like(vp, -1.0))
+    np.testing.assert_array_equal(vt, np.full_like(vt, -1.0))
 
 
 def test_surface_voting_is_deterministic_for_same_seed_and_inputs() -> None:
@@ -881,8 +913,7 @@ def test_accumulate_surface_votes_reference_audit_writes_and_orientation_thresho
     )
 
 
-def test_accumulate_surface_votes_reference_audit_reinforcement_is_boundary_safe() -> None:
-    # Audits the neighbor reinforcement path used by surfaceVoting at image faces.
+def test_accumulate_surface_votes_reference_audit_excludes_edge_source_samples() -> None:
     fe = np.zeros((3, 3, 3), dtype=np.float32)
     vp = np.zeros_like(fe)
     vt = np.zeros_like(fe)
@@ -908,9 +939,41 @@ def test_accumulate_surface_votes_reference_audit_reinforcement_is_boundary_safe
         vm,
     )
 
+    np.testing.assert_array_equal(fe, np.zeros_like(fe))
+    np.testing.assert_array_equal(vm, np.zeros_like(vm))
+
+
+def test_accumulate_surface_votes_reference_audit_reinforcement_uses_interior_sources() -> None:
+    # Audits the neighbor reinforcement path used by surfaceVoting near image faces.
+    fe = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fe)
+    vt = np.zeros_like(fe)
+    vm = np.zeros_like(fe)
+
+    _accumulate_surface_votes(
+        1,
+        1,
+        1,
+        0,
+        0,
+        np.float32(0.5),
+        np.float32(90.0),
+        np.float32(45.0),
+        True,
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        np.zeros((1, 1), dtype=np.float32),
+        fe,
+        vp,
+        vt,
+        vm,
+    )
+
     expected = np.zeros_like(fe)
     expected[0, 1, 1] = np.float32(0.5)
     expected[1, 1, 1] = np.float32(0.5)
+    expected[2, 1, 1] = np.float32(0.5)
     np.testing.assert_array_equal(fe, expected)
     np.testing.assert_array_equal(vm, expected)
 
