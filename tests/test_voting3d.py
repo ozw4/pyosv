@@ -80,6 +80,7 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
     assert voter.surface_smoothing1 == 2.0
     assert voter.surface_smoothing2 == 2.0
     assert voter.surface_orientation_smoothing == 2.0
+    assert voter.final_normalization_smoothing == 0.0
     np.testing.assert_array_equal(
         voter.lmins,
         np.array(
@@ -285,6 +286,33 @@ def test_set_surface_orientation_smoothing_rejects_invalid_values(
     with pytest.raises(ValueError, match="surface_orientation_smoothing"):
         voter.set_surface_orientation_smoothing(
             surface_orientation_smoothing,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("final_normalization_smoothing", [0.0, 1.0, np.float32(2.0)])
+def test_set_final_normalization_smoothing_accepts_nonnegative_finite_numbers(
+    final_normalization_smoothing: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    voter.set_final_normalization_smoothing(final_normalization_smoothing)
+
+    assert voter.final_normalization_smoothing == float(final_normalization_smoothing)
+    assert isinstance(voter.final_normalization_smoothing, float)
+
+
+@pytest.mark.parametrize(
+    "final_normalization_smoothing",
+    [-0.1, np.nan, np.inf, True, "1.0"],
+)
+def test_set_final_normalization_smoothing_rejects_invalid_values(
+    final_normalization_smoothing: object,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="final_normalization_smoothing"):
+        voter.set_final_normalization_smoothing(
+            final_normalization_smoothing,  # type: ignore[arg-type]
         )
 
 
@@ -991,6 +1019,43 @@ def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
         assert array.dtype == np.float32
         assert np.isfinite(array).all()
         np.testing.assert_array_equal(array, np.zeros_like(ft))
+
+
+@pytest.mark.parametrize(
+    ("final_normalization_smoothing", "expected_sigma"),
+    [(None, 0.0), (1.25, 1.25)],
+)
+def test_apply_voting_passes_configured_final_normalization_smoothing(
+    monkeypatch: pytest.MonkeyPatch,
+    final_normalization_smoothing: float | None,
+    expected_sigma: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    if final_normalization_smoothing is not None:
+        voter.set_final_normalization_smoothing(final_normalization_smoothing)
+
+    sigmas: list[float] = []
+
+    def normalize_stub(
+        volume: np.ndarray,
+        *,
+        sigma: float = 0.0,
+        power: float = 8.0,
+    ) -> np.ndarray:
+        del power
+        sigmas.append(sigma)
+        return np.zeros_like(volume, dtype=np.float32)
+
+    monkeypatch.setattr(voting3d, "_normalize_and_power_3d", normalize_stub)
+
+    ft = np.zeros((2, 3, 4), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    fv, _, _ = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert sigmas == [expected_sigma]
+    assert fv.shape == ft.shape
 
 
 def test_apply_voting_accepts_empty_n3_volume() -> None:
