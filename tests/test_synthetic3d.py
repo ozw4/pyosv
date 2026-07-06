@@ -1,11 +1,16 @@
 import numpy as np
 import pytest
 
+from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.synthetic3d import (
     Synthetic3DCase,
+    SyntheticCurvedSurfaceSpec,
     SyntheticPlaneSpec,
     coordinate_grids3,
+    generate_curved_surface_case,
     generate_single_plane_case,
+    make_curved_surface_case,
+    make_single_dipping_plane_case,
     make_single_vertical_plane_case,
     validate_center3,
     validate_shape3,
@@ -128,6 +133,91 @@ def test_synthetic_plane_spec_accepts_valid_values() -> None:
     assert spec.mask_half_width == 0.0
 
 
+def test_synthetic_curved_surface_spec_accepts_valid_values() -> None:
+    spec = SyntheticCurvedSurfaceSpec(
+        case_id="curved-a",
+        shape=(2, 3, 4),
+        center=(1, 1.5, np.float32(0.5)),
+        slope2=np.float32(0.2),
+        slope3=-0.1,
+        curvature2=0.3,
+        curvature3=np.float32(-0.2),
+        likelihood_sigma=1.25,
+        mask_half_width=0.0,
+    )
+
+    assert spec.case_id == "curved-a"
+    assert spec.shape == (2, 3, 4)
+    assert spec.center == (1.0, 1.5, 0.5)
+    assert spec.slope2 == pytest.approx(0.2)
+    assert spec.slope3 == -0.1
+    assert spec.curvature2 == 0.3
+    assert spec.curvature3 == pytest.approx(-0.2)
+    assert spec.likelihood_sigma == 1.25
+    assert spec.mask_half_width == 0.0
+
+
+@pytest.mark.parametrize("likelihood_sigma", [0.0, -1.0, np.inf, np.nan, True])
+def test_synthetic_curved_surface_spec_rejects_invalid_likelihood_sigma(
+    likelihood_sigma: object,
+) -> None:
+    with pytest.raises(ValueError):
+        SyntheticCurvedSurfaceSpec(
+            case_id="invalid",
+            shape=(2, 3, 4),
+            center=(1.0, 1.0, 1.0),
+            slope2=0.2,
+            slope3=-0.1,
+            curvature2=0.3,
+            curvature3=-0.2,
+            likelihood_sigma=likelihood_sigma,
+        )
+
+
+@pytest.mark.parametrize("mask_half_width", [-1.0, np.inf, np.nan, False])
+def test_synthetic_curved_surface_spec_rejects_invalid_mask_half_width(
+    mask_half_width: object,
+) -> None:
+    with pytest.raises(ValueError):
+        SyntheticCurvedSurfaceSpec(
+            case_id="invalid",
+            shape=(2, 3, 4),
+            center=(1.0, 1.0, 1.0),
+            slope2=0.2,
+            slope3=-0.1,
+            curvature2=0.3,
+            curvature3=-0.2,
+            mask_half_width=mask_half_width,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["shape", "center", "slope2", "slope3", "curvature2", "curvature3"],
+)
+def test_synthetic_curved_surface_spec_rejects_invalid_geometry_fields(field: str) -> None:
+    kwargs = {
+        "case_id": "invalid",
+        "shape": (2, 3, 4),
+        "center": (1.0, 1.0, 1.0),
+        "slope2": 0.2,
+        "slope3": -0.1,
+        "curvature2": 0.3,
+        "curvature3": -0.2,
+    }
+    kwargs[field] = {
+        "shape": (2, 3, 0),
+        "center": (4.0, 1.0, 1.0),
+        "slope2": np.inf,
+        "slope3": np.nan,
+        "curvature2": True,
+        "curvature3": np.inf,
+    }[field]
+
+    with pytest.raises(ValueError):
+        SyntheticCurvedSurfaceSpec(**kwargs)
+
+
 def test_synthetic3d_case_normalizes_array_dtypes() -> None:
     shape = (2, 3, 4)
     values = np.zeros(shape, dtype=np.float64)
@@ -200,6 +290,54 @@ def test_make_single_vertical_plane_case_returns_expected_arrays() -> None:
         assert array.dtype == dtype
 
 
+def test_make_single_dipping_plane_case_returns_expected_arrays() -> None:
+    case = make_single_dipping_plane_case(shape=(5, 7, 9))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "single_dipping_plane"
+    assert case.shape == (5, 7, 9)
+    expected_dtypes = {
+        "truth_fault_mask": np.bool_,
+        "truth_fault_id": np.int32,
+        "truth_distance": np.float32,
+        "truth_strike": np.float32,
+        "truth_dip": np.float32,
+        "ft_oracle": np.float32,
+        "pt_oracle": np.float32,
+        "tt_oracle": np.float32,
+    }
+    for name, dtype in expected_dtypes.items():
+        array = getattr(case, name)
+        assert array.shape == case.shape
+        assert array.dtype == dtype
+
+
+def test_make_curved_surface_case_returns_expected_arrays() -> None:
+    case = make_curved_surface_case(shape=(5, 7, 9))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "curved_surface"
+    assert case.shape == (5, 7, 9)
+    expected_dtypes = {
+        "truth_fault_mask": np.bool_,
+        "truth_fault_id": np.int32,
+        "truth_distance": np.float32,
+        "truth_strike": np.float32,
+        "truth_dip": np.float32,
+        "ft_oracle": np.float32,
+        "pt_oracle": np.float32,
+        "tt_oracle": np.float32,
+    }
+    for name, dtype in expected_dtypes.items():
+        array = getattr(case, name)
+        assert array.shape == case.shape
+        assert array.dtype == dtype
+        assert np.all(np.isfinite(array))
+
+    assert np.all((case.truth_strike >= 0.0) & (case.truth_strike < 360.0))
+    assert np.all((case.truth_dip >= 0.0) & (case.truth_dip <= 180.0))
+
+
 def test_single_plane_case_truth_mask_ids_and_oracle_likelihood_are_consistent() -> None:
     spec = SyntheticPlaneSpec(
         case_id="plane-a",
@@ -238,6 +376,93 @@ def test_single_vertical_plane_case_has_constant_truth_orientation() -> None:
     np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
 
 
+def test_single_dipping_plane_case_has_constant_truth_orientation() -> None:
+    case = make_single_dipping_plane_case(shape=(5, 7, 9))
+
+    np.testing.assert_array_equal(case.truth_strike, np.full(case.shape, 45.0, dtype=np.float32))
+    np.testing.assert_array_equal(case.truth_dip, np.full(case.shape, 65.0, dtype=np.float32))
+    np.testing.assert_array_equal(case.pt_oracle, case.truth_strike)
+    np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
+
+
+def test_single_dipping_plane_case_distance_follows_analytic_normal() -> None:
+    case = make_single_dipping_plane_case(shape=(9, 9, 9))
+    normal = fault_normal_vector_from_strike_and_dip(45.0, 65.0).astype(np.float64)
+    center = np.array((4.0, 4.0, 4.0), dtype=np.float64)
+
+    samples = [
+        center,
+        center + normal,
+        center - normal,
+        center + 2.0 * normal,
+        center - 2.0 * normal,
+    ]
+    for sample in samples:
+        x1, x2, x3 = sample
+        nearest = (int(round(x3)), int(round(x2)), int(round(x1)))
+        expected = float(np.dot(np.array((nearest[2], nearest[1], nearest[0])) - center, normal))
+        assert case.truth_distance[nearest] == pytest.approx(expected, abs=1.0e-6)
+
+
+def test_curved_surface_case_distance_follows_analytic_surface() -> None:
+    spec = SyntheticCurvedSurfaceSpec(
+        case_id="curved-a",
+        shape=(7, 9, 11),
+        center=(5.0, 4.0, 3.0),
+        slope2=0.2,
+        slope3=-0.1,
+        curvature2=0.4,
+        curvature3=-0.3,
+        likelihood_sigma=1.25,
+        mask_half_width=1.0,
+    )
+    case = generate_curved_surface_case(spec)
+    scale2 = float(spec.shape[1] - 1)
+    scale3 = float(spec.shape[0] - 1)
+
+    for index in [(3, 4, 5), (3, 5, 6), (4, 2, 7), (1, 7, 3)]:
+        x3, x2, x1 = index
+        dx2 = x2 - spec.center[1]
+        dx3 = x3 - spec.center[2]
+        x1_surface = (
+            spec.center[0]
+            + spec.slope2 * dx2
+            + spec.slope3 * dx3
+            + spec.curvature2 * (dx2**2 / scale2)
+            + spec.curvature3 * (dx3**2 / scale3)
+        )
+        expected = x1 - x1_surface
+        assert case.truth_distance[index] == pytest.approx(expected, abs=1.0e-6)
+
+
+def test_curved_surface_case_truth_orientation_varies_spatially() -> None:
+    case = make_curved_surface_case(shape=(9, 11, 13))
+
+    assert np.ptp(case.truth_strike) > 0.0
+    assert np.ptp(case.truth_dip) > 0.0
+    np.testing.assert_array_equal(case.pt_oracle, case.truth_strike)
+    np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
+
+
+def test_curved_surface_case_truth_mask_ids_and_oracle_likelihood_are_consistent() -> None:
+    case = make_curved_surface_case(shape=(9, 11, 13))
+
+    np.testing.assert_array_equal(case.truth_fault_id, case.truth_fault_mask.astype(np.int32))
+    assert np.all(case.ft_oracle >= 0.0)
+    assert np.all(case.ft_oracle <= 1.0)
+
+    abs_distance = np.abs(case.truth_distance)
+    near_index = np.unravel_index(np.argmin(abs_distance), abs_distance.shape)
+    far_index = np.unravel_index(np.argmax(abs_distance), abs_distance.shape)
+    assert case.ft_oracle[near_index] > 0.95
+    assert case.ft_oracle[near_index] > case.ft_oracle[far_index]
+
+
 def test_generate_single_plane_case_rejects_invalid_spec() -> None:
     with pytest.raises(ValueError):
         generate_single_plane_case(object())
+
+
+def test_generate_curved_surface_case_rejects_invalid_spec() -> None:
+    with pytest.raises(ValueError):
+        generate_curved_surface_case(object())
