@@ -67,6 +67,20 @@ class SyntheticVotingConfig:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SyntheticTruthMetricConfig:
+    """Configuration for controlled truth metrics."""
+
+    truth_surface_half_width: float = 0.5
+    buffer_radius: float = 2.0
+
+    def as_report_dict(self) -> dict[str, float]:
+        return {
+            "truth_surface_half_width": float(self.truth_surface_half_width),
+            "buffer_radius": float(self.buffer_radius),
+        }
+
+
 MINIMAL_CASES = (
     SyntheticQualityCaseDefinition(
         case_id="single_vertical_plane",
@@ -147,6 +161,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Smoothing sigma used by reference-like thinning.",
     )
+    parser.add_argument(
+        "--truth-surface-half-width",
+        type=float,
+        default=0.5,
+        help="Half-width around the truth surface used for thin-surface metrics.",
+    )
+    parser.add_argument(
+        "--buffer-radius",
+        type=float,
+        default=2.0,
+        help="Distance radius used for buffered overlap metrics.",
+    )
     return parser
 
 
@@ -169,6 +195,7 @@ def run_case(
     *,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     case = case_definition.factory(shape)
     if case.case_id != case_definition.case_id:
@@ -197,8 +224,18 @@ def run_case(
         reference_sigma=voting_config.reference_thin_sigma,
     )
 
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(0.5)
-    candidate_mask = top_truth_count_mask(fvt, truth_surface_mask)
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width,
+        "truth_surface_half_width",
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+    fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
+    fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
     report = {
         "case_id": case.case_id,
         "shape": [int(size) for size in case.shape],
@@ -206,23 +243,40 @@ def run_case(
             "fv": _array_summary(fv),
             "fvt": _array_summary(fvt),
         },
-        "metrics": {
-            "buffered_surface_overlap": buffered_surface_overlap(
-                candidate_mask,
-                case.truth_fault_mask,
-                radius=2.0,
-            ),
-            "surface_distance": surface_distance_metrics(
-                candidate_mask,
-                case.truth_fault_mask,
-            ),
-            "orientation_error": masked_orientation_error(
-                vp,
-                vt,
-                case.truth_strike,
-                case.truth_dip,
-                candidate_mask,
-            ),
+        "truth": {
+            "fault_voxel_count": int(np.count_nonzero(truth_fault_mask)),
+            "surface_voxel_count": int(np.count_nonzero(truth_surface_mask)),
+        },
+        "quality": {
+            "fv_top_truth_count": {
+                "buffered_overlap_radius2": buffered_surface_overlap(
+                    fv_top_truth_count,
+                    truth_fault_mask,
+                    radius=buffer_radius,
+                ),
+                "surface_distance": surface_distance_metrics(
+                    fv_top_truth_count,
+                    truth_surface_mask,
+                ),
+            },
+            "fvt_top_truth_count": {
+                "buffered_overlap_radius2": buffered_surface_overlap(
+                    fvt_top_truth_count,
+                    truth_fault_mask,
+                    radius=buffer_radius,
+                ),
+                "surface_distance": surface_distance_metrics(
+                    fvt_top_truth_count,
+                    truth_surface_mask,
+                ),
+                "orientation_error": masked_orientation_error(
+                    vp,
+                    vt,
+                    case.truth_strike,
+                    case.truth_dip,
+                    fvt_top_truth_count,
+                ),
+            },
         },
     }
     volumes = {
@@ -242,11 +296,13 @@ def build_report(
     case_set: str,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
 ) -> dict[str, Any]:
     report, _ = _build_report_and_volumes(
         case_set=case_set,
         shape=shape,
         voting_config=voting_config,
+        truth_metric_config=truth_metric_config,
     )
     return report
 
@@ -256,6 +312,7 @@ def _build_report_and_volumes(
     case_set: str,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
 ) -> tuple[dict[str, Any], dict[str, Mapping[str, np.ndarray]]]:
     valid_shape = validate_shape3(shape)
     try:
@@ -270,6 +327,7 @@ def _build_report_and_volumes(
             case_definition,
             shape=valid_shape,
             voting_config=voting_config,
+            truth_metric_config=truth_metric_config,
         )
         cases.append(case_report)
         volume_outputs[case_definition.case_id] = case_volumes
@@ -280,6 +338,7 @@ def _build_report_and_volumes(
             "case_set": case_set,
             "shape": [int(size) for size in valid_shape],
             "voting": voting_config.as_report_dict(),
+            "truth_metrics": truth_metric_config.as_report_dict(),
         },
         "cases": cases,
     }
@@ -317,9 +376,15 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fv_max",
                 "fv_mean",
                 "fv_nonzero_fraction",
+                "fv_buffered_f1_r2",
+                "fv_distance_p95",
                 "fvt_max",
                 "fvt_mean",
                 "fvt_nonzero_fraction",
+                "fvt_buffered_f1_r2",
+                "fvt_distance_p95",
+                "fvt_strike_median_error",
+                "fvt_dip_median_error",
             ),
         )
         writer.writeheader()
@@ -328,6 +393,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
             pyosv = case["pyosv"]
             fv = pyosv["fv"]
             fvt = pyosv["fvt"]
+            quality = case["quality"]
+            fv_quality = quality["fv_top_truth_count"]
+            fvt_quality = quality["fvt_top_truth_count"]
             writer.writerow(
                 {
                     "case_id": case["case_id"],
@@ -337,9 +405,15 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     "fv_max": fv["max"],
                     "fv_mean": fv["mean"],
                     "fv_nonzero_fraction": fv["nonzero_fraction"],
+                    "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"]["buffered_f1"],
+                    "fv_distance_p95": fv_quality["surface_distance"]["candidate_to_truth_p95"],
                     "fvt_max": fvt["max"],
                     "fvt_mean": fvt["mean"],
                     "fvt_nonzero_fraction": fvt["nonzero_fraction"],
+                    "fvt_buffered_f1_r2": fvt_quality["buffered_overlap_radius2"]["buffered_f1"],
+                    "fvt_distance_p95": fvt_quality["surface_distance"]["candidate_to_truth_p95"],
+                    "fvt_strike_median_error": fvt_quality["orientation_error"]["strike_median"],
+                    "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
                 }
             )
     return output_path
@@ -388,12 +462,24 @@ def write_case_volumes(
     return written
 
 
+def _validate_nonnegative_finite_scalar(value: float, name: str) -> float:
+    if not np.isscalar(value):
+        raise ValueError(f"{name} must be a finite scalar")
+    result = float(value)
+    if not np.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    if result < 0.0:
+        raise ValueError(f"{name} must be non-negative")
+    return result
+
+
 def run_example(
     *,
     output_dir: str | PathLike[str],
     case_set: str = "minimal",
     shape: tuple[int, int, int] = DEFAULT_SHAPE,
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -405,6 +491,7 @@ def run_example(
         case_set=case_set,
         shape=shape,
         voting_config=voting_config,
+        truth_metric_config=truth_metric_config,
     )
     write_metrics_json(report, output_dir, pretty=pretty)
     write_summary_csv(report, output_dir)
@@ -431,6 +518,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 attribute_smoothing=args.attribute_smoothing,
                 voter_thin_mode=args.voter_thin_mode,
                 reference_thin_sigma=args.reference_thin_sigma,
+            ),
+            truth_metric_config=SyntheticTruthMetricConfig(
+                truth_surface_half_width=args.truth_surface_half_width,
+                buffer_radius=args.buffer_radius,
             ),
             pretty=args.pretty,
             save_volumes=args.save_volumes,

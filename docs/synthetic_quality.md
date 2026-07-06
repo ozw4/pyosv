@@ -71,6 +71,8 @@ metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set minimal \
   --output-dir outputs/3d/synthetic_quality/minimal_001 \
+  --truth-surface-half-width 0.5 \
+  --buffer-radius 2.0 \
   --pretty
 ```
 
@@ -93,15 +95,34 @@ The stable minimum JSON contract is:
   "cases": [
     {
       "case_id": "single_vertical_plane",
-      "shape": [33, 33, 33]
+      "shape": [33, 33, 33],
+      "truth": {
+        "fault_voxel_count": 2277,
+        "surface_voxel_count": 1089
+      },
+      "quality": {
+        "fv_top_truth_count": {
+          "buffered_overlap_radius2": {},
+          "surface_distance": {}
+        },
+        "fvt_top_truth_count": {
+          "buffered_overlap_radius2": {},
+          "surface_distance": {},
+          "orientation_error": {}
+        }
+      }
     }
   ]
 }
 ```
 
-Additional per-case metric fields may be present. `--save-volumes` writes DAT
-volumes under `OUTPUT_DIR/volumes`. `--save-figures` and
-`--write-markdown-index` are accepted CLI flags for later report expansion.
+`quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
+the truth target. `quality.*.surface_distance` uses the thin truth surface mask
+defined by `abs(truth_distance) <= --truth-surface-half-width`.
+`summary.csv` includes buffered F1, candidate-to-truth p95 distance, and fvt
+median orientation error columns. `--save-volumes` writes DAT volumes under
+`OUTPUT_DIR/volumes`. `--save-figures` and `--write-markdown-index` are
+accepted CLI flags for later report expansion.
 
 ## Test Commands
 

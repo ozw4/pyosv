@@ -33,6 +33,8 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--case-set" in result.stdout
     assert "--output-dir" in result.stdout
     assert "--voter-thin-mode" in result.stdout
+    assert "--truth-surface-half-width" in result.stdout
+    assert "--buffer-radius" in result.stdout
 
 
 def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
@@ -63,6 +65,12 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     case = metrics["cases"][0]
     assert case["case_id"] == "single_vertical_plane"
     assert case["shape"] == [17, 17, 17]
+    assert case["truth"]["fault_voxel_count"] > case["truth"]["surface_voxel_count"] > 0
+    quality = case["quality"]
+    fvt_quality = quality["fvt_top_truth_count"]
+    assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
+    assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
+    assert "strike_median" in fvt_quality["orientation_error"]
     for name in ("fv", "fvt"):
         summary = case["pyosv"][name]
         assert summary["shape"] == [17, 17, 17]
@@ -79,8 +87,14 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert rows[0]["shape_n1"] == "17"
     assert float(rows[0]["fv_max"]) > 0.0
     assert float(rows[0]["fv_nonzero_fraction"]) > 0.0
+    assert float(rows[0]["fv_buffered_f1_r2"]) > 0.0
+    assert float(rows[0]["fv_distance_p95"]) >= 0.0
     assert float(rows[0]["fvt_max"]) > 0.0
     assert float(rows[0]["fvt_nonzero_fraction"]) > 0.0
+    assert float(rows[0]["fvt_buffered_f1_r2"]) > 0.0
+    assert float(rows[0]["fvt_distance_p95"]) >= 0.0
+    assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
+    assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
 
 
 def test_report_3d_synthetic_quality_normal_thin_mode_passes(tmp_path: Path) -> None:
@@ -141,3 +155,25 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
         "voter_thin_mode": "reference",
         "reference_thin_sigma": 1.5,
     }
+
+
+def test_report_3d_synthetic_quality_default_case_meets_smoke_thresholds(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    quality = metrics["cases"][0]["quality"]["fvt_top_truth_count"]
+
+    assert quality["buffered_overlap_radius2"]["buffered_f1"] >= 0.80
+    assert quality["surface_distance"]["candidate_to_truth_p95"] <= 3.0
+    assert quality["orientation_error"]["strike_median"] <= 10.0
+    assert quality["orientation_error"]["dip_median"] <= 10.0
