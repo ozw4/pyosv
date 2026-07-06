@@ -80,6 +80,7 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
     assert voter.surface_smoothing1 == 2.0
     assert voter.surface_smoothing2 == 2.0
     assert voter.surface_orientation_smoothing == 2.0
+    assert voter.final_normalization_smoothing == 0.0
     np.testing.assert_array_equal(
         voter.lmins,
         np.array(
@@ -285,6 +286,33 @@ def test_set_surface_orientation_smoothing_rejects_invalid_values(
     with pytest.raises(ValueError, match="surface_orientation_smoothing"):
         voter.set_surface_orientation_smoothing(
             surface_orientation_smoothing,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("final_normalization_smoothing", [0.0, 1.0, np.float32(2.0)])
+def test_set_final_normalization_smoothing_accepts_nonnegative_finite_numbers(
+    final_normalization_smoothing: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    voter.set_final_normalization_smoothing(final_normalization_smoothing)
+
+    assert voter.final_normalization_smoothing == float(final_normalization_smoothing)
+    assert isinstance(voter.final_normalization_smoothing, float)
+
+
+@pytest.mark.parametrize(
+    "final_normalization_smoothing",
+    [-0.1, np.nan, np.inf, True, "1.0"],
+)
+def test_set_final_normalization_smoothing_rejects_invalid_values(
+    final_normalization_smoothing: object,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="final_normalization_smoothing"):
+        voter.set_final_normalization_smoothing(
+            final_normalization_smoothing,  # type: ignore[arg-type]
         )
 
 
@@ -993,6 +1021,112 @@ def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
         np.testing.assert_array_equal(array, np.zeros_like(ft))
 
 
+@pytest.mark.parametrize(
+    ("final_normalization_smoothing", "expected_sigma"),
+    [(None, 0.0), (1.25, 1.25)],
+)
+def test_apply_voting_passes_configured_final_normalization_smoothing(
+    monkeypatch: pytest.MonkeyPatch,
+    final_normalization_smoothing: float | None,
+    expected_sigma: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    if final_normalization_smoothing is not None:
+        voter.set_final_normalization_smoothing(final_normalization_smoothing)
+
+    sigmas: list[float] = []
+
+    def normalize_stub(
+        volume: np.ndarray,
+        *,
+        sigma: float = 0.0,
+        power: float = 8.0,
+    ) -> np.ndarray:
+        del power
+        sigmas.append(sigma)
+        return np.zeros_like(volume, dtype=np.float32)
+
+    monkeypatch.setattr(voting3d, "_normalize_and_power_3d", normalize_stub)
+
+    ft = np.zeros((2, 3, 4), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+
+    fv, _, _ = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert sigmas == [expected_sigma]
+    assert fv.shape == ft.shape
+
+
+def test_apply_voting_final_normalization_smoothing_does_not_change_orientation_arrays() -> None:
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 3:8] = 0.8
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+
+    default_voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    default_voter.set_attribute_smoothing(0)
+    default_voter.set_surface_smoothing(0.0, 0.0)
+    default_voter.set_surface_orientation_smoothing(0.0)
+    smoothed_voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    smoothed_voter.set_attribute_smoothing(0)
+    smoothed_voter.set_surface_smoothing(0.0, 0.0)
+    smoothed_voter.set_surface_orientation_smoothing(0.0)
+    smoothed_voter.set_final_normalization_smoothing(1.0)
+
+    default_fv, default_vp, default_vt = default_voter.apply_voting(
+        d=1,
+        fm=0.5,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+    )
+    smoothed_fv, smoothed_vp, smoothed_vt = smoothed_voter.apply_voting(
+        d=1,
+        fm=0.5,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+    )
+
+    assert not np.allclose(default_fv, smoothed_fv)
+    np.testing.assert_array_equal(default_vp, smoothed_vp)
+    np.testing.assert_array_equal(default_vt, smoothed_vt)
+
+
+def test_apply_voting_final_normalization_smoothing_opt_in_keeps_fv_bounded() -> None:
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 3:8] = 0.8
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+
+    default_voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    default_voter.set_attribute_smoothing(0)
+    default_voter.set_surface_smoothing(0.0, 0.0)
+    default_voter.set_surface_orientation_smoothing(0.0)
+    smoothed_voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    smoothed_voter.set_attribute_smoothing(0)
+    smoothed_voter.set_surface_smoothing(0.0, 0.0)
+    smoothed_voter.set_surface_orientation_smoothing(0.0)
+    smoothed_voter.set_final_normalization_smoothing(1.0)
+
+    default_fv, _, _ = default_voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+    smoothed_fv, _, _ = smoothed_voter.apply_voting(
+        d=1,
+        fm=0.5,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+    )
+
+    for fv in (default_fv, smoothed_fv):
+        assert fv.dtype == np.float32
+        assert np.isfinite(fv).all()
+        assert fv.min() >= np.float32(0.0)
+        assert fv.max() <= np.float32(1.0)
+    assert not np.allclose(default_fv, smoothed_fv)
+
+
 def test_apply_voting_accepts_empty_n3_volume() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     ft = np.zeros((0, 8, 9), dtype=np.float32)
@@ -1489,7 +1623,7 @@ def test_normalize_and_power_3d_zero_dynamic_range_returns_finite_zeros() -> Non
 def test_normalize_and_power_3d_simple_ramp_uses_min_max_and_power() -> None:
     volume = np.array([[[2.0, 3.0, 4.0]]], dtype=np.float32)
 
-    scores = _normalize_and_power_3d(volume, sigma=0.0, power=4)
+    scores = _normalize_and_power_3d(volume, power=4)
 
     expected = np.array([[[0.0, 0.9375, 1.0]]], dtype=np.float32)
     assert scores.dtype == np.float32
@@ -1499,7 +1633,7 @@ def test_normalize_and_power_3d_simple_ramp_uses_min_max_and_power() -> None:
 def test_normalize_and_power_3d_reference_audit_range_and_monotonicity() -> None:
     volume = np.array([[[-2.0, 0.0, 2.0], [4.0, 6.0, 8.0]]], dtype=np.float32)
 
-    scores = _normalize_and_power_3d(volume, sigma=0.0, power=2)
+    scores = _normalize_and_power_3d(volume, power=2)
 
     assert scores.shape == volume.shape
     assert scores.dtype == np.float32
@@ -1520,6 +1654,58 @@ def test_normalize_and_power_3d_reference_audit_all_constant_input() -> None:
     assert scores.dtype == np.float32
     assert np.isfinite(scores).all()
     np.testing.assert_array_equal(scores, np.zeros_like(volume))
+
+
+def test_normalize_and_power_3d_default_matches_reference_formula() -> None:
+    volume = np.array(
+        [
+            [[-2.0, -1.0], [0.0, 1.5]],
+            [[3.0, 4.5], [6.0, 8.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    scores = _normalize_and_power_3d(volume)
+
+    expected = volume.copy()
+    expected -= expected.min()
+    expected /= expected.max()
+    expected = np.float32(1.0) - np.power(np.float32(1.0) - expected, 8)
+    assert scores.dtype == np.float32
+    np.testing.assert_allclose(scores, expected.astype(np.float32), rtol=0.0, atol=1e-7)
+
+
+def test_normalize_and_power_3d_explicit_sigma_opts_into_smoothing() -> None:
+    volume = np.zeros((5, 5, 5), dtype=np.float32)
+    volume[2, 2, 2] = 1.0
+
+    default_scores = _normalize_and_power_3d(volume)
+    smoothed_scores = _normalize_and_power_3d(volume, sigma=1.0)
+
+    assert smoothed_scores.shape == volume.shape
+    assert smoothed_scores.dtype == np.float32
+    assert np.isfinite(smoothed_scores).all()
+    assert smoothed_scores.min() >= np.float32(0.0)
+    assert smoothed_scores.max() <= np.float32(1.0)
+    assert not np.allclose(smoothed_scores, default_scores)
+
+
+def test_final_normalization_default_keeps_isolated_spike_sparser_than_smoothing() -> None:
+    volume = np.zeros((7, 7, 7), dtype=np.float32)
+    volume[3, 3, 3] = 1.0
+
+    default_scores = _normalize_and_power_3d(volume)
+    smoothed_scores = _normalize_and_power_3d(volume, sigma=1.0)
+
+    assert default_scores[3, 3, 3] == pytest.approx(1.0)
+    assert smoothed_scores[3, 3, 3] == pytest.approx(1.0)
+    assert np.count_nonzero(default_scores > 0.0) < np.count_nonzero(
+        smoothed_scores > 0.0,
+    )
+    assert np.count_nonzero(default_scores > 0.1) < np.count_nonzero(
+        smoothed_scores > 0.1,
+    )
+    assert default_scores.sum() < smoothed_scores.sum()
 
 
 def test_smooth_fault_likelihood_3d_preserves_shape_and_bounds() -> None:

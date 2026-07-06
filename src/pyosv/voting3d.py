@@ -39,6 +39,7 @@ class OptimalSurfaceVoter:
         self.surface_smoothing1 = 2.0
         self.surface_smoothing2 = 2.0
         self.surface_orientation_smoothing = float(max(self.rv, self.rw))
+        self.final_normalization_smoothing = 0.0
         self.lmins: np.ndarray
         self.lmaxs: np.ndarray
         self._update_shift_ranges()
@@ -86,6 +87,14 @@ class OptimalSurfaceVoter:
         self.surface_orientation_smoothing = _validate_nonnegative_float(
             surface_orientation_smoothing,
             "surface_orientation_smoothing",
+        )
+
+    def set_final_normalization_smoothing(self, sigma: float) -> None:
+        """Set smoothing for final vote map normalization before power transform."""
+
+        self.final_normalization_smoothing = _validate_nonnegative_float(
+            sigma,
+            "final_normalization_smoothing",
         )
 
     def _update_shift_ranges(self) -> None:
@@ -207,7 +216,10 @@ class OptimalSurfaceVoter:
         for seed in seeds:
             self._surface_voting(seed, fs, fe, vp, vt, vm)
 
-        fv = _normalize_and_power_3d(fe)
+        fv = _normalize_and_power_3d(
+            fe,
+            sigma=self.final_normalization_smoothing,
+        )
         return fv, vp, vt
 
     def thin(
@@ -402,9 +414,17 @@ class OptimalSurfaceVoter:
 def _normalize_and_power_3d(
     x: np.ndarray,
     *,
-    sigma: float = 1.0,
+    sigma: float = 0.0,
     power: int = 8,
 ) -> np.ndarray:
+    """Normalize a final 3D vote map using Java-reference default semantics.
+
+    By default this mirrors ``OptimalSurfaceVoter.normalization``: subtract the
+    global minimum, divide by the global maximum when nonzero, then apply
+    ``1 - (1 - x) ** power`` without additional smoothing. Set ``sigma > 0`` to
+    opt in to the practical smoothed vote-map behavior.
+    """
+
     x_array = _validate_finite_array3(x, "x").astype(np.float32, copy=True)
     sigma_float = _validate_nonnegative_float(sigma, "sigma")
     power_int = _validate_positive_int(power, "power")

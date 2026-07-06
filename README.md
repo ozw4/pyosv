@@ -166,12 +166,22 @@ strike/dip, matching the reference-first surface-orientation path. Use
 `set_surface_orientation_smoothing(0.0)` only for diagnostics that require the
 older raw-surface behavior.
 
+`OptimalSurfaceVoter.apply_voting()` now uses reference-style final vote-map
+normalization by default: subtract the global minimum, divide by the global
+maximum, then apply the power transform without final vote-map smoothing. Use
+`set_final_normalization_smoothing(1.0)` to opt into the older practical
+smoothed final-normalization behavior, or pass
+`--final-normalization-smoothing 1.0` in the F3 validation examples.
+
 Migration note: code that relied on the older derivative-bank scanner should
 call `scan_fast()` explicitly. Code that relied on old 3D scanner
 fault-normal thinning should pass `mode="normal"` explicitly, or use
 `--scanner-thin-mode normal` in F3 validation examples. Code that relied on
 old 3D voter fault-normal thinning should pass `mode="normal"` explicitly, or
-use `--voter-thin-mode normal` in F3 validation examples.
+use `--voter-thin-mode normal` in F3 validation examples. Code that relied on
+old final vote-map smoothing should call
+`set_final_normalization_smoothing(1.0)` explicitly, or use
+`--final-normalization-smoothing 1.0` in F3 validation examples.
 
 F3 figure-based diagnostics and interpretation order are documented in
 `docs/f3d_visual_diagnostics.md`.

@@ -82,6 +82,7 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.surface_smoothing1 == 2.0
     assert args.surface_smoothing2 == 2.0
     assert args.surface_orientation_smoothing is None
+    assert args.final_normalization_smoothing is None
     assert args.d == 4
     assert args.fm == 0.3
     assert args.interior_margin is None
@@ -92,6 +93,9 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
     override_args = module.build_parser().parse_args(["--surface-orientation-smoothing", "0"])
     assert override_args.surface_orientation_smoothing == 0.0
+    final_args = module.build_parser().parse_args(["--final-normalization-smoothing", "1.0"])
+    assert final_args.final_normalization_smoothing == 1.0
+    assert "--final-normalization-smoothing" in module.build_parser().format_help()
 
 
 def test_parser_accepts_and_rejects_thinning_modes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -245,6 +249,7 @@ def test_run_example_writes_metrics_json_to_output_dir(
     assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
     assert loaded["config"]["scanner"]["remove_edge_effects"] is True
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
+    assert loaded["config"]["voter"]["final_normalization_smoothing"] == 0.0
     assert loaded["config"]["voter"]["surface_voting_boundary_policy"] == (
         "reference-like-i2-i3-interior"
     )
@@ -280,11 +285,13 @@ def test_run_example_records_selected_thinning_modes(
         reference_thin_sigma=1.25,
         remove_scanner_edge_effects=False,
         surface_orientation_smoothing=0.0,
+        final_normalization_smoothing=1.0,
     )
 
     assert report["config"]["scanner"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["thin_mode"] == "reference"
     assert report["config"]["voter"]["surface_orientation_smoothing"] == 0.0
+    assert report["config"]["voter"]["final_normalization_smoothing"] == 1.0
     assert report["config"]["scanner"]["reference_thin_sigma"] == 1.25
     assert report["config"]["scanner"]["remove_edge_effects"] is False
     assert report["config"]["voter"]["reference_thin_sigma"] == 1.25
@@ -296,10 +303,27 @@ def test_run_example_records_selected_thinning_modes(
     assert received_kwargs["reference_thin_sigma"] == 1.25
     assert received_kwargs["remove_scanner_edge_effects"] is False
     assert received_kwargs["surface_orientation_smoothing"] == 0.0
+    assert received_kwargs["final_normalization_smoothing"] == 1.0
 
 
-def test_small_pipeline_accepts_reference_thinning(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_small_pipeline_accepts_reference_thinning_and_final_normalization_smoothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _import_validation_module(monkeypatch)
+    from pyosv.voting3d import OptimalSurfaceVoter
+
+    received_sigmas: list[float] = []
+    original_setter = OptimalSurfaceVoter.set_final_normalization_smoothing
+
+    def recording_setter(self: object, sigma: float) -> None:
+        received_sigmas.append(float(sigma))
+        original_setter(self, sigma)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        OptimalSurfaceVoter,
+        "set_final_normalization_smoothing",
+        recording_setter,
+    )
 
     outputs = module.run_pipeline(
         np.zeros((4, 4, 4), dtype=np.float32),
@@ -322,8 +346,10 @@ def test_small_pipeline_accepts_reference_thinning(monkeypatch: pytest.MonkeyPat
         scanner_thin_mode="reference",
         voter_thin_mode="reference",
         reference_thin_sigma=1.0,
+        final_normalization_smoothing=1.0,
     )
 
+    assert received_sigmas == [1.0]
     assert outputs["fet_py.dat"].shape == (4, 4, 4)
     assert outputs["vp_py.dat"].shape == (4, 4, 4)
     assert outputs["vt_py.dat"].shape == (4, 4, 4)

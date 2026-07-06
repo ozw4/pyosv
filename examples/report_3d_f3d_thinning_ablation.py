@@ -185,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         help="Surface smoothing in the second voting dimension.",
     )
+    crop_validation.add_final_normalization_smoothing_argument(parser)
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
     parser.add_argument(
@@ -229,6 +230,7 @@ def run_example(
     strain_max2: float = 0.25,
     surface_smoothing1: float = 2.0,
     surface_smoothing2: float = 2.0,
+    final_normalization_smoothing: float | None = None,
     d: int = 4,
     fm: float = 0.3,
     remove_scanner_edge_effects: bool = True,
@@ -284,6 +286,7 @@ def run_example(
         strain_max2=strain_max2,
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
+        final_normalization_smoothing=final_normalization_smoothing,
         d=d,
         fm=fm,
         remove_scanner_edge_effects=remove_scanner_edge_effects,
@@ -313,6 +316,7 @@ def run_example(
                 strain_max2=strain_max2,
                 surface_smoothing1=surface_smoothing1,
                 surface_smoothing2=surface_smoothing2,
+                final_normalization_smoothing=final_normalization_smoothing,
                 d=d,
                 fm=fm,
                 remove_scanner_edge_effects=remove_scanner_edge_effects,
@@ -410,6 +414,7 @@ def run_ablation_pipeline(
     d: int,
     fm: float,
     remove_scanner_edge_effects: bool,
+    final_normalization_smoothing: float | None = None,
 ) -> dict[str, dict[str, np.ndarray]]:
     from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
@@ -438,6 +443,8 @@ def run_ablation_pipeline(
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
+    if final_normalization_smoothing is not None:
+        voter.set_final_normalization_smoothing(final_normalization_smoothing)
 
     voting_by_scanner_mode: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for mode, thinned in thinned_by_scanner_mode.items():
@@ -582,6 +589,7 @@ def build_config(
     strain_max2: float,
     surface_smoothing1: float,
     surface_smoothing2: float,
+    final_normalization_smoothing: float | None,
     d: int,
     fm: float,
     remove_scanner_edge_effects: bool,
@@ -623,6 +631,9 @@ def build_config(
             "strain_max2": float(strain_max2),
             "surface_smoothing1": float(surface_smoothing1),
             "surface_smoothing2": float(surface_smoothing2),
+            "final_normalization_smoothing": float(
+                0.0 if final_normalization_smoothing is None else final_normalization_smoothing
+            ),
             "d": int(d),
             "fm": float(fm),
             "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
@@ -1070,6 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
             strain_max2=args.strain_max2,
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
+            final_normalization_smoothing=args.final_normalization_smoothing,
             d=args.d,
             fm=args.fm,
             remove_scanner_edge_effects=args.remove_scanner_edge_effects,

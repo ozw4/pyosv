@@ -172,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         help="Surface smoothing in the second voting dimension.",
     )
+    crop_validation.add_final_normalization_smoothing_argument(parser)
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
     crop_validation.add_thinning_arguments(parser)
@@ -208,6 +209,7 @@ def run_example(
     strain_max2: float = 0.25,
     surface_smoothing1: float = 2.0,
     surface_smoothing2: float = 2.0,
+    final_normalization_smoothing: float | None = None,
     d: int = 4,
     fm: float = 0.3,
     scanner_thin_mode: str = "reference",
@@ -276,6 +278,7 @@ def run_example(
         strain_max2=strain_max2,
         surface_smoothing1=surface_smoothing1,
         surface_smoothing2=surface_smoothing2,
+        final_normalization_smoothing=final_normalization_smoothing,
         d=d,
         fm=fm,
         scanner_thin_mode=scanner_thin_mode,
@@ -308,6 +311,7 @@ def run_example(
             strain_max2=strain_max2,
             surface_smoothing1=surface_smoothing1,
             surface_smoothing2=surface_smoothing2,
+            final_normalization_smoothing=final_normalization_smoothing,
             d=d,
             fm=fm,
             scanner_thin_mode=scanner_thin_mode,
@@ -442,6 +446,7 @@ def build_config(
     strain_max2: float,
     surface_smoothing1: float,
     surface_smoothing2: float,
+    final_normalization_smoothing: float | None,
     d: int,
     fm: float,
     scanner_thin_mode: str = "reference",
@@ -483,6 +488,9 @@ def build_config(
             "strain_max2": float(strain_max2),
             "surface_smoothing1": float(surface_smoothing1),
             "surface_smoothing2": float(surface_smoothing2),
+            "final_normalization_smoothing": float(
+                0.0 if final_normalization_smoothing is None else final_normalization_smoothing
+            ),
             "d": int(d),
             "fm": float(fm),
             "thin_mode": voter_thin_mode,
@@ -795,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
             strain_max2=args.strain_max2,
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
+            final_normalization_smoothing=args.final_normalization_smoothing,
             d=args.d,
             fm=args.fm,
             scanner_thin_mode=args.scanner_thin_mode,

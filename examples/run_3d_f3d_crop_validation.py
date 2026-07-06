@@ -52,6 +52,10 @@ VOLUME_NAMES = (
     "fvt_py.dat",
 )
 THIN_MODES = ("normal", "reference")
+FINAL_NORMALIZATION_SMOOTHING_HELP = (
+    "Default uses reference-like final normalization with no final vote-map smoothing. "
+    "Use 1.0 to compare the older practical smoothing behavior."
+)
 
 
 def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
@@ -82,6 +86,15 @@ def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
             "Disable scanner reference-thinning edge-effect removal for diagnostics. "
             "The default removes scanner edge effects."
         ),
+    )
+
+
+def add_final_normalization_smoothing_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--final-normalization-smoothing",
+        type=float,
+        default=None,
+        help=FINAL_NORMALIZATION_SMOOTHING_HELP,
     )
 
 
@@ -209,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
             "defaults to max(rv, rw). Use 0 to disable."
         ),
     )
+    add_final_normalization_smoothing_argument(parser)
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
     parser.add_argument(
@@ -251,6 +265,7 @@ def run_example(
     surface_smoothing1: float = 2.0,
     surface_smoothing2: float = 2.0,
     surface_orientation_smoothing: float | None = None,
+    final_normalization_smoothing: float | None = None,
     d: int = 4,
     fm: float = 0.3,
     interior_margin: int | None = None,
@@ -307,6 +322,9 @@ def run_example(
                 if surface_orientation_smoothing is None
                 else surface_orientation_smoothing
             ),
+            "final_normalization_smoothing": float(
+                0.0 if final_normalization_smoothing is None else final_normalization_smoothing
+            ),
             "d": int(d),
             "fm": float(fm),
             "thin_mode": voter_thin_mode,
@@ -358,6 +376,7 @@ def run_example(
             surface_smoothing1=surface_smoothing1,
             surface_smoothing2=surface_smoothing2,
             surface_orientation_smoothing=surface_orientation_smoothing,
+            final_normalization_smoothing=final_normalization_smoothing,
             d=d,
             fm=fm,
             scanner_thin_mode=scanner_thin_mode,
@@ -473,6 +492,7 @@ def run_pipeline(
     d: int,
     fm: float,
     surface_orientation_smoothing: float | None = None,
+    final_normalization_smoothing: float | None = None,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
@@ -497,6 +517,8 @@ def run_pipeline(
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
     if surface_orientation_smoothing is not None:
         voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
+    if final_normalization_smoothing is not None:
+        voter.set_final_normalization_smoothing(final_normalization_smoothing)
     fv, vp, vt = voter.apply_voting(d=d, fm=fm, ft=fet, pt=fpt, tt=ftt)
     fvt = voter.thin(
         fv,
@@ -877,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
             surface_orientation_smoothing=args.surface_orientation_smoothing,
+            final_normalization_smoothing=args.final_normalization_smoothing,
             d=args.d,
             fm=args.fm,
             interior_margin=args.interior_margin,
