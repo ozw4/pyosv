@@ -1,9 +1,8 @@
 # Controlled Synthetic Quality
 
-Controlled synthetic cases measure truth quality, not agreement with the
-reference implementation. They are for checking whether a known fault geometry
-is recovered by the Python workflow without scanner or external-data
-confounds.
+Controlled synthetic cases measure truth quality, not reference agreement. They
+are for checking whether a known fault geometry is recovered by the Python
+workflow without scanner or external-data confounds.
 
 These validation modes answer different questions:
 
@@ -30,13 +29,14 @@ The controlled synthetic API includes:
 - `examples/report_3d_synthetic_quality.py`
 
 The current report CLI includes the `minimal` case set, which contains only
-`single_vertical_plane`. It runs oracle `ft` / `pt` / `tt` attributes through
-`OptimalSurfaceVoter`, applies thinning, and writes truth-quality report files.
+`single_vertical_plane`. PR2 covers only the oracle `ft` / `pt` / `tt` path: it
+runs those controlled attributes through `OptimalSurfaceVoter`, applies
+thinning, and writes truth-quality report files.
 
 The current scope does not include:
 
 - extended cases: dipping, curved, crossing, boundary, weak noisy
-- skin topology metrics
+- skin metrics, including skin topology metrics
 - synthetic seismic generation
 - scanner-inclusive synthetic path
 - FaultSeg3D loader
@@ -82,10 +82,11 @@ The CLI writes these files under `--output-dir`:
 ```text
 metrics.json
 summary.csv
+visual_report.md  # only with --write-markdown-index
 ```
 
-With optional visual-report outputs enabled, each case also gets a case
-directory. For the `minimal` case set this is:
+With optional visual outputs enabled, each case also gets a case directory. For
+the `minimal` case set this is:
 
 ```text
 single_vertical_plane/

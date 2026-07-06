@@ -34,7 +34,11 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "usage:" in result.stdout
     assert "--case-set" in result.stdout
     assert "--output-dir" in result.stdout
+    assert "--shape" in result.stdout
     assert "--variants" in result.stdout
+    assert "--save-volumes" in result.stdout
+    assert "--save-figures" in result.stdout
+    assert "--write-markdown-index" in result.stdout
     assert "--voter-thin-mode" in result.stdout
     assert "--truth-surface-half-width" in result.stdout
     assert "--buffer-radius" in result.stdout
