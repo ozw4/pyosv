@@ -7,10 +7,14 @@ from numbers import Integral, Real
 
 import numpy as np
 
+from pyosv.geometry import fault_normal_vector_from_strike_and_dip
+
 __all__ = [
     "Synthetic3DCase",
     "SyntheticPlaneSpec",
     "coordinate_grids3",
+    "generate_single_plane_case",
+    "make_single_vertical_plane_case",
     "validate_center3",
     "validate_shape3",
 ]
@@ -123,6 +127,60 @@ def coordinate_grids3(shape: tuple[int, int, int]) -> tuple[np.ndarray, np.ndarr
     """Return ``(x1, x2, x3)`` float32 grids for a ``(n3, n2, n1)`` volume."""
     i3, i2, i1 = np.indices(validate_shape3(shape), dtype=np.float32)
     return i1, i2, i3
+
+
+def generate_single_plane_case(spec: SyntheticPlaneSpec) -> Synthetic3DCase:
+    """Generate a controlled single-plane 3D synthetic fault case."""
+    if not isinstance(spec, SyntheticPlaneSpec):
+        raise ValueError("spec must be a SyntheticPlaneSpec")
+
+    normal = fault_normal_vector_from_strike_and_dip(spec.strike, spec.dip).astype(
+        np.float64,
+        copy=False,
+    )
+    x1, x2, x3 = coordinate_grids3(spec.shape)
+    x1c, x2c, x3c = spec.center
+    truth_distance = (
+        (x1.astype(np.float64) - x1c) * normal[0]
+        + (x2.astype(np.float64) - x2c) * normal[1]
+        + (x3.astype(np.float64) - x3c) * normal[2]
+    )
+    truth_fault_mask = np.abs(truth_distance) <= spec.mask_half_width
+    truth_fault_id = np.where(truth_fault_mask, 1, 0).astype(np.int32)
+    truth_strike = np.full(spec.shape, spec.strike, dtype=np.float32)
+    truth_dip = np.full(spec.shape, spec.dip, dtype=np.float32)
+    ft_oracle = np.exp(-0.5 * (truth_distance / spec.likelihood_sigma) ** 2)
+    ft_oracle = np.clip(ft_oracle, 0.0, 1.0).astype(np.float32)
+
+    return Synthetic3DCase(
+        case_id=spec.case_id,
+        shape=spec.shape,
+        truth_fault_mask=truth_fault_mask,
+        truth_fault_id=truth_fault_id,
+        truth_distance=truth_distance.astype(np.float32),
+        truth_strike=truth_strike,
+        truth_dip=truth_dip,
+        ft_oracle=ft_oracle,
+        pt_oracle=truth_strike,
+        tt_oracle=truth_dip,
+    )
+
+
+def make_single_vertical_plane_case(
+    shape: tuple[int, int, int] = (64, 64, 64),
+) -> Synthetic3DCase:
+    """Return the default controlled vertical single-plane synthetic case."""
+    n3, n2, n1 = validate_shape3(shape)
+    spec = SyntheticPlaneSpec(
+        case_id="single_vertical_plane",
+        shape=(n3, n2, n1),
+        center=((n1 - 1) / 2.0, (n2 - 1) / 2.0, (n3 - 1) / 2.0),
+        strike=0.0,
+        dip=90.0,
+        likelihood_sigma=1.25,
+        mask_half_width=1.0,
+    )
+    return generate_single_plane_case(spec)
 
 
 def _validate_finite_real(

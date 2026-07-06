@@ -5,6 +5,8 @@ from pyosv.synthetic3d import (
     Synthetic3DCase,
     SyntheticPlaneSpec,
     coordinate_grids3,
+    generate_single_plane_case,
+    make_single_vertical_plane_case,
     validate_center3,
     validate_shape3,
 )
@@ -174,3 +176,68 @@ def test_synthetic3d_case_rejects_array_shape_mismatch() -> None:
             pt_oracle=values,
             tt_oracle=values,
         )
+
+
+def test_make_single_vertical_plane_case_returns_expected_arrays() -> None:
+    case = make_single_vertical_plane_case(shape=(5, 7, 9))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "single_vertical_plane"
+    assert case.shape == (5, 7, 9)
+    expected_dtypes = {
+        "truth_fault_mask": np.bool_,
+        "truth_fault_id": np.int32,
+        "truth_distance": np.float32,
+        "truth_strike": np.float32,
+        "truth_dip": np.float32,
+        "ft_oracle": np.float32,
+        "pt_oracle": np.float32,
+        "tt_oracle": np.float32,
+    }
+    for name, dtype in expected_dtypes.items():
+        array = getattr(case, name)
+        assert array.shape == case.shape
+        assert array.dtype == dtype
+
+
+def test_single_plane_case_truth_mask_ids_and_oracle_likelihood_are_consistent() -> None:
+    spec = SyntheticPlaneSpec(
+        case_id="plane-a",
+        shape=(5, 7, 9),
+        center=(4.0, 3.0, 2.0),
+        strike=30.0,
+        dip=60.0,
+        likelihood_sigma=1.25,
+        mask_half_width=1.0,
+    )
+    case = generate_single_plane_case(spec)
+
+    np.testing.assert_array_equal(case.truth_fault_id, case.truth_fault_mask.astype(np.int32))
+    assert np.all(case.ft_oracle >= 0.0)
+    assert np.all(case.ft_oracle <= 1.0)
+
+    abs_distance = np.abs(case.truth_distance)
+    near_index = np.unravel_index(np.argmin(abs_distance), abs_distance.shape)
+    far_index = np.unravel_index(np.argmax(abs_distance), abs_distance.shape)
+    assert case.ft_oracle[near_index] > case.ft_oracle[far_index]
+
+
+def test_single_vertical_plane_case_mask_is_centered_near_x2() -> None:
+    case = make_single_vertical_plane_case(shape=(5, 7, 9))
+    masked_x2 = np.flatnonzero(case.truth_fault_mask.any(axis=(0, 2)))
+
+    np.testing.assert_array_equal(masked_x2, np.array([2, 3, 4]))
+
+
+def test_single_vertical_plane_case_has_constant_truth_orientation() -> None:
+    case = make_single_vertical_plane_case(shape=(5, 7, 9))
+
+    np.testing.assert_array_equal(case.truth_strike, np.zeros(case.shape, dtype=np.float32))
+    np.testing.assert_array_equal(case.truth_dip, np.full(case.shape, 90.0, dtype=np.float32))
+    np.testing.assert_array_equal(case.pt_oracle, case.truth_strike)
+    np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
+
+
+def test_generate_single_plane_case_rejects_invalid_spec() -> None:
+    with pytest.raises(ValueError):
+        generate_single_plane_case(object())
