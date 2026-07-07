@@ -420,7 +420,7 @@ CASE_SETS = {
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run controlled 3D synthetic oracle voting and write quality reports.",
+        description="Run controlled 3D synthetic truth-quality reports.",
         epilog=(
             "Example:\n"
             "  PYTHONPATH=src python examples/report_3d_synthetic_quality.py \\\n"
@@ -479,13 +479,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--input-mode",
         choices=("oracle", "scanner", "both"),
         default="oracle",
-        help="Run oracle attributes, scanner-inclusive attributes, or both.",
+        help=(
+            "Input path: oracle evaluates voting/thinning/skinning from truth "
+            "attributes, scanner evaluates scanner plus downstream stages, both runs both."
+        ),
     )
     parser.add_argument(
         "--scanner-backend",
         choices=("reference-like", "fast"),
         default="reference-like",
-        help="FaultOrientScanner3 backend used by --input-mode scanner/both.",
+        help="FaultOrientScanner3 backend for scanner/both mode: reference-like scan or fast scan.",
     )
     parser.add_argument(
         "--scanner-phi-min",
@@ -527,7 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scanner-thin-mode",
         choices=("none", "reference", "normal"),
         default="reference",
-        help="Optional thinning applied to scanner ft/pt/tt before voting.",
+        help="Scanner attribute thinning before voting: none, reference strike-bin, or normal.",
     )
     parser.add_argument(
         "--keep-scanner-edge-effects",

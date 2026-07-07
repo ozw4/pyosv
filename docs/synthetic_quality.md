@@ -14,6 +14,38 @@ controlled synthetic: is the result correct against known truth?
 F3 visual/multicrop: does the workflow avoid obvious failures on real data?
 ```
 
+## Input Paths
+
+The report has three public input paths:
+
+```text
+oracle:
+  voting/thinning/skinning upper-bound and isolated downstream evaluation.
+
+scanner:
+  scanner + voting + thinning + skinning end-to-end synthetic evaluation.
+
+both:
+  diagnostic mode that compares oracle and scanner on the same truth geometry.
+```
+
+Oracle mode is the default and remains the backward-compatible report shape.
+It starts from synthetic truth attributes (`ft_oracle`, `pt_oracle`,
+`tt_oracle`) and is best read as the practical upper bound for the downstream
+voting, thinning, and skinning stages when the fault likelihood and orientation
+attributes are already controlled.
+
+Scanner mode is intentionally harder. It first converts the synthetic truth
+likelihood into a low-planarity surrogate, runs `FaultOrientScanner3`, and then
+passes scanner-derived attributes into the same downstream stages. Its metrics
+therefore include scanner errors as well as downstream voting/thinning/skinning
+errors and should not be expected to match oracle-mode scores.
+
+Both mode runs both paths for each `(case_id, variant)` using the same truth
+geometry. It is a diagnostic comparison mode, not a new pass/fail contract.
+Top-level `pyosv` and `quality` alias the oracle pipeline in both mode, while
+the scanner results live under `pipelines.scanner`.
+
 ## Current Scope
 
 The controlled synthetic API includes:
@@ -79,9 +111,17 @@ truth geometry
 ```
 
 `make_scanner_input_from_case(case, config)` converts high-on-fault
-`case.ft_oracle` into low-on-fault planarity-like input using
-`background - fault_contrast * ft_oracle`, optional deterministic Gaussian
-noise, and clipping. This mirrors the F3 scanner convention where background
+`case.ft_oracle` into low-on-fault planarity-like input using:
+
+```text
+scanner_input = background - fault_contrast * ft_oracle
+scanner_input += normal(0, noise_sigma)  # only when noise_sigma > 0
+scanner_input = clip(scanner_input, clip_min, clip_max)
+```
+
+The default `SyntheticScannerInputConfig` uses `background=1.0`,
+`fault_contrast=0.85`, `noise_sigma=0.0`, `seed=20260706`, `clip_min=0.0`,
+and `clip_max=1.0`. This mirrors the F3 scanner convention where background
 planarity is high and fault-adjacent planarity is low.
 
 The current report CLI includes these case sets:
@@ -92,6 +132,13 @@ The current report CLI includes these case sets:
   `single_dipping_plane`, and `curved_surface`.
 - `extended`: the geometry cases plus `parallel_planes`, `crossing_planes`,
   `boundary_plane`, and `weak_noisy_plane`.
+
+Scanner mode is most useful on `geometry` and `extended` when read as a stress
+test of the scanner contract. Curved, crossing, boundary, and weak/noisy cases
+can expose orientation ambiguity, edge effects, fragmented skins, or weak
+scanner response before the voter sees the data. Compare those rows with oracle
+mode on the same case before treating a scanner-mode drop as a downstream voter
+or skinning regression.
 
 The public factory cases are:
 
@@ -184,9 +231,9 @@ visual_report.md  # only with --write-markdown-index
 `--input-mode` controls the report input path:
 
 ```text
-oracle   # default: oracle ft/pt/tt only, with the stable legacy JSON shape
+oracle   # default: oracle ft/pt/tt; downstream upper-bound/isolated evaluation
 scanner  # scanner_input -> FaultOrientScanner3 -> optional scanner thin -> voting
-both     # run oracle and scanner pipelines for the same case/variant
+both     # compare oracle and scanner pipelines on the same truth case/variant
 ```
 
 Scanner mode is configured with `--scanner-backend reference-like|fast`,
@@ -195,7 +242,11 @@ Scanner mode is configured with `--scanner-backend reference-like|fast`,
 `--scanner-thin-mode none|reference|normal`, and
 `--keep-scanner-edge-effects`. The scanner defaults are reference-like backend,
 strike range `0..180`, dip range `45..90`, `sigma1=sigma2=2`, and reference
-scanner thinning with edge-effect removal.
+scanner thinning with edge-effect removal. `--scanner-backend reference-like`
+uses the reference-like scan path; `fast` uses the accelerated scanner path.
+`--scanner-thin-mode none` passes raw scanner attributes to voting,
+`reference` applies strike-binned scanner thinning, and `normal` uses the
+legacy fault-normal scanner thinning path.
 
 With optional visual outputs enabled, each case also gets a case directory. For
 the `minimal` case set this is:
@@ -331,12 +382,15 @@ against `current_default` when that baseline variant is present; when it is not
 present, `baseline_variant` is `null` and the comparison map is empty.
 With `--input-mode scanner` or `--input-mode both`, each variant also stores
 `pipelines`. Scanner variants include `scanner.input`, raw scanner `ft`/`pt`/`tt`,
-and scanner-thinned `fet`/`fpt`/`ftt` summaries. In scanner-only mode, top-level
+and used scanner `fet`/`fpt`/`ftt` summaries; the corresponding volume artifacts
+are named `ft_used`, `pt_used`, and `tt_used`. In scanner-only mode, top-level
 `pyosv` and `quality` alias the scanner pipeline; in both mode they alias the
 oracle pipeline. Scanner pipeline reports also include `scanner_quality`, which
 measures scanner outputs before voting/skinning: raw scanner `ft` top-truth-count
 overlap and surface distance, raw and used scanner `pt`/`tt` orientation errors,
-and scanner-input association with the truth surface. The input association uses
+and scanner-input association with the truth surface. These metrics are separate
+from downstream `quality.*` so scanner failures can be distinguished from voter,
+thinning, or skinning failures. The input association uses
 `abs(truth_distance) <= --truth-surface-half-width` as the near-surface mask and
 `abs(truth_distance) >= max(3.0, --truth-surface-half-width + 2.0)` as the far
 mask; positive contrast means the low-on-fault scanner input is lower near truth
@@ -530,7 +584,7 @@ and skin metrics.
 
 ## Test Commands
 
-The PR5 minimum validation command for the extended synthetic suite is:
+The PR6 minimum validation command for the synthetic scanner-inclusive suite is:
 
 ```bash
 PYTHONPATH=src python -m pytest -q \
