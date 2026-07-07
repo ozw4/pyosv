@@ -75,28 +75,29 @@ The controlled synthetic API includes:
 - scanner-inclusive report/CLI pipeline
 - `examples/report_3d_synthetic_quality.py`
 
-The controlled synthetic report pipeline is:
+The controlled synthetic oracle path is:
 
 ```text
-truth geometry
-  -> oracle ft/pt/tt
+synthetic truth geometry
+  -> ft_oracle / pt_oracle / tt_oracle
   -> OptimalSurfaceVoter
   -> voter thin
   -> FaultSkinner
-  -> fv/fvt/skin truth metrics
+  -> truth metrics
 ```
 
-The report can also run a scanner-inclusive path:
+The scanner-inclusive path is:
 
 ```text
-truth geometry
-  -> scanner_input / ep_synthetic
-  -> FaultOrientScanner3.scan() or scan_fast()
-  -> optional FaultOrientScanner3.thin()
+synthetic truth geometry
+  -> synthetic scanner input
+  -> FaultOrientScanner3
+  -> ft_scan / pt_scan / tt_scan
+  -> optional scanner thin
   -> OptimalSurfaceVoter
   -> voter thin
   -> FaultSkinner
-  -> fv/fvt/skin truth metrics
+  -> truth metrics
 ```
 
 Scanner-inclusive experiments can also generate a controlled
@@ -156,6 +157,62 @@ The public factory cases are:
   behavior and boundary handling.
 - `weak_noisy_plane`: degraded likelihood with deterministic noise; tests
   robustness under weak contrast.
+
+## Case Classification And Findings
+
+Use controlled synthetic results to separate basic recovery checks from
+diagnostic stress signals. The current classifications are:
+
+```text
+Basic pass / sanity cases:
+  - single_vertical_plane
+  - single_dipping_plane
+  - weak_noisy_plane
+
+Diagnostic / stress cases:
+  - curved_surface: model-limit / thinning-sensitivity diagnostic
+  - boundary_plane: edge/boundary stress diagnostic
+  - parallel_planes: skin separation / topology diagnostic
+  - crossing_planes: crossing / over-merge / over-split diagnostic
+```
+
+Observed numbers from `oracle_extended_001` are examples of the current
+implementation behavior, not fixed acceptance thresholds. In that run,
+`single_vertical_plane` was a clean basic pass (`fvt_buffered_f1_r2=1.0`,
+`fvt_distance_p95=0.0`, and zero orientation error). `single_dipping_plane`
+was also a basic pass (`fvt_buffered_f1_r2` about `0.9993`,
+`fvt_distance_p95=1.0`, and near-zero orientation error). `weak_noisy_plane`
+remained a robustness sanity case (`fvt_buffered_f1_r2` about `0.9937`) with
+good skin quality.
+
+`curved_surface` should not be read as a simple CI failure when current
+defaults score poorly. `OptimalSurfaceVoter` is not an arbitrary global curved
+surface tracker. It is expected to handle surfaces that remain single-valued
+and moderately varying in the seed-local coordinate system, while strong
+curvature or large orientation variation is a stress case. In the observed
+`oracle_extended_001` run, current defaults had `fvt_buffered_f1_r2` about
+`0.6546`, `fvt_distance_p95` about `14.66`, `strike_median_error` about
+`37.4` deg, and `skin_buffered_f1_r2` about `0.2915`. The
+`voter_thin_normal` variant improved the same truth case substantially
+(`fvt_buffered_f1_r2` about `0.9879`, `fvt_distance_p95=1.0`, and
+`skin_buffered_f1_r2` about `0.9753`). Treat this as a model-limit and
+thinning-sensitivity signal unless a narrower regression is demonstrated.
+
+`boundary_plane` places the true fault near a volume boundary. Poor edge
+metrics are not automatically evidence that candidates should be removed by a
+single edge-cleanup rule, because that could also erase true boundary faults.
+False-positive suppression and boundary truth preservation need to be evaluated
+separately. In the observed run, all variants had `fvt_buffered_f1_r2` about
+`0.1136`, `fvt_distance_p95=30`, `skin_count=0`, and
+`fvt_edge_false_positive_fraction` about `0.8788`; read this as an
+edge/boundary stress diagnostic.
+
+For `parallel_planes` and `crossing_planes`, FVT overlap alone is not enough.
+These cases are intended to expose skin topology behavior: separation of nearby
+truth faults for `parallel_planes`, and over-merge or over-split behavior near
+intersections for `crossing_planes`. Future metrics should report coverage,
+over-merge, and over-split against truth fault IDs rather than relying only on
+global overlap scores or raw skin counts.
 
 The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for
 vertical and dipping single-plane cases and the analytic curved surface. They
