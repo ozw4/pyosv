@@ -27,10 +27,12 @@ import numpy as np
 
 from pyosv.synthetic3d import (
     Synthetic3DCase,
+    SyntheticScannerInputConfig,
     make_boundary_plane_case,
     make_crossing_planes_case,
     make_curved_surface_case,
     make_parallel_planes_case,
+    make_scanner_input_from_case,
     make_single_dipping_plane_case,
     make_single_vertical_plane_case,
     make_weak_noisy_plane_case,
@@ -46,6 +48,7 @@ from pyosv.synthetic_metrics import (
     surface_distance_metrics,
     top_truth_count_mask,
 )
+from pyosv.orient3d import FaultOrientScanner3
 from pyosv.skinner import FaultSkinner
 from pyosv.voting3d import OptimalSurfaceVoter
 
@@ -193,6 +196,63 @@ class SyntheticVotingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SyntheticScannerConfig:
+    """Configuration for scanner-inclusive synthetic report inputs."""
+
+    backend: str = "reference-like"
+    phi_min: float = 0.0
+    phi_max: float = 180.0
+    theta_min: float = 45.0
+    theta_max: float = 90.0
+    sigma1: float = 2.0
+    sigma2: float = 2.0
+    scanner_thin_mode: str = "reference"
+    remove_edge_effects: bool = True
+    input_config: SyntheticScannerInputConfig = SyntheticScannerInputConfig()
+
+    def __post_init__(self) -> None:
+        if self.backend not in {"reference-like", "fast"}:
+            raise ValueError("scanner_backend must be 'reference-like' or 'fast'")
+        if self.scanner_thin_mode not in {"none", "reference", "normal"}:
+            raise ValueError("scanner_thin_mode must be 'none', 'reference', or 'normal'")
+        if not isinstance(self.remove_edge_effects, bool):
+            raise ValueError("remove_edge_effects must be a bool")
+        if not isinstance(self.input_config, SyntheticScannerInputConfig):
+            raise ValueError("input_config must be a SyntheticScannerInputConfig")
+        _validate_finite_scalar(self.phi_min, "scanner_phi_min")
+        _validate_finite_scalar(self.phi_max, "scanner_phi_max")
+        _validate_finite_scalar(self.theta_min, "scanner_theta_min")
+        _validate_finite_scalar(self.theta_max, "scanner_theta_max")
+        _validate_positive_finite_scalar(self.sigma1, "scanner_sigma1")
+        _validate_positive_finite_scalar(self.sigma2, "scanner_sigma2")
+        if self.phi_max < self.phi_min:
+            raise ValueError("scanner_phi_max must be greater than or equal to scanner_phi_min")
+        if self.theta_max < self.theta_min:
+            raise ValueError("scanner_theta_max must be greater than or equal to scanner_theta_min")
+
+    def as_report_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "phi_min": float(self.phi_min),
+            "phi_max": float(self.phi_max),
+            "theta_min": float(self.theta_min),
+            "theta_max": float(self.theta_max),
+            "sigma1": float(self.sigma1),
+            "sigma2": float(self.sigma2),
+            "scanner_thin_mode": self.scanner_thin_mode,
+            "remove_edge_effects": self.remove_edge_effects,
+            "input": {
+                "background": float(self.input_config.background),
+                "fault_contrast": float(self.input_config.fault_contrast),
+                "noise_sigma": float(self.input_config.noise_sigma),
+                "seed": int(self.input_config.seed),
+                "clip_min": float(self.input_config.clip_min),
+                "clip_max": float(self.input_config.clip_max),
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SyntheticTruthMetricConfig:
     """Configuration for controlled truth metrics."""
 
@@ -206,12 +266,24 @@ class SyntheticTruthMetricConfig:
         }
 
 
-def _validate_nonnegative_finite_scalar(value: float, name: str) -> float:
+def _validate_finite_scalar(value: float, name: str) -> float:
     if not np.isscalar(value):
         raise ValueError(f"{name} must be a finite scalar")
     result = float(value)
     if not np.isfinite(result):
         raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _validate_positive_finite_scalar(value: float, name: str) -> float:
+    result = _validate_finite_scalar(value, name)
+    if result <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    return result
+
+
+def _validate_nonnegative_finite_scalar(value: float, name: str) -> float:
+    result = _validate_finite_scalar(value, name)
     if result < 0.0:
         raise ValueError(f"{name} must be non-negative")
     return result
@@ -388,6 +460,65 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_VARIANTS,
         help="Comma-separated diagnostic variants to run; see the example below.",
     )
+    parser.add_argument(
+        "--input-mode",
+        choices=("oracle", "scanner", "both"),
+        default="oracle",
+        help="Run oracle attributes, scanner-inclusive attributes, or both.",
+    )
+    parser.add_argument(
+        "--scanner-backend",
+        choices=("reference-like", "fast"),
+        default="reference-like",
+        help="FaultOrientScanner3 backend used by --input-mode scanner/both.",
+    )
+    parser.add_argument(
+        "--scanner-phi-min",
+        type=float,
+        default=0.0,
+        help="Minimum scanner strike angle in degrees.",
+    )
+    parser.add_argument(
+        "--scanner-phi-max",
+        type=float,
+        default=180.0,
+        help="Maximum scanner strike angle in degrees.",
+    )
+    parser.add_argument(
+        "--scanner-theta-min",
+        type=float,
+        default=45.0,
+        help="Minimum scanner dip angle in degrees.",
+    )
+    parser.add_argument(
+        "--scanner-theta-max",
+        type=float,
+        default=90.0,
+        help="Maximum scanner dip angle in degrees.",
+    )
+    parser.add_argument(
+        "--scanner-sigma1",
+        type=float,
+        default=2.0,
+        help="Scanner sigma1 control.",
+    )
+    parser.add_argument(
+        "--scanner-sigma2",
+        type=float,
+        default=2.0,
+        help="Scanner sigma2 control.",
+    )
+    parser.add_argument(
+        "--scanner-thin-mode",
+        choices=("none", "reference", "normal"),
+        default="reference",
+        help="Optional thinning applied to scanner ft/pt/tt before voting.",
+    )
+    parser.add_argument(
+        "--keep-scanner-edge-effects",
+        action="store_true",
+        help="Keep scanner reference-thin edge effects for diagnostics.",
+    )
     parser.add_argument("--ru", type=int, default=1, help="Voting shift radius in u.")
     parser.add_argument("--rv", type=int, default=2, help="Voting shift radius in v.")
     parser.add_argument("--rw", type=int, default=2, help="Voting shift radius in w.")
@@ -554,9 +685,11 @@ def run_case(
     *,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     variant: str = "current_default",
+    input_mode: str = "oracle",
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     case = case_definition.factory(shape)
     if case.case_id != case_definition.case_id:
@@ -566,9 +699,11 @@ def run_case(
     variant_report, volumes, _ = _run_case_variant(
         case,
         voting_config=voting_config,
+        scanner_config=scanner_config,
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variant=variant,
+        input_mode=input_mode,
     )
     report = {
         "case_id": case.case_id,
@@ -586,13 +721,179 @@ def _run_case_variant(
     case: Synthetic3DCase,
     *,
     voting_config: SyntheticVotingConfig,
+    scanner_config: SyntheticScannerConfig,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+    input_mode: str,
+) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
+    if variant not in VARIANT_NAMES:
+        raise ValueError(f"unknown variant: {variant}")
+    valid_input_mode = _validate_input_mode(input_mode)
+
+    if valid_input_mode == "oracle":
+        return _run_oracle_pipeline(
+            case,
+            voting_config=voting_config,
+            truth_metric_config=truth_metric_config,
+            skinning_config=skinning_config,
+            variant=variant,
+        )
+
+    pipelines = {}
+    pipeline_outputs = {}
+    if valid_input_mode == "both":
+        oracle_report, oracle_volumes, oracle_skins = _run_oracle_pipeline(
+            case,
+            voting_config=voting_config,
+            truth_metric_config=truth_metric_config,
+            skinning_config=skinning_config,
+            variant=variant,
+        )
+        pipelines["oracle"] = oracle_report
+        pipeline_outputs["oracle"] = (oracle_report, oracle_volumes, oracle_skins)
+
+    scanner_report, scanner_volumes, scanner_skins = _run_scanner_pipeline(
+        case,
+        voting_config=voting_config,
+        scanner_config=scanner_config,
+        truth_metric_config=truth_metric_config,
+        skinning_config=skinning_config,
+        variant=variant,
+    )
+    pipelines["scanner"] = scanner_report
+    pipeline_outputs["scanner"] = (scanner_report, scanner_volumes, scanner_skins)
+
+    active_pipeline = "scanner" if valid_input_mode == "scanner" else "oracle"
+    active_report, active_volumes, active_skins = pipeline_outputs[active_pipeline]
+    report = dict(active_report)
+    report["active_pipeline"] = active_pipeline
+    report["pipelines"] = pipelines
+    return report, active_volumes, active_skins
+
+
+def _validate_input_mode(input_mode: str) -> str:
+    if input_mode not in {"oracle", "scanner", "both"}:
+        raise ValueError("input_mode must be 'oracle', 'scanner', or 'both'")
+    return input_mode
+
+
+def _run_oracle_pipeline(
+    case: Synthetic3DCase,
+    *,
+    voting_config: SyntheticVotingConfig,
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
     variant: str,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    if variant not in VARIANT_NAMES:
-        raise ValueError(f"unknown variant: {variant}")
+    return _run_voting_from_attributes(
+        case,
+        ft=case.ft_oracle,
+        pt=case.pt_oracle,
+        tt=case.tt_oracle,
+        voting_config=voting_config,
+        truth_metric_config=truth_metric_config,
+        skinning_config=skinning_config,
+        variant=variant,
+    )
 
+
+def _run_scanner_pipeline(
+    case: Synthetic3DCase,
+    *,
+    voting_config: SyntheticVotingConfig,
+    scanner_config: SyntheticScannerConfig,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
+    scanner_report, scanner_volumes = _scanner_attributes_from_case(case, scanner_config)
+    report, volumes, skins_output = _run_voting_from_attributes(
+        case,
+        ft=scanner_volumes["scanner_fet"],
+        pt=scanner_volumes["scanner_fpt"],
+        tt=scanner_volumes["scanner_ftt"],
+        voting_config=voting_config,
+        truth_metric_config=truth_metric_config,
+        skinning_config=skinning_config,
+        variant=variant,
+    )
+    report["scanner"] = scanner_report
+    volumes.update(scanner_volumes)
+    return report, volumes, skins_output
+
+
+def _scanner_attributes_from_case(
+    case: Synthetic3DCase,
+    scanner_config: SyntheticScannerConfig,
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
+    scanner = FaultOrientScanner3(scanner_config.sigma1, scanner_config.sigma2)
+    if scanner_config.backend == "reference-like":
+        ft_scan, pt_scan, tt_scan = scanner.scan(
+            scanner_config.phi_min,
+            scanner_config.phi_max,
+            scanner_config.theta_min,
+            scanner_config.theta_max,
+            scanner_input,
+        )
+    elif scanner_config.backend == "fast":
+        ft_scan, pt_scan, tt_scan = scanner.scan_fast(
+            scanner_config.phi_min,
+            scanner_config.phi_max,
+            scanner_config.theta_min,
+            scanner_config.theta_max,
+            scanner_input,
+        )
+    else:
+        raise ValueError("scanner_backend must be 'reference-like' or 'fast'")
+
+    if scanner_config.scanner_thin_mode == "none":
+        ft_used = ft_scan
+        pt_used = pt_scan
+        tt_used = tt_scan
+    else:
+        ft_used, pt_used, tt_used = scanner.thin(
+            ft_scan,
+            pt_scan,
+            tt_scan,
+            mode=scanner_config.scanner_thin_mode,
+            remove_edge_effects=scanner_config.remove_edge_effects,
+        )
+
+    scanner_report = {
+        "config": scanner_config.as_report_dict(),
+        "input": _array_summary(scanner_input),
+        "ft": _array_summary(ft_scan),
+        "fet": _array_summary(ft_used),
+        "pt": _array_summary(pt_scan),
+        "fpt": _array_summary(pt_used),
+        "tt": _array_summary(tt_scan),
+        "ftt": _array_summary(tt_used),
+    }
+    scanner_volumes = {
+        "scanner_input": scanner_input,
+        "scanner_ft": ft_scan,
+        "scanner_fet": ft_used,
+        "scanner_pt": pt_scan,
+        "scanner_fpt": pt_used,
+        "scanner_tt": tt_scan,
+        "scanner_ftt": tt_used,
+    }
+    return scanner_report, scanner_volumes
+
+
+def _run_voting_from_attributes(
+    case: Synthetic3DCase,
+    *,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+    voting_config: SyntheticVotingConfig,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
         rv=voting_config.rv,
@@ -606,9 +907,9 @@ def _run_case_variant(
     fv, vp, vt = voter.apply_voting(
         d=voting_config.seed_distance,
         fm=voting_config.seed_threshold,
-        ft=case.ft_oracle,
-        pt=case.pt_oracle,
-        tt=case.tt_oracle,
+        ft=ft,
+        pt=pt,
+        tt=tt,
     )
     thin_mode = "normal" if variant == "voter_thin_normal" else voting_config.voter_thin_mode
     fvt = voter.thin(
@@ -802,17 +1103,21 @@ def build_report(
     case_set: str,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
+    input_mode: str = "oracle",
 ) -> dict[str, Any]:
     report, _, _ = _build_report_and_volumes(
         case_set=case_set,
         shape=shape,
         voting_config=voting_config,
+        scanner_config=scanner_config,
         truth_metric_config=truth_metric_config,
         variants=variants,
         skinning_config=skinning_config,
+        input_mode=input_mode,
     )
     return report
 
@@ -822,9 +1127,11 @@ def _build_report_and_volumes(
     case_set: str,
     shape: tuple[int, int, int],
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
+    input_mode: str = "oracle",
 ) -> tuple[
     dict[str, Any],
     dict[str, dict[str, dict[str, np.ndarray]]],
@@ -832,6 +1139,7 @@ def _build_report_and_volumes(
 ]:
     valid_shape = validate_shape3(shape)
     valid_variants = _validate_variants(variants)
+    valid_input_mode = _validate_input_mode(input_mode)
     try:
         case_definitions = CASE_SETS[case_set]
     except KeyError as error:
@@ -853,9 +1161,11 @@ def _build_report_and_volumes(
             variant_report, volumes, skins_output = _run_case_variant(
                 case,
                 voting_config=voting_config,
+                scanner_config=scanner_config,
                 truth_metric_config=truth_metric_config,
                 skinning_config=skinning_config,
                 variant=variant,
+                input_mode=valid_input_mode,
             )
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
@@ -873,16 +1183,21 @@ def _build_report_and_volumes(
         volume_outputs[case_definition.case_id] = variant_volumes
         skin_outputs[case_definition.case_id] = variant_skins
 
+    config: dict[str, Any] = {
+        "case_set": case_set,
+        "shape": [int(size) for size in valid_shape],
+        "variants": list(valid_variants),
+        "voting": voting_config.as_report_dict(),
+        "truth_metrics": truth_metric_config.as_report_dict(),
+        "skinning": skinning_config.as_report_dict(),
+    }
+    if valid_input_mode != "oracle":
+        config["input_mode"] = valid_input_mode
+        config["scanner"] = scanner_config.as_report_dict()
+
     report = {
         "format_version": FORMAT_VERSION,
-        "config": {
-            "case_set": case_set,
-            "shape": [int(size) for size in valid_shape],
-            "variants": list(valid_variants),
-            "voting": voting_config.as_report_dict(),
-            "truth_metrics": truth_metric_config.as_report_dict(),
-            "skinning": skinning_config.as_report_dict(),
-        },
+        "config": config,
         "cases": cases,
     }
     return report, volume_outputs, skin_outputs
@@ -1420,9 +1735,11 @@ def run_example(
     case_set: str = "minimal",
     shape: tuple[int, int, int] = DEFAULT_SHAPE,
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
+    input_mode: str = "oracle",
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -1432,9 +1749,11 @@ def run_example(
         case_set=case_set,
         shape=shape,
         voting_config=voting_config,
+        scanner_config=scanner_config,
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variants=variants,
+        input_mode=input_mode,
     )
     write_metrics_json(report, output_dir, pretty=pretty)
     write_summary_csv(report, output_dir)
@@ -1471,6 +1790,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 voter_thin_mode=args.voter_thin_mode,
                 reference_thin_sigma=args.reference_thin_sigma,
             ),
+            scanner_config=SyntheticScannerConfig(
+                backend=args.scanner_backend,
+                phi_min=args.scanner_phi_min,
+                phi_max=args.scanner_phi_max,
+                theta_min=args.scanner_theta_min,
+                theta_max=args.scanner_theta_max,
+                sigma1=args.scanner_sigma1,
+                sigma2=args.scanner_sigma2,
+                scanner_thin_mode=args.scanner_thin_mode,
+                remove_edge_effects=not args.keep_scanner_edge_effects,
+            ),
             truth_metric_config=SyntheticTruthMetricConfig(
                 truth_surface_half_width=args.truth_surface_half_width,
                 buffer_radius=args.buffer_radius,
@@ -1490,6 +1820,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 small_skin_size=args.small_skin_size,
             ),
             variants=args.variants,
+            input_mode=args.input_mode,
             pretty=args.pretty,
             save_volumes=args.save_volumes,
             save_figures=args.save_figures,

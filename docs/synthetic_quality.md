@@ -40,6 +40,7 @@ The controlled synthetic API includes:
 - masked orientation error
 - skin metrics, including skin topology metrics
 - minimal oracle pipeline smoke test
+- scanner-inclusive report/CLI pipeline
 - `examples/report_3d_synthetic_quality.py`
 
 The controlled synthetic report pipeline is:
@@ -47,6 +48,19 @@ The controlled synthetic report pipeline is:
 ```text
 truth geometry
   -> oracle ft/pt/tt
+  -> OptimalSurfaceVoter
+  -> voter thin
+  -> FaultSkinner
+  -> fv/fvt/skin truth metrics
+```
+
+The report can also run a scanner-inclusive path:
+
+```text
+truth geometry
+  -> scanner_input / ep_synthetic
+  -> FaultOrientScanner3.scan() or scan_fast()
+  -> optional FaultOrientScanner3.thin()
   -> OptimalSurfaceVoter
   -> voter thin
   -> FaultSkinner
@@ -107,7 +121,6 @@ The current scope does not include:
 
 - synthetic seismic generation
 - scanner algorithm changes
-- scanner-inclusive report/CLI pipeline
 - FaultSeg3D loader
 
 ## Shape And Convention
@@ -167,6 +180,22 @@ metrics.json
 summary.csv
 visual_report.md  # only with --write-markdown-index
 ```
+
+`--input-mode` controls the report input path:
+
+```text
+oracle   # default: oracle ft/pt/tt only, with the stable legacy JSON shape
+scanner  # scanner_input -> FaultOrientScanner3 -> optional scanner thin -> voting
+both     # run oracle and scanner pipelines for the same case/variant
+```
+
+Scanner mode is configured with `--scanner-backend reference-like|fast`,
+`--scanner-phi-min`, `--scanner-phi-max`, `--scanner-theta-min`,
+`--scanner-theta-max`, `--scanner-sigma1`, `--scanner-sigma2`,
+`--scanner-thin-mode none|reference|normal`, and
+`--keep-scanner-edge-effects`. The scanner defaults are reference-like backend,
+strike range `0..180`, dip range `45..90`, `sigma1=sigma2=2`, and reference
+scanner thinning with edge-effect removal.
 
 With optional visual outputs enabled, each case also gets a case directory. For
 the `minimal` case set this is:
@@ -300,6 +329,11 @@ compatibility, `current_default` is also duplicated at the case top level when
 that variant is present. `cases[].variant_comparison` stores per-variant deltas
 against `current_default` when that baseline variant is present; when it is not
 present, `baseline_variant` is `null` and the comparison map is empty.
+With `--input-mode scanner` or `--input-mode both`, each variant also stores
+`pipelines`. Scanner variants include `scanner.input`, raw scanner `ft`/`pt`/`tt`,
+and scanner-thinned `fet`/`fpt`/`ftt` summaries. In scanner-only mode, top-level
+`pyosv` and `quality` alias the scanner pipeline; in both mode they alias the
+oracle pipeline.
 `quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
 the truth target. `quality.*.surface_distance` uses the thin truth surface mask
 defined by
