@@ -5,6 +5,7 @@ from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
 from pyosv.synthetic_metrics import (
     buffered_surface_overlap,
+    edge_false_positive_ratio,
     masked_orientation_error,
     skin_mask_from_skins,
     skin_orientation_error,
@@ -102,6 +103,75 @@ def test_buffered_surface_overlap_empty_mask_conventions() -> None:
     assert false_positive["buffered_recall"] == 1.0
 
 
+def test_edge_false_positive_ratio_counts_no_false_positives_inside_truth_buffer() -> None:
+    truth = np.zeros((5, 5), dtype=bool)
+    candidate = np.zeros_like(truth)
+    truth[0, 1] = True
+    candidate[0, 1] = True
+
+    metrics = edge_false_positive_ratio(
+        candidate,
+        truth,
+        edge_margin=0,
+        truth_buffer_radius=0.0,
+    )
+
+    assert metrics == {
+        "candidate_count": 1,
+        "edge_candidate_count": 1,
+        "edge_false_positive_count": 0,
+        "edge_candidate_fraction": 1.0,
+        "edge_false_positive_fraction_of_candidates": 0.0,
+        "edge_false_positive_fraction_of_edge_candidates": 0.0,
+        "edge_margin": 0,
+        "truth_buffer_radius": 0.0,
+    }
+
+
+def test_edge_false_positive_ratio_counts_edge_candidates_outside_truth_buffer() -> None:
+    truth = np.zeros((5, 5), dtype=bool)
+    candidate = np.zeros_like(truth)
+    truth[2, 2] = True
+    candidate[0, 0] = True
+    candidate[2, 2] = True
+
+    metrics = edge_false_positive_ratio(
+        candidate,
+        truth,
+        edge_margin=0,
+        truth_buffer_radius=1.0,
+    )
+
+    assert metrics["candidate_count"] == 2
+    assert metrics["edge_candidate_count"] == 1
+    assert metrics["edge_false_positive_count"] == 1
+    assert metrics["edge_candidate_fraction"] == pytest.approx(0.5)
+    assert metrics["edge_false_positive_fraction_of_candidates"] == pytest.approx(0.5)
+    assert metrics["edge_false_positive_fraction_of_edge_candidates"] == pytest.approx(1.0)
+    assert metrics["edge_margin"] == 0
+    assert metrics["truth_buffer_radius"] == 1.0
+
+
+def test_edge_false_positive_ratio_empty_candidate_returns_zero_fractions() -> None:
+    truth = np.zeros((3, 3), dtype=bool)
+    candidate = np.zeros_like(truth)
+    truth[1, 1] = True
+
+    metrics = edge_false_positive_ratio(
+        candidate,
+        truth,
+        edge_margin=1,
+        truth_buffer_radius=1.0,
+    )
+
+    assert metrics["candidate_count"] == 0
+    assert metrics["edge_candidate_count"] == 0
+    assert metrics["edge_false_positive_count"] == 0
+    assert metrics["edge_candidate_fraction"] == 0.0
+    assert metrics["edge_false_positive_fraction_of_candidates"] == 0.0
+    assert metrics["edge_false_positive_fraction_of_edge_candidates"] == 0.0
+
+
 def test_surface_distance_metrics_known_small_arrays() -> None:
     truth = np.zeros((3, 3), dtype=bool)
     candidate = np.zeros_like(truth)
@@ -195,6 +265,14 @@ def test_synthetic_metrics_reject_shape_mismatch_and_invalid_radius() -> None:
         top_truth_count_mask(np.zeros((2, 2), dtype=np.float32), mismatched)
     with pytest.raises(ValueError, match="shapes must match"):
         masked_orientation_error(mask, mask, mask, mask, mismatched)
+    with pytest.raises(ValueError, match="shapes must match"):
+        edge_false_positive_ratio(mask, mismatched, edge_margin=1, truth_buffer_radius=1.0)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        edge_false_positive_ratio(mask, mask, edge_margin=-1, truth_buffer_radius=1.0)
+    with pytest.raises(ValueError, match="non-negative"):
+        edge_false_positive_ratio(mask, mask, edge_margin=1, truth_buffer_radius=-1.0)
+    with pytest.raises(ValueError, match="finite"):
+        edge_false_positive_ratio(mask, mask, edge_margin=1, truth_buffer_radius=np.nan)
 
 
 def test_skin_mask_from_skins_uses_i3_i2_i1_indexing() -> None:

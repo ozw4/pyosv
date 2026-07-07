@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "buffered_surface_overlap",
+    "edge_false_positive_ratio",
     "masked_orientation_error",
     "skin_mask_from_skins",
     "skin_orientation_error",
@@ -92,6 +93,49 @@ def buffered_surface_overlap(
         "buffered_recall": buffered_recall,
         "buffered_f1": _f1(buffered_precision, buffered_recall),
         "radius": float(buffer_radius),
+    }
+
+
+def edge_false_positive_ratio(
+    candidate_mask: np.ndarray,
+    truth_mask: np.ndarray,
+    *,
+    edge_margin: int,
+    truth_buffer_radius: float,
+) -> dict[str, float | int]:
+    """Return edge-local false-positive counts and fractions for candidate masks."""
+
+    candidate, truth = _validate_mask_pair(candidate_mask, truth_mask)
+    margin = _validate_nonnegative_int(edge_margin, "edge_margin")
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_buffer_radius,
+        "truth_buffer_radius",
+    )
+
+    edge_region = _edge_region(candidate.shape, margin)
+    truth_buffer = _distance_buffer(truth, buffer_radius)
+    edge_candidates = candidate & edge_region
+    edge_false_positive = edge_candidates & ~truth_buffer
+
+    candidate_count = int(np.count_nonzero(candidate))
+    edge_candidate_count = int(np.count_nonzero(edge_candidates))
+    edge_false_positive_count = int(np.count_nonzero(edge_false_positive))
+
+    return {
+        "candidate_count": candidate_count,
+        "edge_candidate_count": edge_candidate_count,
+        "edge_false_positive_count": edge_false_positive_count,
+        "edge_candidate_fraction": (
+            float(edge_candidate_count / candidate_count) if candidate_count else 0.0
+        ),
+        "edge_false_positive_fraction_of_candidates": (
+            float(edge_false_positive_count / candidate_count) if candidate_count else 0.0
+        ),
+        "edge_false_positive_fraction_of_edge_candidates": (
+            float(edge_false_positive_count / edge_candidate_count) if edge_candidate_count else 0.0
+        ),
+        "edge_margin": margin,
+        "truth_buffer_radius": float(buffer_radius),
     }
 
 
@@ -476,6 +520,18 @@ def _distance_buffer(mask: np.ndarray, radius: float) -> np.ndarray:
     if not np.any(mask):
         return np.zeros(mask.shape, dtype=bool)
     return distance_transform_edt(~mask) <= radius
+
+
+def _edge_region(shape: tuple[int, ...], margin: int) -> np.ndarray:
+    region = np.zeros(shape, dtype=bool)
+    for axis, size in enumerate(shape):
+        indices = np.arange(size)
+        edge_indices = indices <= margin
+        edge_indices |= indices >= size - 1 - margin
+        reshape = [1] * len(shape)
+        reshape[axis] = size
+        region |= edge_indices.reshape(reshape)
+    return region
 
 
 def _precision(intersection_count: int, candidate_count: int) -> float:
