@@ -204,6 +204,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--save-figures" in result.stdout
     assert "--write-markdown-index" in result.stdout
     assert "--voter-thin-mode" in result.stdout
+    assert "--include-thinning-diagnostic" in result.stdout
     assert "--truth-surface-half-width" in result.stdout
     assert "--buffer-radius" in result.stdout
     assert "--skip-skinning" in result.stdout
@@ -530,6 +531,81 @@ def test_report_3d_synthetic_quality_diagnostic_variants_pass(tmp_path: Path) ->
     assert [row["fvt_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
     assert [row["skin_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
     assert [row["skin_count_delta_vs_baseline"] for row in rows] == ["", ""]
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_is_opt_in(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert "thinning_diagnostic" not in variant
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_curved_surface(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--include-thinning-diagnostic",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
+    curved = next(case for case in metrics["cases"] if case["case_id"] == "curved_surface")
+    diagnostic = curved["variants"]["current_default"]["thinning_diagnostic"]
+
+    assert "reference" in diagnostic
+    assert "normal" in diagnostic
+    for mode in ("reference", "normal"):
+        mode_report = diagnostic[mode]
+        assert "fvt" in mode_report["pyosv"]
+        _assert_top_truth_quality_has_orientation(mode_report["quality"]["fvt_top_truth_count"])
+
+    keep_mask = diagnostic["keep_mask"]
+    for count_key in (
+        "reference_count",
+        "normal_count",
+        "intersection_count",
+        "union_count",
+        "reference_only_count",
+        "normal_only_count",
+    ):
+        assert count_key in keep_mask
+        assert keep_mask[count_key] >= 0
+    assert math.isfinite(float(keep_mask["jaccard"]))
+    assert "reference_only_buffered_overlap_radius2" in keep_mask
+    assert "normal_only_buffered_overlap_radius2" in keep_mask
+
+    delta = diagnostic["delta"]["normal_minus_reference"]
+    for key in (
+        "fvt_buffered_f1_r2",
+        "fvt_candidate_to_truth_p95",
+        "fvt_strike_median_error",
+        "fvt_dip_median_error",
+    ):
+        assert math.isfinite(float(delta[key]))
 
 
 def test_report_3d_synthetic_quality_unknown_variant_fails(tmp_path: Path) -> None:
