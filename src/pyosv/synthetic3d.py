@@ -16,7 +16,9 @@ __all__ = [
     "coordinate_grids3",
     "generate_curved_surface_case",
     "generate_single_plane_case",
+    "make_crossing_planes_case",
     "make_curved_surface_case",
+    "make_parallel_planes_case",
     "make_single_dipping_plane_case",
     "make_single_vertical_plane_case",
     "validate_center3",
@@ -270,6 +272,21 @@ def generate_single_plane_case(spec: SyntheticPlaneSpec) -> Synthetic3DCase:
     if not isinstance(spec, SyntheticPlaneSpec):
         raise ValueError("spec must be a SyntheticPlaneSpec")
 
+    component = _plane_component_from_spec(spec, fault_id=1)
+    return _compose_synthetic_components(
+        case_id=spec.case_id,
+        shape=spec.shape,
+        components=(component,),
+    )
+
+
+def _plane_component_from_spec(
+    spec: SyntheticPlaneSpec,
+    fault_id: int,
+) -> _SyntheticFaultComponent:
+    if not isinstance(spec, SyntheticPlaneSpec):
+        raise ValueError("spec must be a SyntheticPlaneSpec")
+
     normal = fault_normal_vector_from_strike_and_dip(spec.strike, spec.dip).astype(
         np.float64,
         copy=False,
@@ -286,18 +303,13 @@ def generate_single_plane_case(spec: SyntheticPlaneSpec) -> Synthetic3DCase:
     ft_oracle = np.exp(-0.5 * (truth_distance / spec.likelihood_sigma) ** 2)
     ft_oracle = np.clip(ft_oracle, 0.0, 1.0).astype(np.float32)
 
-    component = _SyntheticFaultComponent(
-        fault_id=1,
+    return _SyntheticFaultComponent(
+        fault_id=fault_id,
         signed_distance=truth_distance.astype(np.float32),
         strike=truth_strike,
         dip=truth_dip,
         likelihood=ft_oracle,
         mask_half_width=spec.mask_half_width,
-    )
-    return _compose_synthetic_components(
-        case_id=spec.case_id,
-        shape=spec.shape,
-        components=(component,),
     )
 
 
@@ -383,6 +395,64 @@ def make_single_dipping_plane_case(
         mask_half_width=1.0,
     )
     return generate_single_plane_case(spec)
+
+
+def make_parallel_planes_case(
+    shape: tuple[int, int, int] = (64, 64, 64),
+) -> Synthetic3DCase:
+    """Return a controlled case with two nearby vertical parallel planes."""
+    n3, n2, n1 = validate_shape3(shape)
+    x1c, x2c, x3c = (n1 - 1) / 2.0, (n2 - 1) / 2.0, (n3 - 1) / 2.0
+    separation = min(max(6.0, 0.18 * n2), float(max(n2 - 1, 0)))
+    common_kwargs = {
+        "case_id": "parallel_planes",
+        "shape": (n3, n2, n1),
+        "strike": 0.0,
+        "dip": 90.0,
+        "likelihood_sigma": 1.25,
+        "mask_half_width": 1.0,
+    }
+    component_a = _plane_component_from_spec(
+        SyntheticPlaneSpec(center=(x1c, x2c - separation / 2.0, x3c), **common_kwargs),
+        fault_id=1,
+    )
+    component_b = _plane_component_from_spec(
+        SyntheticPlaneSpec(center=(x1c, x2c + separation / 2.0, x3c), **common_kwargs),
+        fault_id=2,
+    )
+    return _compose_synthetic_components(
+        case_id="parallel_planes",
+        shape=(n3, n2, n1),
+        components=(component_a, component_b),
+    )
+
+
+def make_crossing_planes_case(
+    shape: tuple[int, int, int] = (64, 64, 64),
+) -> Synthetic3DCase:
+    """Return a controlled case with two intersecting planar faults."""
+    n3, n2, n1 = validate_shape3(shape)
+    center = ((n1 - 1) / 2.0, (n2 - 1) / 2.0, (n3 - 1) / 2.0)
+    common_kwargs = {
+        "case_id": "crossing_planes",
+        "shape": (n3, n2, n1),
+        "center": center,
+        "likelihood_sigma": 1.25,
+        "mask_half_width": 1.0,
+    }
+    component_a = _plane_component_from_spec(
+        SyntheticPlaneSpec(strike=0.0, dip=90.0, **common_kwargs),
+        fault_id=1,
+    )
+    component_b = _plane_component_from_spec(
+        SyntheticPlaneSpec(strike=60.0, dip=70.0, **common_kwargs),
+        fault_id=2,
+    )
+    return _compose_synthetic_components(
+        case_id="crossing_planes",
+        shape=(n3, n2, n1),
+        components=(component_a, component_b),
+    )
 
 
 def make_curved_surface_case(

@@ -11,7 +11,9 @@ from pyosv.synthetic3d import (
     coordinate_grids3,
     generate_curved_surface_case,
     generate_single_plane_case,
+    make_crossing_planes_case,
     make_curved_surface_case,
+    make_parallel_planes_case,
     make_single_dipping_plane_case,
     make_single_vertical_plane_case,
     validate_center3,
@@ -500,6 +502,61 @@ def test_make_curved_surface_case_returns_expected_arrays() -> None:
     assert np.all((case.truth_dip >= 0.0) & (case.truth_dip <= 180.0))
 
 
+def test_make_parallel_planes_case_returns_separated_faults() -> None:
+    case = make_parallel_planes_case(shape=(17, 33, 21))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "parallel_planes"
+    assert case.shape == (17, 33, 21)
+    _assert_synthetic3d_case_contract(case)
+    assert {0, 1, 2}.issubset(set(np.unique(case.truth_fault_id).tolist()))
+
+    fault1_x2 = np.nonzero(case.truth_fault_id == 1)[1]
+    fault2_x2 = np.nonzero(case.truth_fault_id == 2)[1]
+    assert fault1_x2.size > 0
+    assert fault2_x2.size > 0
+    assert fault1_x2.max() < fault2_x2.min()
+
+    background = ~case.truth_fault_mask
+    assert case.ft_oracle[case.truth_fault_mask].mean() > case.ft_oracle[background].mean()
+
+
+def test_make_crossing_planes_case_returns_two_orientations_and_is_deterministic() -> None:
+    case = make_crossing_planes_case(shape=(21, 25, 27))
+    repeated = make_crossing_planes_case(shape=(21, 25, 27))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "crossing_planes"
+    assert case.shape == (21, 25, 27)
+    _assert_synthetic3d_case_contract(case)
+    assert {0, 1, 2}.issubset(set(np.unique(case.truth_fault_id).tolist()))
+
+    mask_pairs = np.column_stack(
+        (
+            np.round(case.truth_strike[case.truth_fault_mask], decimals=3),
+            np.round(case.truth_dip[case.truth_fault_mask], decimals=3),
+        )
+    )
+    assert np.unique(mask_pairs, axis=0).shape[0] >= 2
+
+    center_neighborhood = case.truth_strike[9:12, 11:14, 12:15]
+    assert np.all(np.isfinite(center_neighborhood))
+    assert np.all(np.isfinite(case.truth_dip[9:12, 11:14, 12:15]))
+    assert np.all(np.isfinite(case.ft_oracle[9:12, 11:14, 12:15]))
+
+    for name in (
+        "truth_fault_mask",
+        "truth_fault_id",
+        "truth_distance",
+        "truth_strike",
+        "truth_dip",
+        "ft_oracle",
+        "pt_oracle",
+        "tt_oracle",
+    ):
+        np.testing.assert_array_equal(getattr(case, name), getattr(repeated, name))
+
+
 def test_single_plane_case_truth_mask_ids_and_oracle_likelihood_are_consistent() -> None:
     spec = SyntheticPlaneSpec(
         case_id="plane-a",
@@ -628,3 +685,21 @@ def test_generate_single_plane_case_rejects_invalid_spec() -> None:
 def test_generate_curved_surface_case_rejects_invalid_spec() -> None:
     with pytest.raises(ValueError):
         generate_curved_surface_case(object())
+
+
+def _assert_synthetic3d_case_contract(case: Synthetic3DCase) -> None:
+    expected_dtypes = {
+        "truth_fault_mask": np.bool_,
+        "truth_fault_id": np.int32,
+        "truth_distance": np.float32,
+        "truth_strike": np.float32,
+        "truth_dip": np.float32,
+        "ft_oracle": np.float32,
+        "pt_oracle": np.float32,
+        "tt_oracle": np.float32,
+    }
+    for name, dtype in expected_dtypes.items():
+        array = getattr(case, name)
+        assert array.shape == case.shape
+        assert array.dtype == dtype
+        assert np.all(np.isfinite(array))
