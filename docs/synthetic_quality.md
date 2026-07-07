@@ -2,7 +2,9 @@
 
 Controlled synthetic cases measure truth quality, not reference agreement. They
 are for checking whether a known fault geometry is recovered by the Python
-workflow without scanner or external-data confounds.
+workflow without external-data confounds. The oracle path remains the main
+report path; scanner-inclusive checks start from a controlled synthetic
+planarity input contract.
 
 These validation modes answer different questions:
 
@@ -18,9 +20,11 @@ The controlled synthetic API includes:
 
 - `SyntheticPlaneSpec`
 - `SyntheticCurvedSurfaceSpec`
+- `SyntheticScannerInputConfig`
 - `Synthetic3DCase`
 - `generate_single_plane_case`
 - `generate_curved_surface_case`
+- `make_scanner_input_from_case`
 - `make_boundary_plane_case`
 - `make_crossing_planes_case`
 - `make_single_dipping_plane_case`
@@ -48,6 +52,23 @@ truth geometry
   -> FaultSkinner
   -> fv/fvt/skin truth metrics
 ```
+
+Scanner-inclusive experiments can also generate a controlled
+`scanner_input` / `ep_synthetic` volume from any `Synthetic3DCase`:
+
+```text
+truth geometry
+  -> ft_oracle
+  -> scanner_input / ep_synthetic
+  -> FaultOrientScanner3.scan() or scan_fast()
+  -> scanner ft/pt/tt
+```
+
+`make_scanner_input_from_case(case, config)` converts high-on-fault
+`case.ft_oracle` into low-on-fault planarity-like input using
+`background - fault_contrast * ft_oracle`, optional deterministic Gaussian
+noise, and clipping. This mirrors the F3 scanner convention where background
+planarity is high and fault-adjacent planarity is low.
 
 The current report CLI includes these case sets:
 
@@ -85,7 +106,8 @@ thinning, and check truth-quality metrics.
 The current scope does not include:
 
 - synthetic seismic generation
-- scanner-inclusive synthetic path
+- scanner algorithm changes
+- scanner-inclusive report/CLI pipeline
 - FaultSeg3D loader
 
 ## Shape And Convention

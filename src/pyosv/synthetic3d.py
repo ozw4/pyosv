@@ -13,6 +13,7 @@ __all__ = [
     "Synthetic3DCase",
     "SyntheticCurvedSurfaceSpec",
     "SyntheticPlaneSpec",
+    "SyntheticScannerInputConfig",
     "coordinate_grids3",
     "generate_curved_surface_case",
     "generate_single_plane_case",
@@ -20,12 +21,39 @@ __all__ = [
     "make_crossing_planes_case",
     "make_curved_surface_case",
     "make_parallel_planes_case",
+    "make_scanner_input_from_case",
     "make_single_dipping_plane_case",
     "make_single_vertical_plane_case",
     "make_weak_noisy_plane_case",
     "validate_center3",
     "validate_shape3",
 ]
+
+
+def _validate_finite_real(
+    name: str,
+    value: object,
+    *,
+    minimum: float | None = None,
+    closed: bool = True,
+) -> float:
+    if not isinstance(value, Real) or isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite real number")
+
+    result = float(value)
+    if not np.isfinite(result):
+        raise ValueError(f"{name} must be a finite real number")
+    if minimum is not None:
+        if closed:
+            valid = result >= minimum
+            comparator = ">="
+        else:
+            valid = result > minimum
+            comparator = ">"
+        if not valid:
+            raise ValueError(f"{name} must be finite and {comparator} {minimum:g}")
+
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +130,44 @@ class SyntheticCurvedSurfaceSpec:
             "mask_half_width",
             _validate_finite_real("mask_half_width", self.mask_half_width, minimum=0.0),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SyntheticScannerInputConfig:
+    """Configuration for scanner-inclusive synthetic planarity input."""
+
+    background: float = 1.0
+    fault_contrast: float = 0.85
+    noise_sigma: float = 0.0
+    seed: int = 20260706
+    clip_min: float = 0.0
+    clip_max: float = 1.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "background",
+            _validate_finite_real("background", self.background),
+        )
+        object.__setattr__(
+            self,
+            "fault_contrast",
+            _validate_finite_real("fault_contrast", self.fault_contrast, minimum=0.0),
+        )
+        object.__setattr__(
+            self,
+            "noise_sigma",
+            _validate_finite_real("noise_sigma", self.noise_sigma, minimum=0.0),
+        )
+        if not isinstance(self.seed, Integral) or isinstance(self.seed, bool):
+            raise ValueError("seed must be an integer")
+        object.__setattr__(self, "seed", int(self.seed))
+        clip_min = _validate_finite_real("clip_min", self.clip_min)
+        clip_max = _validate_finite_real("clip_max", self.clip_max)
+        if clip_max <= clip_min:
+            raise ValueError("clip_max must be greater than clip_min")
+        object.__setattr__(self, "clip_min", clip_min)
+        object.__setattr__(self, "clip_max", clip_max)
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +333,24 @@ def coordinate_grids3(shape: tuple[int, int, int]) -> tuple[np.ndarray, np.ndarr
     """Return ``(x1, x2, x3)`` float32 grids for a ``(n3, n2, n1)`` volume."""
     i3, i2, i1 = np.indices(validate_shape3(shape), dtype=np.float32)
     return i1, i2, i3
+
+
+def make_scanner_input_from_case(
+    case: Synthetic3DCase,
+    config: SyntheticScannerInputConfig = SyntheticScannerInputConfig(),
+) -> np.ndarray:
+    """Return low-on-fault synthetic planarity input for ``FaultOrientScanner3``."""
+    if not isinstance(case, Synthetic3DCase):
+        raise ValueError("case must be a Synthetic3DCase")
+    if not isinstance(config, SyntheticScannerInputConfig):
+        raise ValueError("config must be a SyntheticScannerInputConfig")
+
+    scanner_input = config.background - config.fault_contrast * case.ft_oracle
+    if config.noise_sigma > 0.0:
+        rng = np.random.default_rng(config.seed)
+        scanner_input = scanner_input + rng.normal(0.0, config.noise_sigma, size=case.shape)
+    scanner_input = np.clip(scanner_input, config.clip_min, config.clip_max)
+    return scanner_input.astype(np.float32)
 
 
 def generate_single_plane_case(spec: SyntheticPlaneSpec) -> Synthetic3DCase:
@@ -525,32 +609,6 @@ def make_curved_surface_case(
         mask_half_width=1.0,
     )
     return generate_curved_surface_case(spec)
-
-
-def _validate_finite_real(
-    name: str,
-    value: object,
-    *,
-    minimum: float | None = None,
-    closed: bool = True,
-) -> float:
-    if not isinstance(value, Real) or isinstance(value, bool):
-        raise ValueError(f"{name} must be a finite real number")
-
-    result = float(value)
-    if not np.isfinite(result):
-        raise ValueError(f"{name} must be a finite real number")
-    if minimum is not None:
-        if closed:
-            valid = result >= minimum
-            comparator = ">="
-        else:
-            valid = result > minimum
-            comparator = ">"
-        if not valid:
-            raise ValueError(f"{name} must be finite and {comparator} {minimum:g}")
-
-    return result
 
 
 def _curved_surface_scales(shape: tuple[int, int, int]) -> tuple[float, float]:
