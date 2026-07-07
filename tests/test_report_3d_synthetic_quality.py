@@ -108,6 +108,16 @@ SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
     "skin_dip_median_error_delta_vs_baseline",
     "skin_count_delta_vs_baseline",
 )
+EXPECTED_SCANNER_SUMMARY_FIELDS = (
+    "input_mode",
+    "scanner_backend",
+    "scanner_thin_mode",
+    "scanner_ft_buffered_f1_r2",
+    "scanner_ft_distance_p95",
+    "scanner_strike_median_error",
+    "scanner_dip_median_error",
+    "scanner_input_contrast",
+)
 
 
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
@@ -129,6 +139,25 @@ def _assert_enabled_skin_summary_row(row: dict[str, str]) -> None:
     assert row["skin_enabled"] == "True"
     for field in SKIN_NUMERIC_SUMMARY_FIELDS:
         assert math.isfinite(float(row[field]))
+
+
+def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None:
+    ft_quality = scanner_quality["ft_top_truth_count"]
+    assert "buffered_overlap_radius2" in ft_quality
+    assert "surface_distance" in ft_quality
+    assert ft_quality["buffered_overlap_radius2"]["candidate_count"] > 0
+    assert ft_quality["surface_distance"]["candidate_count"] > 0
+
+    orientation_error = scanner_quality["orientation_error"]
+    for name in ("raw_scan_top_truth_count", "used_attributes_top_truth_count"):
+        assert orientation_error[name]["count"] > 0
+        assert math.isfinite(float(orientation_error[name]["strike_median"]))
+        assert math.isfinite(float(orientation_error[name]["dip_median"]))
+
+    input_association = scanner_quality["input_association"]
+    assert math.isfinite(float(input_association["truth_surface_mean"]))
+    assert math.isfinite(float(input_association["far_from_truth_mean"]))
+    assert math.isfinite(float(input_association["contrast"]))
 
 
 def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
@@ -598,6 +627,354 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "reskin": False,
         "small_skin_size": 5,
     }
+
+
+def test_report_synthetic_quality_accepts_input_mode_scanner(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["input_mode"] == "scanner"
+    assert variant["active_pipeline"] == "scanner"
+    assert set(variant["pipelines"]) == {"scanner"}
+    assert variant["pyosv"] == variant["pipelines"]["scanner"]["pyosv"]
+    assert variant["quality"] == variant["pipelines"]["scanner"]["quality"]
+
+
+def test_report_synthetic_quality_accepts_input_mode_both(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["input_mode"] == "both"
+    assert variant["active_pipeline"] == "oracle"
+    assert set(variant["pipelines"]) == {"oracle", "scanner"}
+    assert variant["pyosv"] == variant["pipelines"]["oracle"]["pyosv"]
+    assert variant["pipelines"]["scanner"]["pyosv"]["fvt"]["finite_fraction"] == 1.0
+
+
+def test_report_synthetic_quality_scanner_mode_records_scanner_config(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "fast",
+        "--scanner-phi-min",
+        "10",
+        "--scanner-phi-max",
+        "80",
+        "--scanner-theta-min",
+        "30",
+        "--scanner-theta-max",
+        "70",
+        "--scanner-sigma1",
+        "1.5",
+        "--scanner-sigma2",
+        "2.5",
+        "--scanner-thin-mode",
+        "normal",
+        "--keep-scanner-edge-effects",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    expected_config = {
+        "backend": "fast",
+        "phi_min": 10.0,
+        "phi_max": 80.0,
+        "theta_min": 30.0,
+        "theta_max": 70.0,
+        "sigma1": 1.5,
+        "sigma2": 2.5,
+        "scanner_thin_mode": "normal",
+        "remove_edge_effects": False,
+        "input": {
+            "background": 1.0,
+            "fault_contrast": 0.85,
+            "noise_sigma": 0.0,
+            "seed": 20260706,
+            "clip_min": 0.0,
+            "clip_max": 1.0,
+        },
+    }
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["scanner"] == expected_config
+    assert variant["scanner"]["config"] == expected_config
+
+
+def test_report_synthetic_quality_scanner_mode_writes_finite_scanner_outputs(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    scanner = metrics["cases"][0]["variants"]["current_default"]["scanner"]
+    for name in ("input", "ft", "fet", "pt", "fpt", "tt", "ftt"):
+        summary = scanner[name]
+        assert summary["shape"] == [17, 17, 17]
+        assert summary["finite_count"] == 17 * 17 * 17
+        assert summary["finite_fraction"] == 1.0
+        assert math.isfinite(float(summary["min"]))
+        assert math.isfinite(float(summary["max"]))
+        assert math.isfinite(float(summary["mean"]))
+
+
+def test_report_synthetic_quality_scanner_backend_fast_runs(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "fast",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert variant["scanner"]["config"]["backend"] == "fast"
+    assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+
+
+def test_report_synthetic_quality_scanner_thin_mode_none_runs(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-thin-mode",
+        "none",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    scanner = metrics["cases"][0]["variants"]["current_default"]["scanner"]
+    assert scanner["config"]["scanner_thin_mode"] == "none"
+    assert scanner["fet"]["finite_fraction"] == 1.0
+    assert scanner["fet"]["max"] == scanner["ft"]["max"]
+
+
+def test_scanner_mode_reports_scanner_quality_metrics(tmp_path: Path) -> None:
+    scanner_output_dir = tmp_path / "scanner_quality"
+    scanner_result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(scanner_output_dir),
+    )
+
+    assert scanner_result.returncode == 0, scanner_result.stderr
+    scanner_metrics = json.loads((scanner_output_dir / "metrics.json").read_text(encoding="utf-8"))
+    scanner_variant = scanner_metrics["cases"][0]["variants"]["current_default"]
+    assert "scanner_quality" in scanner_variant
+    _assert_scanner_quality_contract(scanner_variant["scanner_quality"])
+
+    both_output_dir = tmp_path / "both_quality"
+    both_result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--output-dir",
+        str(both_output_dir),
+    )
+
+    assert both_result.returncode == 0, both_result.stderr
+    both_metrics = json.loads((both_output_dir / "metrics.json").read_text(encoding="utf-8"))
+    both_variant = both_metrics["cases"][0]["variants"]["current_default"]
+    assert "scanner_quality" not in both_variant
+    _assert_scanner_quality_contract(both_variant["pipelines"]["scanner"]["scanner_quality"])
+
+
+def test_scanner_input_association_has_positive_contrast_on_minimal_case(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    input_association = metrics["cases"][0]["variants"]["current_default"]["scanner_quality"][
+        "input_association"
+    ]
+    assert input_association["truth_surface_mean"] < input_association["far_from_truth_mean"]
+    assert input_association["contrast"] > 0.0
+
+
+def test_scanner_mode_summary_csv_contains_scanner_columns(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+
+    assert len(rows) == 1
+    row = rows[0]
+    for field in EXPECTED_SCANNER_SUMMARY_FIELDS:
+        assert field in row
+    assert row["input_mode"] == "scanner"
+    assert row["scanner_backend"] == "reference-like"
+    assert row["scanner_thin_mode"] == "reference"
+    for field in (
+        "scanner_ft_buffered_f1_r2",
+        "scanner_ft_distance_p95",
+        "scanner_strike_median_error",
+        "scanner_dip_median_error",
+        "scanner_input_contrast",
+    ):
+        assert math.isfinite(float(row[field]))
+
+
+def test_input_mode_oracle_leaves_scanner_columns_empty_or_absent_consistently(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "oracle",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert "scanner_quality" not in variant
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["input_mode"] == "oracle"
+    for field in EXPECTED_SCANNER_SUMMARY_FIELDS:
+        assert field in row
+    for field in EXPECTED_SCANNER_SUMMARY_FIELDS[1:]:
+        assert row[field] == ""
+
+
+def test_report_synthetic_quality_rejects_invalid_input_mode_or_scanner_backend(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    bad_input_mode = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "invalid",
+        "--output-dir",
+        str(output_dir / "bad_input_mode"),
+    )
+    bad_backend = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "invalid",
+        "--output-dir",
+        str(output_dir / "bad_backend"),
+    )
+
+    assert bad_input_mode.returncode != 0
+    assert "invalid choice" in bad_input_mode.stderr
+    assert bad_backend.returncode != 0
+    assert "invalid choice" in bad_backend.stderr
 
 
 def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(

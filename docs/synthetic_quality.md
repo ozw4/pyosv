@@ -2,7 +2,9 @@
 
 Controlled synthetic cases measure truth quality, not reference agreement. They
 are for checking whether a known fault geometry is recovered by the Python
-workflow without scanner or external-data confounds.
+workflow without external-data confounds. The oracle path remains the main
+report path; scanner-inclusive checks start from a controlled synthetic
+planarity input contract.
 
 These validation modes answer different questions:
 
@@ -18,9 +20,11 @@ The controlled synthetic API includes:
 
 - `SyntheticPlaneSpec`
 - `SyntheticCurvedSurfaceSpec`
+- `SyntheticScannerInputConfig`
 - `Synthetic3DCase`
 - `generate_single_plane_case`
 - `generate_curved_surface_case`
+- `make_scanner_input_from_case`
 - `make_boundary_plane_case`
 - `make_crossing_planes_case`
 - `make_single_dipping_plane_case`
@@ -36,6 +40,7 @@ The controlled synthetic API includes:
 - masked orientation error
 - skin metrics, including skin topology metrics
 - minimal oracle pipeline smoke test
+- scanner-inclusive report/CLI pipeline
 - `examples/report_3d_synthetic_quality.py`
 
 The controlled synthetic report pipeline is:
@@ -48,6 +53,36 @@ truth geometry
   -> FaultSkinner
   -> fv/fvt/skin truth metrics
 ```
+
+The report can also run a scanner-inclusive path:
+
+```text
+truth geometry
+  -> scanner_input / ep_synthetic
+  -> FaultOrientScanner3.scan() or scan_fast()
+  -> optional FaultOrientScanner3.thin()
+  -> OptimalSurfaceVoter
+  -> voter thin
+  -> FaultSkinner
+  -> fv/fvt/skin truth metrics
+```
+
+Scanner-inclusive experiments can also generate a controlled
+`scanner_input` / `ep_synthetic` volume from any `Synthetic3DCase`:
+
+```text
+truth geometry
+  -> ft_oracle
+  -> scanner_input / ep_synthetic
+  -> FaultOrientScanner3.scan() or scan_fast()
+  -> scanner ft/pt/tt
+```
+
+`make_scanner_input_from_case(case, config)` converts high-on-fault
+`case.ft_oracle` into low-on-fault planarity-like input using
+`background - fault_contrast * ft_oracle`, optional deterministic Gaussian
+noise, and clipping. This mirrors the F3 scanner convention where background
+planarity is high and fault-adjacent planarity is low.
 
 The current report CLI includes these case sets:
 
@@ -85,7 +120,7 @@ thinning, and check truth-quality metrics.
 The current scope does not include:
 
 - synthetic seismic generation
-- scanner-inclusive synthetic path
+- scanner algorithm changes
 - FaultSeg3D loader
 
 ## Shape And Convention
@@ -145,6 +180,22 @@ metrics.json
 summary.csv
 visual_report.md  # only with --write-markdown-index
 ```
+
+`--input-mode` controls the report input path:
+
+```text
+oracle   # default: oracle ft/pt/tt only, with the stable legacy JSON shape
+scanner  # scanner_input -> FaultOrientScanner3 -> optional scanner thin -> voting
+both     # run oracle and scanner pipelines for the same case/variant
+```
+
+Scanner mode is configured with `--scanner-backend reference-like|fast`,
+`--scanner-phi-min`, `--scanner-phi-max`, `--scanner-theta-min`,
+`--scanner-theta-max`, `--scanner-sigma1`, `--scanner-sigma2`,
+`--scanner-thin-mode none|reference|normal`, and
+`--keep-scanner-edge-effects`. The scanner defaults are reference-like backend,
+strike range `0..180`, dip range `45..90`, `sigma1=sigma2=2`, and reference
+scanner thinning with edge-effect removal.
 
 With optional visual outputs enabled, each case also gets a case directory. For
 the `minimal` case set this is:
@@ -278,6 +329,18 @@ compatibility, `current_default` is also duplicated at the case top level when
 that variant is present. `cases[].variant_comparison` stores per-variant deltas
 against `current_default` when that baseline variant is present; when it is not
 present, `baseline_variant` is `null` and the comparison map is empty.
+With `--input-mode scanner` or `--input-mode both`, each variant also stores
+`pipelines`. Scanner variants include `scanner.input`, raw scanner `ft`/`pt`/`tt`,
+and scanner-thinned `fet`/`fpt`/`ftt` summaries. In scanner-only mode, top-level
+`pyosv` and `quality` alias the scanner pipeline; in both mode they alias the
+oracle pipeline. Scanner pipeline reports also include `scanner_quality`, which
+measures scanner outputs before voting/skinning: raw scanner `ft` top-truth-count
+overlap and surface distance, raw and used scanner `pt`/`tt` orientation errors,
+and scanner-input association with the truth surface. The input association uses
+`abs(truth_distance) <= --truth-surface-half-width` as the near-surface mask and
+`abs(truth_distance) >= max(3.0, --truth-surface-half-width + 2.0)` as the far
+mask; positive contrast means the low-on-fault scanner input is lower near truth
+than far from truth.
 `quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
 the truth target. `quality.*.surface_distance` uses the thin truth surface mask
 defined by
@@ -353,11 +416,25 @@ voter_thin_normal
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
-column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
-median orientation error columns, `fv_edge_false_positive_fraction`,
+column, baseline variant, input mode, buffered F1, candidate-to-truth p95
+distance, fvt median orientation error columns, `fv_edge_false_positive_fraction`,
 `fvt_edge_false_positive_fraction`, skin topology and truth metric columns, and
-fvt and skin delta columns against the baseline. The skin columns are written in
-deterministic order:
+fvt and skin delta columns against the baseline. Scanner columns are always in
+the header; they are populated for `--input-mode scanner` and `--input-mode both`
+and empty for oracle-only rows:
+
+```text
+input_mode
+scanner_backend
+scanner_thin_mode
+scanner_ft_buffered_f1_r2
+scanner_ft_distance_p95
+scanner_strike_median_error
+scanner_dip_median_error
+scanner_input_contrast
+```
+
+The skin columns are written in deterministic order:
 
 ```text
 skinning_enabled

@@ -6,6 +6,7 @@ from pyosv.synthetic3d import (
     Synthetic3DCase,
     SyntheticCurvedSurfaceSpec,
     SyntheticPlaneSpec,
+    SyntheticScannerInputConfig,
     _SyntheticFaultComponent,
     _compose_synthetic_components,
     coordinate_grids3,
@@ -15,6 +16,7 @@ from pyosv.synthetic3d import (
     make_crossing_planes_case,
     make_curved_surface_case,
     make_parallel_planes_case,
+    make_scanner_input_from_case,
     make_single_dipping_plane_case,
     make_single_vertical_plane_case,
     make_weak_noisy_plane_case,
@@ -272,6 +274,86 @@ def test_synthetic3d_case_rejects_array_shape_mismatch() -> None:
             pt_oracle=values,
             tt_oracle=values,
         )
+
+
+def test_synthetic_scanner_input_is_low_on_fault_and_high_away_from_fault() -> None:
+    case = make_single_vertical_plane_case(shape=(17, 19, 21))
+    scanner_input = make_scanner_input_from_case(case)
+
+    truth_surface = case.truth_fault_mask
+    far_from_fault = case.ft_oracle < 0.05
+
+    assert np.any(truth_surface)
+    assert np.any(far_from_fault)
+    assert scanner_input[truth_surface].mean() < scanner_input[far_from_fault].mean()
+
+
+def test_synthetic_scanner_input_is_float32_finite_and_shape_matching() -> None:
+    case = make_single_dipping_plane_case(shape=(9, 11, 13))
+    config = SyntheticScannerInputConfig(
+        background=1.2,
+        fault_contrast=1.0,
+        clip_min=0.1,
+        clip_max=0.9,
+    )
+
+    scanner_input = make_scanner_input_from_case(case, config)
+    repeated = make_scanner_input_from_case(case, config)
+
+    assert scanner_input.shape == case.shape
+    assert scanner_input.dtype == np.float32
+    assert np.all(np.isfinite(scanner_input))
+    assert scanner_input.min() >= config.clip_min
+    assert scanner_input.max() <= config.clip_max
+    np.testing.assert_array_equal(scanner_input, repeated)
+
+
+def test_synthetic_scanner_input_noise_is_deterministic_for_same_seed() -> None:
+    case = make_curved_surface_case(shape=(9, 11, 13))
+    config = SyntheticScannerInputConfig(noise_sigma=0.04, seed=1234)
+
+    scanner_input = make_scanner_input_from_case(case, config)
+    repeated = make_scanner_input_from_case(case, config)
+
+    np.testing.assert_array_equal(scanner_input, repeated)
+
+
+def test_synthetic_scanner_input_noise_changes_with_different_seed() -> None:
+    case = make_curved_surface_case(shape=(9, 11, 13))
+    config_a = SyntheticScannerInputConfig(noise_sigma=0.04, seed=1234)
+    config_b = SyntheticScannerInputConfig(noise_sigma=0.04, seed=5678)
+
+    scanner_input_a = make_scanner_input_from_case(case, config_a)
+    scanner_input_b = make_scanner_input_from_case(case, config_b)
+
+    assert not np.array_equal(scanner_input_a, scanner_input_b)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"background": np.nan},
+        {"background": np.inf},
+        {"background": True},
+        {"fault_contrast": -0.1},
+        {"fault_contrast": np.nan},
+        {"fault_contrast": False},
+        {"noise_sigma": -0.1},
+        {"noise_sigma": np.inf},
+        {"noise_sigma": True},
+        {"seed": 1.5},
+        {"seed": False},
+        {"clip_min": np.nan},
+        {"clip_max": np.inf},
+        {"clip_min": 1.0, "clip_max": 1.0},
+        {"clip_min": 2.0, "clip_max": 1.0},
+    ],
+)
+def test_synthetic_scanner_input_config_rejects_invalid_values(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        SyntheticScannerInputConfig(**kwargs)
 
 
 @pytest.mark.parametrize(
