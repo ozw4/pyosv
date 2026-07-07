@@ -892,6 +892,74 @@ def test_scanner_input_association_has_positive_contrast_on_minimal_case(
     assert input_association["contrast"] > 0.0
 
 
+def test_report_scanner_mode_minimal_case_meets_loose_smoke_thresholds(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    scanner_quality = variant["scanner_quality"]
+    scanner_ft_overlap = scanner_quality["ft_top_truth_count"]["buffered_overlap_radius2"]
+    fvt_overlap = variant["quality"]["fvt_top_truth_count"]["buffered_overlap_radius2"]
+    input_association = scanner_quality["input_association"]
+
+    assert scanner_ft_overlap["buffered_f1"] >= 0.20
+    assert fvt_overlap["buffered_f1"] >= 0.20
+    assert input_association["contrast"] > 0.0
+
+
+def test_report_input_mode_both_keeps_oracle_and_scanner_metrics_separate(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    pipelines = variant["pipelines"]
+    oracle_pipeline = pipelines["oracle"]
+    scanner_pipeline = pipelines["scanner"]
+
+    assert variant["active_pipeline"] == "oracle"
+    assert variant["quality"] == oracle_pipeline["quality"]
+    assert "scanner_quality" not in variant
+    assert "scanner_quality" in scanner_pipeline
+
+    oracle_fvt = oracle_pipeline["quality"]["fvt_top_truth_count"]
+    scanner_fvt = scanner_pipeline["quality"]["fvt_top_truth_count"]
+    scanner_ft = scanner_pipeline["scanner_quality"]["ft_top_truth_count"]
+    for quality in (oracle_fvt, scanner_fvt, scanner_ft):
+        assert math.isfinite(float(quality["buffered_overlap_radius2"]["buffered_f1"]))
+        assert math.isfinite(float(quality["surface_distance"]["candidate_to_truth_p95"]))
+
+    scanner_input = scanner_pipeline["scanner_quality"]["input_association"]
+    assert math.isfinite(float(scanner_input["contrast"]))
+
+
 def test_scanner_mode_summary_csv_contains_scanner_columns(tmp_path: Path) -> None:
     output_dir = tmp_path / "synthetic_quality"
 
