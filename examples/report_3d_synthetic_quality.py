@@ -2,10 +2,10 @@ r"""Report controlled 3D synthetic truth quality metrics.
 
 Example:
     PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-      --case-set geometry \
+      --case-set extended \
       --shape 33,33,33 \
       --variants current_default \
-      --output-dir outputs/3d/synthetic_quality/geometry_001 \
+      --output-dir outputs/3d/synthetic_quality/extended_001 \
       --pretty \
       --save-figures \
       --write-markdown-index
@@ -337,11 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Example:\n"
             "  PYTHONPATH=src python examples/report_3d_synthetic_quality.py \\\n"
-            "    --case-set geometry \\\n"
+            "    --case-set extended \\\n"
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal \\\n"
-            "    --output-dir outputs/3d/synthetic_quality/geometry_001 \\\n"
+            "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
             "    --write-markdown-index"

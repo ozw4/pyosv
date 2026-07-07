@@ -55,6 +55,8 @@ The current report CLI includes these case sets:
   `single_vertical_plane`.
 - `geometry`: the PR3 geometry set containing `single_vertical_plane`,
   `single_dipping_plane`, and `curved_surface`.
+- `extended`: the geometry cases plus `parallel_planes`, `crossing_planes`,
+  `boundary_plane`, and `weak_noisy_plane`.
 
 The public factory cases are:
 
@@ -64,19 +66,14 @@ The public factory cases are:
   with constant truth orientation and nonzero dip geometry.
 - `curved_surface`: an analytic surface whose `x1` position varies with `x2`
   and `x3`; truth strike and dip vary spatially with the local normal.
-- `boundary_plane`: a vertical plane near the `i2=0` face for edge-effect
-  diagnostics.
-- `parallel_planes`: two nearby vertical parallel planes with separate fault
-  IDs and union truth masks.
-- `crossing_planes`: two intersecting planar faults whose truth ID and
-  orientation follow the nearest component, with smaller fault ID used for
-  exact distance ties.
-- `weak_noisy_plane`: a deterministic dipping plane with weakened noisy
-  `ft_oracle` likelihood and unchanged truth orientation.
-
-The report CLI currently exposes the `minimal` and `geometry` case sets above.
-The boundary, parallel, crossing, and weak/noisy factories are available for
-direct Python use and tests, but are not report CLI case-set entries yet.
+- `parallel_planes`: close but distinct faults; tests separation and skin
+  fragmentation.
+- `crossing_planes`: intersecting faults; tests crossing robustness and
+  orientation ambiguity.
+- `boundary_plane`: a fault near the `i2` boundary; tests edge artifact
+  behavior and boundary handling.
+- `weak_noisy_plane`: degraded likelihood with deterministic noise; tests
+  robustness under weak contrast.
 
 The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for
 vertical and dipping single-plane cases and the analytic curved surface. They
@@ -87,8 +84,6 @@ thinning, and check truth-quality metrics.
 
 The current scope does not include:
 
-- report CLI wiring for the extended boundary, parallel, crossing, and
-  weak/noisy cases
 - synthetic seismic generation
 - scanner-inclusive synthetic path
 - FaultSeg3D loader
@@ -119,18 +114,25 @@ metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 
 `edge_false_positive_ratio(candidate_mask, truth_mask, edge_margin=...,
 truth_buffer_radius=...)` reports boundary-local candidate counts and false
-positive fractions outside a buffered truth mask. It is intended for synthetic
-truth-quality diagnostics such as the `boundary_plane` case, not F3 reference
-metrics.
+positive fractions outside a buffered truth mask. The edge region is the union
+of samples within `edge_margin` voxels of any volume face. A candidate sample
+in that edge region is counted as an edge false positive when it is outside the
+truth buffer, where the buffer is the truth mask dilated by
+`truth_buffer_radius` using Euclidean distance. The main fraction,
+`edge_false_positive_fraction_of_candidates`, is the share of all candidates
+that are edge-local false positives; the companion
+`edge_false_positive_fraction_of_edge_candidates` normalizes by only edge
+candidates. This is a controlled synthetic truth metric for cases such as
+`boundary_plane`, not an F3 reference agreement metric.
 
 ## Report CLI
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set geometry \
+  --case-set extended \
   --shape 33,33,33 \
   --variants current_default,no_surface_orientation_smoothing,final_norm_smoothing_1,voter_thin_normal \
-  --output-dir outputs/3d/synthetic_quality/geometry_001 \
+  --output-dir outputs/3d/synthetic_quality/extended_001 \
   --pretty \
   --save-figures \
   --write-markdown-index
@@ -234,6 +236,17 @@ The stable minimum JSON contract is:
               "surface_distance": {},
               "orientation_error": {}
             },
+            "edge_false_positive": {
+              "fv_top_truth_count": {
+                "edge_false_positive_fraction_of_candidates": 0.0
+              },
+              "fvt_top_truth_count": {
+                "edge_false_positive_fraction_of_candidates": 0.0
+              },
+              "skin": {
+                "edge_false_positive_fraction_of_candidates": 0.0
+              }
+            },
             "skin": {
               "topology": {},
               "buffered_overlap_radius2": {},
@@ -269,6 +282,9 @@ present, `baseline_variant` is `null` and the comparison map is empty.
 the truth target. `quality.*.surface_distance` uses the thin truth surface mask
 defined by
 `abs(truth_distance) <= --truth-surface-half-width`.
+`quality.edge_false_positive` stores edge false-positive metrics for
+`fv_top_truth_count`, `fvt_top_truth_count`, and, when skinning is enabled,
+`skin`.
 `quality.skin.buffered_overlap_radius2` and `quality.skin.surface_distance` use
 the same truth targets as the `fv` and `fvt` truth-count metrics. With
 `--skip-skinning`, each variant stores `"skinning": {"enabled": false}`,
@@ -318,10 +334,12 @@ with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
 `--skinner-du`, `--skinner-max-delta-strike`, `--no-skinner-reskin`, and
 `--small-skin-size`.
 
-The `geometry` case set keeps the same top-level JSON contract and writes one
-`cases[]` entry plus one `summary.csv` row per `(case_id, variant)`. Optional
-volumes and figures are split by case directory, for example
-`single_dipping_plane/` and `curved_surface/`.
+The `geometry` and `extended` case sets keep the same top-level JSON contract
+and write one `cases[]` entry plus one `summary.csv` row per
+`(case_id, variant)`. Optional volumes and figures are split by case directory,
+for example `single_dipping_plane/`, `curved_surface/`,
+`parallel_planes/`, `crossing_planes/`, `boundary_plane/`, and
+`weak_noisy_plane/`.
 
 `--variants` accepts a comma-separated list:
 
@@ -336,9 +354,10 @@ The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
 column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
-median orientation error columns, skin topology and truth metric columns, and
-fvt and skin delta columns against the baseline. The skin columns are written
-in deterministic order:
+median orientation error columns, `fv_edge_false_positive_fraction`,
+`fvt_edge_false_positive_fraction`, skin topology and truth metric columns, and
+fvt and skin delta columns against the baseline. The skin columns are written in
+deterministic order:
 
 ```text
 skinning_enabled
@@ -404,6 +423,8 @@ skin mask and truth-vs-skin overlays. `--write-markdown-index` writes
 `visual_report.md` with relative links to the case figures and skin metrics.
 
 ## Test Commands
+
+The PR5 minimum validation command for the extended synthetic suite is:
 
 ```bash
 PYTHONPATH=src python -m pytest -q \
