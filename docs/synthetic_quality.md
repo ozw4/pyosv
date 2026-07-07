@@ -495,9 +495,38 @@ directory, with `truth_fault_mask.dat` and `skin_mask_py.dat` stored as 0/1
 float32 values. It also writes `skins.json` with deterministic skin cell
 records, or a disabled zero-count object when `--skip-skinning` is used. With
 more than one variant, volumes, `skins.json`, and figures are written under
-`case_id/variant/`. `--save-figures` writes static center-slice PNGs, including
-skin mask and truth-vs-skin overlays. `--write-markdown-index` writes
-`visual_report.md` with relative links to the case figures and skin metrics.
+`case_id/variant/`.
+
+For `--input-mode scanner`, the same case or variant directory also includes
+scanner artifacts:
+
+```text
+scanner_input.dat
+ft_scan.dat
+pt_scan.dat
+tt_scan.dat
+ft_used.dat
+pt_used.dat
+tt_used.dat
+```
+
+`ft_scan` / `pt_scan` / `tt_scan` are raw scanner outputs. `ft_used` /
+`pt_used` / `tt_used` are the attributes passed to voting after scanner
+thinning; with `--scanner-thin-mode none`, used attributes match raw scanner
+outputs. For `--input-mode both`, artifacts are split into pipeline
+subdirectories:
+
+```text
+case_id[/variant]/oracle/
+case_id[/variant]/scanner/
+```
+
+`--save-figures` writes static center-slice PNGs, including skin mask and
+truth-vs-skin overlays. Scanner mode also writes scanner input, `ft_scan`,
+`ft_used`, truth-vs-`ft_scan`, truth-vs-`ft_used`, and scanner FVT overlays.
+`--write-markdown-index` writes `visual_report.md` with relative links to the
+case figures, scanner overlays, scanner input/attribute metrics, FVT metrics,
+and skin metrics.
 
 ## Test Commands
 

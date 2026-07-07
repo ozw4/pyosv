@@ -70,6 +70,21 @@ VOLUME_NAMES = (
     "skin_mask_py",
 )
 FIGURE_VOLUME_NAMES = ("ft_oracle", "fv_py", "fvt_py")
+SCANNER_VOLUME_NAMES = (
+    ("scanner_input", "scanner_input"),
+    ("scanner_ft", "ft_scan"),
+    ("scanner_pt", "pt_scan"),
+    ("scanner_tt", "tt_scan"),
+    ("scanner_fet", "ft_used"),
+    ("scanner_fpt", "pt_used"),
+    ("scanner_ftt", "tt_used"),
+)
+SCANNER_FIGURE_VOLUME_NAMES = (
+    ("scanner_input", "scanner_input"),
+    ("scanner_ft", "ft_scan"),
+    ("scanner_fet", "ft_used"),
+)
+PIPELINE_OUTPUTS_KEY = "__pipelines__"
 NONZERO_EPSILON = 1.0e-6
 VARIANT_NAMES = (
     "current_default",
@@ -769,6 +784,14 @@ def _run_case_variant(
     report = dict(active_report)
     report["active_pipeline"] = active_pipeline
     report["pipelines"] = pipelines
+    if valid_input_mode == "both":
+        pipeline_volumes = {pipeline: outputs[1] for pipeline, outputs in pipeline_outputs.items()}
+        pipeline_skins = {pipeline: outputs[2] for pipeline, outputs in pipeline_outputs.items()}
+        return (
+            report,
+            {PIPELINE_OUTPUTS_KEY: pipeline_volumes},
+            {PIPELINE_OUTPUTS_KEY: pipeline_skins},
+        )
     return report, active_volumes, active_skins
 
 
@@ -1705,8 +1728,35 @@ def write_case_volumes(
         case_dir = _case_output_dir(output_root, case_id)
         for variant, volumes in variants.items():
             output_dir_for_variant = _variant_output_dir(case_dir, variant, len(variants) == 1)
-            for name in VOLUME_NAMES:
-                written.append(write_dat(output_dir_for_variant / f"{name}.dat", volumes[name]))
+            for pipeline, pipeline_volumes in _iter_pipeline_volume_outputs(volumes):
+                volume_dir = _pipeline_output_dir(output_dir_for_variant, pipeline)
+                written.extend(_write_pipeline_volumes(volume_dir, pipeline_volumes, write_dat))
+    return written
+
+
+def _iter_pipeline_volume_outputs(
+    volumes: Mapping[str, Any],
+) -> Sequence[tuple[str | None, Mapping[str, np.ndarray]]]:
+    pipeline_outputs = volumes.get(PIPELINE_OUTPUTS_KEY)
+    if isinstance(pipeline_outputs, Mapping):
+        return tuple(
+            (str(pipeline), pipeline_volumes)
+            for pipeline, pipeline_volumes in pipeline_outputs.items()
+        )
+    return ((None, volumes),)
+
+
+def _write_pipeline_volumes(
+    output_dir: Path,
+    volumes: Mapping[str, np.ndarray],
+    write_dat: Callable[[str | PathLike[str], np.ndarray], Path],
+) -> list[Path]:
+    written = []
+    for name in VOLUME_NAMES:
+        written.append(write_dat(output_dir / f"{name}.dat", volumes[name]))
+    for source_name, output_name in SCANNER_VOLUME_NAMES:
+        if source_name in volumes:
+            written.append(write_dat(output_dir / f"{output_name}.dat", volumes[source_name]))
     return written
 
 
@@ -1720,13 +1770,34 @@ def write_case_skins_json(
         case_dir = _case_output_dir(output_root, case_id)
         for variant, skins_output in variants.items():
             output_dir_for_variant = _variant_output_dir(case_dir, variant, len(variants) == 1)
-            output_path = output_dir_for_variant / "skins.json"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(
-                json.dumps(skins_output, sort_keys=True) + "\n", encoding="utf-8"
-            )
-            written.append(output_path)
+            for pipeline, pipeline_skins in _iter_pipeline_skin_outputs(skins_output):
+                skin_dir = _pipeline_output_dir(output_dir_for_variant, pipeline)
+                output_path = skin_dir / "skins.json"
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(
+                    json.dumps(pipeline_skins, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                written.append(output_path)
     return written
+
+
+def _iter_pipeline_skin_outputs(
+    skins_output: Mapping[str, Any],
+) -> Sequence[tuple[str | None, Mapping[str, Any]]]:
+    pipeline_outputs = skins_output.get(PIPELINE_OUTPUTS_KEY)
+    if isinstance(pipeline_outputs, Mapping):
+        return tuple(
+            (str(pipeline), pipeline_skins) for pipeline, pipeline_skins in pipeline_outputs.items()
+        )
+    return ((None, skins_output),)
+
+
+def _pipeline_output_dir(output_dir_for_variant: Path, pipeline: str | None) -> Path:
+    if pipeline is None:
+        return output_dir_for_variant
+    if pipeline not in {"oracle", "scanner"}:
+        raise ValueError(f"unknown pipeline: {pipeline}")
+    return output_dir_for_variant / pipeline
 
 
 def write_case_figures(
@@ -1735,60 +1806,123 @@ def write_case_figures(
     *,
     buffer_radius: float = 2.0,
 ) -> list[Path]:
-    from pyosv import viz
-
     written = []
     output_root = Path(output_dir)
     for case_id, variants in volume_outputs.items():
         case_dir = _case_output_dir(output_root, case_id)
         for variant, volumes in variants.items():
             output_dir_for_variant = _variant_output_dir(case_dir, variant, len(variants) == 1)
-            figures_dir = output_dir_for_variant / "figures"
-            indices = viz.select_center_slices(np.asarray(volumes["fvt_py"]).shape)
-            for axis in ("i3", "i2", "i1"):
-                index = indices[axis]
-                for name in FIGURE_VOLUME_NAMES:
-                    figure_path = figures_dir / f"{name}_{axis}_center.png"
-                    written.append(
-                        viz.save_slice_panel(
-                            figure_path,
-                            [(name, viz.slice_2d(volumes[name], axis, index))],
-                            title=f"{case_id} {variant} {name} {axis}=center",
-                        )
-                    )
-                if axis == "i3":
-                    written.append(
-                        viz.save_slice_panel(
-                            figures_dir / "skin_mask_py_i3_center.png",
-                            [("skin_mask_py", viz.slice_2d(volumes["skin_mask_py"], axis, index))],
-                            title=f"{case_id} {variant} skin_mask_py {axis}=center",
-                            clip_percentiles=(0.0, 100.0),
-                        )
-                    )
-                written.append(
-                    viz.save_ridge_overlay_slice(
-                        figures_dir / f"truth_vs_fvt_overlay_{axis}_center.png",
-                        reference=volumes["truth_fault_mask"],
-                        candidate=volumes["fvt_py"],
-                        axis=axis,
-                        index=index,
-                        percentile=99.0,
+            for pipeline, pipeline_volumes in _iter_pipeline_volume_outputs(volumes):
+                figure_dir = _pipeline_output_dir(output_dir_for_variant, pipeline) / "figures"
+                written.extend(
+                    _write_pipeline_figures(
+                        pipeline_volumes,
+                        figure_dir,
+                        case_id=case_id,
+                        variant=variant,
+                        pipeline=pipeline,
                         buffer_radius=buffer_radius,
-                        title=f"{case_id} {variant} truth vs fvt {axis}=center",
                     )
                 )
+    return written
+
+
+def _write_pipeline_figures(
+    volumes: Mapping[str, np.ndarray],
+    figures_dir: Path,
+    *,
+    case_id: str,
+    variant: str,
+    pipeline: str | None,
+    buffer_radius: float,
+) -> list[Path]:
+    from pyosv import viz
+
+    written = []
+    title_parts = [case_id, variant]
+    if pipeline is not None:
+        title_parts.append(pipeline)
+    title_prefix = " ".join(title_parts)
+    indices = viz.select_center_slices(np.asarray(volumes["fvt_py"]).shape)
+    for axis in ("i3", "i2", "i1"):
+        index = indices[axis]
+        for name in FIGURE_VOLUME_NAMES:
+            figure_path = figures_dir / f"{name}_{axis}_center.png"
+            written.append(
+                viz.save_slice_panel(
+                    figure_path,
+                    [(name, viz.slice_2d(volumes[name], axis, index))],
+                    title=f"{title_prefix} {name} {axis}=center",
+                )
+            )
+        if "scanner_input" in volumes:
+            for source_name, output_name in SCANNER_FIGURE_VOLUME_NAMES:
+                figure_path = figures_dir / f"{output_name}_{axis}_center.png"
                 written.append(
-                    viz.save_ridge_overlay_slice(
-                        figures_dir / f"truth_vs_skin_overlay_{axis}_center.png",
-                        reference=volumes["truth_fault_mask"],
-                        candidate=volumes["skin_mask_py"].astype(np.float32),
-                        axis=axis,
-                        index=index,
-                        percentile=99.0,
-                        buffer_radius=buffer_radius,
-                        title=f"{case_id} {variant} truth vs skin {axis}=center",
+                    viz.save_slice_panel(
+                        figure_path,
+                        [(output_name, viz.slice_2d(volumes[source_name], axis, index))],
+                        title=f"{title_prefix} {output_name} {axis}=center",
                     )
                 )
+        if axis == "i3":
+            written.append(
+                viz.save_slice_panel(
+                    figures_dir / "skin_mask_py_i3_center.png",
+                    [("skin_mask_py", viz.slice_2d(volumes["skin_mask_py"], axis, index))],
+                    title=f"{title_prefix} skin_mask_py {axis}=center",
+                    clip_percentiles=(0.0, 100.0),
+                )
+            )
+        written.append(
+            viz.save_ridge_overlay_slice(
+                figures_dir / f"truth_vs_fvt_overlay_{axis}_center.png",
+                reference=volumes["truth_fault_mask"],
+                candidate=volumes["fvt_py"],
+                axis=axis,
+                index=index,
+                percentile=99.0,
+                buffer_radius=buffer_radius,
+                title=f"{title_prefix} truth vs fvt {axis}=center",
+            )
+        )
+        written.append(
+            viz.save_ridge_overlay_slice(
+                figures_dir / f"truth_vs_skin_overlay_{axis}_center.png",
+                reference=volumes["truth_fault_mask"],
+                candidate=volumes["skin_mask_py"].astype(np.float32),
+                axis=axis,
+                index=index,
+                percentile=99.0,
+                buffer_radius=buffer_radius,
+                title=f"{title_prefix} truth vs skin {axis}=center",
+            )
+        )
+        if "scanner_ft" in volumes:
+            written.append(
+                viz.save_ridge_overlay_slice(
+                    figures_dir / f"truth_vs_ft_scan_overlay_{axis}_center.png",
+                    reference=volumes["truth_fault_mask"],
+                    candidate=volumes["scanner_ft"],
+                    axis=axis,
+                    index=index,
+                    percentile=99.0,
+                    buffer_radius=buffer_radius,
+                    title=f"{title_prefix} truth vs ft_scan {axis}=center",
+                )
+            )
+            written.append(
+                viz.save_ridge_overlay_slice(
+                    figures_dir / f"truth_vs_ft_used_overlay_{axis}_center.png",
+                    reference=volumes["truth_fault_mask"],
+                    candidate=volumes["scanner_fet"],
+                    axis=axis,
+                    index=index,
+                    percentile=99.0,
+                    buffer_radius=buffer_radius,
+                    title=f"{title_prefix} truth vs ft_used {axis}=center",
+                )
+            )
     return written
 
 
@@ -1804,6 +1938,7 @@ def write_visual_report_markdown(
 
 def visual_report_markdown(report: Mapping[str, Any]) -> str:
     lines = ["# Controlled Synthetic Quality Report", ""]
+    input_mode = str(report.get("config", {}).get("input_mode", "oracle"))
     for case in report["cases"]:
         case_id = str(case["case_id"])
         lines.extend(
@@ -1814,61 +1949,235 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
         )
         variants = case["variants"]
         for variant, variant_report in variants.items():
-            quality = variant_report["quality"]["fvt_top_truth_count"]
-            overlap = quality["buffered_overlap_radius2"]
-            distance = quality["surface_distance"]
-            orientation = quality["orientation_error"]
-            overlay_parts = [case_id]
-            if len(variants) > 1:
-                overlay_parts.append(variant)
-            overlay_parts.extend(("figures", "truth_vs_fvt_overlay_i3_center.png"))
-            overlay_path = PurePosixPath(*overlay_parts)
-            skin_overlay_parts = [case_id]
-            if len(variants) > 1:
-                skin_overlay_parts.append(variant)
-            skin_overlay_parts.extend(("figures", "truth_vs_skin_overlay_i3_center.png"))
-            skin_overlay_path = PurePosixPath(*skin_overlay_parts)
-            lines.extend(
-                [
-                    f"### {variant}",
-                    "",
-                    f"- buffered_f1_r2: {_format_markdown_metric(overlap['buffered_f1'])}",
-                    "- distance_p95: "
-                    f"{_format_markdown_metric(distance['candidate_to_truth_p95'])}",
-                    "- strike_median_error: "
-                    f"{_format_markdown_metric(orientation['strike_median'])}",
-                    f"- dip_median_error: {_format_markdown_metric(orientation['dip_median'])}",
-                    "",
-                    f"![fvt overlay]({overlay_path.as_posix()})",
-                    "",
-                ]
-            )
-            if bool(variant_report["skinning"]["enabled"]):
-                skin_quality = variant_report["quality"]["skin"]
-                skin_topology = skin_quality["topology"]
-                skin_overlap = skin_quality["buffered_overlap_radius2"]
-                skin_distance = skin_quality["surface_distance"]
-                skin_orientation = skin_quality["orientation_error"]
+            pipelines = variant_report.get("pipelines", {})
+            lines.extend([f"### {variant}", ""])
+            if input_mode == "both" and isinstance(pipelines, Mapping):
+                oracle_report = pipelines["oracle"]
+                scanner_report = pipelines["scanner"]
                 lines.extend(
-                    [
-                        f"- skin_count: {_format_markdown_metric(skin_topology['skin_count'])}",
-                        f"- skin_cell_count: {_format_markdown_metric(skin_topology['cell_count'])}",
-                        "- skin_buffered_f1_r2: "
-                        f"{_format_markdown_metric(skin_overlap['buffered_f1'])}",
-                        "- skin_distance_p95: "
-                        f"{_format_markdown_metric(skin_distance['candidate_to_truth_p95'])}",
-                        "- skin_strike_median_error: "
-                        f"{_format_markdown_metric(skin_orientation['strike_median'])}",
-                        "- skin_dip_median_error: "
-                        f"{_format_markdown_metric(skin_orientation['dip_median'])}",
-                        "",
-                        f"![skin overlay]({skin_overlay_path.as_posix()})",
-                        "",
-                    ]
+                    _pipeline_comparison_table(
+                        oracle_report=oracle_report,
+                        scanner_report=scanner_report,
+                    )
+                )
+                lines.extend(
+                    _visual_pipeline_section(
+                        "oracle",
+                        oracle_report,
+                        case_id=case_id,
+                        variant=variant,
+                        variant_count=len(variants),
+                        path_pipeline="oracle",
+                        include_scanner=False,
+                    )
+                )
+                lines.extend(
+                    _visual_pipeline_section(
+                        "scanner",
+                        scanner_report,
+                        case_id=case_id,
+                        variant=variant,
+                        variant_count=len(variants),
+                        path_pipeline="scanner",
+                        include_scanner=True,
+                    )
                 )
             else:
-                lines.extend(["- skinning disabled", ""])
+                lines.extend(
+                    _visual_pipeline_section(
+                        None,
+                        variant_report,
+                        case_id=case_id,
+                        variant=variant,
+                        variant_count=len(variants),
+                        path_pipeline=None,
+                        include_scanner="scanner_quality" in variant_report,
+                    )
+                )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _visual_pipeline_section(
+    pipeline_label: str | None,
+    pipeline_report: Mapping[str, Any],
+    *,
+    case_id: str,
+    variant: str,
+    variant_count: int,
+    path_pipeline: str | None,
+    include_scanner: bool,
+) -> list[str]:
+    quality = pipeline_report["quality"]["fvt_top_truth_count"]
+    overlap = quality["buffered_overlap_radius2"]
+    distance = quality["surface_distance"]
+    orientation = quality["orientation_error"]
+    overlay_path = _figure_path(
+        case_id,
+        variant=variant,
+        variant_count=variant_count,
+        pipeline=path_pipeline,
+        filename="truth_vs_fvt_overlay_i3_center.png",
+    )
+    skin_overlay_path = _figure_path(
+        case_id,
+        variant=variant,
+        variant_count=variant_count,
+        pipeline=path_pipeline,
+        filename="truth_vs_skin_overlay_i3_center.png",
+    )
+    lines: list[str] = []
+    if pipeline_label is not None:
+        lines.extend([f"#### {pipeline_label} pipeline", ""])
+    lines.extend(
+        [
+            f"- buffered_f1_r2: {_format_markdown_metric(overlap['buffered_f1'])}",
+            f"- distance_p95: {_format_markdown_metric(distance['candidate_to_truth_p95'])}",
+            f"- strike_median_error: {_format_markdown_metric(orientation['strike_median'])}",
+            f"- dip_median_error: {_format_markdown_metric(orientation['dip_median'])}",
+        ]
+    )
+    if include_scanner:
+        lines.extend(_scanner_markdown_metrics(pipeline_report))
+    lines.extend(["", f"![fvt overlay]({overlay_path.as_posix()})", ""])
+    if include_scanner:
+        scanner_scan_overlay_path = _figure_path(
+            case_id,
+            variant=variant,
+            variant_count=variant_count,
+            pipeline=path_pipeline,
+            filename="truth_vs_ft_scan_overlay_i3_center.png",
+        )
+        scanner_used_overlay_path = _figure_path(
+            case_id,
+            variant=variant,
+            variant_count=variant_count,
+            pipeline=path_pipeline,
+            filename="truth_vs_ft_used_overlay_i3_center.png",
+        )
+        lines.extend(
+            [
+                f"![scanner ft scan overlay]({scanner_scan_overlay_path.as_posix()})",
+                "",
+                f"![scanner ft used overlay]({scanner_used_overlay_path.as_posix()})",
+                "",
+            ]
+        )
+    if bool(pipeline_report["skinning"]["enabled"]):
+        skin_quality = pipeline_report["quality"]["skin"]
+        skin_topology = skin_quality["topology"]
+        skin_overlap = skin_quality["buffered_overlap_radius2"]
+        skin_distance = skin_quality["surface_distance"]
+        skin_orientation = skin_quality["orientation_error"]
+        lines.extend(
+            [
+                f"- skin_count: {_format_markdown_metric(skin_topology['skin_count'])}",
+                f"- skin_cell_count: {_format_markdown_metric(skin_topology['cell_count'])}",
+                f"- skin_buffered_f1_r2: {_format_markdown_metric(skin_overlap['buffered_f1'])}",
+                "- skin_distance_p95: "
+                f"{_format_markdown_metric(skin_distance['candidate_to_truth_p95'])}",
+                "- skin_strike_median_error: "
+                f"{_format_markdown_metric(skin_orientation['strike_median'])}",
+                "- skin_dip_median_error: "
+                f"{_format_markdown_metric(skin_orientation['dip_median'])}",
+                "",
+                f"![skin overlay]({skin_overlay_path.as_posix()})",
+                "",
+            ]
+        )
+    else:
+        lines.extend(["- skinning disabled", ""])
+    return lines
+
+
+def _scanner_markdown_metrics(pipeline_report: Mapping[str, Any]) -> list[str]:
+    scanner_quality = pipeline_report["scanner_quality"]
+    input_association = scanner_quality["input_association"]
+    ft_quality = scanner_quality["ft_top_truth_count"]
+    ft_overlap = ft_quality["buffered_overlap_radius2"]
+    ft_distance = ft_quality["surface_distance"]
+    orientation = scanner_quality["orientation_error"]["raw_scan_top_truth_count"]
+    return [
+        f"- scanner input contrast: {_format_markdown_metric(input_association['contrast'])}",
+        f"- scanner ft buffered_f1: {_format_markdown_metric(ft_overlap['buffered_f1'])}",
+        "- scanner ft distance_p95: "
+        f"{_format_markdown_metric(ft_distance['candidate_to_truth_p95'])}",
+        f"- scanner strike median error: {_format_markdown_metric(orientation['strike_median'])}",
+        f"- scanner dip median error: {_format_markdown_metric(orientation['dip_median'])}",
+    ]
+
+
+def _pipeline_comparison_table(
+    *,
+    oracle_report: Mapping[str, Any],
+    scanner_report: Mapping[str, Any],
+) -> list[str]:
+    headers = (
+        "pipeline",
+        "scanner input contrast",
+        "scanner ft buffered_f1",
+        "scanner ft distance_p95",
+        "scanner strike median error",
+        "scanner dip median error",
+        "fvt buffered_f1",
+        "skin buffered_f1",
+    )
+    return [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+        _pipeline_comparison_row("oracle", oracle_report, include_scanner=False),
+        _pipeline_comparison_row("scanner", scanner_report, include_scanner=True),
+        "",
+    ]
+
+
+def _pipeline_comparison_row(
+    pipeline: str,
+    pipeline_report: Mapping[str, Any],
+    *,
+    include_scanner: bool,
+) -> str:
+    fvt_overlap = pipeline_report["quality"]["fvt_top_truth_count"]["buffered_overlap_radius2"][
+        "buffered_f1"
+    ]
+    skin_quality = pipeline_report["quality"]["skin"]
+    skin_overlap = (
+        skin_quality["buffered_overlap_radius2"]["buffered_f1"]
+        if skin_quality is not None
+        else "skinning disabled"
+    )
+    scanner_values: tuple[object, ...]
+    if include_scanner:
+        scanner_quality = pipeline_report["scanner_quality"]
+        scanner_ft_quality = scanner_quality["ft_top_truth_count"]
+        scanner_orientation = scanner_quality["orientation_error"]["raw_scan_top_truth_count"]
+        scanner_values = (
+            scanner_quality["input_association"]["contrast"],
+            scanner_ft_quality["buffered_overlap_radius2"]["buffered_f1"],
+            scanner_ft_quality["surface_distance"]["candidate_to_truth_p95"],
+            scanner_orientation["strike_median"],
+            scanner_orientation["dip_median"],
+        )
+    else:
+        scanner_values = ("n/a", "n/a", "n/a", "n/a", "n/a")
+    values = (pipeline, *scanner_values, fvt_overlap, skin_overlap)
+    return "| " + " | ".join(_format_markdown_metric(value) for value in values) + " |"
+
+
+def _figure_path(
+    case_id: str,
+    *,
+    variant: str,
+    variant_count: int,
+    pipeline: str | None,
+    filename: str,
+) -> PurePosixPath:
+    parts = [case_id]
+    if variant_count > 1:
+        parts.append(variant)
+    if pipeline is not None:
+        parts.append(pipeline)
+    parts.extend(("figures", filename))
+    return PurePosixPath(*parts)
 
 
 def _format_markdown_metric(value: object) -> str:
