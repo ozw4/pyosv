@@ -177,6 +177,15 @@ def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None
     assert math.isfinite(float(input_association["contrast"]))
 
 
+def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> None:
+    assert "buffered_f1" in quality["buffered_overlap_radius2"]
+    assert "candidate_to_truth_p95" in quality["surface_distance"]
+    orientation = quality["orientation_error"]
+    assert orientation["count"] > 0
+    assert math.isfinite(float(orientation["strike_median"]))
+    assert math.isfinite(float(orientation["dip_median"]))
+
+
 def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     result = _run_script("--help")
 
@@ -235,10 +244,10 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert set(case["variants"]) == {"current_default"}
     assert case["truth"]["fault_voxel_count"] > case["truth"]["surface_voxel_count"] > 0
     quality = case["quality"]
+    fv_quality = quality["fv_top_truth_count"]
+    _assert_top_truth_quality_has_orientation(fv_quality)
     fvt_quality = quality["fvt_top_truth_count"]
-    assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
-    assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
-    assert "strike_median" in fvt_quality["orientation_error"]
+    _assert_top_truth_quality_has_orientation(fvt_quality)
     skin_quality = quality["skin"]
     assert skin_quality is not None
     assert "buffered_f1" in skin_quality["buffered_overlap_radius2"]
@@ -270,6 +279,8 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fv_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fv_distance_p95"]) >= 0.0
     assert math.isfinite(float(rows[0]["fv_edge_false_positive_fraction"]))
+    assert math.isfinite(float(rows[0]["fv_strike_median_error"]))
+    assert math.isfinite(float(rows[0]["fv_dip_median_error"]))
     assert float(rows[0]["fvt_max"]) > 0.0
     assert float(rows[0]["fvt_nonzero_fraction"]) > 0.0
     assert float(rows[0]["fvt_buffered_f1_r2"]) > 0.0
@@ -319,11 +330,10 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert math.isfinite(fvt["max"])
         assert fvt["max"] > 0.0
 
+        fv_quality = variant["quality"]["fv_top_truth_count"]
+        _assert_top_truth_quality_has_orientation(fv_quality)
         fvt_quality = variant["quality"]["fvt_top_truth_count"]
-        assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
-        assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
-        assert "strike_median" in fvt_quality["orientation_error"]
-        assert "dip_median" in fvt_quality["orientation_error"]
+        _assert_top_truth_quality_has_orientation(fvt_quality)
         skin_quality = variant["quality"]["skin"]
         assert skin_quality is not None
         assert "topology" in skin_quality
@@ -340,6 +350,8 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert math.isfinite(float(row["fvt_buffered_f1_r2"]))
         assert float(row["fvt_buffered_f1_r2"]) >= 0.0
         assert math.isfinite(float(row["fvt_distance_p95"]))
+        assert math.isfinite(float(row["fv_strike_median_error"]))
+        assert math.isfinite(float(row["fv_dip_median_error"]))
         assert math.isfinite(float(row["fvt_strike_median_error"]))
         assert math.isfinite(float(row["fvt_dip_median_error"]))
         _assert_enabled_skin_summary_row(row)
@@ -799,6 +811,9 @@ def test_input_mode_both_summary_csv_has_oracle_and_scanner_rows(
         ("single_vertical_plane", "oracle", "current_default"),
         ("single_vertical_plane", "scanner", "current_default"),
     }
+    for row in rows:
+        assert math.isfinite(float(row["fv_strike_median_error"]))
+        assert math.isfinite(float(row["fv_dip_median_error"]))
 
 
 def test_report_synthetic_quality_scanner_mode_records_scanner_config(
@@ -1020,9 +1035,11 @@ def test_report_scanner_mode_minimal_case_meets_loose_smoke_thresholds(
     variant = metrics["cases"][0]["variants"]["current_default"]
     scanner_quality = variant["scanner_quality"]
     scanner_ft_overlap = scanner_quality["ft_top_truth_count"]["buffered_overlap_radius2"]
+    fv_quality = variant["quality"]["fv_top_truth_count"]
     fvt_overlap = variant["quality"]["fvt_top_truth_count"]["buffered_overlap_radius2"]
     input_association = scanner_quality["input_association"]
 
+    _assert_top_truth_quality_has_orientation(fv_quality)
     assert scanner_ft_overlap["buffered_f1"] >= 0.20
     assert fvt_overlap["buffered_f1"] >= 0.20
     assert input_association["contrast"] > 0.0
@@ -1056,12 +1073,16 @@ def test_report_input_mode_both_keeps_oracle_and_scanner_metrics_separate(
     assert "scanner_quality" not in variant
     assert "scanner_quality" in scanner_pipeline
 
+    oracle_fv = oracle_pipeline["quality"]["fv_top_truth_count"]
+    scanner_fv = scanner_pipeline["quality"]["fv_top_truth_count"]
     oracle_fvt = oracle_pipeline["quality"]["fvt_top_truth_count"]
     scanner_fvt = scanner_pipeline["quality"]["fvt_top_truth_count"]
     scanner_ft = scanner_pipeline["scanner_quality"]["ft_top_truth_count"]
     for quality in (oracle_fvt, scanner_fvt, scanner_ft):
         assert math.isfinite(float(quality["buffered_overlap_radius2"]["buffered_f1"]))
         assert math.isfinite(float(quality["surface_distance"]["candidate_to_truth_p95"]))
+    for quality in (oracle_fv, scanner_fv):
+        _assert_top_truth_quality_has_orientation(quality)
 
     scanner_input = scanner_pipeline["scanner_quality"]["input_association"]
     assert math.isfinite(float(scanner_input["contrast"]))

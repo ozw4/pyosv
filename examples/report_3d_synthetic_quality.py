@@ -1170,6 +1170,13 @@ def _run_voting_from_attributes(
                     fv_top_truth_count,
                     truth_surface_mask,
                 ),
+                "orientation_error": masked_orientation_error(
+                    vp,
+                    vt,
+                    case.truth_strike,
+                    case.truth_dip,
+                    fv_top_truth_count,
+                ),
             },
             "fvt_top_truth_count": {
                 "buffered_overlap_radius2": buffered_surface_overlap(
@@ -1518,6 +1525,8 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fv_buffered_f1_r2",
                 "fv_distance_p95",
                 "fv_edge_false_positive_fraction",
+                "fv_strike_median_error",
+                "fv_dip_median_error",
                 "fvt_max",
                 "fvt_mean",
                 "fvt_nonzero_fraction",
@@ -1612,6 +1621,10 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "fv_edge_false_positive_fraction": edge_false_positive[
                                 "fv_top_truth_count"
                             ]["edge_false_positive_fraction_of_candidates"],
+                            "fv_strike_median_error": fv_quality["orientation_error"][
+                                "strike_median"
+                            ],
+                            "fv_dip_median_error": fv_quality["orientation_error"]["dip_median"],
                             "fvt_max": fvt["max"],
                             "fvt_mean": fvt["mean"],
                             "fvt_nonzero_fraction": fvt["nonzero_fraction"],
