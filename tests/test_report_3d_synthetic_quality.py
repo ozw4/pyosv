@@ -42,6 +42,15 @@ EXPECTED_VOLUME_FILES = (
     "fvt_py.dat",
     "skin_mask_py.dat",
 )
+EXPECTED_SCANNER_VOLUME_FILES = (
+    "scanner_input.dat",
+    "ft_scan.dat",
+    "pt_scan.dat",
+    "tt_scan.dat",
+    "ft_used.dat",
+    "pt_used.dat",
+    "tt_used.dat",
+)
 EXPECTED_I3_FIGURES = (
     "ft_oracle_i3_center.png",
     "fv_py_i3_center.png",
@@ -49,6 +58,14 @@ EXPECTED_I3_FIGURES = (
     "skin_mask_py_i3_center.png",
     "truth_vs_fvt_overlay_i3_center.png",
     "truth_vs_skin_overlay_i3_center.png",
+)
+EXPECTED_SCANNER_I3_FIGURES = (
+    "scanner_input_i3_center.png",
+    "ft_scan_i3_center.png",
+    "ft_used_i3_center.png",
+    "truth_vs_ft_scan_overlay_i3_center.png",
+    "truth_vs_ft_used_overlay_i3_center.png",
+    "truth_vs_fvt_overlay_i3_center.png",
 )
 EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_enabled",
@@ -875,6 +892,74 @@ def test_scanner_input_association_has_positive_contrast_on_minimal_case(
     assert input_association["contrast"] > 0.0
 
 
+def test_report_scanner_mode_minimal_case_meets_loose_smoke_thresholds(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    scanner_quality = variant["scanner_quality"]
+    scanner_ft_overlap = scanner_quality["ft_top_truth_count"]["buffered_overlap_radius2"]
+    fvt_overlap = variant["quality"]["fvt_top_truth_count"]["buffered_overlap_radius2"]
+    input_association = scanner_quality["input_association"]
+
+    assert scanner_ft_overlap["buffered_f1"] >= 0.20
+    assert fvt_overlap["buffered_f1"] >= 0.20
+    assert input_association["contrast"] > 0.0
+
+
+def test_report_input_mode_both_keeps_oracle_and_scanner_metrics_separate(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    pipelines = variant["pipelines"]
+    oracle_pipeline = pipelines["oracle"]
+    scanner_pipeline = pipelines["scanner"]
+
+    assert variant["active_pipeline"] == "oracle"
+    assert variant["quality"] == oracle_pipeline["quality"]
+    assert "scanner_quality" not in variant
+    assert "scanner_quality" in scanner_pipeline
+
+    oracle_fvt = oracle_pipeline["quality"]["fvt_top_truth_count"]
+    scanner_fvt = scanner_pipeline["quality"]["fvt_top_truth_count"]
+    scanner_ft = scanner_pipeline["scanner_quality"]["ft_top_truth_count"]
+    for quality in (oracle_fvt, scanner_fvt, scanner_ft):
+        assert math.isfinite(float(quality["buffered_overlap_radius2"]["buffered_f1"]))
+        assert math.isfinite(float(quality["surface_distance"]["candidate_to_truth_p95"]))
+
+    scanner_input = scanner_pipeline["scanner_quality"]["input_association"]
+    assert math.isfinite(float(scanner_input["contrast"]))
+
+
 def test_scanner_mode_summary_csv_contains_scanner_columns(tmp_path: Path) -> None:
     output_dir = tmp_path / "synthetic_quality"
 
@@ -1145,6 +1230,35 @@ def test_report_3d_synthetic_quality_save_volumes_writes_expected_dat_files(
             }
 
 
+def test_scanner_mode_save_volumes_writes_scanner_dat_files(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+    shape = (17, 17, 17)
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        ",".join(str(size) for size in shape),
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+        "--save-volumes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    case_dir = output_dir / "single_vertical_plane"
+    expected_size = shape[0] * shape[1] * shape[2] * 4
+    for name in EXPECTED_SCANNER_VOLUME_FILES:
+        path = case_dir / name
+        assert path.is_file()
+        assert path.stat().st_size == expected_size
+
+    ft_scan = np.fromfile(case_dir / "ft_scan.dat", dtype=">f4").astype(np.float32)
+    ft_used = np.fromfile(case_dir / "ft_used.dat", dtype=">f4").astype(np.float32)
+    assert np.count_nonzero(ft_scan) >= np.count_nonzero(ft_used)
+
+
 def test_report_3d_synthetic_quality_geometry_save_volumes_splits_case_directories(
     tmp_path: Path,
 ) -> None:
@@ -1200,6 +1314,47 @@ def test_report_3d_synthetic_quality_variants_save_volumes_split_skin_outputs(
         assert mask_path.stat().st_size == expected_size
 
 
+def test_input_mode_both_splits_oracle_and_scanner_outputs_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+    shape = (17, 17, 17)
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        ",".join(str(size) for size in shape),
+        "--input-mode",
+        "both",
+        "--output-dir",
+        str(output_dir),
+        "--save-volumes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    case_dir = output_dir / "single_vertical_plane"
+    oracle_dir = case_dir / "oracle"
+    scanner_dir = case_dir / "scanner"
+    expected_size = shape[0] * shape[1] * shape[2] * 4
+    assert oracle_dir.is_dir()
+    assert scanner_dir.is_dir()
+    for name in EXPECTED_VOLUME_FILES:
+        oracle_path = oracle_dir / name
+        scanner_path = scanner_dir / name
+        assert oracle_path.is_file()
+        assert scanner_path.is_file()
+        assert oracle_path.stat().st_size == expected_size
+        assert scanner_path.stat().st_size == expected_size
+    for name in EXPECTED_SCANNER_VOLUME_FILES:
+        path = scanner_dir / name
+        assert path.is_file()
+        assert path.stat().st_size == expected_size
+        assert not (oracle_dir / name).exists()
+    assert (oracle_dir / "skins.json").is_file()
+    assert (scanner_dir / "skins.json").is_file()
+
+
 def test_report_3d_synthetic_quality_write_markdown_index_includes_case_and_metrics(
     tmp_path: Path,
 ) -> None:
@@ -1231,6 +1386,33 @@ def test_report_3d_synthetic_quality_write_markdown_index_includes_case_and_metr
     assert "skin_dip_median_error" in markdown
     assert "single_vertical_plane/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
     assert "single_vertical_plane/figures/truth_vs_skin_overlay_i3_center.png" in markdown
+
+
+def test_scanner_mode_markdown_links_scanner_figures(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+        "--write-markdown-index",
+    )
+
+    assert result.returncode == 0, result.stderr
+    markdown = (output_dir / "visual_report.md").read_text(encoding="utf-8")
+    assert "scanner input contrast" in markdown
+    assert "scanner ft buffered_f1" in markdown
+    assert "scanner ft distance_p95" in markdown
+    assert "scanner strike median error" in markdown
+    assert "scanner dip median error" in markdown
+    assert "single_vertical_plane/figures/truth_vs_ft_scan_overlay_i3_center.png" in markdown
+    assert "single_vertical_plane/figures/truth_vs_ft_used_overlay_i3_center.png" in markdown
+    assert "single_vertical_plane/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
 
 
 def test_report_3d_synthetic_quality_geometry_markdown_index_includes_each_case(
@@ -1275,6 +1457,30 @@ def test_report_3d_synthetic_quality_save_figures_writes_expected_pngs(
     assert result.returncode == 0, result.stderr
     figures_dir = output_dir / "single_vertical_plane" / "figures"
     for name in EXPECTED_I3_FIGURES:
+        path = figures_dir / name
+        assert path.is_file()
+        assert path.stat().st_size > 0
+
+
+def test_scanner_mode_save_figures_writes_scanner_pngs(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+        "--save-figures",
+    )
+
+    assert result.returncode == 0, result.stderr
+    figures_dir = output_dir / "single_vertical_plane" / "figures"
+    for name in EXPECTED_SCANNER_I3_FIGURES:
         path = figures_dir / name
         assert path.is_file()
         assert path.stat().st_size > 0

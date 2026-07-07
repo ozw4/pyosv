@@ -23,6 +23,14 @@ F3 data is external and optional. Normal tests must not require the F3 data root
 or the `reference_osv/` bind mount. Use `docs/f3d_validation.md` for optional
 smoke, crop, multi-crop, ablation, and full-volume commands.
 
+Controlled synthetic reports are a separate truth-quality diagnostic documented
+in `docs/synthetic_quality.md`. Oracle synthetic mode isolates the downstream
+voting, thinning, and skinning stages from controlled truth attributes, while
+scanner-inclusive mode evaluates the scanner plus those downstream stages
+against the same known truth geometry. Use these reports to localize behavior
+before interpreting F3 agreement changes; they are not Java-reference parity
+claims.
+
 Current comparisons are report-oriented. The previous normal/normal baseline
 context documented for thinned `fvt` is:
 

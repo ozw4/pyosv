@@ -3,8 +3,10 @@ import math
 import numpy as np
 import pytest
 
+from pyosv.orient3d import FaultOrientScanner3
 from pyosv.synthetic3d import (
     Synthetic3DCase,
+    make_scanner_input_from_case,
     make_boundary_plane_case,
     make_crossing_planes_case,
     make_curved_surface_case,
@@ -151,6 +153,42 @@ def test_single_vertical_plane_oracle_pipeline_smoke() -> None:
         max_dip_median_error=15.0,
         min_largest_skin_fraction=0.60,
     )
+
+
+def test_single_vertical_plane_scanner_inclusive_pipeline_smoke() -> None:
+    case = make_single_vertical_plane_case(shape=(21, 21, 21))
+    scanner_input = make_scanner_input_from_case(case)
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    ft, pt, tt = scanner.scan(0.0, 180.0, 45.0, 90.0, scanner_input)
+    fet, fpt, ftt = scanner.thin(ft, pt, tt)
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=fet, pt=fpt, tt=ftt)
+    fvt = voter.thin(fv, vp, vt)
+
+    for values in (ft, pt, tt, fet, fpt, ftt, fv, vp, vt, fvt):
+        assert values.shape == case.shape
+        assert values.dtype == np.float32
+        assert np.isfinite(values).all()
+
+    scanner_quality = _truth_quality(case, ft, pt, tt)
+    scanner_overlap = scanner_quality["buffered_overlap"]
+    scanner_distances = scanner_quality["surface_distance"]
+    scanner_orientation = scanner_quality["orientation_error"]
+    assert scanner_overlap["buffered_f1"] >= 0.30
+    assert scanner_distances["candidate_to_truth_p95"] <= 8.0
+    assert scanner_orientation["strike_median"] <= 45.0
+    assert scanner_orientation["dip_median"] <= 45.0
+
+    voter_quality = _truth_quality(case, fvt, vp, vt)
+    voter_overlap = voter_quality["buffered_overlap"]
+    voter_distances = voter_quality["surface_distance"]
+    voter_orientation = voter_quality["orientation_error"]
+    assert voter_overlap["buffered_f1"] >= 0.30
+    assert voter_distances["candidate_to_truth_p95"] <= 8.0
+    assert voter_orientation["strike_median"] <= 45.0
+    assert voter_orientation["dip_median"] <= 45.0
 
 
 def test_single_dipping_plane_oracle_pipeline_smoke() -> None:

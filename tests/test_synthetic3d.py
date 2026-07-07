@@ -288,6 +288,26 @@ def test_synthetic_scanner_input_is_low_on_fault_and_high_away_from_fault() -> N
     assert scanner_input[truth_surface].mean() < scanner_input[far_from_fault].mean()
 
 
+@pytest.mark.parametrize(
+    "case_factory",
+    [
+        make_single_vertical_plane_case,
+        make_single_dipping_plane_case,
+        make_curved_surface_case,
+    ],
+)
+def test_scanner_input_is_lower_near_fault_for_all_geometry_cases(case_factory) -> None:
+    case = case_factory(shape=(17, 17, 17))
+    scanner_input = make_scanner_input_from_case(case)
+
+    near_fault = np.abs(case.truth_distance) <= np.float32(0.5)
+    far_from_fault = np.abs(case.truth_distance) >= np.float32(3.0)
+
+    assert np.any(near_fault)
+    assert np.any(far_from_fault)
+    assert scanner_input[near_fault].mean() < scanner_input[far_from_fault].mean()
+
+
 def test_synthetic_scanner_input_is_float32_finite_and_shape_matching() -> None:
     case = make_single_dipping_plane_case(shape=(9, 11, 13))
     config = SyntheticScannerInputConfig(

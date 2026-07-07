@@ -159,6 +159,21 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --write-markdown-index
 ```
 
+The default report path remains oracle input. To compare the downstream oracle
+upper-bound path with the scanner-inclusive end-to-end path on the same
+synthetic truth geometry, use `--input-mode both`:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set geometry \
+  --shape 33,33,33 \
+  --input-mode both \
+  --output-dir outputs/3d/synthetic_quality/scanner_inclusive_001 \
+  --pretty \
+  --save-figures \
+  --write-markdown-index
+```
+
 Reference-like 3D thinning is documented in
 `docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
 to reference-like strike-binned thinning with scanner edge-effect removal; pass
