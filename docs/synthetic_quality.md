@@ -199,6 +199,77 @@ curvature or large orientation variation is a stress case. In the observed
 `skin_buffered_f1_r2` about `0.9753`). Treat this as a model-limit and
 thinning-sensitivity signal unless a narrower regression is demonstrated.
 
+## Curved Surface Thinning Diagnostic
+
+`curved_surface` is not a basic pass/fail case for reference-first OSV. It is a
+model-limit and thinning-sensitivity diagnostic for comparing how voter
+thinning behaves on a gently curved analytic surface with spatially varying
+truth strike and dip.
+
+The diagnostic compares `reference` and `normal` voter thinning from the same
+pre-thin `fv` / `vp` / `vt` volumes. `reference` thinning is closer to the
+Java-reference style and remains the default path. `normal` thinning can score
+better against analytic truth on curved synthetic surfaces because it thins
+along the local fault-normal field instead of the reference-like strike-binned
+path. A better `normal` result on `curved_surface` does not automatically mean
+the default should change; read it as evidence about curved-surface
+truth-quality behavior, not as a reference-agreement requirement.
+
+Use `--thinning-diagnostics` to compute both thinning modes from the same
+pre-thin voter output:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set geometry \
+  --shape 33,33,33 \
+  --input-mode oracle \
+  --variants current_default \
+  --thinning-diagnostics \
+  --save-volumes \
+  --save-figures \
+  --write-markdown-index \
+  --output-dir outputs/3d/synthetic_quality/curved_thinning_diag_001 \
+  --pretty
+```
+
+Inspect these outputs:
+
+```text
+summary.csv:
+  thinning_diag_* columns
+
+metrics.json:
+  cases[].variants.<variant>.thinning_diagnostic
+  cases[].pipelines.<pipeline>.variants.<variant>.thinning_diagnostic
+    for --input-mode both
+
+visual_report.md:
+  reference vs normal thinning overlays
+```
+
+The diagnostic `summary.csv` columns are written in this stable order:
+
+```text
+thinning_diag_reference_fvt_buffered_f1_r2
+thinning_diag_normal_fvt_buffered_f1_r2
+thinning_diag_normal_minus_reference_fvt_buffered_f1_r2
+thinning_diag_reference_fvt_distance_p95
+thinning_diag_normal_fvt_distance_p95
+thinning_diag_normal_minus_reference_fvt_distance_p95
+thinning_diag_reference_count
+thinning_diag_normal_count
+thinning_diag_intersection_count
+thinning_diag_reference_only_count
+thinning_diag_normal_only_count
+thinning_diag_jaccard
+```
+
+Diagnostic JSON uses the mode names `reference` and `normal`, and stores
+deltas under `delta.normal_minus_reference`. The DAT and PNG artifacts are
+written under `case_id[/variant][/pipeline]/thinning_diagnostic/` when
+`--save-volumes` or `--save-figures` is enabled. Diagnostic artifact names use
+`reference`, `normal`, `reference_only`, and `normal_only` consistently.
+
 `boundary_plane` places the true fault near a volume boundary. Poor edge
 metrics are not automatically evidence that candidates should be removed by a
 single edge-cleanup rule, because that could also erase true boundary faults.
