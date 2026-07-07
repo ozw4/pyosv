@@ -17,6 +17,7 @@ from pyosv.synthetic3d import (
     make_parallel_planes_case,
     make_single_dipping_plane_case,
     make_single_vertical_plane_case,
+    make_weak_noisy_plane_case,
     validate_center3,
     validate_shape3,
 )
@@ -573,6 +574,60 @@ def test_make_crossing_planes_case_returns_two_orientations_and_is_deterministic
         "tt_oracle",
     ):
         np.testing.assert_array_equal(getattr(case, name), getattr(repeated, name))
+
+
+def test_make_weak_noisy_plane_case_returns_expected_arrays_and_orientation() -> None:
+    case = make_weak_noisy_plane_case(shape=(21, 25, 27))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "weak_noisy_plane"
+    assert case.shape == (21, 25, 27)
+    _assert_synthetic3d_case_contract(case)
+    np.testing.assert_array_equal(case.truth_fault_id, case.truth_fault_mask.astype(np.int32))
+    np.testing.assert_array_equal(case.truth_strike, np.full(case.shape, 35.0, dtype=np.float32))
+    np.testing.assert_array_equal(case.truth_dip, np.full(case.shape, 70.0, dtype=np.float32))
+    np.testing.assert_array_equal(case.pt_oracle, case.truth_strike)
+    np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
+
+
+def test_make_weak_noisy_plane_case_is_deterministic() -> None:
+    case = make_weak_noisy_plane_case(shape=(17, 19, 21))
+    repeated = make_weak_noisy_plane_case(shape=(17, 19, 21))
+
+    for name in (
+        "truth_fault_mask",
+        "truth_fault_id",
+        "truth_distance",
+        "truth_strike",
+        "truth_dip",
+        "ft_oracle",
+        "pt_oracle",
+        "tt_oracle",
+    ):
+        np.testing.assert_array_equal(getattr(case, name), getattr(repeated, name))
+
+
+def test_make_weak_noisy_plane_case_has_degraded_likelihood() -> None:
+    shape = (21, 25, 27)
+    case = make_weak_noisy_plane_case(shape=shape)
+    ideal = generate_single_plane_case(
+        SyntheticPlaneSpec(
+            case_id="ideal",
+            shape=shape,
+            center=(13.0, 12.0, 10.0),
+            strike=35.0,
+            dip=70.0,
+            likelihood_sigma=1.25,
+            mask_half_width=1.0,
+        )
+    )
+
+    assert case.ft_oracle.max() > 0.5
+    assert (
+        case.ft_oracle[case.truth_fault_mask].mean() > case.ft_oracle[~case.truth_fault_mask].mean()
+    )
+    assert not np.array_equal(case.ft_oracle, ideal.ft_oracle)
+    np.testing.assert_array_equal(case.truth_distance, ideal.truth_distance)
 
 
 def test_single_plane_case_truth_mask_ids_and_oracle_likelihood_are_consistent() -> None:

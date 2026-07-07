@@ -22,6 +22,7 @@ __all__ = [
     "make_parallel_planes_case",
     "make_single_dipping_plane_case",
     "make_single_vertical_plane_case",
+    "make_weak_noisy_plane_case",
     "validate_center3",
     "validate_shape3",
 ]
@@ -470,6 +471,40 @@ def make_crossing_planes_case(
         case_id="crossing_planes",
         shape=(n3, n2, n1),
         components=(component_a, component_b),
+    )
+
+
+def make_weak_noisy_plane_case(
+    shape: tuple[int, int, int] = (64, 64, 64),
+) -> Synthetic3DCase:
+    """Return a controlled single-plane case with weak deterministic noisy likelihood."""
+    n3, n2, n1 = validate_shape3(shape)
+    spec = SyntheticPlaneSpec(
+        case_id="weak_noisy_plane",
+        shape=(n3, n2, n1),
+        center=((n1 - 1) / 2.0, (n2 - 1) / 2.0, (n3 - 1) / 2.0),
+        strike=35.0,
+        dip=70.0,
+        likelihood_sigma=1.25,
+        mask_half_width=1.0,
+    )
+    component = _plane_component_from_spec(spec, fault_id=1)
+    rng = np.random.default_rng(20260707)
+    base = np.exp(-0.5 * (component.signed_distance / spec.likelihood_sigma) ** 2)
+    noise = rng.normal(0.0, 0.06, size=spec.shape)
+    likelihood = np.clip(0.03 + 0.65 * base + noise, 0.0, 1.0).astype(np.float32)
+    noisy_component = _SyntheticFaultComponent(
+        fault_id=component.fault_id,
+        signed_distance=component.signed_distance,
+        strike=component.strike,
+        dip=component.dip,
+        likelihood=likelihood,
+        mask_half_width=component.mask_half_width,
+    )
+    return _compose_synthetic_components(
+        case_id=spec.case_id,
+        shape=spec.shape,
+        components=(noisy_component,),
     )
 
 
