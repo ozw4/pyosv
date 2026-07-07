@@ -94,6 +94,7 @@ VARIANT_NAMES = (
 )
 DEFAULT_VARIANTS = ("current_default",)
 BASELINE_VARIANT = "current_default"
+DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 VARIANT_COMPARISON_METRICS = (
     (
         "fvt_buffered_f1_r2_delta_vs_current",
@@ -421,6 +422,7 @@ CASE_SETS = {
     "geometry": GEOMETRY_CASES,
     "extended": EXTENDED_CASES,
 }
+CASE_IDS = tuple(definition.case_id for definition in EXTENDED_CASES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -576,9 +578,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Smoothing sigma used by reference-like thinning.",
     )
     parser.add_argument(
+        "--thinning-diagnostics",
         "--include-thinning-diagnostic",
+        dest="include_thinning_diagnostic",
         action="store_true",
         help="Add reference-vs-normal voter thinning diagnostics to metrics.json.",
+    )
+    parser.add_argument(
+        "--thinning-diagnostic-cases",
+        type=parse_thinning_diagnostic_cases,
+        default=DEFAULT_THINNING_DIAGNOSTIC_CASES,
+        help="Comma-separated case IDs for thinning diagnostics.",
     )
     parser.add_argument(
         "--truth-surface-half-width",
@@ -692,6 +702,16 @@ def parse_variants(text: str) -> tuple[str, ...]:
     return variants
 
 
+def parse_thinning_diagnostic_cases(text: str) -> tuple[str, ...]:
+    """Parse a comma-separated thinning diagnostic case list."""
+
+    case_ids = tuple(part.strip() for part in text.split(",") if part.strip())
+    try:
+        return _validate_thinning_diagnostic_cases(case_ids)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
 def parse_optional_nonnegative_int(text: str) -> int | None:
     """Parse a non-negative integer or a textual None value."""
 
@@ -719,12 +739,14 @@ def run_case(
     variant: str = "current_default",
     input_mode: str = "oracle",
     include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     case = case_definition.factory(shape)
     if case.case_id != case_definition.case_id:
         raise ValueError(
             f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
         )
+    diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
     variant_report, volumes, _ = _run_case_variant(
         case,
         voting_config=voting_config,
@@ -733,7 +755,9 @@ def run_case(
         skinning_config=skinning_config,
         variant=variant,
         input_mode=input_mode,
-        include_thinning_diagnostic=include_thinning_diagnostic,
+        include_thinning_diagnostic=(
+            include_thinning_diagnostic and case.case_id in diagnostic_case_ids
+        ),
     )
     report = {
         "case_id": case.case_id,
@@ -1525,6 +1549,7 @@ def build_report(
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
     include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     report, _, _ = _build_report_and_volumes(
         case_set=case_set,
@@ -1536,6 +1561,7 @@ def build_report(
         skinning_config=skinning_config,
         input_mode=input_mode,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     return report
 
@@ -1551,6 +1577,7 @@ def _build_report_and_volumes(
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
     include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[
     dict[str, Any],
     dict[str, dict[str, dict[str, np.ndarray]]],
@@ -1559,6 +1586,7 @@ def _build_report_and_volumes(
     valid_shape = validate_shape3(shape)
     valid_variants = _validate_variants(variants)
     valid_input_mode = _validate_input_mode(input_mode)
+    diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
     try:
         case_definitions = CASE_SETS[case_set]
     except KeyError as error:
@@ -1585,7 +1613,9 @@ def _build_report_and_volumes(
                 skinning_config=skinning_config,
                 variant=variant,
                 input_mode=valid_input_mode,
-                include_thinning_diagnostic=include_thinning_diagnostic,
+                include_thinning_diagnostic=(
+                    include_thinning_diagnostic and case.case_id in diagnostic_case_ids
+                ),
             )
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
@@ -1649,6 +1679,24 @@ def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:
     if duplicates:
         raise ValueError(f"duplicate variant(s): {','.join(sorted(duplicates))}")
     return valid_variants
+
+
+def _validate_thinning_diagnostic_cases(case_ids: Sequence[str]) -> tuple[str, ...]:
+    valid_case_ids = tuple(case_ids)
+    if not valid_case_ids:
+        raise ValueError("thinning_diagnostic_cases must include at least one case ID")
+    unknown = sorted(set(valid_case_ids).difference(CASE_IDS))
+    if unknown:
+        raise ValueError(
+            f"unknown thinning diagnostic case ID(s): {','.join(unknown)}; "
+            f"choices: {','.join(CASE_IDS)}"
+        )
+    duplicates = {case_id for case_id in valid_case_ids if valid_case_ids.count(case_id) > 1}
+    if duplicates:
+        raise ValueError(
+            f"duplicate thinning diagnostic case ID(s): {','.join(sorted(duplicates))}"
+        )
+    return valid_case_ids
 
 
 def _variant_comparison(
@@ -1767,6 +1815,18 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_strike_median_error",
                 "scanner_dip_median_error",
                 "scanner_input_contrast",
+                "thinning_diag_reference_fvt_buffered_f1_r2",
+                "thinning_diag_normal_fvt_buffered_f1_r2",
+                "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
+                "thinning_diag_reference_fvt_distance_p95",
+                "thinning_diag_normal_fvt_distance_p95",
+                "thinning_diag_normal_minus_reference_fvt_distance_p95",
+                "thinning_diag_reference_count",
+                "thinning_diag_normal_count",
+                "thinning_diag_intersection_count",
+                "thinning_diag_reference_only_count",
+                "thinning_diag_normal_only_count",
+                "thinning_diag_jaccard",
                 "fvt_buffered_f1_delta_vs_baseline",
                 "fvt_distance_p95_delta_vs_baseline",
                 "fvt_strike_median_error_delta_vs_baseline",
@@ -1806,6 +1866,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     scanner_row = _summary_csv_scanner_row(
                         variant_report=variant_report,
                         input_mode=input_mode,
+                    )
+                    thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
+                        variant_report.get("thinning_diagnostic"),
                     )
                     writer.writerow(
                         {
@@ -1851,6 +1914,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
                             **skin_summary,
                             **scanner_row,
+                            **thinning_diagnostic_row,
                             **comparison_row,
                         }
                     )
@@ -1893,6 +1957,56 @@ def _summary_csv_scanner_row(
         "scanner_strike_median_error": orientation_error["strike_median"],
         "scanner_dip_median_error": orientation_error["dip_median"],
         "scanner_input_contrast": input_association["contrast"],
+    }
+
+
+def _summary_csv_thinning_diagnostic_row(
+    diagnostic: Mapping[str, Any] | None,
+) -> dict[str, float | int | None]:
+    empty_row: dict[str, float | int | None] = {
+        "thinning_diag_reference_fvt_buffered_f1_r2": None,
+        "thinning_diag_normal_fvt_buffered_f1_r2": None,
+        "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2": None,
+        "thinning_diag_reference_fvt_distance_p95": None,
+        "thinning_diag_normal_fvt_distance_p95": None,
+        "thinning_diag_normal_minus_reference_fvt_distance_p95": None,
+        "thinning_diag_reference_count": None,
+        "thinning_diag_normal_count": None,
+        "thinning_diag_intersection_count": None,
+        "thinning_diag_reference_only_count": None,
+        "thinning_diag_normal_only_count": None,
+        "thinning_diag_jaccard": None,
+    }
+    if diagnostic is None:
+        return empty_row
+
+    reference_quality = diagnostic["reference"]["quality"]["fvt_top_truth_count"]
+    normal_quality = diagnostic["normal"]["quality"]["fvt_top_truth_count"]
+    delta = diagnostic["delta"]["normal_minus_reference"]
+    keep_mask = diagnostic["keep_mask"]
+    return {
+        "thinning_diag_reference_fvt_buffered_f1_r2": reference_quality["buffered_overlap_radius2"][
+            "buffered_f1"
+        ],
+        "thinning_diag_normal_fvt_buffered_f1_r2": normal_quality["buffered_overlap_radius2"][
+            "buffered_f1"
+        ],
+        "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2": delta["fvt_buffered_f1_r2"],
+        "thinning_diag_reference_fvt_distance_p95": reference_quality["surface_distance"][
+            "candidate_to_truth_p95"
+        ],
+        "thinning_diag_normal_fvt_distance_p95": normal_quality["surface_distance"][
+            "candidate_to_truth_p95"
+        ],
+        "thinning_diag_normal_minus_reference_fvt_distance_p95": delta[
+            "fvt_candidate_to_truth_p95"
+        ],
+        "thinning_diag_reference_count": keep_mask["reference_count"],
+        "thinning_diag_normal_count": keep_mask["normal_count"],
+        "thinning_diag_intersection_count": keep_mask["intersection_count"],
+        "thinning_diag_reference_only_count": keep_mask["reference_only_count"],
+        "thinning_diag_normal_only_count": keep_mask["normal_only_count"],
+        "thinning_diag_jaccard": keep_mask["jaccard"],
     }
 
 
@@ -2543,6 +2657,7 @@ def run_example(
     save_figures: bool = False,
     write_markdown_index: bool = False,
     include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     report, volume_outputs, skin_outputs = _build_report_and_volumes(
         case_set=case_set,
@@ -2554,6 +2669,7 @@ def run_example(
         variants=variants,
         input_mode=input_mode,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     write_metrics_json(report, output_dir, pretty=pretty)
     write_summary_csv(report, output_dir)
@@ -2622,6 +2738,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             variants=args.variants,
             input_mode=args.input_mode,
             include_thinning_diagnostic=args.include_thinning_diagnostic,
+            thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,
             save_volumes=args.save_volumes,
             save_figures=args.save_figures,

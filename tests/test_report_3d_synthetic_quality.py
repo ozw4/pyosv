@@ -135,6 +135,20 @@ EXPECTED_SCANNER_SUMMARY_FIELDS = (
     "scanner_dip_median_error",
     "scanner_input_contrast",
 )
+EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS = (
+    "thinning_diag_reference_fvt_buffered_f1_r2",
+    "thinning_diag_normal_fvt_buffered_f1_r2",
+    "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
+    "thinning_diag_reference_fvt_distance_p95",
+    "thinning_diag_normal_fvt_distance_p95",
+    "thinning_diag_normal_minus_reference_fvt_distance_p95",
+    "thinning_diag_reference_count",
+    "thinning_diag_normal_count",
+    "thinning_diag_intersection_count",
+    "thinning_diag_reference_only_count",
+    "thinning_diag_normal_only_count",
+    "thinning_diag_jaccard",
+)
 
 
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
@@ -204,7 +218,9 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--save-figures" in result.stdout
     assert "--write-markdown-index" in result.stdout
     assert "--voter-thin-mode" in result.stdout
+    assert "--thinning-diagnostics" in result.stdout
     assert "--include-thinning-diagnostic" in result.stdout
+    assert "--thinning-diagnostic-cases" in result.stdout
     assert "--truth-surface-half-width" in result.stdout
     assert "--buffer-radius" in result.stdout
     assert "--skip-skinning" in result.stdout
@@ -567,12 +583,20 @@ def test_report_3d_synthetic_quality_thinning_diagnostic_curved_surface(
         "--output-dir",
         str(output_dir),
         "--skip-skinning",
-        "--include-thinning-diagnostic",
+        "--thinning-diagnostics",
     )
 
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
+    for case in metrics["cases"]:
+        variant = case["variants"]["current_default"]
+        if case["case_id"] == "curved_surface":
+            assert "thinning_diagnostic" in variant
+            assert "thinning_diagnostic" in case
+        else:
+            assert "thinning_diagnostic" not in variant
+            assert "thinning_diagnostic" not in case
     curved = next(case for case in metrics["cases"] if case["case_id"] == "curved_surface")
     diagnostic = curved["variants"]["current_default"]["thinning_diagnostic"]
 
@@ -606,6 +630,132 @@ def test_report_3d_synthetic_quality_thinning_diagnostic_curved_surface(
         "fvt_dip_median_error",
     ):
         assert math.isfinite(float(delta[key]))
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_summary_columns(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--thinning-diagnostics",
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+
+    assert rows
+    for field in EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS:
+        assert field in rows[0]
+
+    curved_row = next(row for row in rows if row["case_id"] == "curved_surface")
+    for field in EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS:
+        assert curved_row[field] != ""
+    assert math.isfinite(float(curved_row["thinning_diag_jaccard"]))
+
+    non_diagnostic_rows = [row for row in rows if row["case_id"] != "curved_surface"]
+    assert non_diagnostic_rows
+    for row in non_diagnostic_rows:
+        for field in EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS:
+            assert row[field] == ""
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_explicit_cases(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--thinning-diagnostics",
+        "--thinning-diagnostic-cases",
+        "single_dipping_plane,curved_surface",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    diagnostic_cases = {
+        case["case_id"]
+        for case in metrics["cases"]
+        if "thinning_diagnostic" in case["variants"]["current_default"]
+    }
+    assert diagnostic_cases == {"single_dipping_plane", "curved_surface"}
+
+
+def test_report_3d_synthetic_quality_unknown_thinning_diagnostic_case_fails(
+    tmp_path: Path,
+) -> None:
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(tmp_path / "synthetic_quality"),
+        "--thinning-diagnostics",
+        "--thinning-diagnostic-cases",
+        "unknown_case",
+    )
+
+    assert result.returncode != 0
+    assert "unknown thinning diagnostic case ID" in result.stderr
+    assert "unknown_case" in result.stderr
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_input_mode_both(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--input-mode",
+        "both",
+        "--scanner-backend",
+        "reference-like",
+        "--scanner-thin-mode",
+        "reference",
+        "--variants",
+        "current_default",
+        "--thinning-diagnostics",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    curved = next(case for case in metrics["cases"] if case["case_id"] == "curved_surface")
+    for pipeline in ("oracle", "scanner"):
+        variant = curved["pipelines"][pipeline]["variants"]["current_default"]
+        assert "thinning_diagnostic" in variant
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    curved_rows = [row for row in rows if row["case_id"] == "curved_surface"]
+    assert {(row["pipeline"], row["variant"]) for row in curved_rows} == {
+        ("oracle", "current_default"),
+        ("scanner", "current_default"),
+    }
+    for row in curved_rows:
+        assert row["thinning_diag_reference_count"] != ""
 
 
 def test_report_3d_synthetic_quality_unknown_variant_fails(tmp_path: Path) -> None:
