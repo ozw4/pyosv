@@ -6,6 +6,8 @@ from pyosv.synthetic3d import (
     Synthetic3DCase,
     SyntheticCurvedSurfaceSpec,
     SyntheticPlaneSpec,
+    _SyntheticFaultComponent,
+    _compose_synthetic_components,
     coordinate_grids3,
     generate_curved_surface_case,
     generate_single_plane_case,
@@ -266,6 +268,166 @@ def test_synthetic3d_case_rejects_array_shape_mismatch() -> None:
             pt_oracle=values,
             tt_oracle=values,
         )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "truth_distance",
+        "truth_strike",
+        "truth_dip",
+        "ft_oracle",
+        "pt_oracle",
+        "tt_oracle",
+    ],
+)
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf])
+def test_synthetic3d_case_rejects_nonfinite_float_arrays(field: str, bad_value: float) -> None:
+    shape = (2, 3, 4)
+    values = np.zeros(shape, dtype=np.float32)
+    kwargs = {
+        "case_id": "invalid",
+        "shape": shape,
+        "truth_fault_mask": np.zeros(shape, dtype=bool),
+        "truth_fault_id": np.zeros(shape, dtype=np.int32),
+        "truth_distance": values,
+        "truth_strike": values,
+        "truth_dip": values,
+        "ft_oracle": values,
+        "pt_oracle": values,
+        "tt_oracle": values,
+    }
+    invalid = values.copy()
+    invalid[0, 0, 0] = bad_value
+    kwargs[field] = invalid
+
+    with pytest.raises(ValueError, match="finite"):
+        Synthetic3DCase(**kwargs)
+
+
+def test_compose_synthetic_components_builds_union_mask() -> None:
+    shape = (1, 1, 5)
+    component_a = _SyntheticFaultComponent(
+        fault_id=1,
+        signed_distance=np.array([[[-2.0, -0.5, 2.0, 2.0, 2.0]]], dtype=np.float32),
+        strike=np.zeros(shape, dtype=np.float32),
+        dip=np.zeros(shape, dtype=np.float32),
+        likelihood=np.zeros(shape, dtype=np.float32),
+        mask_half_width=1.0,
+    )
+    component_b = _SyntheticFaultComponent(
+        fault_id=2,
+        signed_distance=np.array([[[2.0, 2.0, 0.25, 0.75, 2.0]]], dtype=np.float32),
+        strike=np.zeros(shape, dtype=np.float32),
+        dip=np.zeros(shape, dtype=np.float32),
+        likelihood=np.zeros(shape, dtype=np.float32),
+        mask_half_width=1.0,
+    )
+
+    case = _compose_synthetic_components(
+        case_id="multi",
+        shape=shape,
+        components=(component_a, component_b),
+    )
+
+    np.testing.assert_array_equal(
+        case.truth_fault_mask,
+        np.array([[[False, True, True, True, False]]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        case.truth_fault_id,
+        np.array([[[0, 1, 2, 2, 0]]], dtype=np.int32),
+    )
+
+
+def test_compose_synthetic_components_uses_nearest_component_orientation() -> None:
+    shape = (1, 1, 3)
+    component_a = _SyntheticFaultComponent(
+        fault_id=3,
+        signed_distance=np.array([[[0.8, 0.2, 0.5]]], dtype=np.float32),
+        strike=np.full(shape, 30.0, dtype=np.float32),
+        dip=np.full(shape, 60.0, dtype=np.float32),
+        likelihood=np.zeros(shape, dtype=np.float32),
+        mask_half_width=1.0,
+    )
+    component_b = _SyntheticFaultComponent(
+        fault_id=7,
+        signed_distance=np.array([[[0.1, 0.6, 0.4]]], dtype=np.float32),
+        strike=np.full(shape, 70.0, dtype=np.float32),
+        dip=np.full(shape, 80.0, dtype=np.float32),
+        likelihood=np.zeros(shape, dtype=np.float32),
+        mask_half_width=1.0,
+    )
+
+    case = _compose_synthetic_components(
+        case_id="multi",
+        shape=shape,
+        components=(component_a, component_b),
+    )
+
+    np.testing.assert_array_equal(case.truth_fault_id, np.array([[[7, 3, 7]]], dtype=np.int32))
+    np.testing.assert_array_equal(case.truth_strike, np.array([[[70.0, 30.0, 70.0]]]))
+    np.testing.assert_array_equal(case.truth_dip, np.array([[[80.0, 60.0, 80.0]]]))
+    np.testing.assert_array_equal(case.pt_oracle, case.truth_strike)
+    np.testing.assert_array_equal(case.tt_oracle, case.truth_dip)
+
+
+def test_compose_synthetic_components_breaks_distance_tie_by_smaller_fault_id() -> None:
+    shape = (1, 1, 1)
+    component_high = _SyntheticFaultComponent(
+        fault_id=9,
+        signed_distance=np.array([[[0.5]]], dtype=np.float32),
+        strike=np.full(shape, 90.0, dtype=np.float32),
+        dip=np.full(shape, 95.0, dtype=np.float32),
+        likelihood=np.zeros(shape, dtype=np.float32),
+        mask_half_width=1.0,
+    )
+    component_low = _SyntheticFaultComponent(
+        fault_id=2,
+        signed_distance=np.array([[[-0.5]]], dtype=np.float32),
+        strike=np.full(shape, 20.0, dtype=np.float32),
+        dip=np.full(shape, 25.0, dtype=np.float32),
+        likelihood=np.zeros(shape, dtype=np.float32),
+        mask_half_width=1.0,
+    )
+
+    case = _compose_synthetic_components(
+        case_id="tie",
+        shape=shape,
+        components=(component_high, component_low),
+    )
+
+    assert case.truth_fault_id[0, 0, 0] == 2
+    assert case.truth_strike[0, 0, 0] == 20.0
+    assert case.truth_dip[0, 0, 0] == 25.0
+
+
+def test_compose_synthetic_components_uses_maximum_component_likelihood() -> None:
+    shape = (1, 1, 2)
+    component_a = _SyntheticFaultComponent(
+        fault_id=1,
+        signed_distance=np.full(shape, 0.25, dtype=np.float32),
+        strike=np.zeros(shape, dtype=np.float32),
+        dip=np.zeros(shape, dtype=np.float32),
+        likelihood=np.array([[[0.2, 1.5]]], dtype=np.float32),
+        mask_half_width=1.0,
+    )
+    component_b = _SyntheticFaultComponent(
+        fault_id=2,
+        signed_distance=np.full(shape, 0.5, dtype=np.float32),
+        strike=np.zeros(shape, dtype=np.float32),
+        dip=np.zeros(shape, dtype=np.float32),
+        likelihood=np.array([[[0.7, -0.5]]], dtype=np.float32),
+        mask_half_width=1.0,
+    )
+
+    case = _compose_synthetic_components(
+        case_id="likelihood",
+        shape=shape,
+        components=(component_a, component_b),
+    )
+
+    np.testing.assert_array_equal(case.ft_oracle, np.array([[[0.7, 1.0]]], dtype=np.float32))
 
 
 def test_make_single_vertical_plane_case_returns_expected_arrays() -> None:

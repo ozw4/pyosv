@@ -132,6 +132,94 @@ class Synthetic3DCase:
             object.__setattr__(self, name, array)
 
 
+@dataclass(frozen=True, slots=True)
+class _SyntheticFaultComponent:
+    fault_id: int
+    signed_distance: np.ndarray
+    strike: np.ndarray
+    dip: np.ndarray
+    likelihood: np.ndarray
+    mask_half_width: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.fault_id, Integral) or isinstance(self.fault_id, bool):
+            raise ValueError("fault_id must be a positive integer")
+        fault_id = int(self.fault_id)
+        if fault_id <= 0:
+            raise ValueError("fault_id must be a positive integer")
+        object.__setattr__(self, "fault_id", fault_id)
+
+        signed_distance = _validate_component_array("signed_distance", self.signed_distance)
+        shape = signed_distance.shape
+        object.__setattr__(self, "signed_distance", signed_distance)
+        object.__setattr__(self, "strike", _validate_component_array("strike", self.strike, shape))
+        object.__setattr__(self, "dip", _validate_component_array("dip", self.dip, shape))
+        likelihood = _validate_component_array("likelihood", self.likelihood, shape)
+        object.__setattr__(self, "likelihood", np.clip(likelihood, 0.0, 1.0).astype(np.float32))
+        object.__setattr__(
+            self,
+            "mask_half_width",
+            _validate_finite_real("mask_half_width", self.mask_half_width, minimum=0.0),
+        )
+
+    @property
+    def mask(self) -> np.ndarray:
+        return np.abs(self.signed_distance) <= self.mask_half_width
+
+
+def _compose_synthetic_components(
+    *,
+    case_id: str,
+    shape: tuple[int, int, int],
+    components: tuple[_SyntheticFaultComponent, ...],
+) -> Synthetic3DCase:
+    shape = validate_shape3(shape)
+    if len(components) == 0:
+        raise ValueError("components must contain at least one component")
+
+    for component in components:
+        if not isinstance(component, _SyntheticFaultComponent):
+            raise ValueError("components must be _SyntheticFaultComponent instances")
+        if component.signed_distance.shape != shape:
+            raise ValueError("component arrays must have shape matching shape")
+
+    ordered_components = sorted(components, key=lambda component: component.fault_id)
+    first = ordered_components[0]
+    truth_fault_mask = first.mask.copy()
+    nearest_abs_distance = np.abs(first.signed_distance).copy()
+    truth_fault_id = np.full(shape, first.fault_id, dtype=np.int32)
+    truth_distance = first.signed_distance.copy()
+    truth_strike = first.strike.copy()
+    truth_dip = first.dip.copy()
+    ft_oracle = first.likelihood.copy()
+
+    for component in ordered_components[1:]:
+        component_mask = component.mask
+        truth_fault_mask |= component_mask
+        component_abs_distance = np.abs(component.signed_distance)
+        nearer = component_abs_distance < nearest_abs_distance
+        nearest_abs_distance = np.where(nearer, component_abs_distance, nearest_abs_distance)
+        truth_distance = np.where(nearer, component.signed_distance, truth_distance)
+        truth_strike = np.where(nearer, component.strike, truth_strike)
+        truth_dip = np.where(nearer, component.dip, truth_dip)
+        truth_fault_id = np.where(nearer, component.fault_id, truth_fault_id)
+        ft_oracle = np.maximum(ft_oracle, component.likelihood)
+
+    truth_fault_id = np.where(truth_fault_mask, truth_fault_id, 0).astype(np.int32)
+    return Synthetic3DCase(
+        case_id=case_id,
+        shape=shape,
+        truth_fault_mask=truth_fault_mask,
+        truth_fault_id=truth_fault_id,
+        truth_distance=truth_distance,
+        truth_strike=truth_strike,
+        truth_dip=truth_dip,
+        ft_oracle=ft_oracle,
+        pt_oracle=truth_strike,
+        tt_oracle=truth_dip,
+    )
+
+
 def validate_shape3(shape: tuple[int, int, int]) -> tuple[int, int, int]:
     """Validate a 3D ``(n3, n2, n1)`` shape."""
     if not isinstance(shape, tuple) or len(shape) != 3:
@@ -193,24 +281,23 @@ def generate_single_plane_case(spec: SyntheticPlaneSpec) -> Synthetic3DCase:
         + (x2.astype(np.float64) - x2c) * normal[1]
         + (x3.astype(np.float64) - x3c) * normal[2]
     )
-    truth_fault_mask = np.abs(truth_distance) <= spec.mask_half_width
-    truth_fault_id = np.where(truth_fault_mask, 1, 0).astype(np.int32)
     truth_strike = np.full(spec.shape, spec.strike, dtype=np.float32)
     truth_dip = np.full(spec.shape, spec.dip, dtype=np.float32)
     ft_oracle = np.exp(-0.5 * (truth_distance / spec.likelihood_sigma) ** 2)
     ft_oracle = np.clip(ft_oracle, 0.0, 1.0).astype(np.float32)
 
-    return Synthetic3DCase(
+    component = _SyntheticFaultComponent(
+        fault_id=1,
+        signed_distance=truth_distance.astype(np.float32),
+        strike=truth_strike,
+        dip=truth_dip,
+        likelihood=ft_oracle,
+        mask_half_width=spec.mask_half_width,
+    )
+    return _compose_synthetic_components(
         case_id=spec.case_id,
         shape=spec.shape,
-        truth_fault_mask=truth_fault_mask,
-        truth_fault_id=truth_fault_id,
-        truth_distance=truth_distance.astype(np.float32),
-        truth_strike=truth_strike,
-        truth_dip=truth_dip,
-        ft_oracle=ft_oracle,
-        pt_oracle=truth_strike,
-        tt_oracle=truth_dip,
+        components=(component,),
     )
 
 
@@ -361,5 +448,29 @@ def _validate_case_array(
 
     if array.shape != shape:
         raise ValueError(f"{name} must have shape {shape}")
+
+    if np.issubdtype(array.dtype, np.floating) and not np.all(np.isfinite(array)):
+        raise ValueError(f"{name} must contain only finite values")
+
+    return array
+
+
+def _validate_component_array(
+    name: str,
+    value: np.ndarray,
+    shape: tuple[int, int, int] | None = None,
+) -> np.ndarray:
+    try:
+        array = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be convertible to float32") from exc
+
+    if shape is None:
+        validate_shape3(array.shape)
+    elif array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{name} must contain only finite values")
 
     return array
