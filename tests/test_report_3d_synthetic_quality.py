@@ -149,6 +149,22 @@ EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS = (
     "thinning_diag_normal_only_count",
     "thinning_diag_jaccard",
 )
+EXPECTED_THINNING_DIAGNOSTIC_VOLUME_FILES = (
+    "fvt_reference.dat",
+    "fvt_normal.dat",
+    "keep_reference.dat",
+    "keep_normal.dat",
+    "keep_both.dat",
+    "keep_reference_only.dat",
+    "keep_normal_only.dat",
+)
+EXPECTED_THINNING_DIAGNOSTIC_I3_FIGURES = (
+    "truth_vs_fvt_reference_overlay_i3_center.png",
+    "truth_vs_fvt_normal_overlay_i3_center.png",
+    "truth_vs_keep_reference_only_overlay_i3_center.png",
+    "truth_vs_keep_normal_only_overlay_i3_center.png",
+    "fvt_reference_vs_normal_i3_center.png",
+)
 
 
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
@@ -756,6 +772,66 @@ def test_report_3d_synthetic_quality_thinning_diagnostic_input_mode_both(
     }
     for row in curved_rows:
         assert row["thinning_diag_reference_count"] != ""
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_writes_visual_artifacts(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("matplotlib")
+    output_dir = tmp_path / "synthetic_quality"
+    shape = (17, 17, 17)
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        ",".join(str(size) for size in shape),
+        "--input-mode",
+        "oracle",
+        "--variants",
+        "current_default",
+        "--thinning-diagnostics",
+        "--save-volumes",
+        "--save-figures",
+        "--write-markdown-index",
+        "--output-dir",
+        str(output_dir),
+        "--pretty",
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected_size = shape[0] * shape[1] * shape[2] * 4
+    diagnostic_dir = output_dir / "curved_surface" / "thinning_diagnostic"
+    assert diagnostic_dir.is_dir()
+    for name in EXPECTED_THINNING_DIAGNOSTIC_VOLUME_FILES:
+        path = diagnostic_dir / name
+        assert path.is_file()
+        assert path.stat().st_size == expected_size
+    for name in EXPECTED_THINNING_DIAGNOSTIC_I3_FIGURES:
+        path = diagnostic_dir / name
+        assert path.is_file()
+        assert path.stat().st_size > 0
+    for axis in ("i1", "i2", "i3"):
+        path = diagnostic_dir / f"fvt_reference_vs_normal_{axis}_center.png"
+        assert path.is_file()
+        assert path.stat().st_size > 0
+
+    keep_reference = np.fromfile(diagnostic_dir / "keep_reference.dat", dtype=">f4")
+    keep_normal_only = np.fromfile(diagnostic_dir / "keep_normal_only.dat", dtype=">f4")
+    assert set(np.unique(keep_reference)).issubset({0.0, 1.0})
+    assert set(np.unique(keep_normal_only)).issubset({0.0, 1.0})
+
+    markdown = (output_dir / "visual_report.md").read_text(encoding="utf-8")
+    assert "##### thinning diagnostic" in markdown
+    assert "reference buffered F1" in markdown
+    assert "normal buffered F1" in markdown
+    assert "normal-minus-reference delta" in markdown
+    assert "keep-mask Jaccard" in markdown
+    for name in EXPECTED_THINNING_DIAGNOSTIC_I3_FIGURES:
+        assert f"curved_surface/thinning_diagnostic/{name}" in markdown
+
+    assert not (output_dir / "single_vertical_plane" / "thinning_diagnostic").exists()
+    assert not (output_dir / "single_dipping_plane" / "thinning_diagnostic").exists()
 
 
 def test_report_3d_synthetic_quality_unknown_variant_fails(tmp_path: Path) -> None:

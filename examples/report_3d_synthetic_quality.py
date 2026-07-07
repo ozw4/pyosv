@@ -84,6 +84,15 @@ SCANNER_FIGURE_VOLUME_NAMES = (
     ("scanner_ft", "ft_scan"),
     ("scanner_fet", "ft_used"),
 )
+THINNING_DIAGNOSTIC_VOLUME_NAMES = (
+    ("fvt_reference_thinning_diagnostic", "fvt_reference"),
+    ("fvt_normal_thinning_diagnostic", "fvt_normal"),
+    ("keep_reference_thinning_diagnostic", "keep_reference"),
+    ("keep_normal_thinning_diagnostic", "keep_normal"),
+    ("keep_both_thinning_diagnostic", "keep_both"),
+    ("keep_reference_only_thinning_diagnostic", "keep_reference_only"),
+    ("keep_normal_only_thinning_diagnostic", "keep_normal_only"),
+)
 PIPELINE_OUTPUTS_KEY = "__pipelines__"
 NONZERO_EPSILON = 1.0e-6
 VARIANT_NAMES = (
@@ -1176,6 +1185,17 @@ def _run_voter_thinning_diagnostic(
     volumes = {
         "fvt_reference_thinning_diagnostic": fvt_reference,
         "fvt_normal_thinning_diagnostic": fvt_normal,
+        "keep_reference_thinning_diagnostic": (fvt_reference > 0.0).astype(np.float32),
+        "keep_normal_thinning_diagnostic": (fvt_normal > 0.0).astype(np.float32),
+        "keep_both_thinning_diagnostic": ((fvt_reference > 0.0) & (fvt_normal > 0.0)).astype(
+            np.float32
+        ),
+        "keep_reference_only_thinning_diagnostic": (
+            (fvt_reference > 0.0) & ~(fvt_normal > 0.0)
+        ).astype(np.float32),
+        "keep_normal_only_thinning_diagnostic": (
+            (fvt_normal > 0.0) & ~(fvt_reference > 0.0)
+        ).astype(np.float32),
     }
     return report, volumes
 
@@ -2183,7 +2203,23 @@ def _write_pipeline_volumes(
     for source_name, output_name in SCANNER_VOLUME_NAMES:
         if source_name in volumes:
             written.append(write_dat(output_dir / f"{output_name}.dat", volumes[source_name]))
+    written.extend(_write_thinning_diagnostic_volumes(output_dir, volumes, write_dat))
     return written
+
+
+def _write_thinning_diagnostic_volumes(
+    output_dir: Path,
+    volumes: Mapping[str, np.ndarray],
+    write_dat: Callable[[str | PathLike[str], np.ndarray], Path],
+) -> list[Path]:
+    if "fvt_reference_thinning_diagnostic" not in volumes:
+        return []
+
+    diagnostic_dir = output_dir / "thinning_diagnostic"
+    return [
+        write_dat(diagnostic_dir / f"{output_name}.dat", volumes[source_name])
+        for source_name, output_name in THINNING_DIAGNOSTIC_VOLUME_NAMES
+    ]
 
 
 def write_case_skins_json(
@@ -2359,6 +2395,66 @@ def _write_pipeline_figures(
                     title=f"{title_prefix} truth vs ft_used {axis}=center",
                 )
             )
+    written.extend(
+        _write_thinning_diagnostic_figures(
+            volumes,
+            figures_dir.parent / "thinning_diagnostic",
+            title_prefix=title_prefix,
+            buffer_radius=buffer_radius,
+        )
+    )
+    return written
+
+
+def _write_thinning_diagnostic_figures(
+    volumes: Mapping[str, np.ndarray],
+    diagnostic_dir: Path,
+    *,
+    title_prefix: str,
+    buffer_radius: float,
+) -> list[Path]:
+    if "fvt_reference_thinning_diagnostic" not in volumes:
+        return []
+
+    from pyosv import viz
+
+    written = []
+    indices = viz.select_center_slices(
+        np.asarray(volumes["fvt_reference_thinning_diagnostic"]).shape
+    )
+    for axis in ("i3", "i2", "i1"):
+        index = indices[axis]
+        for source_name, output_name in (
+            ("fvt_reference_thinning_diagnostic", "fvt_reference"),
+            ("fvt_normal_thinning_diagnostic", "fvt_normal"),
+            ("keep_reference_only_thinning_diagnostic", "keep_reference_only"),
+            ("keep_normal_only_thinning_diagnostic", "keep_normal_only"),
+        ):
+            written.append(
+                viz.save_ridge_overlay_slice(
+                    diagnostic_dir / f"truth_vs_{output_name}_overlay_{axis}_center.png",
+                    reference=volumes["truth_fault_mask"],
+                    candidate=volumes[source_name],
+                    axis=axis,
+                    index=index,
+                    percentile=99.0,
+                    buffer_radius=buffer_radius,
+                    title=f"{title_prefix} truth vs {output_name} {axis}=center",
+                )
+            )
+        reference_slice = viz.slice_2d(volumes["fvt_reference_thinning_diagnostic"], axis, index)
+        normal_slice = viz.slice_2d(volumes["fvt_normal_thinning_diagnostic"], axis, index)
+        written.append(
+            viz.save_slice_panel(
+                diagnostic_dir / f"fvt_reference_vs_normal_{axis}_center.png",
+                [
+                    ("fvt_reference", reference_slice),
+                    ("fvt_normal", normal_slice),
+                    ("normal - reference", normal_slice - reference_slice),
+                ],
+                title=f"{title_prefix} fvt reference vs normal {axis}=center",
+            )
+        )
     return written
 
 
@@ -2474,6 +2570,16 @@ def _visual_pipeline_section(
     )
     if include_scanner:
         lines.extend(_scanner_markdown_metrics(pipeline_report))
+    if "thinning_diagnostic" in pipeline_report:
+        lines.extend(
+            _thinning_diagnostic_markdown(
+                pipeline_report["thinning_diagnostic"],
+                case_id=case_id,
+                variant=variant,
+                variant_count=variant_count,
+                pipeline=path_pipeline,
+            )
+        )
     lines.extend(["", f"![fvt overlay]({overlay_path.as_posix()})", ""])
     if include_scanner:
         scanner_scan_overlay_path = _figure_path(
@@ -2522,6 +2628,63 @@ def _visual_pipeline_section(
         )
     else:
         lines.extend(["- skinning disabled", ""])
+    return lines
+
+
+def _thinning_diagnostic_markdown(
+    diagnostic: Mapping[str, Any],
+    *,
+    case_id: str,
+    variant: str,
+    variant_count: int,
+    pipeline: str | None,
+) -> list[str]:
+    reference_quality = diagnostic["reference"]["quality"]["fvt_top_truth_count"]
+    normal_quality = diagnostic["normal"]["quality"]["fvt_top_truth_count"]
+    delta = diagnostic["delta"]["normal_minus_reference"]
+    keep_mask = diagnostic["keep_mask"]
+    links = [
+        (
+            "reference overlay",
+            "truth_vs_fvt_reference_overlay_i3_center.png",
+        ),
+        (
+            "normal overlay",
+            "truth_vs_fvt_normal_overlay_i3_center.png",
+        ),
+        (
+            "reference-only overlay",
+            "truth_vs_keep_reference_only_overlay_i3_center.png",
+        ),
+        (
+            "normal-only overlay",
+            "truth_vs_keep_normal_only_overlay_i3_center.png",
+        ),
+        (
+            "reference vs normal",
+            "fvt_reference_vs_normal_i3_center.png",
+        ),
+    ]
+    lines = [
+        "",
+        "##### thinning diagnostic",
+        "",
+        "- reference buffered F1: "
+        f"{_format_markdown_metric(reference_quality['buffered_overlap_radius2']['buffered_f1'])}",
+        "- normal buffered F1: "
+        f"{_format_markdown_metric(normal_quality['buffered_overlap_radius2']['buffered_f1'])}",
+        f"- normal-minus-reference delta: {_format_markdown_metric(delta['fvt_buffered_f1_r2'])}",
+        f"- keep-mask Jaccard: {_format_markdown_metric(keep_mask['jaccard'])}",
+    ]
+    for label, filename in links:
+        path = _thinning_diagnostic_figure_path(
+            case_id,
+            variant=variant,
+            variant_count=variant_count,
+            pipeline=pipeline,
+            filename=filename,
+        )
+        lines.append(f"- [{label}]({path.as_posix()})")
     return lines
 
 
@@ -2613,6 +2776,23 @@ def _figure_path(
     if pipeline is not None:
         parts.append(pipeline)
     parts.extend(("figures", filename))
+    return PurePosixPath(*parts)
+
+
+def _thinning_diagnostic_figure_path(
+    case_id: str,
+    *,
+    variant: str,
+    variant_count: int,
+    pipeline: str | None,
+    filename: str,
+) -> PurePosixPath:
+    parts = [case_id]
+    if variant_count > 1:
+        parts.append(variant)
+    if pipeline is not None:
+        parts.append(pipeline)
+    parts.extend(("thinning_diagnostic", filename))
     return PurePosixPath(*parts)
 
 
