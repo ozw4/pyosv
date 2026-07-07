@@ -94,6 +94,7 @@ THINNING_DIAGNOSTIC_VOLUME_NAMES = (
     ("keep_normal_only_thinning_diagnostic", "keep_normal_only"),
 )
 PIPELINE_OUTPUTS_KEY = "__pipelines__"
+PIPELINE_NAMES = ("oracle", "scanner")
 NONZERO_EPSILON = 1.0e-6
 VARIANT_NAMES = (
     "current_default",
@@ -1862,7 +1863,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
         input_mode = str(report.get("config", {}).get("input_mode", "oracle"))
         for case in report["cases"]:
             n3, n2, n1 = case["shape"]
-            for pipeline, pipeline_report in case["pipelines"].items():
+            for pipeline, pipeline_report in _iter_pipeline_reports(case["pipelines"]):
                 variant_comparison = pipeline_report["variant_comparison"]
                 baseline_variant = variant_comparison["baseline_variant"]
                 comparison_variants = variant_comparison["variants"]
@@ -1978,6 +1979,17 @@ def _summary_csv_scanner_row(
         "scanner_dip_median_error": orientation_error["dip_median"],
         "scanner_input_contrast": input_association["contrast"],
     }
+
+
+def _iter_pipeline_reports(
+    pipelines: Mapping[str, Mapping[str, Any]],
+) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    unknown = sorted(set(pipelines).difference(PIPELINE_NAMES))
+    if unknown:
+        raise ValueError(f"unknown pipeline(s): {','.join(unknown)}")
+    return tuple(
+        (pipeline, pipelines[pipeline]) for pipeline in PIPELINE_NAMES if pipeline in pipelines
+    )
 
 
 def _summary_csv_thinning_diagnostic_row(
@@ -2185,9 +2197,13 @@ def _iter_pipeline_volume_outputs(
 ) -> Sequence[tuple[str | None, Mapping[str, np.ndarray]]]:
     pipeline_outputs = volumes.get(PIPELINE_OUTPUTS_KEY)
     if isinstance(pipeline_outputs, Mapping):
+        unknown = sorted(set(pipeline_outputs).difference(PIPELINE_NAMES))
+        if unknown:
+            raise ValueError(f"unknown pipeline(s): {','.join(unknown)}")
         return tuple(
-            (str(pipeline), pipeline_volumes)
-            for pipeline, pipeline_volumes in pipeline_outputs.items()
+            (pipeline, pipeline_outputs[pipeline])
+            for pipeline in PIPELINE_NAMES
+            if pipeline in pipeline_outputs
         )
     return ((None, volumes),)
 
@@ -2248,8 +2264,13 @@ def _iter_pipeline_skin_outputs(
 ) -> Sequence[tuple[str | None, Mapping[str, Any]]]:
     pipeline_outputs = skins_output.get(PIPELINE_OUTPUTS_KEY)
     if isinstance(pipeline_outputs, Mapping):
+        unknown = sorted(set(pipeline_outputs).difference(PIPELINE_NAMES))
+        if unknown:
+            raise ValueError(f"unknown pipeline(s): {','.join(unknown)}")
         return tuple(
-            (str(pipeline), pipeline_skins) for pipeline, pipeline_skins in pipeline_outputs.items()
+            (pipeline, pipeline_outputs[pipeline])
+            for pipeline in PIPELINE_NAMES
+            if pipeline in pipeline_outputs
         )
     return ((None, skins_output),)
 
