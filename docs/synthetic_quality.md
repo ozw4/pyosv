@@ -44,7 +44,8 @@ errors and should not be expected to match oracle-mode scores.
 Both mode runs both paths for each `(case_id, variant)` using the same truth
 geometry. It is a diagnostic comparison mode, not a new pass/fail contract.
 Top-level `pyosv` and `quality` alias the oracle pipeline in both mode, while
-the scanner results live under `pipelines.scanner`.
+the canonical pipeline reports live under
+`cases[].pipelines.<pipeline>.variants.<variant>`.
 
 ## Current Scope
 
@@ -75,28 +76,29 @@ The controlled synthetic API includes:
 - scanner-inclusive report/CLI pipeline
 - `examples/report_3d_synthetic_quality.py`
 
-The controlled synthetic report pipeline is:
+The controlled synthetic oracle path is:
 
 ```text
-truth geometry
-  -> oracle ft/pt/tt
+synthetic truth geometry
+  -> ft_oracle / pt_oracle / tt_oracle
   -> OptimalSurfaceVoter
   -> voter thin
   -> FaultSkinner
-  -> fv/fvt/skin truth metrics
+  -> truth metrics
 ```
 
-The report can also run a scanner-inclusive path:
+The scanner-inclusive path is:
 
 ```text
-truth geometry
-  -> scanner_input / ep_synthetic
-  -> FaultOrientScanner3.scan() or scan_fast()
-  -> optional FaultOrientScanner3.thin()
+synthetic truth geometry
+  -> synthetic scanner input
+  -> FaultOrientScanner3
+  -> ft_scan / pt_scan / tt_scan
+  -> optional scanner thin
   -> OptimalSurfaceVoter
   -> voter thin
   -> FaultSkinner
-  -> fv/fvt/skin truth metrics
+  -> truth metrics
 ```
 
 Scanner-inclusive experiments can also generate a controlled
@@ -156,6 +158,62 @@ The public factory cases are:
   behavior and boundary handling.
 - `weak_noisy_plane`: degraded likelihood with deterministic noise; tests
   robustness under weak contrast.
+
+## Case Classification And Findings
+
+Use controlled synthetic results to separate basic recovery checks from
+diagnostic stress signals. The current classifications are:
+
+```text
+Basic pass / sanity cases:
+  - single_vertical_plane
+  - single_dipping_plane
+  - weak_noisy_plane
+
+Diagnostic / stress cases:
+  - curved_surface: model-limit / thinning-sensitivity diagnostic
+  - boundary_plane: edge/boundary stress diagnostic
+  - parallel_planes: skin separation / topology diagnostic
+  - crossing_planes: crossing / over-merge / over-split diagnostic
+```
+
+Observed numbers from `oracle_extended_001` are examples of the current
+implementation behavior, not fixed acceptance thresholds. In that run,
+`single_vertical_plane` was a clean basic pass (`fvt_buffered_f1_r2=1.0`,
+`fvt_distance_p95=0.0`, and zero orientation error). `single_dipping_plane`
+was also a basic pass (`fvt_buffered_f1_r2` about `0.9993`,
+`fvt_distance_p95=1.0`, and near-zero orientation error). `weak_noisy_plane`
+remained a robustness sanity case (`fvt_buffered_f1_r2` about `0.9937`) with
+good skin quality.
+
+`curved_surface` should not be read as a simple CI failure when current
+defaults score poorly. `OptimalSurfaceVoter` is not an arbitrary global curved
+surface tracker. It is expected to handle surfaces that remain single-valued
+and moderately varying in the seed-local coordinate system, while strong
+curvature or large orientation variation is a stress case. In the observed
+`oracle_extended_001` run, current defaults had `fvt_buffered_f1_r2` about
+`0.6546`, `fvt_distance_p95` about `14.66`, `strike_median_error` about
+`37.4` deg, and `skin_buffered_f1_r2` about `0.2915`. The
+`voter_thin_normal` variant improved the same truth case substantially
+(`fvt_buffered_f1_r2` about `0.9879`, `fvt_distance_p95=1.0`, and
+`skin_buffered_f1_r2` about `0.9753`). Treat this as a model-limit and
+thinning-sensitivity signal unless a narrower regression is demonstrated.
+
+`boundary_plane` places the true fault near a volume boundary. Poor edge
+metrics are not automatically evidence that candidates should be removed by a
+single edge-cleanup rule, because that could also erase true boundary faults.
+False-positive suppression and boundary truth preservation need to be evaluated
+separately. In the observed run, all variants had `fvt_buffered_f1_r2` about
+`0.1136`, `fvt_distance_p95=30`, `skin_count=0`, and
+`fvt_edge_false_positive_fraction` about `0.8788`; read this as an
+edge/boundary stress diagnostic.
+
+For `parallel_planes` and `crossing_planes`, FVT overlap alone is not enough.
+These cases are intended to expose skin topology behavior: separation of nearby
+truth faults for `parallel_planes`, and over-merge or over-split behavior near
+intersections for `crossing_planes`. Future metrics should report coverage,
+over-merge, and over-split against truth fault IDs rather than relying only on
+global overlap scores or raw skin counts.
 
 The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for
 vertical and dipping single-plane cases and the analytic curved surface. They
@@ -227,6 +285,144 @@ metrics.json
 summary.csv
 visual_report.md  # only with --write-markdown-index
 ```
+
+## Review Workflow
+
+Read controlled synthetic results from the stable summary outward. The normal
+review order is:
+
+```text
+1. Read summary.csv first.
+2. Check fvt truth quality.
+3. Check skin quality.
+4. Check edge false-positive fraction.
+5. Check variant delta columns.
+6. Check visual_report.md and PNG overlays visually.
+7. Use metrics.json only for detailed drill-down.
+```
+
+Start with the tabular view:
+
+```bash
+column -s, -t < outputs/3d/synthetic_quality/oracle_extended_001/summary.csv | less -S
+```
+
+For a smaller comparison table, extract the important review columns:
+
+```bash
+PYTHONPATH=src python - <<'PY'
+from pathlib import Path
+import csv
+
+p = Path("outputs/3d/synthetic_quality/oracle_extended_001/summary.csv")
+cols = [
+    "case_id",
+    "input_mode",
+    "variant",
+    "fvt_buffered_f1_r2",
+    "fvt_distance_p95",
+    "fvt_strike_median_error",
+    "fvt_dip_median_error",
+    "skin_count",
+    "skin_cell_count",
+    "skin_largest_fraction",
+    "skin_buffered_f1_r2",
+    "skin_distance_p95",
+    "fv_edge_false_positive_fraction",
+    "fvt_edge_false_positive_fraction",
+    "scanner_ft_buffered_f1_r2",
+    "scanner_ft_distance_p95",
+    "scanner_strike_median_error",
+    "scanner_dip_median_error",
+]
+with p.open(newline="", encoding="utf-8") as f:
+    rows = list(csv.DictReader(f))
+if not rows:
+    raise SystemExit(f"no rows in {p}")
+available = [c for c in cols if c in rows[0]]
+print("\t".join(available))
+for r in rows:
+    print("\t".join(r.get(c, "") for c in available))
+PY
+```
+
+The current `summary.csv` format writes one row per
+`(case_id, pipeline, variant)`. The `pipeline` column is always present:
+`oracle` for oracle-only runs, `scanner` for scanner-only runs, and both values
+for `--input-mode both`. Pipeline-specific scanner information is represented by
+`scanner_backend`, `scanner_thin_mode`, and `scanner_*` quality columns. In
+`--input-mode both`, compare the `oracle` and `scanner` rows, then inspect the
+split `oracle/` and `scanner/` artifact directories when visual or volume-level
+drill-down is needed.
+
+Important summary columns are:
+
+```text
+case_id
+pipeline
+input_mode
+variant
+fvt_buffered_f1_r2
+fvt_distance_p95
+fvt_strike_median_error
+fvt_dip_median_error
+skin_count
+skin_cell_count
+skin_largest_fraction
+skin_buffered_f1_r2
+skin_distance_p95
+fv_edge_false_positive_fraction
+fvt_edge_false_positive_fraction
+scanner_ft_buffered_f1_r2
+scanner_ft_distance_p95
+scanner_strike_median_error
+scanner_dip_median_error
+```
+
+Metric direction is:
+
+```text
+Higher is better:
+  - fvt_buffered_f1_r2
+  - skin_buffered_f1_r2
+  - scanner_ft_buffered_f1_r2
+  - skin_largest_fraction, but only within the same expected topology
+
+Lower is better:
+  - fvt_distance_p95
+  - skin_distance_p95
+  - fvt_strike_median_error and fvt_dip_median_error
+  - scanner_strike_median_error and scanner_dip_median_error
+  - edge_false_positive_fraction columns
+  - skin_small_cell_fraction
+```
+
+`skin_count` and `skin_cell_count` are topology context. Do not judge them
+alone: the right direction depends on whether the truth case expects one
+connected skin, multiple separated skins, crossing geometry, or no accepted
+skin.
+
+Read diagnostic variant comparison as "same case, same truth, different voter
+setting." CSV delta fields ending in `_delta_vs_baseline` use
+`variant_value - current_default_value`. Positive
+`*_buffered_f1_delta_vs_baseline` is better. Negative
+`*_distance_p95_delta_vs_baseline` is better. Negative
+`*_orientation_error_delta_vs_baseline`, including the strike and dip median
+error delta columns, is better. Delta fields are populated only when the
+`current_default` baseline variant is included.
+
+After the CSV pass, open `visual_report.md` when `--write-markdown-index` was
+used. It links the center-slice PNG overlays, including truth-vs-FVT,
+truth-vs-skin, and scanner overlays when scanner output is present. Use these
+overlays to confirm that high or low summary metrics correspond to plausible
+fault geometry rather than a misleading aggregate score.
+
+`metrics.json` is for detailed drill-down and scripted diagnostics. Prefer
+`summary.csv` for routine review, especially for `--input-mode both`. If a
+script hard-codes internal `metrics.json` paths, first check `format_version`
+and the documented schema section below. The canonical direct JSON access path
+for pipeline metrics is
+`cases[].pipelines.<pipeline>.variants.<variant>`.
 
 `--input-mode` controls the report input path:
 
@@ -379,16 +575,35 @@ Each case stores per-variant metrics under `cases[].variants`. For backward
 compatibility, `current_default` is also duplicated at the case top level when
 that variant is present. `cases[].variant_comparison` stores per-variant deltas
 against `current_default` when that baseline variant is present; when it is not
-present, `baseline_variant` is `null` and the comparison map is empty.
-With `--input-mode scanner` or `--input-mode both`, each variant also stores
-`pipelines`. Scanner variants include `scanner.input`, raw scanner `ft`/`pt`/`tt`,
-and used scanner `fet`/`fpt`/`ftt` summaries; the corresponding volume artifacts
-are named `ft_used`, `pt_used`, and `tt_used`. In scanner-only mode, top-level
-`pyosv` and `quality` alias the scanner pipeline; in both mode they alias the
-oracle pipeline. Scanner pipeline reports also include `scanner_quality`, which
-measures scanner outputs before voting/skinning: raw scanner `ft` top-truth-count
-overlap and surface distance, raw and used scanner `pt`/`tt` orientation errors,
-and scanner-input association with the truth surface. These metrics are separate
+present, `baseline_variant` is `null` and the comparison map is empty. In
+`--input-mode both`, the top-level comparison is a `pipelines` map to avoid an
+ambiguous active-pipeline comparison.
+
+The canonical pipeline schema is:
+
+```text
+cases[].pipelines.oracle.variants.<variant>.pyosv
+cases[].pipelines.oracle.variants.<variant>.quality
+cases[].pipelines.oracle.variant_comparison
+cases[].pipelines.scanner.variants.<variant>.pyosv
+cases[].pipelines.scanner.variants.<variant>.quality
+cases[].pipelines.scanner.variants.<variant>.scanner_quality
+cases[].pipelines.scanner.variant_comparison
+```
+
+Oracle-only runs include only `pipelines.oracle`; scanner-only runs include only
+`pipelines.scanner`; `--input-mode both` includes both. Existing
+`cases[].variants` entries remain as compatibility aliases. In scanner-only
+mode, top-level `pyosv` and `quality` alias the scanner pipeline; in both mode
+they alias the oracle pipeline. Scanner pipeline reports include
+`scanner.input`, raw scanner `ft`/`pt`/`tt`, and used scanner
+`fet`/`fpt`/`ftt` summaries; the corresponding volume artifacts are named
+`ft_used`, `pt_used`, and `tt_used`.
+
+Scanner pipeline reports also include `scanner_quality`, which measures scanner
+outputs before voting/skinning: raw scanner `ft` top-truth-count overlap and
+surface distance, raw and used scanner `pt`/`tt` orientation errors, and
+scanner-input association with the truth surface. These metrics are separate
 from downstream `quality.*` so scanner failures can be distinguished from voter,
 thinning, or skinning failures. The input association uses
 `abs(truth_distance) <= --truth-surface-half-width` as the near-surface mask and
@@ -452,9 +667,9 @@ with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
 `--small-skin-size`.
 
 The `geometry` and `extended` case sets keep the same top-level JSON contract
-and write one `cases[]` entry plus one `summary.csv` row per
-`(case_id, variant)`. Optional volumes and figures are split by case directory,
-for example `single_dipping_plane/`, `curved_surface/`,
+and write one `cases[]` entry per case plus one `summary.csv` row per
+`(case_id, pipeline, variant)`. Optional volumes and figures are split by case
+directory, for example `single_dipping_plane/`, `curved_surface/`,
 `parallel_planes/`, `crossing_planes/`, `boundary_plane/`, and
 `weak_noisy_plane/`.
 
@@ -469,15 +684,16 @@ voter_thin_normal
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
-`summary.csv` writes one row per `(case_id, variant)` and includes the variant
-column, baseline variant, input mode, buffered F1, candidate-to-truth p95
-distance, fvt median orientation error columns, `fv_edge_false_positive_fraction`,
-`fvt_edge_false_positive_fraction`, skin topology and truth metric columns, and
-fvt and skin delta columns against the baseline. Scanner columns are always in
-the header; they are populated for `--input-mode scanner` and `--input-mode both`
-and empty for oracle-only rows:
+`summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
+pipeline column, variant column, baseline variant, input mode, buffered F1,
+candidate-to-truth p95 distance, fvt median orientation error columns,
+`fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`, skin
+topology and truth metric columns, and fvt and skin delta columns against the
+baseline. Scanner columns are always in the header; they are populated for
+scanner pipeline rows and empty for oracle pipeline rows:
 
 ```text
+pipeline
 input_mode
 scanner_backend
 scanner_thin_mode
@@ -517,32 +733,31 @@ skin_dip_median_error_delta_vs_baseline
 skin_count_delta_vs_baseline
 ```
 
-Read diagnostic variant comparison as "same case, same truth, different voter
-setting." JSON delta fields under `variant_comparison.variants.*` and CSV delta
-fields ending in `_delta_vs_baseline` are only populated when `current_default`
-is included. If the baseline is omitted, `baseline_variant` is `null` in JSON,
-empty in CSV, and the delta fields are empty.
+JSON delta fields under `variant_comparison.variants.*` and CSV delta fields
+ending in `_delta_vs_baseline` are only populated when `current_default` is
+included. If the baseline is omitted, `baseline_variant` is `null` in JSON,
+empty in CSV, and the delta fields are empty. Delta signs use
+`variant_value - current_default_value`.
 
-Delta signs use `variant_value - current_default_value`. That means positive
-buffered-F1 deltas are improvements, while negative distance and
-orientation-error deltas are improvements. The report does not encode this
-good/bad direction; consumers should interpret each metric family explicitly.
 Metric direction is:
 
 ```text
 buffered F1: higher is better
 distance p95: lower is better
 orientation error: lower is better
+edge false-positive fraction: lower is better
+small skin cell fraction: lower is better
 skin_count: depends on truth topology; do not judge it alone
 largest_skin_fraction: for single-fault cases, higher means less fragmentation
 ```
 
-For skin deltas, `skin_buffered_f1_r2_delta_vs_current` follows the same
-positive-is-better interpretation, while
-`skin_candidate_to_truth_p95_delta_vs_current`,
-`skin_strike_median_error_delta_vs_current`, and
-`skin_dip_median_error_delta_vs_current` are better when negative.
-`skin_count_delta_vs_current` is useful topology context only.
+For skin deltas, `skin_buffered_f1_delta_vs_baseline` follows the same
+positive-is-better interpretation, while `skin_distance_p95_delta_vs_baseline`,
+`skin_strike_median_error_delta_vs_baseline`, and
+`skin_dip_median_error_delta_vs_baseline` are better when negative.
+`skin_count_delta_vs_baseline` is useful topology context only. The underlying
+JSON comparison fields keep the older `_delta_vs_current` names, but the sign
+definition is the same.
 
 `--save-volumes` writes float32 big-endian DAT volumes under each case
 directory, with `truth_fault_mask.dat` and `skin_mask_py.dat` stored as 0/1

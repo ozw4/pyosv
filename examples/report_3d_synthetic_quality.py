@@ -101,7 +101,12 @@ VARIANT_COMPARISON_METRICS = (
     ),
     (
         "fvt_candidate_to_truth_p95_delta_vs_current",
-        ("quality", "fvt_top_truth_count", "surface_distance", "candidate_to_truth_p95"),
+        (
+            "quality",
+            "fvt_top_truth_count",
+            "surface_distance",
+            "candidate_to_truth_p95",
+        ),
     ),
     (
         "fvt_strike_median_error_delta_vs_current",
@@ -728,10 +733,14 @@ def run_case(
         "shape": [int(size) for size in case.shape],
         "truth": _truth_report(case, truth_metric_config),
         "variants": {variant: variant_report},
-        "variant_comparison": _variant_comparison({variant: variant_report}),
     }
     if variant == BASELINE_VARIANT:
-        report.update(variant_report)
+        report.update(
+            {key: value for key, value in variant_report.items() if key not in {"pipelines"}}
+        )
+    pipelines = _case_pipeline_reports({variant: variant_report}, input_mode)
+    report["pipelines"] = pipelines
+    report["variant_comparison"] = _case_variant_comparison_alias(pipelines, input_mode)
     return report, volumes
 
 
@@ -802,6 +811,65 @@ def _validate_input_mode(input_mode: str) -> str:
     if input_mode not in {"oracle", "scanner", "both"}:
         raise ValueError("input_mode must be 'oracle', 'scanner', or 'both'")
     return input_mode
+
+
+def _case_pipeline_reports(
+    variant_reports: Mapping[str, Mapping[str, Any]],
+    input_mode: str,
+) -> dict[str, dict[str, Any]]:
+    pipeline_names = {
+        "oracle": ("oracle",),
+        "scanner": ("scanner",),
+        "both": ("oracle", "scanner"),
+    }[_validate_input_mode(input_mode)]
+    return {
+        pipeline: {
+            "variants": {
+                variant: _variant_pipeline_report(variant_report, pipeline)
+                for variant, variant_report in variant_reports.items()
+            },
+            "variant_comparison": _variant_comparison(
+                {
+                    variant: _variant_pipeline_report(variant_report, pipeline)
+                    for variant, variant_report in variant_reports.items()
+                }
+            ),
+        }
+        for pipeline in pipeline_names
+    }
+
+
+def _variant_pipeline_report(
+    variant_report: Mapping[str, Any],
+    pipeline: str,
+) -> Mapping[str, Any]:
+    pipelines = variant_report.get("pipelines")
+    if isinstance(pipelines, Mapping) and pipeline in pipelines:
+        pipeline_report = pipelines[pipeline]
+        if not isinstance(pipeline_report, Mapping):
+            raise TypeError(f"pipeline report must be a mapping: {pipeline}")
+        return pipeline_report
+    if pipeline == "oracle" and "scanner_quality" not in variant_report:
+        return variant_report
+    if pipeline == "scanner" and "scanner_quality" in variant_report:
+        return variant_report
+    raise KeyError(f"missing pipeline report: {pipeline}")
+
+
+def _case_variant_comparison_alias(
+    pipelines: Mapping[str, Mapping[str, Any]],
+    input_mode: str,
+) -> dict[str, Any]:
+    valid_input_mode = _validate_input_mode(input_mode)
+    if valid_input_mode == "both":
+        return {
+            "pipelines": {
+                pipeline: pipeline_report["variant_comparison"]
+                for pipeline, pipeline_report in pipelines.items()
+            }
+        }
+    active_pipeline = "scanner" if valid_input_mode == "scanner" else "oracle"
+    return dict(pipelines[active_pipeline]["variant_comparison"])
 
 
 def _run_oracle_pipeline(
@@ -1309,15 +1377,28 @@ def _build_report_and_volumes(
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
             variant_skins[variant] = skins_output
+        pipelines = _case_pipeline_reports(variant_reports, valid_input_mode)
         case_report = {
             "case_id": case.case_id,
             "shape": [int(size) for size in case.shape],
             "truth": _truth_report(case, truth_metric_config),
             "variants": variant_reports,
-            "variant_comparison": _variant_comparison(variant_reports),
+            "pipelines": pipelines,
+            "variant_comparison": _case_variant_comparison_alias(pipelines, valid_input_mode),
         }
         if BASELINE_VARIANT in variant_reports:
-            case_report.update(variant_reports[BASELINE_VARIANT])
+            case_report.update(
+                {
+                    key: value
+                    for key, value in variant_reports[BASELINE_VARIANT].items()
+                    if key not in {"pipelines"}
+                }
+            )
+            case_report["pipelines"] = pipelines
+            case_report["variant_comparison"] = _case_variant_comparison_alias(
+                pipelines,
+                valid_input_mode,
+            )
         cases.append(case_report)
         volume_outputs[case_definition.case_id] = variant_volumes
         skin_outputs[case_definition.case_id] = variant_skins
@@ -1422,6 +1503,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
             file,
             fieldnames=(
                 "case_id",
+                "pipeline",
                 "variant",
                 "baseline_variant",
                 "input_mode",
@@ -1483,68 +1565,74 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
         input_mode = str(report.get("config", {}).get("input_mode", "oracle"))
         for case in report["cases"]:
             n3, n2, n1 = case["shape"]
-            variant_comparison = case["variant_comparison"]
-            baseline_variant = variant_comparison["baseline_variant"]
-            comparison_variants = variant_comparison["variants"]
-            for variant, variant_report in case["variants"].items():
-                pyosv = variant_report["pyosv"]
-                fv = pyosv["fv"]
-                fvt = pyosv["fvt"]
-                quality = variant_report["quality"]
-                fv_quality = quality["fv_top_truth_count"]
-                fvt_quality = quality["fvt_top_truth_count"]
-                edge_false_positive = quality["edge_false_positive"]
-                skinning = variant_report["skinning"]
-                skin_quality = quality["skin"]
-                skin_summary = _summary_csv_skin_row(
-                    enabled=bool(skinning["enabled"]),
-                    quality=skin_quality,
-                )
-                comparison_row = _summary_csv_comparison_row(
-                    comparison_variants.get(variant, {}),
-                )
-                scanner_row = _summary_csv_scanner_row(
-                    variant_report=variant_report,
-                    input_mode=input_mode,
-                )
-                writer.writerow(
-                    {
-                        "case_id": case["case_id"],
-                        "variant": variant,
-                        "baseline_variant": baseline_variant,
-                        "input_mode": input_mode,
-                        "shape_n3": n3,
-                        "shape_n2": n2,
-                        "shape_n1": n1,
-                        "fv_max": fv["max"],
-                        "fv_mean": fv["mean"],
-                        "fv_nonzero_fraction": fv["nonzero_fraction"],
-                        "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"]["buffered_f1"],
-                        "fv_distance_p95": fv_quality["surface_distance"]["candidate_to_truth_p95"],
-                        "fv_edge_false_positive_fraction": edge_false_positive[
-                            "fv_top_truth_count"
-                        ]["edge_false_positive_fraction_of_candidates"],
-                        "fvt_max": fvt["max"],
-                        "fvt_mean": fvt["mean"],
-                        "fvt_nonzero_fraction": fvt["nonzero_fraction"],
-                        "fvt_buffered_f1_r2": fvt_quality["buffered_overlap_radius2"][
-                            "buffered_f1"
-                        ],
-                        "fvt_distance_p95": fvt_quality["surface_distance"][
-                            "candidate_to_truth_p95"
-                        ],
-                        "fvt_edge_false_positive_fraction": edge_false_positive[
-                            "fvt_top_truth_count"
-                        ]["edge_false_positive_fraction_of_candidates"],
-                        "fvt_strike_median_error": fvt_quality["orientation_error"][
-                            "strike_median"
-                        ],
-                        "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
-                        **skin_summary,
-                        **scanner_row,
-                        **comparison_row,
-                    }
-                )
+            for pipeline, pipeline_report in case["pipelines"].items():
+                variant_comparison = pipeline_report["variant_comparison"]
+                baseline_variant = variant_comparison["baseline_variant"]
+                comparison_variants = variant_comparison["variants"]
+                for variant, variant_report in pipeline_report["variants"].items():
+                    pyosv = variant_report["pyosv"]
+                    fv = pyosv["fv"]
+                    fvt = pyosv["fvt"]
+                    quality = variant_report["quality"]
+                    fv_quality = quality["fv_top_truth_count"]
+                    fvt_quality = quality["fvt_top_truth_count"]
+                    edge_false_positive = quality["edge_false_positive"]
+                    skinning = variant_report["skinning"]
+                    skin_quality = quality["skin"]
+                    skin_summary = _summary_csv_skin_row(
+                        enabled=bool(skinning["enabled"]),
+                        quality=skin_quality,
+                    )
+                    comparison_row = _summary_csv_comparison_row(
+                        comparison_variants.get(variant, {}),
+                    )
+                    scanner_row = _summary_csv_scanner_row(
+                        variant_report=variant_report,
+                        input_mode=input_mode,
+                    )
+                    writer.writerow(
+                        {
+                            "case_id": case["case_id"],
+                            "pipeline": pipeline,
+                            "variant": variant,
+                            "baseline_variant": baseline_variant,
+                            "input_mode": input_mode,
+                            "shape_n3": n3,
+                            "shape_n2": n2,
+                            "shape_n1": n1,
+                            "fv_max": fv["max"],
+                            "fv_mean": fv["mean"],
+                            "fv_nonzero_fraction": fv["nonzero_fraction"],
+                            "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"][
+                                "buffered_f1"
+                            ],
+                            "fv_distance_p95": fv_quality["surface_distance"][
+                                "candidate_to_truth_p95"
+                            ],
+                            "fv_edge_false_positive_fraction": edge_false_positive[
+                                "fv_top_truth_count"
+                            ]["edge_false_positive_fraction_of_candidates"],
+                            "fvt_max": fvt["max"],
+                            "fvt_mean": fvt["mean"],
+                            "fvt_nonzero_fraction": fvt["nonzero_fraction"],
+                            "fvt_buffered_f1_r2": fvt_quality["buffered_overlap_radius2"][
+                                "buffered_f1"
+                            ],
+                            "fvt_distance_p95": fvt_quality["surface_distance"][
+                                "candidate_to_truth_p95"
+                            ],
+                            "fvt_edge_false_positive_fraction": edge_false_positive[
+                                "fvt_top_truth_count"
+                            ]["edge_false_positive_fraction_of_candidates"],
+                            "fvt_strike_median_error": fvt_quality["orientation_error"][
+                                "strike_median"
+                            ],
+                            "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
+                            **skin_summary,
+                            **scanner_row,
+                            **comparison_row,
+                        }
+                    )
     return output_path
 
 
@@ -1864,7 +1952,12 @@ def _write_pipeline_figures(
                 written.append(
                     viz.save_slice_panel(
                         figure_path,
-                        [(output_name, viz.slice_2d(volumes[source_name], axis, index))],
+                        [
+                            (
+                                output_name,
+                                viz.slice_2d(volumes[source_name], axis, index),
+                            )
+                        ],
                         title=f"{title_prefix} {output_name} {axis}=center",
                     )
                 )
@@ -1872,7 +1965,12 @@ def _write_pipeline_figures(
             written.append(
                 viz.save_slice_panel(
                     figures_dir / "skin_mask_py_i3_center.png",
-                    [("skin_mask_py", viz.slice_2d(volumes["skin_mask_py"], axis, index))],
+                    [
+                        (
+                            "skin_mask_py",
+                            viz.slice_2d(volumes["skin_mask_py"], axis, index),
+                        )
+                    ],
                     title=f"{title_prefix} skin_mask_py {axis}=center",
                     clip_percentiles=(0.0, 100.0),
                 )
