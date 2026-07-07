@@ -285,6 +285,141 @@ summary.csv
 visual_report.md  # only with --write-markdown-index
 ```
 
+## Review Workflow
+
+Read controlled synthetic results from the stable summary outward. The normal
+review order is:
+
+```text
+1. Read summary.csv first.
+2. Check fvt truth quality.
+3. Check skin quality.
+4. Check edge false-positive fraction.
+5. Check variant delta columns.
+6. Check visual_report.md and PNG overlays visually.
+7. Use metrics.json only for detailed drill-down.
+```
+
+Start with the tabular view:
+
+```bash
+column -s, -t < outputs/3d/synthetic_quality/oracle_extended_001/summary.csv | less -S
+```
+
+For a smaller comparison table, extract the important review columns:
+
+```bash
+PYTHONPATH=src python - <<'PY'
+from pathlib import Path
+import csv
+
+p = Path("outputs/3d/synthetic_quality/oracle_extended_001/summary.csv")
+cols = [
+    "case_id",
+    "input_mode",
+    "variant",
+    "fvt_buffered_f1_r2",
+    "fvt_distance_p95",
+    "fvt_strike_median_error",
+    "fvt_dip_median_error",
+    "skin_count",
+    "skin_cell_count",
+    "skin_largest_fraction",
+    "skin_buffered_f1_r2",
+    "skin_distance_p95",
+    "fv_edge_false_positive_fraction",
+    "fvt_edge_false_positive_fraction",
+    "scanner_ft_buffered_f1_r2",
+    "scanner_ft_distance_p95",
+    "scanner_strike_median_error",
+    "scanner_dip_median_error",
+]
+with p.open(newline="", encoding="utf-8") as f:
+    rows = list(csv.DictReader(f))
+if not rows:
+    raise SystemExit(f"no rows in {p}")
+available = [c for c in cols if c in rows[0]]
+print("\t".join(available))
+for r in rows:
+    print("\t".join(r.get(c, "") for c in available))
+PY
+```
+
+The current `summary.csv` format writes one row per `(case_id, variant)`.
+Pipeline-specific scanner information is represented by `input_mode`,
+`scanner_backend`, `scanner_thin_mode`, and `scanner_*` quality columns rather
+than a separate `pipeline` column. In `--input-mode both`, use the summary row
+for the primary comparison, then inspect the split `oracle/` and `scanner/`
+artifact directories when visual or volume-level drill-down is needed.
+
+Important summary columns are:
+
+```text
+case_id
+input_mode
+variant
+fvt_buffered_f1_r2
+fvt_distance_p95
+fvt_strike_median_error
+fvt_dip_median_error
+skin_count
+skin_cell_count
+skin_largest_fraction
+skin_buffered_f1_r2
+skin_distance_p95
+fv_edge_false_positive_fraction
+fvt_edge_false_positive_fraction
+scanner_ft_buffered_f1_r2
+scanner_ft_distance_p95
+scanner_strike_median_error
+scanner_dip_median_error
+```
+
+Metric direction is:
+
+```text
+Higher is better:
+  - fvt_buffered_f1_r2
+  - skin_buffered_f1_r2
+  - scanner_ft_buffered_f1_r2
+  - skin_largest_fraction, but only within the same expected topology
+
+Lower is better:
+  - fvt_distance_p95
+  - skin_distance_p95
+  - fvt_strike_median_error and fvt_dip_median_error
+  - scanner_strike_median_error and scanner_dip_median_error
+  - edge_false_positive_fraction columns
+  - skin_small_cell_fraction
+```
+
+`skin_count` and `skin_cell_count` are topology context. Do not judge them
+alone: the right direction depends on whether the truth case expects one
+connected skin, multiple separated skins, crossing geometry, or no accepted
+skin.
+
+Read diagnostic variant comparison as "same case, same truth, different voter
+setting." CSV delta fields ending in `_delta_vs_baseline` use
+`variant_value - current_default_value`. Positive
+`*_buffered_f1_delta_vs_baseline` is better. Negative
+`*_distance_p95_delta_vs_baseline` is better. Negative
+`*_orientation_error_delta_vs_baseline`, including the strike and dip median
+error delta columns, is better. Delta fields are populated only when the
+`current_default` baseline variant is included.
+
+After the CSV pass, open `visual_report.md` when `--write-markdown-index` was
+used. It links the center-slice PNG overlays, including truth-vs-FVT,
+truth-vs-skin, and scanner overlays when scanner output is present. Use these
+overlays to confirm that high or low summary metrics correspond to plausible
+fault geometry rather than a misleading aggregate score.
+
+`metrics.json` is for detailed drill-down and scripted diagnostics. Prefer
+`summary.csv` for routine review, especially for `--input-mode both`. If a
+script hard-codes internal `metrics.json` paths, first check `format_version`
+and the documented schema section below. The canonical internal schema for
+more stable direct JSON access is expected after the follow-up schema
+stabilization work.
+
 `--input-mode` controls the report input path:
 
 ```text
@@ -574,32 +709,31 @@ skin_dip_median_error_delta_vs_baseline
 skin_count_delta_vs_baseline
 ```
 
-Read diagnostic variant comparison as "same case, same truth, different voter
-setting." JSON delta fields under `variant_comparison.variants.*` and CSV delta
-fields ending in `_delta_vs_baseline` are only populated when `current_default`
-is included. If the baseline is omitted, `baseline_variant` is `null` in JSON,
-empty in CSV, and the delta fields are empty.
+JSON delta fields under `variant_comparison.variants.*` and CSV delta fields
+ending in `_delta_vs_baseline` are only populated when `current_default` is
+included. If the baseline is omitted, `baseline_variant` is `null` in JSON,
+empty in CSV, and the delta fields are empty. Delta signs use
+`variant_value - current_default_value`.
 
-Delta signs use `variant_value - current_default_value`. That means positive
-buffered-F1 deltas are improvements, while negative distance and
-orientation-error deltas are improvements. The report does not encode this
-good/bad direction; consumers should interpret each metric family explicitly.
 Metric direction is:
 
 ```text
 buffered F1: higher is better
 distance p95: lower is better
 orientation error: lower is better
+edge false-positive fraction: lower is better
+small skin cell fraction: lower is better
 skin_count: depends on truth topology; do not judge it alone
 largest_skin_fraction: for single-fault cases, higher means less fragmentation
 ```
 
-For skin deltas, `skin_buffered_f1_r2_delta_vs_current` follows the same
-positive-is-better interpretation, while
-`skin_candidate_to_truth_p95_delta_vs_current`,
-`skin_strike_median_error_delta_vs_current`, and
-`skin_dip_median_error_delta_vs_current` are better when negative.
-`skin_count_delta_vs_current` is useful topology context only.
+For skin deltas, `skin_buffered_f1_delta_vs_baseline` follows the same
+positive-is-better interpretation, while `skin_distance_p95_delta_vs_baseline`,
+`skin_strike_median_error_delta_vs_baseline`, and
+`skin_dip_median_error_delta_vs_baseline` are better when negative.
+`skin_count_delta_vs_baseline` is useful topology context only. The underlying
+JSON comparison fields keep the older `_delta_vs_current` names, but the sign
+definition is the same.
 
 `--save-volumes` writes float32 big-endian DAT volumes under each case
 directory, with `truth_fault_mask.dat` and `skin_mask_py.dat` stored as 0/1
