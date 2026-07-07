@@ -11,6 +11,7 @@ from pyosv.synthetic3d import (
     coordinate_grids3,
     generate_curved_surface_case,
     generate_single_plane_case,
+    make_boundary_plane_case,
     make_crossing_planes_case,
     make_curved_surface_case,
     make_parallel_planes_case,
@@ -474,6 +475,23 @@ def test_make_single_dipping_plane_case_returns_expected_arrays() -> None:
         array = getattr(case, name)
         assert array.shape == case.shape
         assert array.dtype == dtype
+
+
+def test_make_boundary_plane_case_touches_i2_zero_face() -> None:
+    case = make_boundary_plane_case(shape=(5, 7, 9))
+
+    assert isinstance(case, Synthetic3DCase)
+    assert case.case_id == "boundary_plane"
+    assert case.shape == (5, 7, 9)
+    _assert_synthetic3d_case_contract(case)
+    np.testing.assert_array_equal(case.truth_fault_id, case.truth_fault_mask.astype(np.int32))
+    np.testing.assert_array_equal(case.truth_strike, np.zeros(case.shape, dtype=np.float32))
+    np.testing.assert_array_equal(case.truth_dip, np.full(case.shape, 90.0, dtype=np.float32))
+
+    assert np.any(case.truth_fault_mask[:, 0, :])
+    assert not np.any(case.truth_fault_mask[:, -1, :])
+    masked_x2 = np.flatnonzero(case.truth_fault_mask.any(axis=(0, 2)))
+    np.testing.assert_array_equal(masked_x2, np.array([0, 1, 2]))
 
 
 def test_make_curved_surface_case_returns_expected_arrays() -> None:
