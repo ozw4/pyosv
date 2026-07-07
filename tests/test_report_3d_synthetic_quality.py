@@ -331,9 +331,18 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
+    assert len(rows) == 7
     assert [row["case_id"] for row in rows] == list(EXTENDED_CASE_IDS)
     assert all(row["variant"] == "current_default" for row in rows)
+    finite_summary_fields = (
+        "fvt_buffered_f1_r2",
+        "fvt_distance_p95",
+        "fvt_strike_median_error",
+        "fvt_dip_median_error",
+    )
     for row in rows:
+        for field in finite_summary_fields:
+            assert math.isfinite(float(row[field]))
         assert "fvt_edge_false_positive_fraction" in row
         assert "fv_edge_false_positive_fraction" in row
         assert math.isfinite(float(row["fvt_edge_false_positive_fraction"]))
