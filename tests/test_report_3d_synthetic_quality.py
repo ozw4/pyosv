@@ -15,6 +15,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "examples" / "report_3d_synthetic_quality.py"
 GEOMETRY_CASE_IDS = ("single_vertical_plane", "single_dipping_plane", "curved_surface")
+EXTENDED_CASE_IDS = (
+    *GEOMETRY_CASE_IDS,
+    "parallel_planes",
+    "crossing_planes",
+    "boundary_plane",
+    "weak_noisy_plane",
+)
 DIAGNOSTIC_VARIANTS = (
     "current_default",
     "no_surface_orientation_smoothing",
@@ -131,6 +138,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "usage:" in result.stdout
     assert "--case-set" in result.stdout
     assert "geometry" in result.stdout
+    assert "extended" in result.stdout
     assert "--output-dir" in result.stdout
     assert "--shape" in result.stdout
     assert "--variants" in result.stdout
@@ -212,10 +220,12 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fv_nonzero_fraction"]) > 0.0
     assert float(rows[0]["fv_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fv_distance_p95"]) >= 0.0
+    assert math.isfinite(float(rows[0]["fv_edge_false_positive_fraction"]))
     assert float(rows[0]["fvt_max"]) > 0.0
     assert float(rows[0]["fvt_nonzero_fraction"]) > 0.0
     assert float(rows[0]["fvt_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fvt_distance_p95"]) >= 0.0
+    assert math.isfinite(float(rows[0]["fvt_edge_false_positive_fraction"]))
     assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
     assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
     assert rows[0]["skinning_enabled"] == "True"
@@ -284,6 +294,68 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert math.isfinite(float(row["fvt_strike_median_error"]))
         assert math.isfinite(float(row["fvt_dip_median_error"]))
         _assert_enabled_skin_summary_row(row)
+
+
+def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "extended",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--save-volumes",
+        "--write-markdown-index",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["case_set"] == "extended"
+    assert [case["case_id"] for case in metrics["cases"]] == list(EXTENDED_CASE_IDS)
+    for case in metrics["cases"]:
+        quality = case["quality"]
+        assert "buffered_overlap_radius2" in quality["fvt_top_truth_count"]
+        assert "fvt_top_truth_count" in quality["edge_false_positive"]
+        assert math.isfinite(
+            float(
+                quality["edge_false_positive"]["fvt_top_truth_count"][
+                    "edge_false_positive_fraction_of_candidates"
+                ]
+            )
+        )
+        assert case["variants"]["current_default"]["quality"] == quality
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert len(rows) == 7
+    assert [row["case_id"] for row in rows] == list(EXTENDED_CASE_IDS)
+    assert all(row["variant"] == "current_default" for row in rows)
+    finite_summary_fields = (
+        "fvt_buffered_f1_r2",
+        "fvt_distance_p95",
+        "fvt_strike_median_error",
+        "fvt_dip_median_error",
+    )
+    for row in rows:
+        for field in finite_summary_fields:
+            assert math.isfinite(float(row[field]))
+        assert "fvt_edge_false_positive_fraction" in row
+        assert "fv_edge_false_positive_fraction" in row
+        assert math.isfinite(float(row["fvt_edge_false_positive_fraction"]))
+        assert math.isfinite(float(row["fv_edge_false_positive_fraction"]))
+
+    for case_id in EXTENDED_CASE_IDS:
+        assert (output_dir / case_id).is_dir()
+        assert (output_dir / case_id / "fvt_py.dat").is_file()
+        assert (output_dir / case_id / "skins.json").is_file()
+
+    markdown = (output_dir / "visual_report.md").read_text(encoding="utf-8")
+    for case_id in EXTENDED_CASE_IDS:
+        assert f"## {case_id}" in markdown
 
 
 def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(

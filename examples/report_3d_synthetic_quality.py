@@ -2,10 +2,10 @@ r"""Report controlled 3D synthetic truth quality metrics.
 
 Example:
     PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-      --case-set geometry \
+      --case-set extended \
       --shape 33,33,33 \
       --variants current_default \
-      --output-dir outputs/3d/synthetic_quality/geometry_001 \
+      --output-dir outputs/3d/synthetic_quality/extended_001 \
       --pretty \
       --save-figures \
       --write-markdown-index
@@ -27,13 +27,18 @@ import numpy as np
 
 from pyosv.synthetic3d import (
     Synthetic3DCase,
+    make_boundary_plane_case,
+    make_crossing_planes_case,
     make_curved_surface_case,
+    make_parallel_planes_case,
     make_single_dipping_plane_case,
     make_single_vertical_plane_case,
+    make_weak_noisy_plane_case,
     validate_shape3,
 )
 from pyosv.synthetic_metrics import (
     buffered_surface_overlap,
+    edge_false_positive_ratio,
     masked_orientation_error,
     skin_mask_from_skins,
     skin_topology_metrics,
@@ -46,6 +51,7 @@ from pyosv.voting3d import OptimalSurfaceVoter
 
 DEFAULT_SHAPE = (33, 33, 33)
 FORMAT_VERSION = 1
+EDGE_FALSE_POSITIVE_MARGIN = 2
 VOLUME_NAMES = (
     "truth_fault_mask",
     "truth_distance",
@@ -311,9 +317,17 @@ GEOMETRY_CASES = (
         factory=make_curved_surface_case,
     ),
 )
+EXTENDED_CASES = (
+    *GEOMETRY_CASES,
+    SyntheticQualityCaseDefinition("parallel_planes", make_parallel_planes_case),
+    SyntheticQualityCaseDefinition("crossing_planes", make_crossing_planes_case),
+    SyntheticQualityCaseDefinition("boundary_plane", make_boundary_plane_case),
+    SyntheticQualityCaseDefinition("weak_noisy_plane", make_weak_noisy_plane_case),
+)
 CASE_SETS = {
     "minimal": MINIMAL_CASES,
     "geometry": GEOMETRY_CASES,
+    "extended": EXTENDED_CASES,
 }
 
 
@@ -323,11 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Example:\n"
             "  PYTHONPATH=src python examples/report_3d_synthetic_quality.py \\\n"
-            "    --case-set geometry \\\n"
+            "    --case-set extended \\\n"
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal \\\n"
-            "    --output-dir outputs/3d/synthetic_quality/geometry_001 \\\n"
+            "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
             "    --write-markdown-index"
@@ -617,6 +631,20 @@ def _run_case_variant(
     truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
     fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
     fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
+    edge_false_positive_metrics = {
+        "fv_top_truth_count": edge_false_positive_ratio(
+            fv_top_truth_count,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
+        "fvt_top_truth_count": edge_false_positive_ratio(
+            fvt_top_truth_count,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
+    }
     report = {
         "skinning": {"enabled": skinning_config.enabled},
         "pyosv": {
@@ -653,6 +681,7 @@ def _run_case_variant(
                     fvt_top_truth_count,
                 ),
             },
+            "edge_false_positive": edge_false_positive_metrics,
         },
     }
     if skinning_config.enabled:
@@ -676,6 +705,12 @@ def _run_case_variant(
         report["pyosv"]["skins"] = skin_metrics["topology"]
         report["quality"]["skin"] = skin_metrics
         skin_mask = skin_mask_from_skins(skins, case.shape)
+        report["quality"]["edge_false_positive"]["skin"] = edge_false_positive_ratio(
+            skin_mask,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        )
         skins_output = _skins_json_payload(skins)
     else:
         report["pyosv"]["skins"] = skin_topology_metrics(
@@ -943,11 +978,13 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fv_nonzero_fraction",
                 "fv_buffered_f1_r2",
                 "fv_distance_p95",
+                "fv_edge_false_positive_fraction",
                 "fvt_max",
                 "fvt_mean",
                 "fvt_nonzero_fraction",
                 "fvt_buffered_f1_r2",
                 "fvt_distance_p95",
+                "fvt_edge_false_positive_fraction",
                 "fvt_strike_median_error",
                 "fvt_dip_median_error",
                 "skinning_enabled",
@@ -993,6 +1030,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 quality = variant_report["quality"]
                 fv_quality = quality["fv_top_truth_count"]
                 fvt_quality = quality["fvt_top_truth_count"]
+                edge_false_positive = quality["edge_false_positive"]
                 skinning = variant_report["skinning"]
                 skin_quality = quality["skin"]
                 skin_summary = _summary_csv_skin_row(
@@ -1015,6 +1053,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         "fv_nonzero_fraction": fv["nonzero_fraction"],
                         "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"]["buffered_f1"],
                         "fv_distance_p95": fv_quality["surface_distance"]["candidate_to_truth_p95"],
+                        "fv_edge_false_positive_fraction": edge_false_positive[
+                            "fv_top_truth_count"
+                        ]["edge_false_positive_fraction_of_candidates"],
                         "fvt_max": fvt["max"],
                         "fvt_mean": fvt["mean"],
                         "fvt_nonzero_fraction": fvt["nonzero_fraction"],
@@ -1024,6 +1065,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         "fvt_distance_p95": fvt_quality["surface_distance"][
                             "candidate_to_truth_p95"
                         ],
+                        "fvt_edge_false_positive_fraction": edge_false_positive[
+                            "fvt_top_truth_count"
+                        ]["edge_false_positive_fraction_of_candidates"],
                         "fvt_strike_median_error": fvt_quality["orientation_error"][
                             "strike_median"
                         ],

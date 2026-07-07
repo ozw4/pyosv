@@ -144,15 +144,17 @@ crop validation, and the manual full-volume pipeline.
 
 Controlled synthetic 3D truth-quality checks are documented in
 `docs/synthetic_quality.md`, including the default `minimal` case set and the
-`geometry` set for vertical, dipping, and curved faults, voter variants, and
-skinning metrics. A typical report run is:
+`geometry` and `extended` case sets for vertical, dipping, curved, parallel,
+crossing, boundary, and weak/noisy faults, voter variants, and skinning
+metrics. A typical extended report run is:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set geometry \
+  --case-set extended \
   --shape 33,33,33 \
   --variants current_default,no_surface_orientation_smoothing,final_norm_smoothing_1,voter_thin_normal \
-  --output-dir outputs/3d/synthetic_quality/geometry_001 \
+  --output-dir outputs/3d/synthetic_quality/extended_001 \
+  --pretty \
   --save-figures \
   --write-markdown-index
 ```
