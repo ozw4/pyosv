@@ -694,6 +694,110 @@ def test_report_synthetic_quality_accepts_input_mode_both(tmp_path: Path) -> Non
     assert variant["pipelines"]["scanner"]["pyosv"]["fvt"]["finite_fraction"] == 1.0
 
 
+def test_input_mode_both_metrics_json_uses_canonical_pipeline_schema(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--variants",
+        "current_default",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    case = metrics["cases"][0]
+    assert set(case["pipelines"]) == {"oracle", "scanner"}
+    for pipeline_name in ("oracle", "scanner"):
+        pipeline = case["pipelines"][pipeline_name]
+        assert set(pipeline) == {"variants", "variant_comparison"}
+        assert "current_default" in pipeline["variants"]
+        variant = pipeline["variants"]["current_default"]
+        assert "pyosv" in variant
+        assert "quality" in variant
+        if pipeline_name == "scanner":
+            assert "scanner_quality" in variant
+
+
+def test_input_mode_oracle_summary_csv_uses_pipeline_oracle(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "oracle",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["pipeline"] == "oracle"
+    assert {row["pipeline"] for row in rows} == {"oracle"}
+
+
+def test_input_mode_scanner_summary_csv_uses_pipeline_scanner(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["pipeline"] == "scanner"
+    assert {row["pipeline"] for row in rows} == {"scanner"}
+
+
+def test_input_mode_both_summary_csv_has_oracle_and_scanner_rows(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--variants",
+        "current_default",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert "pipeline" in rows[0]
+    assert len(rows) == 2
+    assert {(row["case_id"], row["pipeline"], row["variant"]) for row in rows} == {
+        ("single_vertical_plane", "oracle", "current_default"),
+        ("single_vertical_plane", "scanner", "current_default"),
+    }
+
+
 def test_report_synthetic_quality_scanner_mode_records_scanner_config(
     tmp_path: Path,
 ) -> None:

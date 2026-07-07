@@ -44,7 +44,8 @@ errors and should not be expected to match oracle-mode scores.
 Both mode runs both paths for each `(case_id, variant)` using the same truth
 geometry. It is a diagnostic comparison mode, not a new pass/fail contract.
 Top-level `pyosv` and `quality` alias the oracle pipeline in both mode, while
-the scanner results live under `pipelines.scanner`.
+the canonical pipeline reports live under
+`cases[].pipelines.<pipeline>.variants.<variant>`.
 
 ## Current Scope
 
@@ -345,17 +346,20 @@ for r in rows:
 PY
 ```
 
-The current `summary.csv` format writes one row per `(case_id, variant)`.
-Pipeline-specific scanner information is represented by `input_mode`,
-`scanner_backend`, `scanner_thin_mode`, and `scanner_*` quality columns rather
-than a separate `pipeline` column. In `--input-mode both`, use the summary row
-for the primary comparison, then inspect the split `oracle/` and `scanner/`
-artifact directories when visual or volume-level drill-down is needed.
+The current `summary.csv` format writes one row per
+`(case_id, pipeline, variant)`. The `pipeline` column is always present:
+`oracle` for oracle-only runs, `scanner` for scanner-only runs, and both values
+for `--input-mode both`. Pipeline-specific scanner information is represented by
+`scanner_backend`, `scanner_thin_mode`, and `scanner_*` quality columns. In
+`--input-mode both`, compare the `oracle` and `scanner` rows, then inspect the
+split `oracle/` and `scanner/` artifact directories when visual or volume-level
+drill-down is needed.
 
 Important summary columns are:
 
 ```text
 case_id
+pipeline
 input_mode
 variant
 fvt_buffered_f1_r2
@@ -416,9 +420,9 @@ fault geometry rather than a misleading aggregate score.
 `metrics.json` is for detailed drill-down and scripted diagnostics. Prefer
 `summary.csv` for routine review, especially for `--input-mode both`. If a
 script hard-codes internal `metrics.json` paths, first check `format_version`
-and the documented schema section below. The canonical internal schema for
-more stable direct JSON access is expected after the follow-up schema
-stabilization work.
+and the documented schema section below. The canonical direct JSON access path
+for pipeline metrics is
+`cases[].pipelines.<pipeline>.variants.<variant>`.
 
 `--input-mode` controls the report input path:
 
@@ -571,16 +575,35 @@ Each case stores per-variant metrics under `cases[].variants`. For backward
 compatibility, `current_default` is also duplicated at the case top level when
 that variant is present. `cases[].variant_comparison` stores per-variant deltas
 against `current_default` when that baseline variant is present; when it is not
-present, `baseline_variant` is `null` and the comparison map is empty.
-With `--input-mode scanner` or `--input-mode both`, each variant also stores
-`pipelines`. Scanner variants include `scanner.input`, raw scanner `ft`/`pt`/`tt`,
-and used scanner `fet`/`fpt`/`ftt` summaries; the corresponding volume artifacts
-are named `ft_used`, `pt_used`, and `tt_used`. In scanner-only mode, top-level
-`pyosv` and `quality` alias the scanner pipeline; in both mode they alias the
-oracle pipeline. Scanner pipeline reports also include `scanner_quality`, which
-measures scanner outputs before voting/skinning: raw scanner `ft` top-truth-count
-overlap and surface distance, raw and used scanner `pt`/`tt` orientation errors,
-and scanner-input association with the truth surface. These metrics are separate
+present, `baseline_variant` is `null` and the comparison map is empty. In
+`--input-mode both`, the top-level comparison is a `pipelines` map to avoid an
+ambiguous active-pipeline comparison.
+
+The canonical pipeline schema is:
+
+```text
+cases[].pipelines.oracle.variants.<variant>.pyosv
+cases[].pipelines.oracle.variants.<variant>.quality
+cases[].pipelines.oracle.variant_comparison
+cases[].pipelines.scanner.variants.<variant>.pyosv
+cases[].pipelines.scanner.variants.<variant>.quality
+cases[].pipelines.scanner.variants.<variant>.scanner_quality
+cases[].pipelines.scanner.variant_comparison
+```
+
+Oracle-only runs include only `pipelines.oracle`; scanner-only runs include only
+`pipelines.scanner`; `--input-mode both` includes both. Existing
+`cases[].variants` entries remain as compatibility aliases. In scanner-only
+mode, top-level `pyosv` and `quality` alias the scanner pipeline; in both mode
+they alias the oracle pipeline. Scanner pipeline reports include
+`scanner.input`, raw scanner `ft`/`pt`/`tt`, and used scanner
+`fet`/`fpt`/`ftt` summaries; the corresponding volume artifacts are named
+`ft_used`, `pt_used`, and `tt_used`.
+
+Scanner pipeline reports also include `scanner_quality`, which measures scanner
+outputs before voting/skinning: raw scanner `ft` top-truth-count overlap and
+surface distance, raw and used scanner `pt`/`tt` orientation errors, and
+scanner-input association with the truth surface. These metrics are separate
 from downstream `quality.*` so scanner failures can be distinguished from voter,
 thinning, or skinning failures. The input association uses
 `abs(truth_distance) <= --truth-surface-half-width` as the near-surface mask and
@@ -644,9 +667,9 @@ with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
 `--small-skin-size`.
 
 The `geometry` and `extended` case sets keep the same top-level JSON contract
-and write one `cases[]` entry plus one `summary.csv` row per
-`(case_id, variant)`. Optional volumes and figures are split by case directory,
-for example `single_dipping_plane/`, `curved_surface/`,
+and write one `cases[]` entry per case plus one `summary.csv` row per
+`(case_id, pipeline, variant)`. Optional volumes and figures are split by case
+directory, for example `single_dipping_plane/`, `curved_surface/`,
 `parallel_planes/`, `crossing_planes/`, `boundary_plane/`, and
 `weak_noisy_plane/`.
 
@@ -661,15 +684,16 @@ voter_thin_normal
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
-`summary.csv` writes one row per `(case_id, variant)` and includes the variant
-column, baseline variant, input mode, buffered F1, candidate-to-truth p95
-distance, fvt median orientation error columns, `fv_edge_false_positive_fraction`,
-`fvt_edge_false_positive_fraction`, skin topology and truth metric columns, and
-fvt and skin delta columns against the baseline. Scanner columns are always in
-the header; they are populated for `--input-mode scanner` and `--input-mode both`
-and empty for oracle-only rows:
+`summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
+pipeline column, variant column, baseline variant, input mode, buffered F1,
+candidate-to-truth p95 distance, fvt median orientation error columns,
+`fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`, skin
+topology and truth metric columns, and fvt and skin delta columns against the
+baseline. Scanner columns are always in the header; they are populated for
+scanner pipeline rows and empty for oracle pipeline rows:
 
 ```text
+pipeline
 input_mode
 scanner_backend
 scanner_thin_mode
