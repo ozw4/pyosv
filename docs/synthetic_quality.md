@@ -333,7 +333,14 @@ With `--input-mode scanner` or `--input-mode both`, each variant also stores
 `pipelines`. Scanner variants include `scanner.input`, raw scanner `ft`/`pt`/`tt`,
 and scanner-thinned `fet`/`fpt`/`ftt` summaries. In scanner-only mode, top-level
 `pyosv` and `quality` alias the scanner pipeline; in both mode they alias the
-oracle pipeline.
+oracle pipeline. Scanner pipeline reports also include `scanner_quality`, which
+measures scanner outputs before voting/skinning: raw scanner `ft` top-truth-count
+overlap and surface distance, raw and used scanner `pt`/`tt` orientation errors,
+and scanner-input association with the truth surface. The input association uses
+`abs(truth_distance) <= --truth-surface-half-width` as the near-surface mask and
+`abs(truth_distance) >= max(3.0, --truth-surface-half-width + 2.0)` as the far
+mask; positive contrast means the low-on-fault scanner input is lower near truth
+than far from truth.
 `quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
 the truth target. `quality.*.surface_distance` uses the thin truth surface mask
 defined by
@@ -409,11 +416,25 @@ voter_thin_normal
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, variant)` and includes the variant
-column, baseline variant, buffered F1, candidate-to-truth p95 distance, fvt
-median orientation error columns, `fv_edge_false_positive_fraction`,
+column, baseline variant, input mode, buffered F1, candidate-to-truth p95
+distance, fvt median orientation error columns, `fv_edge_false_positive_fraction`,
 `fvt_edge_false_positive_fraction`, skin topology and truth metric columns, and
-fvt and skin delta columns against the baseline. The skin columns are written in
-deterministic order:
+fvt and skin delta columns against the baseline. Scanner columns are always in
+the header; they are populated for `--input-mode scanner` and `--input-mode both`
+and empty for oracle-only rows:
+
+```text
+input_mode
+scanner_backend
+scanner_thin_mode
+scanner_ft_buffered_f1_r2
+scanner_ft_distance_p95
+scanner_strike_median_error
+scanner_dip_median_error
+scanner_input_contrast
+```
+
+The skin columns are written in deterministic order:
 
 ```text
 skinning_enabled

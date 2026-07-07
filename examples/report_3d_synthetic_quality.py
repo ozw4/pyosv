@@ -819,6 +819,11 @@ def _run_scanner_pipeline(
         variant=variant,
     )
     report["scanner"] = scanner_report
+    report["scanner_quality"] = _scanner_truth_quality(
+        case,
+        scanner_volumes=scanner_volumes,
+        truth_metric_config=truth_metric_config,
+    )
     volumes.update(scanner_volumes)
     return report, volumes, skins_output
 
@@ -881,6 +886,114 @@ def _scanner_attributes_from_case(
         "scanner_ftt": tt_used,
     }
     return scanner_report, scanner_volumes
+
+
+def _scanner_truth_quality(
+    case: Synthetic3DCase,
+    *,
+    scanner_volumes: Mapping[str, np.ndarray],
+    truth_metric_config: SyntheticTruthMetricConfig,
+) -> dict[str, Any]:
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width,
+        "truth_surface_half_width",
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+    far_from_truth_mask = np.abs(case.truth_distance) >= np.float32(
+        max(3.0, truth_surface_half_width + 2.0)
+    )
+
+    raw_ft_top_truth_count = top_truth_count_mask(
+        scanner_volumes["scanner_ft"],
+        truth_surface_mask,
+    )
+    used_ft_top_truth_count = top_truth_count_mask(
+        scanner_volumes["scanner_fet"],
+        truth_surface_mask,
+    )
+
+    return {
+        "ft_top_truth_count": _top_truth_count_quality(
+            raw_ft_top_truth_count,
+            truth_fault_mask=truth_fault_mask,
+            truth_surface_mask=truth_surface_mask,
+            buffer_radius=buffer_radius,
+        ),
+        "orientation_error": {
+            "raw_scan_top_truth_count": masked_orientation_error(
+                scanner_volumes["scanner_pt"],
+                scanner_volumes["scanner_tt"],
+                case.truth_strike,
+                case.truth_dip,
+                raw_ft_top_truth_count,
+            ),
+            "used_attributes_top_truth_count": masked_orientation_error(
+                scanner_volumes["scanner_fpt"],
+                scanner_volumes["scanner_ftt"],
+                case.truth_strike,
+                case.truth_dip,
+                used_ft_top_truth_count,
+            ),
+        },
+        "input_association": _scanner_input_association(
+            scanner_volumes["scanner_input"],
+            truth_surface_mask=truth_surface_mask,
+            far_from_truth_mask=far_from_truth_mask,
+        ),
+    }
+
+
+def _top_truth_count_quality(
+    candidate_mask: np.ndarray,
+    *,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, Any]:
+    return {
+        "buffered_overlap_radius2": buffered_surface_overlap(
+            candidate_mask,
+            truth_fault_mask,
+            radius=buffer_radius,
+        ),
+        "surface_distance": surface_distance_metrics(
+            candidate_mask,
+            truth_surface_mask,
+        ),
+    }
+
+
+def _scanner_input_association(
+    scanner_input: np.ndarray,
+    *,
+    truth_surface_mask: np.ndarray,
+    far_from_truth_mask: np.ndarray,
+) -> dict[str, float]:
+    input_array = np.asarray(scanner_input, dtype=np.float64)
+    truth_mean = _masked_mean(input_array, truth_surface_mask)
+    far_mean = _masked_mean(input_array, far_from_truth_mask)
+    return {
+        "truth_surface_mean": truth_mean,
+        "far_from_truth_mean": far_mean,
+        "contrast": float(far_mean - truth_mean),
+    }
+
+
+def _masked_mean(values: np.ndarray, mask: np.ndarray) -> float:
+    sample_mask = np.asarray(mask, dtype=bool)
+    if values.shape != sample_mask.shape:
+        raise ValueError(f"array shapes must match, got {values.shape} and {sample_mask.shape}")
+    if not np.any(sample_mask):
+        return 0.0
+    samples = values[sample_mask]
+    if not np.all(np.isfinite(samples)):
+        raise ValueError("masked values must contain only finite values")
+    return float(np.mean(samples))
 
 
 def _run_voting_from_attributes(
@@ -1285,6 +1398,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "case_id",
                 "variant",
                 "baseline_variant",
+                "input_mode",
+                "scanner_backend",
+                "scanner_thin_mode",
                 "shape_n3",
                 "shape_n2",
                 "shape_n1",
@@ -1321,6 +1437,11 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_distance_hausdorff_p95",
                 "skin_strike_median_error",
                 "skin_dip_median_error",
+                "scanner_ft_buffered_f1_r2",
+                "scanner_ft_distance_p95",
+                "scanner_strike_median_error",
+                "scanner_dip_median_error",
+                "scanner_input_contrast",
                 "fvt_buffered_f1_delta_vs_baseline",
                 "fvt_distance_p95_delta_vs_baseline",
                 "fvt_strike_median_error_delta_vs_baseline",
@@ -1333,6 +1454,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
             ),
         )
         writer.writeheader()
+        input_mode = str(report.get("config", {}).get("input_mode", "oracle"))
         for case in report["cases"]:
             n3, n2, n1 = case["shape"]
             variant_comparison = case["variant_comparison"]
@@ -1355,11 +1477,16 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 comparison_row = _summary_csv_comparison_row(
                     comparison_variants.get(variant, {}),
                 )
+                scanner_row = _summary_csv_scanner_row(
+                    variant_report=variant_report,
+                    input_mode=input_mode,
+                )
                 writer.writerow(
                     {
                         "case_id": case["case_id"],
                         "variant": variant,
                         "baseline_variant": baseline_variant,
+                        "input_mode": input_mode,
                         "shape_n3": n3,
                         "shape_n2": n2,
                         "shape_n1": n1,
@@ -1388,10 +1515,50 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         ],
                         "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
                         **skin_summary,
+                        **scanner_row,
                         **comparison_row,
                     }
                 )
     return output_path
+
+
+def _summary_csv_scanner_row(
+    *,
+    variant_report: Mapping[str, Any],
+    input_mode: str,
+) -> dict[str, str | float | None]:
+    empty_row: dict[str, str | float | None] = {
+        "scanner_backend": None,
+        "scanner_thin_mode": None,
+        "scanner_ft_buffered_f1_r2": None,
+        "scanner_ft_distance_p95": None,
+        "scanner_strike_median_error": None,
+        "scanner_dip_median_error": None,
+        "scanner_input_contrast": None,
+    }
+    if input_mode == "oracle":
+        return empty_row
+
+    scanner_report = variant_report
+    if "pipelines" in variant_report:
+        scanner_report = variant_report["pipelines"].get("scanner", {})
+    scanner = scanner_report.get("scanner")
+    scanner_quality = scanner_report.get("scanner_quality")
+    if not scanner or not scanner_quality:
+        return empty_row
+
+    ft_quality = scanner_quality["ft_top_truth_count"]
+    orientation_error = scanner_quality["orientation_error"]["raw_scan_top_truth_count"]
+    input_association = scanner_quality["input_association"]
+    return {
+        "scanner_backend": scanner["config"]["backend"],
+        "scanner_thin_mode": scanner["config"]["scanner_thin_mode"],
+        "scanner_ft_buffered_f1_r2": ft_quality["buffered_overlap_radius2"]["buffered_f1"],
+        "scanner_ft_distance_p95": ft_quality["surface_distance"]["candidate_to_truth_p95"],
+        "scanner_strike_median_error": orientation_error["strike_median"],
+        "scanner_dip_median_error": orientation_error["dip_median"],
+        "scanner_input_contrast": input_association["contrast"],
+    }
 
 
 def _summary_csv_skin_row(
