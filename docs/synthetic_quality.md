@@ -21,12 +21,17 @@ The controlled synthetic API includes:
 - `Synthetic3DCase`
 - `generate_single_plane_case`
 - `generate_curved_surface_case`
+- `make_boundary_plane_case`
+- `make_crossing_planes_case`
 - `make_single_dipping_plane_case`
 - `make_single_vertical_plane_case`
 - `make_curved_surface_case`
+- `make_parallel_planes_case`
+- `make_weak_noisy_plane_case`
 - `ft` / `pt` / `tt` oracle attributes
 - top-k / truth-count masks
 - buffered surface overlap
+- edge false-positive ratio
 - surface distance metrics
 - masked orientation error
 - skin metrics, including skin topology metrics
@@ -51,7 +56,7 @@ The current report CLI includes these case sets:
 - `geometry`: the PR3 geometry set containing `single_vertical_plane`,
   `single_dipping_plane`, and `curved_surface`.
 
-The individual cases are:
+The public factory cases are:
 
 - `single_vertical_plane`: a planar fault centered near constant `x2`, with
   constant strike and dip truth orientation.
@@ -59,15 +64,31 @@ The individual cases are:
   with constant truth orientation and nonzero dip geometry.
 - `curved_surface`: an analytic surface whose `x1` position varies with `x2`
   and `x3`; truth strike and dip vary spatially with the local normal.
+- `boundary_plane`: a vertical plane near the `i2=0` face for edge-effect
+  diagnostics.
+- `parallel_planes`: two nearby vertical parallel planes with separate fault
+  IDs and union truth masks.
+- `crossing_planes`: two intersecting planar faults whose truth ID and
+  orientation follow the nearest component, with smaller fault ID used for
+  exact distance ties.
+- `weak_noisy_plane`: a deterministic dipping plane with weakened noisy
+  `ft_oracle` likelihood and unchanged truth orientation.
+
+The report CLI currently exposes the `minimal` and `geometry` case sets above.
+The boundary, parallel, crossing, and weak/noisy factories are available for
+direct Python use and tests, but are not report CLI case-set entries yet.
 
 The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for
-vertical and dipping single-plane cases and the analytic curved surface: they
-run those controlled attributes through `OptimalSurfaceVoter`, apply thinning,
-and check truth-quality metrics.
+vertical and dipping single-plane cases and the analytic curved surface. They
+also cover the boundary, parallel, crossing, and weak/noisy generator contracts,
+and the edge false-positive metric for boundary-local candidate artifacts.
+Pipeline tests run controlled attributes through `OptimalSurfaceVoter`, apply
+thinning, and check truth-quality metrics.
 
 The current scope does not include:
 
-- extended cases: crossing, boundary, weak noisy
+- report CLI wiring for the extended boundary, parallel, crossing, and
+  weak/noisy cases
 - synthetic seismic generation
 - scanner-inclusive synthetic path
 - FaultSeg3D loader
@@ -95,6 +116,12 @@ case = make_single_vertical_plane_case(shape=(33, 33, 33))
 mask = top_truth_count_mask(case.ft_oracle, case.truth_fault_mask)
 metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
 ```
+
+`edge_false_positive_ratio(candidate_mask, truth_mask, edge_margin=...,
+truth_buffer_radius=...)` reports boundary-local candidate counts and false
+positive fractions outside a buffered truth mask. It is intended for synthetic
+truth-quality diagnostics such as the `boundary_plane` case, not F3 reference
+metrics.
 
 ## Report CLI
 
