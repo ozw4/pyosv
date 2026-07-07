@@ -94,6 +94,7 @@ VARIANT_NAMES = (
 )
 DEFAULT_VARIANTS = ("current_default",)
 BASELINE_VARIANT = "current_default"
+DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 VARIANT_COMPARISON_METRICS = (
     (
         "fvt_buffered_f1_r2_delta_vs_current",
@@ -421,6 +422,7 @@ CASE_SETS = {
     "geometry": GEOMETRY_CASES,
     "extended": EXTENDED_CASES,
 }
+CASE_IDS = tuple(definition.case_id for definition in EXTENDED_CASES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -576,6 +578,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Smoothing sigma used by reference-like thinning.",
     )
     parser.add_argument(
+        "--thinning-diagnostics",
+        "--include-thinning-diagnostic",
+        dest="include_thinning_diagnostic",
+        action="store_true",
+        help="Add reference-vs-normal voter thinning diagnostics to metrics.json.",
+    )
+    parser.add_argument(
+        "--thinning-diagnostic-cases",
+        type=parse_thinning_diagnostic_cases,
+        default=DEFAULT_THINNING_DIAGNOSTIC_CASES,
+        help="Comma-separated case IDs for thinning diagnostics.",
+    )
+    parser.add_argument(
         "--truth-surface-half-width",
         type=float,
         default=0.5,
@@ -687,6 +702,16 @@ def parse_variants(text: str) -> tuple[str, ...]:
     return variants
 
 
+def parse_thinning_diagnostic_cases(text: str) -> tuple[str, ...]:
+    """Parse a comma-separated thinning diagnostic case list."""
+
+    case_ids = tuple(part.strip() for part in text.split(",") if part.strip())
+    try:
+        return _validate_thinning_diagnostic_cases(case_ids)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
 def parse_optional_nonnegative_int(text: str) -> int | None:
     """Parse a non-negative integer or a textual None value."""
 
@@ -713,12 +738,15 @@ def run_case(
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     variant: str = "current_default",
     input_mode: str = "oracle",
+    include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     case = case_definition.factory(shape)
     if case.case_id != case_definition.case_id:
         raise ValueError(
             f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
         )
+    diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
     variant_report, volumes, _ = _run_case_variant(
         case,
         voting_config=voting_config,
@@ -727,6 +755,9 @@ def run_case(
         skinning_config=skinning_config,
         variant=variant,
         input_mode=input_mode,
+        include_thinning_diagnostic=(
+            include_thinning_diagnostic and case.case_id in diagnostic_case_ids
+        ),
     )
     report = {
         "case_id": case.case_id,
@@ -753,6 +784,7 @@ def _run_case_variant(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
     input_mode: str,
+    include_thinning_diagnostic: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     if variant not in VARIANT_NAMES:
         raise ValueError(f"unknown variant: {variant}")
@@ -765,6 +797,7 @@ def _run_case_variant(
             truth_metric_config=truth_metric_config,
             skinning_config=skinning_config,
             variant=variant,
+            include_thinning_diagnostic=include_thinning_diagnostic,
         )
 
     pipelines = {}
@@ -776,6 +809,7 @@ def _run_case_variant(
             truth_metric_config=truth_metric_config,
             skinning_config=skinning_config,
             variant=variant,
+            include_thinning_diagnostic=include_thinning_diagnostic,
         )
         pipelines["oracle"] = oracle_report
         pipeline_outputs["oracle"] = (oracle_report, oracle_volumes, oracle_skins)
@@ -787,6 +821,7 @@ def _run_case_variant(
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variant=variant,
+        include_thinning_diagnostic=include_thinning_diagnostic,
     )
     pipelines["scanner"] = scanner_report
     pipeline_outputs["scanner"] = (scanner_report, scanner_volumes, scanner_skins)
@@ -879,6 +914,7 @@ def _run_oracle_pipeline(
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
     variant: str,
+    include_thinning_diagnostic: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     return _run_voting_from_attributes(
         case,
@@ -889,6 +925,7 @@ def _run_oracle_pipeline(
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variant=variant,
+        include_thinning_diagnostic=include_thinning_diagnostic,
     )
 
 
@@ -900,6 +937,7 @@ def _run_scanner_pipeline(
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
     variant: str,
+    include_thinning_diagnostic: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     scanner_report, scanner_volumes = _scanner_attributes_from_case(case, scanner_config)
     report, volumes, skins_output = _run_voting_from_attributes(
@@ -911,6 +949,7 @@ def _run_scanner_pipeline(
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variant=variant,
+        include_thinning_diagnostic=include_thinning_diagnostic,
     )
     report["scanner"] = scanner_report
     report["scanner_quality"] = _scanner_truth_quality(
@@ -1062,6 +1101,178 @@ def _top_truth_count_quality(
     }
 
 
+def _run_voter_thinning_diagnostic(
+    *,
+    case: Synthetic3DCase,
+    voter: OptimalSurfaceVoter,
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    reference_sigma: float,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    skinning_config: SyntheticSkinningConfig | None,
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    del skinning_config
+
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width,
+        "truth_surface_half_width",
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+
+    fvt_reference = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="reference",
+        reference_sigma=reference_sigma,
+    )
+    fvt_normal = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="normal",
+        reference_sigma=reference_sigma,
+    )
+    reference_report = _thinning_mode_diagnostic_report(
+        fvt_reference,
+        vp=vp,
+        vt=vt,
+        case=case,
+        truth_fault_mask=truth_fault_mask,
+        truth_surface_mask=truth_surface_mask,
+        buffer_radius=buffer_radius,
+    )
+    normal_report = _thinning_mode_diagnostic_report(
+        fvt_normal,
+        vp=vp,
+        vt=vt,
+        case=case,
+        truth_fault_mask=truth_fault_mask,
+        truth_surface_mask=truth_surface_mask,
+        buffer_radius=buffer_radius,
+    )
+    report = {
+        "reference": reference_report,
+        "normal": normal_report,
+        "delta": {
+            "normal_minus_reference": _thinning_quality_delta(
+                normal_report["quality"]["fvt_top_truth_count"],
+                reference_report["quality"]["fvt_top_truth_count"],
+            )
+        },
+        "keep_mask": _thinning_keep_mask_comparison(
+            fvt_reference > 0.0,
+            fvt_normal > 0.0,
+            truth_fault_mask=truth_fault_mask,
+            buffer_radius=buffer_radius,
+        ),
+    }
+    volumes = {
+        "fvt_reference_thinning_diagnostic": fvt_reference,
+        "fvt_normal_thinning_diagnostic": fvt_normal,
+    }
+    return report, volumes
+
+
+def _thinning_mode_diagnostic_report(
+    fvt: np.ndarray,
+    *,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    case: Synthetic3DCase,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, Any]:
+    fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
+    quality = _top_truth_count_quality(
+        fvt_top_truth_count,
+        truth_fault_mask=truth_fault_mask,
+        truth_surface_mask=truth_surface_mask,
+        buffer_radius=buffer_radius,
+    )
+    quality["orientation_error"] = masked_orientation_error(
+        vp,
+        vt,
+        case.truth_strike,
+        case.truth_dip,
+        fvt_top_truth_count,
+    )
+    return {
+        "pyosv": {"fvt": _array_summary(fvt)},
+        "quality": {"fvt_top_truth_count": quality},
+    }
+
+
+def _thinning_quality_delta(
+    normal_quality: Mapping[str, Any],
+    reference_quality: Mapping[str, Any],
+) -> dict[str, float]:
+    return {
+        "fvt_buffered_f1_r2": float(
+            normal_quality["buffered_overlap_radius2"]["buffered_f1"]
+            - reference_quality["buffered_overlap_radius2"]["buffered_f1"]
+        ),
+        "fvt_candidate_to_truth_p95": float(
+            normal_quality["surface_distance"]["candidate_to_truth_p95"]
+            - reference_quality["surface_distance"]["candidate_to_truth_p95"]
+        ),
+        "fvt_strike_median_error": float(
+            normal_quality["orientation_error"]["strike_median"]
+            - reference_quality["orientation_error"]["strike_median"]
+        ),
+        "fvt_dip_median_error": float(
+            normal_quality["orientation_error"]["dip_median"]
+            - reference_quality["orientation_error"]["dip_median"]
+        ),
+    }
+
+
+def _thinning_keep_mask_comparison(
+    keep_reference: np.ndarray,
+    keep_normal: np.ndarray,
+    *,
+    truth_fault_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, Any]:
+    reference = np.asarray(keep_reference, dtype=bool)
+    normal = np.asarray(keep_normal, dtype=bool)
+    if reference.shape != normal.shape:
+        raise ValueError(f"keep mask shapes must match, got {reference.shape} and {normal.shape}")
+
+    intersection = reference & normal
+    union = reference | normal
+    reference_only = reference & ~normal
+    normal_only = normal & ~reference
+    intersection_count = int(np.count_nonzero(intersection))
+    union_count = int(np.count_nonzero(union))
+    return {
+        "reference_count": int(np.count_nonzero(reference)),
+        "normal_count": int(np.count_nonzero(normal)),
+        "intersection_count": intersection_count,
+        "union_count": union_count,
+        "reference_only_count": int(np.count_nonzero(reference_only)),
+        "normal_only_count": int(np.count_nonzero(normal_only)),
+        "jaccard": float(intersection_count / union_count) if union_count else 1.0,
+        "reference_only_buffered_overlap_radius2": buffered_surface_overlap(
+            reference_only,
+            truth_fault_mask,
+            radius=buffer_radius,
+        ),
+        "normal_only_buffered_overlap_radius2": buffered_surface_overlap(
+            normal_only,
+            truth_fault_mask,
+            radius=buffer_radius,
+        ),
+    }
+
+
 def _scanner_input_association(
     scanner_input: np.ndarray,
     *,
@@ -1100,6 +1311,7 @@ def _run_voting_from_attributes(
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
     variant: str,
+    include_thinning_diagnostic: bool = False,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
@@ -1170,6 +1382,13 @@ def _run_voting_from_attributes(
                     fv_top_truth_count,
                     truth_surface_mask,
                 ),
+                "orientation_error": masked_orientation_error(
+                    vp,
+                    vt,
+                    case.truth_strike,
+                    case.truth_dip,
+                    fv_top_truth_count,
+                ),
             },
             "fvt_top_truth_count": {
                 "buffered_overlap_radius2": buffered_surface_overlap(
@@ -1192,6 +1411,19 @@ def _run_voting_from_attributes(
             "edge_false_positive": edge_false_positive_metrics,
         },
     }
+    diagnostic_volumes: dict[str, np.ndarray] = {}
+    if include_thinning_diagnostic:
+        thinning_diagnostic, diagnostic_volumes = _run_voter_thinning_diagnostic(
+            case=case,
+            voter=voter,
+            fv=fv,
+            vp=vp,
+            vt=vt,
+            reference_sigma=voting_config.reference_thin_sigma,
+            truth_metric_config=truth_metric_config,
+            skinning_config=skinning_config,
+        )
+        report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
         skins = _find_synthetic_skins(
             fvt,
@@ -1244,6 +1476,7 @@ def _run_voting_from_attributes(
         "fvt_py": fvt,
         "skin_mask_py": skin_mask.astype(np.float32),
     }
+    volumes.update(diagnostic_volumes)
     return report, volumes, skins_output
 
 
@@ -1315,6 +1548,8 @@ def build_report(
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
+    include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     report, _, _ = _build_report_and_volumes(
         case_set=case_set,
@@ -1325,6 +1560,8 @@ def build_report(
         variants=variants,
         skinning_config=skinning_config,
         input_mode=input_mode,
+        include_thinning_diagnostic=include_thinning_diagnostic,
+        thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     return report
 
@@ -1339,6 +1576,8 @@ def _build_report_and_volumes(
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
+    include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[
     dict[str, Any],
     dict[str, dict[str, dict[str, np.ndarray]]],
@@ -1347,6 +1586,7 @@ def _build_report_and_volumes(
     valid_shape = validate_shape3(shape)
     valid_variants = _validate_variants(variants)
     valid_input_mode = _validate_input_mode(input_mode)
+    diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
     try:
         case_definitions = CASE_SETS[case_set]
     except KeyError as error:
@@ -1373,6 +1613,9 @@ def _build_report_and_volumes(
                 skinning_config=skinning_config,
                 variant=variant,
                 input_mode=valid_input_mode,
+                include_thinning_diagnostic=(
+                    include_thinning_diagnostic and case.case_id in diagnostic_case_ids
+                ),
             )
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
@@ -1414,6 +1657,8 @@ def _build_report_and_volumes(
     if valid_input_mode != "oracle":
         config["input_mode"] = valid_input_mode
         config["scanner"] = scanner_config.as_report_dict()
+    if include_thinning_diagnostic:
+        config["thinning_diagnostic"] = {"enabled": True}
 
     report = {
         "format_version": FORMAT_VERSION,
@@ -1434,6 +1679,24 @@ def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:
     if duplicates:
         raise ValueError(f"duplicate variant(s): {','.join(sorted(duplicates))}")
     return valid_variants
+
+
+def _validate_thinning_diagnostic_cases(case_ids: Sequence[str]) -> tuple[str, ...]:
+    valid_case_ids = tuple(case_ids)
+    if not valid_case_ids:
+        raise ValueError("thinning_diagnostic_cases must include at least one case ID")
+    unknown = sorted(set(valid_case_ids).difference(CASE_IDS))
+    if unknown:
+        raise ValueError(
+            f"unknown thinning diagnostic case ID(s): {','.join(unknown)}; "
+            f"choices: {','.join(CASE_IDS)}"
+        )
+    duplicates = {case_id for case_id in valid_case_ids if valid_case_ids.count(case_id) > 1}
+    if duplicates:
+        raise ValueError(
+            f"duplicate thinning diagnostic case ID(s): {','.join(sorted(duplicates))}"
+        )
+    return valid_case_ids
 
 
 def _variant_comparison(
@@ -1518,6 +1781,8 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fv_buffered_f1_r2",
                 "fv_distance_p95",
                 "fv_edge_false_positive_fraction",
+                "fv_strike_median_error",
+                "fv_dip_median_error",
                 "fvt_max",
                 "fvt_mean",
                 "fvt_nonzero_fraction",
@@ -1550,6 +1815,18 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_strike_median_error",
                 "scanner_dip_median_error",
                 "scanner_input_contrast",
+                "thinning_diag_reference_fvt_buffered_f1_r2",
+                "thinning_diag_normal_fvt_buffered_f1_r2",
+                "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
+                "thinning_diag_reference_fvt_distance_p95",
+                "thinning_diag_normal_fvt_distance_p95",
+                "thinning_diag_normal_minus_reference_fvt_distance_p95",
+                "thinning_diag_reference_count",
+                "thinning_diag_normal_count",
+                "thinning_diag_intersection_count",
+                "thinning_diag_reference_only_count",
+                "thinning_diag_normal_only_count",
+                "thinning_diag_jaccard",
                 "fvt_buffered_f1_delta_vs_baseline",
                 "fvt_distance_p95_delta_vs_baseline",
                 "fvt_strike_median_error_delta_vs_baseline",
@@ -1590,6 +1867,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         variant_report=variant_report,
                         input_mode=input_mode,
                     )
+                    thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
+                        variant_report.get("thinning_diagnostic"),
+                    )
                     writer.writerow(
                         {
                             "case_id": case["case_id"],
@@ -1612,6 +1892,10 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "fv_edge_false_positive_fraction": edge_false_positive[
                                 "fv_top_truth_count"
                             ]["edge_false_positive_fraction_of_candidates"],
+                            "fv_strike_median_error": fv_quality["orientation_error"][
+                                "strike_median"
+                            ],
+                            "fv_dip_median_error": fv_quality["orientation_error"]["dip_median"],
                             "fvt_max": fvt["max"],
                             "fvt_mean": fvt["mean"],
                             "fvt_nonzero_fraction": fvt["nonzero_fraction"],
@@ -1630,6 +1914,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
                             **skin_summary,
                             **scanner_row,
+                            **thinning_diagnostic_row,
                             **comparison_row,
                         }
                     )
@@ -1672,6 +1957,56 @@ def _summary_csv_scanner_row(
         "scanner_strike_median_error": orientation_error["strike_median"],
         "scanner_dip_median_error": orientation_error["dip_median"],
         "scanner_input_contrast": input_association["contrast"],
+    }
+
+
+def _summary_csv_thinning_diagnostic_row(
+    diagnostic: Mapping[str, Any] | None,
+) -> dict[str, float | int | None]:
+    empty_row: dict[str, float | int | None] = {
+        "thinning_diag_reference_fvt_buffered_f1_r2": None,
+        "thinning_diag_normal_fvt_buffered_f1_r2": None,
+        "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2": None,
+        "thinning_diag_reference_fvt_distance_p95": None,
+        "thinning_diag_normal_fvt_distance_p95": None,
+        "thinning_diag_normal_minus_reference_fvt_distance_p95": None,
+        "thinning_diag_reference_count": None,
+        "thinning_diag_normal_count": None,
+        "thinning_diag_intersection_count": None,
+        "thinning_diag_reference_only_count": None,
+        "thinning_diag_normal_only_count": None,
+        "thinning_diag_jaccard": None,
+    }
+    if diagnostic is None:
+        return empty_row
+
+    reference_quality = diagnostic["reference"]["quality"]["fvt_top_truth_count"]
+    normal_quality = diagnostic["normal"]["quality"]["fvt_top_truth_count"]
+    delta = diagnostic["delta"]["normal_minus_reference"]
+    keep_mask = diagnostic["keep_mask"]
+    return {
+        "thinning_diag_reference_fvt_buffered_f1_r2": reference_quality["buffered_overlap_radius2"][
+            "buffered_f1"
+        ],
+        "thinning_diag_normal_fvt_buffered_f1_r2": normal_quality["buffered_overlap_radius2"][
+            "buffered_f1"
+        ],
+        "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2": delta["fvt_buffered_f1_r2"],
+        "thinning_diag_reference_fvt_distance_p95": reference_quality["surface_distance"][
+            "candidate_to_truth_p95"
+        ],
+        "thinning_diag_normal_fvt_distance_p95": normal_quality["surface_distance"][
+            "candidate_to_truth_p95"
+        ],
+        "thinning_diag_normal_minus_reference_fvt_distance_p95": delta[
+            "fvt_candidate_to_truth_p95"
+        ],
+        "thinning_diag_reference_count": keep_mask["reference_count"],
+        "thinning_diag_normal_count": keep_mask["normal_count"],
+        "thinning_diag_intersection_count": keep_mask["intersection_count"],
+        "thinning_diag_reference_only_count": keep_mask["reference_only_count"],
+        "thinning_diag_normal_only_count": keep_mask["normal_only_count"],
+        "thinning_diag_jaccard": keep_mask["jaccard"],
     }
 
 
@@ -2321,6 +2656,8 @@ def run_example(
     save_volumes: bool = False,
     save_figures: bool = False,
     write_markdown_index: bool = False,
+    include_thinning_diagnostic: bool = False,
+    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     report, volume_outputs, skin_outputs = _build_report_and_volumes(
         case_set=case_set,
@@ -2331,6 +2668,8 @@ def run_example(
         skinning_config=skinning_config,
         variants=variants,
         input_mode=input_mode,
+        include_thinning_diagnostic=include_thinning_diagnostic,
+        thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     write_metrics_json(report, output_dir, pretty=pretty)
     write_summary_csv(report, output_dir)
@@ -2398,6 +2737,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             variants=args.variants,
             input_mode=args.input_mode,
+            include_thinning_diagnostic=args.include_thinning_diagnostic,
+            thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,
             save_volumes=args.save_volumes,
             save_figures=args.save_figures,

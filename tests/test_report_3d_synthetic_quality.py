@@ -135,6 +135,20 @@ EXPECTED_SCANNER_SUMMARY_FIELDS = (
     "scanner_dip_median_error",
     "scanner_input_contrast",
 )
+EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS = (
+    "thinning_diag_reference_fvt_buffered_f1_r2",
+    "thinning_diag_normal_fvt_buffered_f1_r2",
+    "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
+    "thinning_diag_reference_fvt_distance_p95",
+    "thinning_diag_normal_fvt_distance_p95",
+    "thinning_diag_normal_minus_reference_fvt_distance_p95",
+    "thinning_diag_reference_count",
+    "thinning_diag_normal_count",
+    "thinning_diag_intersection_count",
+    "thinning_diag_reference_only_count",
+    "thinning_diag_normal_only_count",
+    "thinning_diag_jaccard",
+)
 
 
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
@@ -177,6 +191,15 @@ def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None
     assert math.isfinite(float(input_association["contrast"]))
 
 
+def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> None:
+    assert "buffered_f1" in quality["buffered_overlap_radius2"]
+    assert "candidate_to_truth_p95" in quality["surface_distance"]
+    orientation = quality["orientation_error"]
+    assert orientation["count"] > 0
+    assert math.isfinite(float(orientation["strike_median"]))
+    assert math.isfinite(float(orientation["dip_median"]))
+
+
 def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     result = _run_script("--help")
 
@@ -195,6 +218,9 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--save-figures" in result.stdout
     assert "--write-markdown-index" in result.stdout
     assert "--voter-thin-mode" in result.stdout
+    assert "--thinning-diagnostics" in result.stdout
+    assert "--include-thinning-diagnostic" in result.stdout
+    assert "--thinning-diagnostic-cases" in result.stdout
     assert "--truth-surface-half-width" in result.stdout
     assert "--buffer-radius" in result.stdout
     assert "--skip-skinning" in result.stdout
@@ -235,10 +261,10 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert set(case["variants"]) == {"current_default"}
     assert case["truth"]["fault_voxel_count"] > case["truth"]["surface_voxel_count"] > 0
     quality = case["quality"]
+    fv_quality = quality["fv_top_truth_count"]
+    _assert_top_truth_quality_has_orientation(fv_quality)
     fvt_quality = quality["fvt_top_truth_count"]
-    assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
-    assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
-    assert "strike_median" in fvt_quality["orientation_error"]
+    _assert_top_truth_quality_has_orientation(fvt_quality)
     skin_quality = quality["skin"]
     assert skin_quality is not None
     assert "buffered_f1" in skin_quality["buffered_overlap_radius2"]
@@ -270,6 +296,8 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fv_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fv_distance_p95"]) >= 0.0
     assert math.isfinite(float(rows[0]["fv_edge_false_positive_fraction"]))
+    assert math.isfinite(float(rows[0]["fv_strike_median_error"]))
+    assert math.isfinite(float(rows[0]["fv_dip_median_error"]))
     assert float(rows[0]["fvt_max"]) > 0.0
     assert float(rows[0]["fvt_nonzero_fraction"]) > 0.0
     assert float(rows[0]["fvt_buffered_f1_r2"]) > 0.0
@@ -319,11 +347,10 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert math.isfinite(fvt["max"])
         assert fvt["max"] > 0.0
 
+        fv_quality = variant["quality"]["fv_top_truth_count"]
+        _assert_top_truth_quality_has_orientation(fv_quality)
         fvt_quality = variant["quality"]["fvt_top_truth_count"]
-        assert "buffered_f1" in fvt_quality["buffered_overlap_radius2"]
-        assert "candidate_to_truth_p95" in fvt_quality["surface_distance"]
-        assert "strike_median" in fvt_quality["orientation_error"]
-        assert "dip_median" in fvt_quality["orientation_error"]
+        _assert_top_truth_quality_has_orientation(fvt_quality)
         skin_quality = variant["quality"]["skin"]
         assert skin_quality is not None
         assert "topology" in skin_quality
@@ -340,6 +367,8 @@ def test_report_3d_synthetic_quality_geometry_case_set_writes_three_case_rows(
         assert math.isfinite(float(row["fvt_buffered_f1_r2"]))
         assert float(row["fvt_buffered_f1_r2"]) >= 0.0
         assert math.isfinite(float(row["fvt_distance_p95"]))
+        assert math.isfinite(float(row["fv_strike_median_error"]))
+        assert math.isfinite(float(row["fv_dip_median_error"]))
         assert math.isfinite(float(row["fvt_strike_median_error"]))
         assert math.isfinite(float(row["fvt_dip_median_error"]))
         _assert_enabled_skin_summary_row(row)
@@ -518,6 +547,215 @@ def test_report_3d_synthetic_quality_diagnostic_variants_pass(tmp_path: Path) ->
     assert [row["fvt_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
     assert [row["skin_buffered_f1_delta_vs_baseline"] for row in rows] == ["", ""]
     assert [row["skin_count_delta_vs_baseline"] for row in rows] == ["", ""]
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_is_opt_in(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert "thinning_diagnostic" not in variant
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_curved_surface(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--thinning-diagnostics",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
+    for case in metrics["cases"]:
+        variant = case["variants"]["current_default"]
+        if case["case_id"] == "curved_surface":
+            assert "thinning_diagnostic" in variant
+            assert "thinning_diagnostic" in case
+        else:
+            assert "thinning_diagnostic" not in variant
+            assert "thinning_diagnostic" not in case
+    curved = next(case for case in metrics["cases"] if case["case_id"] == "curved_surface")
+    diagnostic = curved["variants"]["current_default"]["thinning_diagnostic"]
+
+    assert "reference" in diagnostic
+    assert "normal" in diagnostic
+    for mode in ("reference", "normal"):
+        mode_report = diagnostic[mode]
+        assert "fvt" in mode_report["pyosv"]
+        _assert_top_truth_quality_has_orientation(mode_report["quality"]["fvt_top_truth_count"])
+
+    keep_mask = diagnostic["keep_mask"]
+    for count_key in (
+        "reference_count",
+        "normal_count",
+        "intersection_count",
+        "union_count",
+        "reference_only_count",
+        "normal_only_count",
+    ):
+        assert count_key in keep_mask
+        assert keep_mask[count_key] >= 0
+    assert math.isfinite(float(keep_mask["jaccard"]))
+    assert "reference_only_buffered_overlap_radius2" in keep_mask
+    assert "normal_only_buffered_overlap_radius2" in keep_mask
+
+    delta = diagnostic["delta"]["normal_minus_reference"]
+    for key in (
+        "fvt_buffered_f1_r2",
+        "fvt_candidate_to_truth_p95",
+        "fvt_strike_median_error",
+        "fvt_dip_median_error",
+    ):
+        assert math.isfinite(float(delta[key]))
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_summary_columns(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--thinning-diagnostics",
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+
+    assert rows
+    for field in EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS:
+        assert field in rows[0]
+
+    curved_row = next(row for row in rows if row["case_id"] == "curved_surface")
+    for field in EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS:
+        assert curved_row[field] != ""
+    assert math.isfinite(float(curved_row["thinning_diag_jaccard"]))
+
+    non_diagnostic_rows = [row for row in rows if row["case_id"] != "curved_surface"]
+    assert non_diagnostic_rows
+    for row in non_diagnostic_rows:
+        for field in EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS:
+            assert row[field] == ""
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_explicit_cases(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--thinning-diagnostics",
+        "--thinning-diagnostic-cases",
+        "single_dipping_plane,curved_surface",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    diagnostic_cases = {
+        case["case_id"]
+        for case in metrics["cases"]
+        if "thinning_diagnostic" in case["variants"]["current_default"]
+    }
+    assert diagnostic_cases == {"single_dipping_plane", "curved_surface"}
+
+
+def test_report_3d_synthetic_quality_unknown_thinning_diagnostic_case_fails(
+    tmp_path: Path,
+) -> None:
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(tmp_path / "synthetic_quality"),
+        "--thinning-diagnostics",
+        "--thinning-diagnostic-cases",
+        "unknown_case",
+    )
+
+    assert result.returncode != 0
+    assert "unknown thinning diagnostic case ID" in result.stderr
+    assert "unknown_case" in result.stderr
+
+
+def test_report_3d_synthetic_quality_thinning_diagnostic_input_mode_both(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+        "--input-mode",
+        "both",
+        "--scanner-backend",
+        "reference-like",
+        "--scanner-thin-mode",
+        "reference",
+        "--variants",
+        "current_default",
+        "--thinning-diagnostics",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    curved = next(case for case in metrics["cases"] if case["case_id"] == "curved_surface")
+    for pipeline in ("oracle", "scanner"):
+        variant = curved["pipelines"][pipeline]["variants"]["current_default"]
+        assert "thinning_diagnostic" in variant
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    curved_rows = [row for row in rows if row["case_id"] == "curved_surface"]
+    assert {(row["pipeline"], row["variant"]) for row in curved_rows} == {
+        ("oracle", "current_default"),
+        ("scanner", "current_default"),
+    }
+    for row in curved_rows:
+        assert row["thinning_diag_reference_count"] != ""
 
 
 def test_report_3d_synthetic_quality_unknown_variant_fails(tmp_path: Path) -> None:
@@ -799,6 +1037,9 @@ def test_input_mode_both_summary_csv_has_oracle_and_scanner_rows(
         ("single_vertical_plane", "oracle", "current_default"),
         ("single_vertical_plane", "scanner", "current_default"),
     }
+    for row in rows:
+        assert math.isfinite(float(row["fv_strike_median_error"]))
+        assert math.isfinite(float(row["fv_dip_median_error"]))
 
 
 def test_report_synthetic_quality_scanner_mode_records_scanner_config(
@@ -1020,9 +1261,11 @@ def test_report_scanner_mode_minimal_case_meets_loose_smoke_thresholds(
     variant = metrics["cases"][0]["variants"]["current_default"]
     scanner_quality = variant["scanner_quality"]
     scanner_ft_overlap = scanner_quality["ft_top_truth_count"]["buffered_overlap_radius2"]
+    fv_quality = variant["quality"]["fv_top_truth_count"]
     fvt_overlap = variant["quality"]["fvt_top_truth_count"]["buffered_overlap_radius2"]
     input_association = scanner_quality["input_association"]
 
+    _assert_top_truth_quality_has_orientation(fv_quality)
     assert scanner_ft_overlap["buffered_f1"] >= 0.20
     assert fvt_overlap["buffered_f1"] >= 0.20
     assert input_association["contrast"] > 0.0
@@ -1056,12 +1299,16 @@ def test_report_input_mode_both_keeps_oracle_and_scanner_metrics_separate(
     assert "scanner_quality" not in variant
     assert "scanner_quality" in scanner_pipeline
 
+    oracle_fv = oracle_pipeline["quality"]["fv_top_truth_count"]
+    scanner_fv = scanner_pipeline["quality"]["fv_top_truth_count"]
     oracle_fvt = oracle_pipeline["quality"]["fvt_top_truth_count"]
     scanner_fvt = scanner_pipeline["quality"]["fvt_top_truth_count"]
     scanner_ft = scanner_pipeline["scanner_quality"]["ft_top_truth_count"]
     for quality in (oracle_fvt, scanner_fvt, scanner_ft):
         assert math.isfinite(float(quality["buffered_overlap_radius2"]["buffered_f1"]))
         assert math.isfinite(float(quality["surface_distance"]["candidate_to_truth_p95"]))
+    for quality in (oracle_fv, scanner_fv):
+        _assert_top_truth_quality_has_orientation(quality)
 
     scanner_input = scanner_pipeline["scanner_quality"]["input_association"]
     assert math.isfinite(float(scanner_input["contrast"]))
