@@ -278,6 +278,23 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --write-markdown-index
 ```
 
+To compare the oracle upper-bound path with the scanner-inclusive path in one
+report, run `--input-mode both`:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set geometry \
+  --shape 33,33,33 \
+  --input-mode both \
+  --scanner-backend reference-like \
+  --scanner-thin-mode reference \
+  --variants current_default \
+  --output-dir outputs/3d/synthetic_quality/both_geometry_reference_like_001 \
+  --pretty \
+  --save-figures \
+  --write-markdown-index
+```
+
 The CLI writes these files under `--output-dir`:
 
 ```text
@@ -343,6 +360,42 @@ available = [c for c in cols if c in rows[0]]
 print("\t".join(available))
 for r in rows:
     print("\t".join(r.get(c, "") for c in available))
+PY
+```
+
+For `--input-mode both`, compare the oracle and scanner rows by grouping on
+`case_id` and reading the stable `pipeline` column:
+
+```bash
+PYTHONPATH=src python - <<'PY'
+from pathlib import Path
+import csv
+
+p = Path("outputs/3d/synthetic_quality/both_geometry_reference_like_001/summary.csv")
+metrics = [
+    "fvt_buffered_f1_r2",
+    "fvt_distance_p95",
+    "skin_count",
+    "skin_buffered_f1_r2",
+]
+rows = list(csv.DictReader(p.open(newline="", encoding="utf-8")))
+
+by_case = {}
+for row in rows:
+    by_case.setdefault(row["case_id"], {})[row["pipeline"]] = row
+
+print("case_id\tmetric\toracle\tscanner\tscanner_minus_oracle")
+for case_id, pipelines in sorted(by_case.items()):
+    oracle = pipelines.get("oracle", {})
+    scanner = pipelines.get("scanner", {})
+    for metric in metrics:
+        if metric in oracle and metric in scanner:
+            try:
+                a = float(oracle[metric])
+                b = float(scanner[metric])
+            except ValueError:
+                continue
+            print(f"{case_id}\t{metric}\t{a:.6g}\t{b:.6g}\t{b-a:.6g}")
 PY
 ```
 
@@ -471,7 +524,11 @@ single_vertical_plane/
     truth_vs_skin_overlay_i3_center.png
 ```
 
-The stable minimum JSON contract is:
+The stable minimum JSON contract stores canonical metrics under
+`cases[].pipelines.<pipeline>.variants.<variant>`. `cases[].variants`,
+`cases[].pyosv`, and `cases[].quality` remain compatibility aliases for the
+active pipeline. In single-pipeline modes, `cases[].variant_comparison` is also
+an active-pipeline alias; in `--input-mode both`, it is a `pipelines` map.
 
 ```json
 {
@@ -480,6 +537,7 @@ The stable minimum JSON contract is:
     "case_set": "minimal",
     "shape": [33, 33, 33],
     "variants": ["current_default"],
+    "input_mode": "both",
     "skinning": {
       "enabled": true,
       "min_likelihood": 0.5,
@@ -503,66 +561,155 @@ The stable minimum JSON contract is:
         "fault_voxel_count": 2277,
         "surface_voxel_count": 1089
       },
-      "variants": {
-        "current_default": {
-          "pyosv": {
-            "fv": {},
-            "fvt": {},
-            "skins": {
-              "skin_count": 1,
-              "cell_count": 1089,
-              "unique_cell_count": 1089,
-              "duplicate_cell_count": 0,
-              "largest_skin_size": 1089,
-              "largest_skin_fraction": 1.0,
-              "small_skin_size": 10,
-              "small_skin_count": 0,
-              "small_skin_cell_count": 0,
-              "small_skin_cell_fraction": 0.0
+      "pipelines": {
+        "oracle": {
+          "variants": {
+            "current_default": {
+              "pyosv": {
+                "fv": {},
+                "fvt": {},
+                "skins": {
+                  "skin_count": 1,
+                  "cell_count": 1089,
+                  "unique_cell_count": 1089,
+                  "duplicate_cell_count": 0,
+                  "largest_skin_size": 1089,
+                  "largest_skin_fraction": 1.0,
+                  "small_skin_size": 10,
+                  "small_skin_count": 0,
+                  "small_skin_cell_count": 0,
+                  "small_skin_cell_fraction": 0.0
+                }
+              },
+              "skinning": {
+                "enabled": true
+              },
+              "quality": {
+                "fv_top_truth_count": {
+                  "buffered_overlap_radius2": {},
+                  "surface_distance": {}
+                },
+                "fvt_top_truth_count": {
+                  "buffered_overlap_radius2": {},
+                  "surface_distance": {},
+                  "orientation_error": {}
+                },
+                "edge_false_positive": {
+                  "fv_top_truth_count": {
+                    "edge_false_positive_fraction_of_candidates": 0.0
+                  },
+                  "fvt_top_truth_count": {
+                    "edge_false_positive_fraction_of_candidates": 0.0
+                  },
+                  "skin": {
+                    "edge_false_positive_fraction_of_candidates": 0.0
+                  }
+                },
+                "skin": {
+                  "topology": {},
+                  "buffered_overlap_radius2": {},
+                  "surface_distance": {},
+                  "orientation_error": {}
+                }
+              }
             }
           },
-          "skinning": {
-            "enabled": true
-          },
-          "quality": {
-            "fv_top_truth_count": {
-              "buffered_overlap_radius2": {},
-              "surface_distance": {}
-            },
-            "fvt_top_truth_count": {
-              "buffered_overlap_radius2": {},
-              "surface_distance": {},
-              "orientation_error": {}
-            },
-            "edge_false_positive": {
-              "fv_top_truth_count": {
-                "edge_false_positive_fraction_of_candidates": 0.0
-              },
-              "fvt_top_truth_count": {
-                "edge_false_positive_fraction_of_candidates": 0.0
-              },
-              "skin": {
-                "edge_false_positive_fraction_of_candidates": 0.0
+          "variant_comparison": {
+            "baseline_variant": "current_default",
+            "variants": {
+              "current_default": {
+                "fvt_buffered_f1_r2_delta_vs_current": 0.0,
+                "fvt_candidate_to_truth_p95_delta_vs_current": 0.0,
+                "fvt_strike_median_error_delta_vs_current": 0.0,
+                "fvt_dip_median_error_delta_vs_current": 0.0,
+                "fv_buffered_f1_r2_delta_vs_current": 0.0
               }
-            },
-            "skin": {
-              "topology": {},
-              "buffered_overlap_radius2": {},
-              "surface_distance": {},
-              "orientation_error": {}
+            }
+          }
+        },
+        "scanner": {
+          "variants": {
+            "current_default": {
+              "pyosv": {
+                "fv": {},
+                "fvt": {},
+                "skins": {}
+              },
+              "scanner": {
+                "input": {},
+                "ft": {},
+                "pt": {},
+                "tt": {},
+                "fet": {},
+                "fpt": {},
+                "ftt": {}
+              },
+              "skinning": {
+                "enabled": true
+              },
+              "quality": {
+                "fv_top_truth_count": {},
+                "fvt_top_truth_count": {},
+                "edge_false_positive": {},
+                "skin": {}
+              },
+              "scanner_quality": {
+                "ft_top_truth_count": {},
+                "orientation_error": {},
+                "input_association": {}
+              }
+            }
+          },
+          "variant_comparison": {
+            "baseline_variant": "current_default",
+            "variants": {
+              "current_default": {
+                "fvt_buffered_f1_r2_delta_vs_current": 0.0,
+                "fvt_candidate_to_truth_p95_delta_vs_current": 0.0,
+                "fvt_strike_median_error_delta_vs_current": 0.0,
+                "fvt_dip_median_error_delta_vs_current": 0.0,
+                "fv_buffered_f1_r2_delta_vs_current": 0.0
+              }
             }
           }
         }
       },
+      "active_pipeline": "oracle",
+      "pyosv": {
+        "fv": {},
+        "fvt": {},
+        "skins": {}
+      },
+      "skinning": {
+        "enabled": true
+      },
+      "quality": {
+        "fv_top_truth_count": {},
+        "fvt_top_truth_count": {},
+        "edge_false_positive": {},
+        "skin": {}
+      },
+      "variants": {
+        "current_default": {
+          "active_pipeline": "oracle",
+          "pyosv": {},
+          "skinning": {},
+          "quality": {},
+          "pipelines": {
+            "oracle": {},
+            "scanner": {}
+          }
+        }
+      },
       "variant_comparison": {
-        "baseline_variant": "current_default",
-        "variants": {
-          "current_default": {
-            "fvt_buffered_f1_r2_delta_vs_current": 0.0,
-            "fvt_candidate_to_truth_p95_delta_vs_current": 0.0,
-            "fvt_strike_median_error_delta_vs_current": 0.0,
-            "fvt_dip_median_error_delta_vs_current": 0.0,
-            "fv_buffered_f1_r2_delta_vs_current": 0.0
+        "pipelines": {
+          "oracle": {
+            "baseline_variant": "current_default",
+            "variants": {}
+          },
+          "scanner": {
+            "baseline_variant": "current_default",
+            "variants": {}
           }
         }
       }
@@ -571,13 +718,14 @@ The stable minimum JSON contract is:
 }
 ```
 
-Each case stores per-variant metrics under `cases[].variants`. For backward
-compatibility, `current_default` is also duplicated at the case top level when
-that variant is present. `cases[].variant_comparison` stores per-variant deltas
-against `current_default` when that baseline variant is present; when it is not
-present, `baseline_variant` is `null` and the comparison map is empty. In
-`--input-mode both`, the top-level comparison is a `pipelines` map to avoid an
-ambiguous active-pipeline comparison.
+Each case stores per-variant metrics under `cases[].pipelines.*.variants`.
+For backward compatibility, the active pipeline is also exposed through
+`cases[].variants`; `current_default` is duplicated at the case top level when
+that variant is present. `cases[].pipelines.*.variant_comparison` stores
+per-variant deltas against `current_default` when that baseline variant is
+present; when it is not present, `baseline_variant` is `null` and the
+comparison map is empty. In `--input-mode both`, the top-level comparison is a
+`pipelines` map to avoid an ambiguous active-pipeline comparison.
 
 The canonical pipeline schema is:
 

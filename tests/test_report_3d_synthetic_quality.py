@@ -188,6 +188,9 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--output-dir" in result.stdout
     assert "--shape" in result.stdout
     assert "--variants" in result.stdout
+    assert "--input-mode" in result.stdout
+    assert "--scanner-backend" in result.stdout
+    assert "--scanner-thin-mode" in result.stdout
     assert "--save-volumes" in result.stdout
     assert "--save-figures" in result.stdout
     assert "--write-markdown-index" in result.stdout
@@ -1517,6 +1520,36 @@ def test_scanner_mode_markdown_links_scanner_figures(tmp_path: Path) -> None:
     assert "single_vertical_plane/figures/truth_vs_ft_scan_overlay_i3_center.png" in markdown
     assert "single_vertical_plane/figures/truth_vs_ft_used_overlay_i3_center.png" in markdown
     assert "single_vertical_plane/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
+
+
+def test_input_mode_both_markdown_links_pipeline_figures(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--output-dir",
+        str(output_dir),
+        "--write-markdown-index",
+    )
+
+    assert result.returncode == 0, result.stderr
+    markdown = (output_dir / "visual_report.md").read_text(encoding="utf-8")
+    assert "#### oracle pipeline" in markdown
+    assert "#### scanner pipeline" in markdown
+    assert "single_vertical_plane/oracle/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
+    assert "single_vertical_plane/oracle/figures/truth_vs_skin_overlay_i3_center.png" in markdown
+    assert (
+        "single_vertical_plane/scanner/figures/truth_vs_ft_scan_overlay_i3_center.png" in markdown
+    )
+    assert (
+        "single_vertical_plane/scanner/figures/truth_vs_ft_used_overlay_i3_center.png" in markdown
+    )
+    assert "single_vertical_plane/scanner/figures/truth_vs_fvt_overlay_i3_center.png" in markdown
 
 
 def test_report_3d_synthetic_quality_geometry_markdown_index_includes_each_case(
