@@ -246,6 +246,10 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--shape" in result.stdout
     assert "--variants" in result.stdout
     assert "--input-mode" in result.stdout
+    assert "--workflow-mode" in result.stdout
+    assert "reference" in result.stdout
+    assert "quality" in result.stdout
+    assert "diagnostic" in result.stdout
     assert "--scanner-backend" in result.stdout
     assert "--scanner-thin-mode" in result.stdout
     assert "--save-volumes" in result.stdout
@@ -288,6 +292,7 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     assert metrics["format_version"] == 1
     assert metrics["config"]["case_set"] == "minimal"
+    assert metrics["config"]["workflow_mode"] == "reference"
     assert metrics["config"]["shape"] == [17, 17, 17]
     case = metrics["cases"][0]
     assert case["case_id"] == "single_vertical_plane"
@@ -322,6 +327,7 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
         rows = list(csv.DictReader(file))
     assert rows[0]["case_id"] == "single_vertical_plane"
     assert rows[0]["variant"] == "current_default"
+    assert rows[0]["workflow_mode"] == "reference"
     assert rows[0]["shape_n3"] == "17"
     assert rows[0]["shape_n2"] == "17"
     assert rows[0]["shape_n1"] == "17"
@@ -992,6 +998,73 @@ def test_report_3d_synthetic_quality_normal_thin_mode_passes(tmp_path: Path) -> 
     assert metrics["cases"][0]["pyosv"]["fvt"]["max"] > 0.0
 
 
+def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "normal"
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["workflow_mode"] == "quality"
+
+
+def test_report_3d_synthetic_quality_diagnostic_workflow_records_mode_and_defaults(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "diagnostic",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "diagnostic"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
+
+
+def test_report_3d_synthetic_quality_invalid_workflow_mode_fails(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "invalid",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode != 0
+    assert "workflow-mode" in result.stderr or "workflow_mode" in result.stderr
+
+
 def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> None:
     output_dir = tmp_path / "synthetic_quality"
 
@@ -1101,6 +1174,7 @@ def test_report_synthetic_quality_accepts_input_mode_scanner(tmp_path: Path) -> 
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     variant = metrics["cases"][0]["variants"]["current_default"]
     assert metrics["config"]["input_mode"] == "scanner"
+    assert metrics["config"]["workflow_mode"] == "reference"
     assert variant["active_pipeline"] == "scanner"
     assert set(variant["pipelines"]) == {"scanner"}
     assert variant["pyosv"] == variant["pipelines"]["scanner"]["pyosv"]
@@ -1125,6 +1199,7 @@ def test_report_synthetic_quality_accepts_input_mode_both(tmp_path: Path) -> Non
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     variant = metrics["cases"][0]["variants"]["current_default"]
     assert metrics["config"]["input_mode"] == "both"
+    assert metrics["config"]["workflow_mode"] == "reference"
     assert variant["active_pipeline"] == "oracle"
     assert set(variant["pipelines"]) == {"oracle", "scanner"}
     assert variant["pyosv"] == variant["pipelines"]["oracle"]["pyosv"]

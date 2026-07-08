@@ -105,6 +105,7 @@ VARIANT_NAMES = (
 DEFAULT_VARIANTS = ("current_default",)
 BASELINE_VARIANT = "current_default"
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
+WORKFLOW_MODES = ("reference", "quality", "diagnostic")
 VARIANT_COMPARISON_METRICS = (
     (
         "fvt_buffered_f1_r2_delta_vs_current",
@@ -152,6 +153,25 @@ VARIANT_COMPARISON_METRICS = (
         ("quality", "skin", "topology", "skin_count"),
     ),
 )
+
+
+def _validate_workflow_mode(value: str) -> str:
+    if value not in WORKFLOW_MODES:
+        raise ValueError("workflow_mode must be one of: " + ", ".join(WORKFLOW_MODES))
+    return value
+
+
+def parse_workflow_mode(text: str) -> str:
+    try:
+        return _validate_workflow_mode(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
+    return "normal" if workflow_mode == "quality" else "reference"
+
+
 CSV_VARIANT_COMPARISON_FIELDS = (
     (
         "fvt_buffered_f1_delta_vs_baseline",
@@ -502,6 +522,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--workflow-mode",
+        type=parse_workflow_mode,
+        default="reference",
+        metavar="{" + ",".join(WORKFLOW_MODES) + "}",
+        help=(
+            "Workflow defaults: reference keeps reference-like voter thinning, "
+            "quality defaults voter thinning to normal, diagnostic keeps reference "
+            "thinning and enables reference-vs-normal diagnostics."
+        ),
+    )
+    parser.add_argument(
         "--scanner-backend",
         choices=("reference-like", "fast"),
         default="reference-like",
@@ -578,8 +609,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--voter-thin-mode",
         choices=("reference", "normal"),
-        default="reference",
-        help="Thinning mode passed to OptimalSurfaceVoter.thin().",
+        default=None,
+        help="Thinning mode passed to OptimalSurfaceVoter.thin(); defaults by workflow mode.",
     )
     parser.add_argument(
         "--reference-thin-sigma",
@@ -1563,12 +1594,13 @@ def build_report(
     *,
     case_set: str,
     shape: tuple[int, int, int],
-    voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    voting_config: SyntheticVotingConfig | None = None,
     scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
+    workflow_mode: str = "reference",
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
@@ -1581,6 +1613,7 @@ def build_report(
         variants=variants,
         skinning_config=skinning_config,
         input_mode=input_mode,
+        workflow_mode=workflow_mode,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -1591,12 +1624,13 @@ def _build_report_and_volumes(
     *,
     case_set: str,
     shape: tuple[int, int, int],
-    voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    voting_config: SyntheticVotingConfig | None = None,
     scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
+    workflow_mode: str = "reference",
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[
@@ -1607,6 +1641,12 @@ def _build_report_and_volumes(
     valid_shape = validate_shape3(shape)
     valid_variants = _validate_variants(variants)
     valid_input_mode = _validate_input_mode(input_mode)
+    valid_workflow_mode = _validate_workflow_mode(workflow_mode)
+    if voting_config is None:
+        voting_config = SyntheticVotingConfig(
+            voter_thin_mode=_default_voter_thin_mode_for_workflow(valid_workflow_mode),
+        )
+    include_thinning_diagnostic = include_thinning_diagnostic or valid_workflow_mode == "diagnostic"
     diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
     try:
         case_definitions = CASE_SETS[case_set]
@@ -1669,6 +1709,7 @@ def _build_report_and_volumes(
 
     config: dict[str, Any] = {
         "case_set": case_set,
+        "workflow_mode": valid_workflow_mode,
         "shape": [int(size) for size in valid_shape],
         "variants": list(valid_variants),
         "voting": voting_config.as_report_dict(),
@@ -1791,6 +1832,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "variant",
                 "baseline_variant",
                 "input_mode",
+                "workflow_mode",
                 "scanner_backend",
                 "scanner_thin_mode",
                 "shape_n3",
@@ -1860,7 +1902,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
             ),
         )
         writer.writeheader()
-        input_mode = str(report.get("config", {}).get("input_mode", "oracle"))
+        config = report.get("config", {})
+        input_mode = str(config.get("input_mode", "oracle"))
+        workflow_mode = str(config.get("workflow_mode", "reference"))
         for case in report["cases"]:
             n3, n2, n1 = case["shape"]
             for pipeline, pipeline_report in _iter_pipeline_reports(case["pipelines"]):
@@ -1898,6 +1942,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "variant": variant,
                             "baseline_variant": baseline_variant,
                             "input_mode": input_mode,
+                            "workflow_mode": workflow_mode,
                             "shape_n3": n3,
                             "shape_n2": n2,
                             "shape_n1": n1,
@@ -2847,12 +2892,13 @@ def run_example(
     output_dir: str | PathLike[str],
     case_set: str = "minimal",
     shape: tuple[int, int, int] = DEFAULT_SHAPE,
-    voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    voting_config: SyntheticVotingConfig | None = None,
     scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
     input_mode: str = "oracle",
+    workflow_mode: str = "reference",
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -2869,6 +2915,7 @@ def run_example(
         skinning_config=skinning_config,
         variants=variants,
         input_mode=input_mode,
+        workflow_mode=workflow_mode,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -2891,6 +2938,9 @@ def run_example(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    voter_thin_mode = args.voter_thin_mode
+    if voter_thin_mode is None:
+        voter_thin_mode = _default_voter_thin_mode_for_workflow(args.workflow_mode)
 
     try:
         run_example(
@@ -2904,7 +2954,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed_distance=args.seed_distance,
                 seed_threshold=args.seed_threshold,
                 attribute_smoothing=args.attribute_smoothing,
-                voter_thin_mode=args.voter_thin_mode,
+                voter_thin_mode=voter_thin_mode,
                 reference_thin_sigma=args.reference_thin_sigma,
             ),
             scanner_config=SyntheticScannerConfig(
@@ -2938,6 +2988,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             variants=args.variants,
             input_mode=args.input_mode,
+            workflow_mode=args.workflow_mode,
             include_thinning_diagnostic=args.include_thinning_diagnostic,
             thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,
