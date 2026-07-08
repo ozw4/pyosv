@@ -81,6 +81,8 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
     assert voter.surface_smoothing2 == 2.0
     assert voter.surface_orientation_smoothing == 2.0
     assert voter.final_normalization_smoothing == 0.0
+    assert voter.surface_support_min_fraction == 0.0
+    assert voter.surface_support_exponent == 0.0
     np.testing.assert_array_equal(
         voter.lmins,
         np.array(
@@ -313,6 +315,51 @@ def test_set_final_normalization_smoothing_rejects_invalid_values(
     with pytest.raises(ValueError, match="final_normalization_smoothing"):
         voter.set_final_normalization_smoothing(
             final_normalization_smoothing,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("min_fraction", "exponent"),
+    [
+        (0.0, 0.0),
+        (0.5, 1.0),
+        (1.0, 2.5),
+        (np.float32(0.25), np.float32(1.5)),
+    ],
+)
+def test_set_surface_support_policy_accepts_valid_values(
+    min_fraction: float,
+    exponent: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    voter.set_surface_support_policy(min_fraction=min_fraction, exponent=exponent)
+
+    assert voter.surface_support_min_fraction == float(min_fraction)
+    assert voter.surface_support_exponent == float(exponent)
+
+
+@pytest.mark.parametrize("min_fraction", [-0.1, 1.1, np.nan, np.inf, True, "0.5"])
+def test_set_surface_support_policy_rejects_invalid_min_fraction(
+    min_fraction: object,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="surface_support_min_fraction"):
+        voter.set_surface_support_policy(
+            min_fraction=min_fraction,  # type: ignore[arg-type]
+            exponent=0.0,
+        )
+
+
+@pytest.mark.parametrize("exponent", [-0.1, np.nan, np.inf, True, "1.0"])
+def test_set_surface_support_policy_rejects_invalid_exponent(exponent: object) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="surface_support_exponent"):
+        voter.set_surface_support_policy(
+            min_fraction=0.0,
+            exponent=exponent,  # type: ignore[arg-type]
         )
 
 
@@ -840,6 +887,114 @@ def test_surface_voting_no_ops_when_surface_has_no_valid_samples() -> None:
     np.testing.assert_array_equal(vt, np.full_like(vt, -1.0))
 
 
+def test_surface_voting_skips_vote_below_support_fraction_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
+    voter.set_surface_support_policy(min_fraction=0.5, exponent=0.0)
+    ft = np.ones((5, 5, 5), dtype=np.float32)
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+    surface = np.zeros((3, 3), dtype=np.float32)
+    accumulate_calls: list[np.float32] = []
+
+    monkeypatch.setattr(voting3d, "find_surface_3d", lambda *args, **kwargs: surface)
+    monkeypatch.setattr(
+        voting3d,
+        "_surface_vote_average",
+        lambda *args: (np.float32(0.8), 4),
+    )
+
+    def accumulate_stub(
+        c1: int,
+        c2: int,
+        c3: int,
+        rv: int,
+        rw: int,
+        fa: np.float32,
+        vp_value: np.float32,
+        vt_value: np.float32,
+        align_i3: bool,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        surface: np.ndarray,
+        fe: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        vm: np.ndarray,
+    ) -> None:
+        del c1, c2, c3, rv, rw, vp_value, vt_value, align_i3, normal, dip, strike
+        del surface, fe, vp, vt, vm
+        accumulate_calls.append(fa)
+
+    monkeypatch.setattr(voting3d, "_accumulate_surface_votes", accumulate_stub)
+
+    voter._surface_voting(FaultCell(2, 2, 2, 1.0, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    assert accumulate_calls == []
+    np.testing.assert_array_equal(fe, np.zeros_like(fe))
+    np.testing.assert_array_equal(vm, np.zeros_like(vm))
+
+
+def test_surface_voting_downweights_vote_by_support_fraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
+    voter.set_surface_support_policy(min_fraction=0.0, exponent=1.0)
+    ft = np.ones((5, 5, 5), dtype=np.float32)
+    fe = np.zeros_like(ft)
+    vp = np.full_like(ft, -1.0)
+    vt = np.full_like(ft, -1.0)
+    vm = np.zeros_like(ft)
+    surface = np.zeros((3, 3), dtype=np.float32)
+    accumulated_fa: list[np.float32] = []
+
+    monkeypatch.setattr(voting3d, "find_surface_3d", lambda *args, **kwargs: surface)
+    monkeypatch.setattr(
+        voting3d,
+        "_surface_vote_average",
+        lambda *args: (np.float32(0.9), 4),
+    )
+    monkeypatch.setattr(
+        voting3d,
+        "_surface_strike_and_dip",
+        lambda *args, **kwargs: (0.0, 90.0),
+    )
+
+    def accumulate_stub(
+        c1: int,
+        c2: int,
+        c3: int,
+        rv: int,
+        rw: int,
+        fa: np.float32,
+        vp_value: np.float32,
+        vt_value: np.float32,
+        align_i3: bool,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        surface: np.ndarray,
+        fe: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        vm: np.ndarray,
+    ) -> None:
+        del c1, c2, c3, rv, rw, vp_value, vt_value, align_i3, normal, dip, strike
+        del surface, fe, vp, vt, vm
+        accumulated_fa.append(fa)
+
+    monkeypatch.setattr(voting3d, "_accumulate_surface_votes", accumulate_stub)
+
+    voter._surface_voting(FaultCell(2, 2, 2, 1.0, 0.0, 90.0), ft, fe, vp, vt, vm)
+
+    assert len(accumulated_fa) == 1
+    assert accumulated_fa[0] == pytest.approx(np.float32(0.9 * 4.0 / 9.0))
+
+
 def test_surface_voting_is_deterministic_for_same_seed_and_inputs() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     voter.set_attribute_smoothing(0)
@@ -1019,6 +1174,29 @@ def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
         assert array.dtype == np.float32
         assert np.isfinite(array).all()
         np.testing.assert_array_equal(array, np.zeros_like(ft))
+
+
+def test_apply_voting_surface_support_default_policy_is_no_op() -> None:
+    ft = np.zeros((11, 11, 11), dtype=np.float32)
+    ft[3:8, 5, 3:8] = 0.8
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+
+    default_voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    default_voter.set_attribute_smoothing(0)
+    default_voter.set_surface_smoothing(0.0, 0.0)
+    default_voter.set_surface_orientation_smoothing(0.0)
+    configured_voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    configured_voter.set_attribute_smoothing(0)
+    configured_voter.set_surface_smoothing(0.0, 0.0)
+    configured_voter.set_surface_orientation_smoothing(0.0)
+    configured_voter.set_surface_support_policy(min_fraction=0.0, exponent=0.0)
+
+    default = default_voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+    configured = configured_voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    for default_array, configured_array in zip(default, configured):
+        np.testing.assert_array_equal(default_array, configured_array)
 
 
 @pytest.mark.parametrize(
@@ -1234,6 +1412,83 @@ def test_thin_normal_mode_remains_explicit_fault_normal_path() -> None:
     assert np.count_nonzero(reference != normal) > 0
 
 
+def test_thin_reference_mode_matches_reference_helper_regression() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    expected, _ = reference_like_3d_thin_values(
+        fv,
+        vp,
+        sigma=0.0,
+        reinforce_vertical=True,
+    )
+
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+
+    np.testing.assert_array_equal(reference, expected)
+
+
+def test_thin_normal_mode_matches_fault_normal_regression() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((7, 9, 7), dtype=np.float32)
+    fv[1:6, 2, 1:6] = 0.7
+    fv[1:6, 3:6, 1:6] = 1.0
+    fv[1:6, 6, 1:6] = 0.7
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    expected = np.zeros_like(fv)
+    expected[:, 4, :] = fv[:, 4, :]
+
+    normal = voter.thin(fv, vp, vt, mode="normal")
+
+    np.testing.assert_array_equal(normal, expected)
+
+
+def test_thin_hybrid_constant_orientation_matches_reference_mode() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.full_like(fv, 30.0)
+    vt = np.full_like(fv, 45.0)
+
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+    hybrid = voter.thin(fv, vp, vt, mode="hybrid", reference_sigma=0.0)
+
+    np.testing.assert_array_equal(hybrid, reference)
+
+
+def test_thin_hybrid_uses_normal_mode_in_unstable_orientation_region() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.zeros_like(fv)
+    vp[:, 2:, :] = 20.0
+    vt = np.zeros_like(fv)
+
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+    normal = voter.thin(fv, vp, vt, mode="normal")
+    hybrid = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="hybrid",
+        reference_sigma=0.0,
+        hybrid_orientation_gradient_threshold=1.0,
+    )
+
+    normal_selected = (reference != normal) & (hybrid == normal)
+    assert np.count_nonzero(normal_selected) > 0
+    assert np.count_nonzero(hybrid != reference) > 0
+
+
 def test_thin_reference_mode_returns_float32_shape_and_original_values() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     fv = np.zeros((5, 5, 2), dtype=np.float32)
@@ -1317,8 +1572,27 @@ def test_thin_rejects_invalid_mode() -> None:
     vp = np.zeros_like(fv)
     vt = np.zeros_like(fv)
 
-    with pytest.raises(ValueError, match="mode"):
+    with pytest.raises(ValueError, match="reference.*normal.*hybrid"):
         voter.thin(fv, vp, vt, mode="nearest")
+
+
+@pytest.mark.parametrize("threshold", [-1.0, np.inf, np.nan])
+def test_thin_hybrid_rejects_invalid_orientation_gradient_threshold(
+    threshold: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    with pytest.raises(ValueError, match="hybrid_orientation_gradient_threshold"):
+        voter.thin(
+            fv,
+            vp,
+            vt,
+            mode="hybrid",
+            hybrid_orientation_gradient_threshold=threshold,
+        )
 
 
 def test_thin_reference_mode_uses_strike_bin_nms_in_i2_i3_plane() -> None:

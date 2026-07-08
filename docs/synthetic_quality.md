@@ -206,6 +206,9 @@ Controlled synthetic reports expose an explicit workflow contract through
 existing reference-first runs keep reference-like voter thinning unless a run
 passes an explicit `--voter-thin-mode` override.
 
+See [Quality Mode](quality_mode.md) for the recommended quality benchmark
+matrix and the intended role of each workflow.
+
 ```text
 reference
   Reference-alignment mode. Effective voter_thin_mode is reference unless

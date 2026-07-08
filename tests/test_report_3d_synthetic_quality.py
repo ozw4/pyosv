@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import math
 import os
@@ -27,6 +28,8 @@ DIAGNOSTIC_VARIANTS = (
     "no_surface_orientation_smoothing",
     "final_norm_smoothing_1",
     "voter_thin_normal",
+    "voter_thin_hybrid",
+    "surface_support_weighted",
 )
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
@@ -167,6 +170,16 @@ EXPECTED_THINNING_DIAGNOSTIC_I3_FIGURES = (
 )
 
 
+def _load_report_module() -> object:
+    spec = importlib.util.spec_from_file_location("report_3d_synthetic_quality", SCRIPT)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
@@ -245,6 +258,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--output-dir" in result.stdout
     assert "--shape" in result.stdout
     assert "--variants" in result.stdout
+    assert "--variant-preset" in result.stdout
     assert "--input-mode" in result.stdout
     assert "--workflow-mode" in result.stdout
     assert "reference" in result.stdout
@@ -256,6 +270,8 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--save-figures" in result.stdout
     assert "--write-markdown-index" in result.stdout
     assert "--voter-thin-mode" in result.stdout
+    assert "--surface-support-min-fraction" in result.stdout
+    assert "--surface-support-exponent" in result.stdout
     assert "--thinning-diagnostics" in result.stdout
     assert "--include-thinning-diagnostic" in result.stdout
     assert "--thinning-diagnostic-cases" in result.stdout
@@ -266,6 +282,34 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--skinner-ru" in result.stdout
     assert "--no-skinner-reskin" in result.stdout
     assert "--small-skin-size" in result.stdout
+
+
+def test_report_3d_synthetic_quality_default_parse_resolves_default_variants(
+    tmp_path: Path,
+) -> None:
+    module = _load_report_module()
+
+    args = module.build_parser().parse_args(["--output-dir", str(tmp_path)])
+    variants = module._resolve_variants(
+        variants=args.variants,
+        variant_preset=args.variant_preset,
+    )
+
+    assert args.variants is None
+    assert args.variant_preset == "default"
+    assert variants == ("current_default",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_voter_thin_hybrid() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("voter_thin_hybrid") == ("voter_thin_hybrid",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("surface_support_weighted") == ("surface_support_weighted",)
 
 
 def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
@@ -293,6 +337,8 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert metrics["format_version"] == 1
     assert metrics["config"]["case_set"] == "minimal"
     assert metrics["config"]["workflow_mode"] == "reference"
+    assert metrics["config"]["variant_preset"] == "default"
+    assert metrics["config"]["variants"] == ["current_default"]
     assert metrics["config"]["shape"] == [17, 17, 17]
     case = metrics["cases"][0]
     assert case["case_id"] == "single_vertical_plane"
@@ -491,7 +537,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         "--variants",
         (
             "current_default,no_surface_orientation_smoothing,"
-            "final_norm_smoothing_1,voter_thin_normal"
+            "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
+            "surface_support_weighted"
         ),
     )
 
@@ -550,6 +597,68 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         _assert_enabled_skin_summary_row(row)
         for field in csv_delta_fields:
             assert math.isfinite(float(row[field]))
+
+
+def test_report_3d_synthetic_quality_quality_matrix_preset_runs_diagnostic_variants(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--variant-preset",
+        "quality-matrix",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variant_preset"] == "quality-matrix"
+    assert metrics["config"]["variants"] == list(DIAGNOSTIC_VARIANTS)
+    assert set(metrics["cases"][0]["variants"]) == set(DIAGNOSTIC_VARIANTS)
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["case_id"], row["variant"]) for row in rows] == [
+        ("single_vertical_plane", variant) for variant in DIAGNOSTIC_VARIANTS
+    ]
+
+
+def test_report_3d_synthetic_quality_explicit_variants_override_preset(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--variant-preset",
+        "quality-matrix",
+        "--variants",
+        "current_default",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variant_preset"] == "quality-matrix"
+    assert metrics["config"]["variants"] == ["current_default"]
+    assert set(metrics["cases"][0]["variants"]) == {"current_default"}
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["case_id"], row["variant"]) for row in rows] == [
+        ("single_vertical_plane", "current_default")
+    ]
 
 
 def test_report_3d_synthetic_quality_diagnostic_variants_pass(tmp_path: Path) -> None:
@@ -998,6 +1107,58 @@ def test_report_3d_synthetic_quality_normal_thin_mode_passes(tmp_path: Path) -> 
     assert metrics["cases"][0]["pyosv"]["fvt"]["max"] > 0.0
 
 
+def test_report_3d_synthetic_quality_voter_thin_hybrid_variant_passes(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--variants",
+        "current_default,voter_thin_hybrid",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert set(metrics["cases"][0]["variants"]) == {"current_default", "voter_thin_hybrid"}
+    hybrid = metrics["cases"][0]["variants"]["voter_thin_hybrid"]
+    assert hybrid["pyosv"]["fvt"]["max"] > 0.0
+
+
+def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--variants",
+        "surface_support_weighted",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["surface_support_weighted"]
+    variant = metrics["cases"][0]["variants"]["surface_support_weighted"]
+    assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+    assert variant["pyosv"]["voting"] == {
+        "surface_support_min_fraction": 0.5,
+        "surface_support_exponent": 1.0,
+    }
+
+
 @pytest.mark.parametrize(
     ("workflow_mode", "override", "expected_voter_thin_mode"),
     [
@@ -1005,6 +1166,7 @@ def test_report_3d_synthetic_quality_normal_thin_mode_passes(tmp_path: Path) -> 
         ("quality", None, "normal"),
         ("quality", "reference", "reference"),
         ("reference", "normal", "normal"),
+        ("reference", "hybrid", "hybrid"),
         ("diagnostic", None, "reference"),
         ("diagnostic", "normal", "normal"),
     ],
@@ -1244,6 +1406,10 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
         "1",
         "--reference-thin-sigma",
         "1.5",
+        "--surface-support-min-fraction",
+        "0.25",
+        "--surface-support-exponent",
+        "2.0",
     )
 
     assert result.returncode == 0, result.stderr
@@ -1257,6 +1423,8 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
         "attribute_smoothing": 1,
         "voter_thin_mode": "reference",
         "reference_thin_sigma": 1.5,
+        "surface_support_min_fraction": 0.25,
+        "surface_support_exponent": 2.0,
     }
 
 
