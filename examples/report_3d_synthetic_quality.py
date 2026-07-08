@@ -519,6 +519,7 @@ class SyntheticSkinningConfig:
     du: float = 5.0
     max_delta_strike: float = 30.0
     reskin: bool = True
+    accepted_occupancy_radius: int | None = None
     small_skin_size: int = 10
 
     def __post_init__(self) -> None:
@@ -541,6 +542,10 @@ class SyntheticSkinningConfig:
             self.max_delta_strike,
             "skinner_max_delta_strike",
         )
+        _validate_optional_nonnegative_int(
+            self.accepted_occupancy_radius,
+            "skinner_accepted_occupancy_radius",
+        )
         _validate_nonnegative_int(self.small_skin_size, "small_skin_size")
 
     def as_report_dict(self) -> dict[str, bool | int | float | str | None]:
@@ -560,6 +565,14 @@ class SyntheticSkinningConfig:
             "du": float(self.du),
             "max_delta_strike": float(self.max_delta_strike),
             "reskin": self.reskin,
+            "accepted_occupancy_radius": (
+                None
+                if self.accepted_occupancy_radius is None
+                else int(self.accepted_occupancy_radius)
+            ),
+            "effective_accepted_occupancy_radius": (
+                5 if self.accepted_occupancy_radius is None else int(self.accepted_occupancy_radius)
+            ),
             "small_skin_size": int(self.small_skin_size),
         }
 
@@ -887,6 +900,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-skinner-reskin",
         action="store_true",
         help="Disable reference-like reskin smoothing/reorientation.",
+    )
+    parser.add_argument(
+        "--skinner-accepted-occupancy-radius",
+        type=parse_optional_nonnegative_int,
+        default=None,
+        help=(
+            "Accepted skin occupancy radius for reference-like FaultSkinner, "
+            "or 'none' for the backend default."
+        ),
     )
     parser.add_argument(
         "--small-skin-size",
@@ -2548,6 +2570,7 @@ def _find_synthetic_skins(
         du=skinning_config.du,
         max_delta_strike=skinning_config.max_delta_strike,
         reskin=skinning_config.reskin,
+        accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
     )
 
 
@@ -3346,6 +3369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 du=args.skinner_du,
                 max_delta_strike=args.skinner_max_delta_strike,
                 reskin=not args.no_skinner_reskin,
+                accepted_occupancy_radius=args.skinner_accepted_occupancy_radius,
                 small_skin_size=args.small_skin_size,
             ),
             variants=variants,

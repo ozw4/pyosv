@@ -932,6 +932,74 @@ def test_reference_find_skins_box_marks_accepted_skin_to_skip_nearby_seed() -> N
     assert [[cell.index for cell in skin] for skin in box_occupancy_skins] == [[(10, 10, 10)]]
 
 
+def test_reference_find_skins_public_accepted_occupancy_radius_matches_helper() -> None:
+    fv = np.zeros((21, 21, 21), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[10, 10, 10] = 0.9
+    fv[10, 15, 10] = 0.8
+
+    expected = _find_reference_skins(
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        fm=0.5,
+        min_skin_size=1,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+        accepted_occupancy_radius=0,
+    )
+    actual = FaultSkinner(min_likelihood=0.5, min_skin_size=1).find_skins(
+        fv,
+        vp,
+        vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+        accepted_occupancy_radius=0,
+    )
+
+    assert [[cell.index for cell in skin] for skin in actual] == [
+        [cell.index for cell in skin] for skin in expected
+    ]
+
+
+@pytest.mark.parametrize("accepted_occupancy_radius", [-1, 1.2, True])
+def test_reference_find_skins_rejects_invalid_accepted_occupancy_radius(
+    accepted_occupancy_radius: object,
+) -> None:
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    with pytest.raises(ValueError, match="accepted_occupancy_radius"):
+        FaultSkinner().find_skins(
+            fv,
+            vp,
+            vt,
+            accepted_occupancy_radius=accepted_occupancy_radius,  # type: ignore[arg-type]
+        )
+
+
 def test_connected_component_find_skins_keeps_reference_voting_plane_component() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     voter.set_attribute_smoothing(0)

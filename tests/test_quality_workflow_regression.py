@@ -146,6 +146,8 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert reference["skinning"]["method"] == "reference"
     assert reference["skinning"]["adaptive_min_likelihood"] is False
     assert reference["skinning"]["seed_min_ep"] == 0.8
+    assert reference["skinning"]["accepted_occupancy_radius"] is None
+    assert reference["skinning"]["effective_accepted_occupancy_radius"] == 5
 
     quality = workflow_reports["quality"]["config"]
     assert quality["workflow_mode"] == "quality"
@@ -156,6 +158,8 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert quality["skinning"]["min_likelihood"] is None
     assert quality["skinning"]["adaptive_min_likelihood"] is True
     assert quality["skinning"]["seed_min_ep"] == 0.5
+    assert quality["skinning"]["accepted_occupancy_radius"] is None
+    assert quality["skinning"]["effective_accepted_occupancy_radius"] == 5
 
 
 def test_quality_workflow_key_metrics_are_finite(

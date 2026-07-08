@@ -292,6 +292,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--skinner-min-likelihood" in result.stdout
     assert "--skinner-method" in result.stdout
     assert "--skinner-ru" in result.stdout
+    assert "--skinner-accepted-occupancy-radius" in result.stdout
     assert "--no-skinner-reskin" in result.stdout
     assert "--small-skin-size" in result.stdout
 
@@ -1660,6 +1661,8 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "--skinner-max-delta-strike",
         "20",
         "--no-skinner-reskin",
+        "--skinner-accepted-occupancy-radius",
+        "1",
         "--small-skin-size",
         "5",
     )
@@ -1682,6 +1685,8 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "du": 4.5,
         "max_delta_strike": 20.0,
         "reskin": False,
+        "accepted_occupancy_radius": 1,
+        "effective_accepted_occupancy_radius": 1,
         "small_skin_size": 5,
     }
 
