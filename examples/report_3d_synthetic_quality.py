@@ -103,6 +103,17 @@ VARIANT_NAMES = (
     "voter_thin_normal",
 )
 DEFAULT_VARIANTS = ("current_default",)
+QUALITY_MATRIX_VARIANTS = (
+    "current_default",
+    "no_surface_orientation_smoothing",
+    "final_norm_smoothing_1",
+    "voter_thin_normal",
+)
+VARIANT_PRESETS = {
+    "default": DEFAULT_VARIANTS,
+    "quality-matrix": QUALITY_MATRIX_VARIANTS,
+}
+DEFAULT_VARIANT_PRESET = "default"
 BASELINE_VARIANT = "current_default"
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
@@ -527,8 +538,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--variants",
         type=parse_variants,
-        default=DEFAULT_VARIANTS,
-        help="Comma-separated diagnostic variants to run; see the example below.",
+        default=None,
+        help=(
+            "Comma-separated diagnostic variants to run; overrides --variant-preset when provided."
+        ),
+    )
+    parser.add_argument(
+        "--variant-preset",
+        choices=tuple(VARIANT_PRESETS),
+        default=DEFAULT_VARIANT_PRESET,
+        help="Named variant preset used when --variants is omitted.",
     )
     parser.add_argument(
         "--input-mode",
@@ -1616,6 +1635,7 @@ def build_report(
     scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
+    variant_preset: str = DEFAULT_VARIANT_PRESET,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
@@ -1629,6 +1649,7 @@ def build_report(
         scanner_config=scanner_config,
         truth_metric_config=truth_metric_config,
         variants=variants,
+        variant_preset=variant_preset,
         skinning_config=skinning_config,
         input_mode=input_mode,
         workflow_mode=workflow_mode,
@@ -1646,6 +1667,7 @@ def _build_report_and_volumes(
     scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
+    variant_preset: str = DEFAULT_VARIANT_PRESET,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
@@ -1658,6 +1680,7 @@ def _build_report_and_volumes(
 ]:
     valid_shape = validate_shape3(shape)
     valid_variants = _validate_variants(variants)
+    valid_variant_preset = _validate_variant_preset(variant_preset)
     valid_input_mode = _validate_input_mode(input_mode)
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
     if voting_config is None:
@@ -1731,6 +1754,7 @@ def _build_report_and_volumes(
     config: dict[str, Any] = {
         "case_set": case_set,
         "workflow_mode": valid_workflow_mode,
+        "variant_preset": valid_variant_preset,
         "shape": [int(size) for size in valid_shape],
         "variants": list(valid_variants),
         "voting": voting_config.as_report_dict(),
@@ -1762,6 +1786,22 @@ def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:
     if duplicates:
         raise ValueError(f"duplicate variant(s): {','.join(sorted(duplicates))}")
     return valid_variants
+
+
+def _validate_variant_preset(variant_preset: str) -> str:
+    if variant_preset not in VARIANT_PRESETS:
+        raise ValueError("variant_preset must be one of: " + ", ".join(sorted(VARIANT_PRESETS)))
+    return variant_preset
+
+
+def _resolve_variants(
+    *,
+    variants: Sequence[str] | None,
+    variant_preset: str,
+) -> tuple[str, ...]:
+    if variants is not None:
+        return _validate_variants(variants)
+    return _validate_variants(VARIANT_PRESETS[_validate_variant_preset(variant_preset)])
 
 
 def _validate_thinning_diagnostic_cases(case_ids: Sequence[str]) -> tuple[str, ...]:
@@ -2918,6 +2958,7 @@ def run_example(
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     variants: Sequence[str] = DEFAULT_VARIANTS,
+    variant_preset: str = DEFAULT_VARIANT_PRESET,
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
     pretty: bool = False,
@@ -2935,6 +2976,7 @@ def run_example(
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variants=variants,
+        variant_preset=variant_preset,
         input_mode=input_mode,
         workflow_mode=workflow_mode,
         include_thinning_diagnostic=include_thinning_diagnostic,
@@ -2966,6 +3008,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     include_thinning_diagnostic = _effective_include_thinning_diagnostic(
         workflow_mode=args.workflow_mode,
         include_thinning_diagnostic=args.include_thinning_diagnostic,
+    )
+    variants = _resolve_variants(
+        variants=args.variants,
+        variant_preset=args.variant_preset,
     )
 
     try:
@@ -3012,7 +3058,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reskin=not args.no_skinner_reskin,
                 small_skin_size=args.small_skin_size,
             ),
-            variants=args.variants,
+            variants=variants,
+            variant_preset=args.variant_preset,
             input_mode=args.input_mode,
             workflow_mode=args.workflow_mode,
             include_thinning_diagnostic=include_thinning_diagnostic,
