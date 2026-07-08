@@ -47,6 +47,7 @@ from pyosv.synthetic_metrics import (
     skin_topology_metrics,
     skin_truth_metrics,
     surface_distance_metrics,
+    top_positive_truth_count_mask,
     top_truth_count_mask,
 )
 from pyosv.orient3d import FaultOrientScanner3
@@ -1615,6 +1616,8 @@ def _run_voting_from_attributes(
     truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
     fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
     fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
+    fv_positive_top_truth_count = top_positive_truth_count_mask(fv, truth_surface_mask)
+    fvt_positive_top_truth_count = top_positive_truth_count_mask(fvt, truth_surface_mask)
     edge_false_positive_metrics = {
         "fv_top_truth_count": edge_false_positive_ratio(
             fv_top_truth_count,
@@ -1624,6 +1627,18 @@ def _run_voting_from_attributes(
         ),
         "fvt_top_truth_count": edge_false_positive_ratio(
             fvt_top_truth_count,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
+        "fv_positive_top_truth_count": edge_false_positive_ratio(
+            fv_positive_top_truth_count,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
+        "fvt_positive_top_truth_count": edge_false_positive_ratio(
+            fvt_positive_top_truth_count,
             truth_surface_mask,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
             truth_buffer_radius=buffer_radius,
@@ -1674,6 +1689,42 @@ def _run_voting_from_attributes(
                     case.truth_strike,
                     case.truth_dip,
                     fvt_top_truth_count,
+                ),
+            },
+            "fv_positive_top_truth_count": {
+                "buffered_overlap_radius2": buffered_surface_overlap(
+                    fv_positive_top_truth_count,
+                    truth_fault_mask,
+                    radius=buffer_radius,
+                ),
+                "surface_distance": surface_distance_metrics(
+                    fv_positive_top_truth_count,
+                    truth_surface_mask,
+                ),
+                "orientation_error": masked_orientation_error(
+                    vp,
+                    vt,
+                    case.truth_strike,
+                    case.truth_dip,
+                    fv_positive_top_truth_count,
+                ),
+            },
+            "fvt_positive_top_truth_count": {
+                "buffered_overlap_radius2": buffered_surface_overlap(
+                    fvt_positive_top_truth_count,
+                    truth_fault_mask,
+                    radius=buffer_radius,
+                ),
+                "surface_distance": surface_distance_metrics(
+                    fvt_positive_top_truth_count,
+                    truth_surface_mask,
+                ),
+                "orientation_error": masked_orientation_error(
+                    vp,
+                    vt,
+                    case.truth_strike,
+                    case.truth_dip,
+                    fvt_positive_top_truth_count,
                 ),
             },
             "edge_false_positive": edge_false_positive_metrics,
@@ -2097,6 +2148,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fv_buffered_f1_r2",
                 "fv_distance_p95",
                 "fv_edge_false_positive_fraction",
+                "fv_positive_candidate_count",
                 "fv_strike_median_error",
                 "fv_dip_median_error",
                 "fvt_max",
@@ -2105,6 +2157,10 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fvt_buffered_f1_r2",
                 "fvt_distance_p95",
                 "fvt_edge_false_positive_fraction",
+                "fvt_positive_candidate_count",
+                "fvt_positive_buffered_f1_r2",
+                "fvt_positive_distance_p95",
+                "fvt_positive_edge_false_positive_fraction",
                 "fvt_strike_median_error",
                 "fvt_dip_median_error",
                 "skinning_enabled",
@@ -2171,6 +2227,8 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     quality = variant_report["quality"]
                     fv_quality = quality["fv_top_truth_count"]
                     fvt_quality = quality["fvt_top_truth_count"]
+                    fv_positive_quality = quality["fv_positive_top_truth_count"]
+                    fvt_positive_quality = quality["fvt_positive_top_truth_count"]
                     edge_false_positive = quality["edge_false_positive"]
                     skinning = variant_report["skinning"]
                     skin_quality = quality["skin"]
@@ -2211,6 +2269,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "fv_edge_false_positive_fraction": edge_false_positive[
                                 "fv_top_truth_count"
                             ]["edge_false_positive_fraction_of_candidates"],
+                            "fv_positive_candidate_count": fv_positive_quality[
+                                "buffered_overlap_radius2"
+                            ]["candidate_count"],
                             "fv_strike_median_error": fv_quality["orientation_error"][
                                 "strike_median"
                             ],
@@ -2226,6 +2287,18 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             ],
                             "fvt_edge_false_positive_fraction": edge_false_positive[
                                 "fvt_top_truth_count"
+                            ]["edge_false_positive_fraction_of_candidates"],
+                            "fvt_positive_candidate_count": fvt_positive_quality[
+                                "buffered_overlap_radius2"
+                            ]["candidate_count"],
+                            "fvt_positive_buffered_f1_r2": fvt_positive_quality[
+                                "buffered_overlap_radius2"
+                            ]["buffered_f1"],
+                            "fvt_positive_distance_p95": fvt_positive_quality["surface_distance"][
+                                "candidate_to_truth_p95"
+                            ],
+                            "fvt_positive_edge_false_positive_fraction": edge_false_positive[
+                                "fvt_positive_top_truth_count"
                             ]["edge_false_positive_fraction_of_candidates"],
                             "fvt_strike_median_error": fvt_quality["orientation_error"][
                                 "strike_median"

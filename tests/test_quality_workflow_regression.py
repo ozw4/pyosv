@@ -169,7 +169,12 @@ def test_quality_workflow_key_metrics_are_finite(
             assert case["variants"]["current_default"]["skinning"] == {"enabled": True}
 
             quality = case["quality"]
-            for field in ("fv_top_truth_count", "fvt_top_truth_count"):
+            for field in (
+                "fv_top_truth_count",
+                "fvt_top_truth_count",
+                "fv_positive_top_truth_count",
+                "fvt_positive_top_truth_count",
+            ):
                 _assert_finite_metric_tree(quality[field]["buffered_overlap_radius2"])
                 _assert_finite_metric_tree(quality[field]["surface_distance"])
                 _assert_finite_metric_tree(quality[field]["orientation_error"])
@@ -177,6 +182,8 @@ def test_quality_workflow_key_metrics_are_finite(
             edge_false_positive = quality["edge_false_positive"]
             _assert_finite_metric_tree(edge_false_positive["fv_top_truth_count"])
             _assert_finite_metric_tree(edge_false_positive["fvt_top_truth_count"])
+            _assert_finite_metric_tree(edge_false_positive["fv_positive_top_truth_count"])
+            _assert_finite_metric_tree(edge_false_positive["fvt_positive_top_truth_count"])
 
             skin = quality["skin"]
             assert skin is not None

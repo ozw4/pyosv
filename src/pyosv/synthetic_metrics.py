@@ -21,6 +21,8 @@ __all__ = [
     "skin_truth_metrics",
     "surface_distance_metrics",
     "top_k_mask",
+    "top_positive_k_mask",
+    "top_positive_truth_count_mask",
     "top_truth_count_mask",
 ]
 
@@ -52,6 +54,53 @@ def top_truth_count_mask(values: np.ndarray, truth_mask: np.ndarray) -> np.ndarr
     if value_array.shape != truth.shape:
         raise ValueError(f"array shapes must match, got {value_array.shape} and {truth.shape}")
     return top_k_mask(value_array, int(np.count_nonzero(truth)))
+
+
+def top_positive_k_mask(
+    values: np.ndarray,
+    k: int,
+    *,
+    epsilon: float = 1.0e-6,
+) -> np.ndarray:
+    """Return a deterministic top-k mask restricted to values above ``epsilon``."""
+
+    value_array = _validate_finite_array(values, "values")
+    count = _validate_k(k)
+    threshold = _validate_nonnegative_finite_scalar(epsilon, "epsilon")
+    positive = value_array > threshold
+    positive_count = int(np.count_nonzero(positive))
+    if count == 0 or positive_count == 0:
+        return np.zeros(value_array.shape, dtype=bool)
+    if count >= positive_count:
+        return positive.astype(bool, copy=True)
+
+    flat_values = value_array.astype(np.float64, copy=False).ravel()
+    positive_indices = np.flatnonzero(positive.ravel())
+    selected_order = np.lexsort((positive_indices, -flat_values[positive_indices]))[:count]
+    selected_indices = positive_indices[selected_order]
+
+    mask = np.zeros(flat_values.shape, dtype=bool)
+    mask[selected_indices] = True
+    return mask.reshape(value_array.shape)
+
+
+def top_positive_truth_count_mask(
+    values: np.ndarray,
+    truth_mask: np.ndarray,
+    *,
+    epsilon: float = 1.0e-6,
+) -> np.ndarray:
+    """Return a positive-only top-k mask where k is the number of truth voxels."""
+
+    value_array = np.asarray(values)
+    truth = np.asarray(truth_mask, dtype=bool)
+    if value_array.shape != truth.shape:
+        raise ValueError(f"array shapes must match, got {value_array.shape} and {truth.shape}")
+    return top_positive_k_mask(
+        value_array,
+        int(np.count_nonzero(truth)),
+        epsilon=epsilon,
+    )
 
 
 def buffered_surface_overlap(

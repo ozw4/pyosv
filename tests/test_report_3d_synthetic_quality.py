@@ -229,6 +229,15 @@ def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> Non
     assert math.isfinite(float(orientation["dip_median"]))
 
 
+def _assert_positive_top_truth_quality_is_finite(quality: dict[str, object]) -> None:
+    assert "buffered_f1" in quality["buffered_overlap_radius2"]
+    assert "candidate_to_truth_p95" in quality["surface_distance"]
+    orientation = quality["orientation_error"]
+    assert orientation["count"] >= 0
+    assert math.isfinite(float(orientation["strike_median"]))
+    assert math.isfinite(float(orientation["dip_median"]))
+
+
 def _assert_finite_thinning_diagnostic_quality(diagnostic: dict[str, object]) -> None:
     for mode in ("reference", "normal"):
         mode_report = diagnostic[mode]
@@ -353,6 +362,10 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     _assert_top_truth_quality_has_orientation(fv_quality)
     fvt_quality = quality["fvt_top_truth_count"]
     _assert_top_truth_quality_has_orientation(fvt_quality)
+    fv_positive_quality = quality["fv_positive_top_truth_count"]
+    _assert_positive_top_truth_quality_is_finite(fv_positive_quality)
+    fvt_positive_quality = quality["fvt_positive_top_truth_count"]
+    _assert_positive_top_truth_quality_is_finite(fvt_positive_quality)
     skin_quality = quality["skin"]
     assert skin_quality is not None
     assert "buffered_f1" in skin_quality["buffered_overlap_radius2"]
@@ -385,6 +398,7 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fv_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fv_distance_p95"]) >= 0.0
     assert math.isfinite(float(rows[0]["fv_edge_false_positive_fraction"]))
+    assert int(rows[0]["fv_positive_candidate_count"]) > 0
     assert math.isfinite(float(rows[0]["fv_strike_median_error"]))
     assert math.isfinite(float(rows[0]["fv_dip_median_error"]))
     assert float(rows[0]["fvt_max"]) > 0.0
@@ -392,6 +406,10 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fvt_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fvt_distance_p95"]) >= 0.0
     assert math.isfinite(float(rows[0]["fvt_edge_false_positive_fraction"]))
+    assert int(rows[0]["fvt_positive_candidate_count"]) > 0
+    assert math.isfinite(float(rows[0]["fvt_positive_buffered_f1_r2"]))
+    assert float(rows[0]["fvt_positive_distance_p95"]) >= 0.0
+    assert math.isfinite(float(rows[0]["fvt_positive_edge_false_positive_fraction"]))
     assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
     assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
     assert rows[0]["skinning_enabled"] == "True"
@@ -486,7 +504,11 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
     for case in metrics["cases"]:
         quality = case["quality"]
         assert "buffered_overlap_radius2" in quality["fvt_top_truth_count"]
+        assert "fvt_top_truth_count" in quality
+        assert "fvt_positive_top_truth_count" in quality
+        assert "buffered_overlap_radius2" in quality["fvt_positive_top_truth_count"]
         assert "fvt_top_truth_count" in quality["edge_false_positive"]
+        assert "fvt_positive_top_truth_count" in quality["edge_false_positive"]
         assert math.isfinite(
             float(
                 quality["edge_false_positive"]["fvt_top_truth_count"][
@@ -512,8 +534,18 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
             assert math.isfinite(float(row[field]))
         assert "fvt_edge_false_positive_fraction" in row
         assert "fv_edge_false_positive_fraction" in row
+        assert "fv_positive_candidate_count" in row
+        assert "fvt_positive_candidate_count" in row
+        assert "fvt_positive_buffered_f1_r2" in row
+        assert "fvt_positive_distance_p95" in row
+        assert "fvt_positive_edge_false_positive_fraction" in row
         assert math.isfinite(float(row["fvt_edge_false_positive_fraction"]))
         assert math.isfinite(float(row["fv_edge_false_positive_fraction"]))
+        assert int(row["fv_positive_candidate_count"]) >= 0
+        assert int(row["fvt_positive_candidate_count"]) >= 0
+        assert math.isfinite(float(row["fvt_positive_buffered_f1_r2"]))
+        assert math.isfinite(float(row["fvt_positive_distance_p95"]))
+        assert math.isfinite(float(row["fvt_positive_edge_false_positive_fraction"]))
 
     for case_id in EXTENDED_CASE_IDS:
         assert (output_dir / case_id).is_dir()
@@ -2761,3 +2793,32 @@ def test_report_3d_synthetic_quality_default_case_meets_smoke_thresholds(
     assert variant_quality["surface_distance"]["candidate_to_truth_p95"] <= 3.0
     assert variant_quality["orientation_error"]["strike_median"] <= 10.0
     assert variant_quality["orientation_error"]["dip_median"] <= 10.0
+
+
+def test_report_3d_synthetic_quality_boundary_plane_zero_fvt_has_no_positive_candidates() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="extended",
+        shape=(17, 17, 17),
+        variants=("current_default",),
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    boundary_case = next(case for case in report["cases"] if case["case_id"] == "boundary_plane")
+    variant = boundary_case["variants"]["current_default"]
+
+    assert variant["pyosv"]["fvt"]["max"] == 0.0
+    assert (
+        variant["quality"]["fvt_top_truth_count"]["buffered_overlap_radius2"]["candidate_count"] > 0
+    )
+    assert (
+        variant["quality"]["fvt_positive_top_truth_count"]["buffered_overlap_radius2"][
+            "candidate_count"
+        ]
+        == 0
+    )
+    assert (
+        variant["quality"]["edge_false_positive"]["fvt_positive_top_truth_count"]["candidate_count"]
+        == 0
+    )
