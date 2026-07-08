@@ -1234,6 +1234,83 @@ def test_thin_normal_mode_remains_explicit_fault_normal_path() -> None:
     assert np.count_nonzero(reference != normal) > 0
 
 
+def test_thin_reference_mode_matches_reference_helper_regression() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    expected, _ = reference_like_3d_thin_values(
+        fv,
+        vp,
+        sigma=0.0,
+        reinforce_vertical=True,
+    )
+
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+
+    np.testing.assert_array_equal(reference, expected)
+
+
+def test_thin_normal_mode_matches_fault_normal_regression() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((7, 9, 7), dtype=np.float32)
+    fv[1:6, 2, 1:6] = 0.7
+    fv[1:6, 3:6, 1:6] = 1.0
+    fv[1:6, 6, 1:6] = 0.7
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    expected = np.zeros_like(fv)
+    expected[:, 4, :] = fv[:, 4, :]
+
+    normal = voter.thin(fv, vp, vt, mode="normal")
+
+    np.testing.assert_array_equal(normal, expected)
+
+
+def test_thin_hybrid_constant_orientation_matches_reference_mode() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.full_like(fv, 30.0)
+    vt = np.full_like(fv, 45.0)
+
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+    hybrid = voter.thin(fv, vp, vt, mode="hybrid", reference_sigma=0.0)
+
+    np.testing.assert_array_equal(hybrid, reference)
+
+
+def test_thin_hybrid_uses_normal_mode_in_unstable_orientation_region() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    vp = np.zeros_like(fv)
+    vp[:, 2:, :] = 20.0
+    vt = np.zeros_like(fv)
+
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+    normal = voter.thin(fv, vp, vt, mode="normal")
+    hybrid = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="hybrid",
+        reference_sigma=0.0,
+        hybrid_orientation_gradient_threshold=1.0,
+    )
+
+    normal_selected = (reference != normal) & (hybrid == normal)
+    assert np.count_nonzero(normal_selected) > 0
+    assert np.count_nonzero(hybrid != reference) > 0
+
+
 def test_thin_reference_mode_returns_float32_shape_and_original_values() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     fv = np.zeros((5, 5, 2), dtype=np.float32)
@@ -1317,8 +1394,27 @@ def test_thin_rejects_invalid_mode() -> None:
     vp = np.zeros_like(fv)
     vt = np.zeros_like(fv)
 
-    with pytest.raises(ValueError, match="mode"):
+    with pytest.raises(ValueError, match="reference.*normal.*hybrid"):
         voter.thin(fv, vp, vt, mode="nearest")
+
+
+@pytest.mark.parametrize("threshold", [-1.0, np.inf, np.nan])
+def test_thin_hybrid_rejects_invalid_orientation_gradient_threshold(
+    threshold: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+
+    with pytest.raises(ValueError, match="hybrid_orientation_gradient_threshold"):
+        voter.thin(
+            fv,
+            vp,
+            vt,
+            mode="hybrid",
+            hybrid_orientation_gradient_threshold=threshold,
+        )
 
 
 def test_thin_reference_mode_uses_strike_bin_nms_in_i2_i3_plane() -> None:

@@ -38,6 +38,12 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
 Review `summary.csv` first, then use `metrics.json` and visual overlays for
 drill-down.
 
+The `quality-matrix` preset includes `current_default`,
+`no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
+`voter_thin_normal`, and `voter_thin_hybrid`. The hybrid voter thinning variant
+uses reference-like thinning in stable-orientation regions and fault-normal
+thinning where local orientation changes rapidly.
+
 Primary metrics to compare:
 
 - `fvt_buffered_f1_r2`

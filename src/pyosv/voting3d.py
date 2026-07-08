@@ -230,12 +230,19 @@ class OptimalSurfaceVoter:
         *,
         mode: str = "reference",
         reference_sigma: float = 1.0,
+        hybrid_orientation_gradient_threshold: float = 8.0,
     ) -> np.ndarray:
         """Keep 3D voting-score maxima using the selected thinning mode."""
 
         fv_array, vp_array, vt_array = _validate_matching_finite_arrays3_many(
             (fv, vp, vt),
             ("fv", "vp", "vt"),
+        )
+        if mode not in {"reference", "normal", "hybrid"}:
+            raise ValueError("mode must be 'reference', 'normal', or 'hybrid'")
+        threshold = _validate_nonnegative_float(
+            hybrid_orientation_gradient_threshold,
+            "hybrid_orientation_gradient_threshold",
         )
         if mode == "reference":
             thinned, _ = _thin_reference_like_3d(
@@ -244,23 +251,20 @@ class OptimalSurfaceVoter:
                 reference_sigma=reference_sigma,
             )
             return thinned
-        if mode != "normal":
-            raise ValueError("mode must be 'normal' or 'reference'")
+        if mode == "normal":
+            return _thin_fault_normal_3d(fv_array, vp_array, vt_array)
 
-        n3, n2, n1 = fv_array.shape
-        thinned = np.zeros((n3, n2, n1), dtype=np.float32)
-        if fv_array.size == 0:
-            return thinned
-
-        fs = smooth3d(fv_array, 1.0).astype(np.float32, copy=False)
-        i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
-        w1, w2, w3 = _fault_normal_components_from_strike_and_dip(vp_array, vt_array)
-
-        fp = sample3(fs, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
-        fm = sample3(fs, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
-        keep = (fp < fs) & (fm < fs)
-        thinned[keep] = fv_array[keep]
-        return thinned
+        reference, _ = _thin_reference_like_3d(
+            fv_array,
+            vp_array,
+            reference_sigma=reference_sigma,
+        )
+        normal = _thin_fault_normal_3d(fv_array, vp_array, vt_array)
+        roughness = _orientation_roughness_3d(vp_array, vt_array)
+        return np.where(roughness <= threshold, reference, normal).astype(
+            np.float32,
+            copy=False,
+        )
 
     def update_vector_map(self, radius: int, vector: np.ndarray) -> np.ndarray:
         """Return displacement vectors for offsets ``[-radius, radius]``."""
@@ -946,6 +950,62 @@ def _thin_reference_like_3d(
         sigma=reference_sigma,
         reinforce_vertical=True,
     )
+
+
+def _thin_fault_normal_3d(
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+) -> np.ndarray:
+    n3, n2, n1 = fv.shape
+    thinned = np.zeros((n3, n2, n1), dtype=np.float32)
+    if fv.size == 0:
+        return thinned
+
+    fs = smooth3d(fv, 1.0).astype(np.float32, copy=False)
+    i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
+    w1, w2, w3 = _fault_normal_components_from_strike_and_dip(vp, vt)
+
+    fp = sample3(fs, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
+    fm = sample3(fs, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
+    keep = (fp < fs) & (fm < fs)
+    thinned[keep] = fv[keep]
+    return thinned
+
+
+def _orientation_roughness_3d(vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
+    if vp.size == 0:
+        return np.zeros(vp.shape, dtype=np.float32)
+
+    roughness_squared = np.zeros(vp.shape, dtype=np.float32)
+    for axis in range(3):
+        if vp.shape[axis] < 2:
+            continue
+
+        strike_diff = _strike_difference_degrees(
+            np.diff(vp, axis=axis).astype(np.float32, copy=False)
+        )
+        dip_diff = np.diff(vt, axis=axis).astype(np.float32, copy=False)
+        diff_squared = strike_diff ** np.float32(2.0) + dip_diff ** np.float32(2.0)
+
+        lower = [slice(None)] * 3
+        upper = [slice(None)] * 3
+        lower[axis] = slice(0, -1)
+        upper[axis] = slice(1, None)
+        np.maximum(
+            roughness_squared[tuple(lower)], diff_squared, out=roughness_squared[tuple(lower)]
+        )
+        np.maximum(
+            roughness_squared[tuple(upper)], diff_squared, out=roughness_squared[tuple(upper)]
+        )
+
+    return np.sqrt(roughness_squared).astype(np.float32, copy=False)
+
+
+def _strike_difference_degrees(delta: np.ndarray) -> np.ndarray:
+    radians = np.deg2rad(delta).astype(np.float32, copy=False)
+    wrapped = 0.5 * np.rad2deg(np.arctan2(np.sin(2.0 * radians), np.cos(2.0 * radians)))
+    return np.abs(wrapped).astype(np.float32, copy=False)
 
 
 def _smooth_fault_likelihood_3d(

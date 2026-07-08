@@ -101,6 +101,7 @@ VARIANT_NAMES = (
     "no_surface_orientation_smoothing",
     "final_norm_smoothing_1",
     "voter_thin_normal",
+    "voter_thin_hybrid",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -108,6 +109,7 @@ QUALITY_MATRIX_VARIANTS = (
     "no_surface_orientation_smoothing",
     "final_norm_smoothing_1",
     "voter_thin_normal",
+    "voter_thin_hybrid",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -493,7 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    --case-set extended \\\n"
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
-            "final_norm_smoothing_1,voter_thin_normal \\\n"
+            "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -645,7 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--voter-thin-mode",
-        choices=("reference", "normal"),
+        choices=("reference", "normal", "hybrid"),
         default=None,
         help="Thinning mode passed to OptimalSurfaceVoter.thin(); defaults by workflow mode.",
     )
@@ -1419,7 +1421,11 @@ def _run_voting_from_attributes(
         pt=pt,
         tt=tt,
     )
-    thin_mode = "normal" if variant == "voter_thin_normal" else voting_config.voter_thin_mode
+    variant_thin_modes = {
+        "voter_thin_normal": "normal",
+        "voter_thin_hybrid": "hybrid",
+    }
+    thin_mode = variant_thin_modes.get(variant, voting_config.voter_thin_mode)
     fvt = voter.thin(
         fv,
         vp,
