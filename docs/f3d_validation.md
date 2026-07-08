@@ -194,14 +194,18 @@ python examples/report_3d_f3d_multicrop.py \
   --save-figures
 ```
 
-F3 crops do not have independent truth labels. Agreement with the reference
-workflow therefore does not directly mean that the quality workflow is better.
-Use this report to check that the quality workflow has not removed visible
-geological signal from the reference-oriented path, has not introduced excess
-ridges or boundary artifacts, and has not become less stable across crops. In
-compare mode, metrics and figures are written under workflow-specific
-directories such as `volumes/reference/`, `volumes/quality/`,
-`figures/reference/`, and `figures/quality/`.
+`--compare-workflows` runs both configured workflows, `reference` and
+`quality`, for each selected crop center. F3 crops do not have independent
+truth labels. Agreement with the reference workflow therefore does not directly
+mean that the quality workflow is better. Use this report to check that the
+quality workflow has not removed visible geological signal from the
+reference-oriented path, has not introduced excess ridges or boundary
+artifacts, and has not become less stable across crops. Support-aware voting is
+inactive in both workflow defaults; enable it only with explicit
+`--surface-support-*` overrides when running a diagnostic comparison. In compare
+mode, metrics and figures are written under workflow-specific directories such
+as `volumes/reference/`, `volumes/quality/`, `figures/reference/`, and
+`figures/quality/`.
 
 Run the thinning ablation report to compare normal/normal, mixed, and
 reference/reference thinning cases:

@@ -750,8 +750,15 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
     scanner = _as_mapping(config.get("scanner", {}))
     voter = _as_mapping(config.get("voter", {}))
     visualization = _as_mapping(config.get("visualization", {}))
+    workflows = _as_mapping(report.get("workflows", {}))
     crops = list(report.get("crops", []))
     data_root = Path(str(report.get("data_root", "")))
+    selected_count = crop_selection.get("selected_count", len(crops))
+    if workflows and selected_count == 0:
+        selected_count = max(
+            (len(list(_as_mapping(workflow).get("crops", []))) for workflow in workflows.values()),
+            default=0,
+        )
 
     lines = [
         "# F3 Multi-Crop Visual Report",
@@ -764,7 +771,7 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
         f"- crop_shape: `{crop_selection.get('crop_shape', '')}`",
         f"- interior_margin: `{config.get('interior_margin', '')}`",
         f"- crop_selection_source: `{crop_selection.get('source', '')}`",
-        f"- selected_count: `{crop_selection.get('selected_count', len(crops))}`",
+        f"- selected_count: `{selected_count}`",
         f"- scanner_thin_mode: `{scanner.get('thin_mode', '')}`",
         f"- scanner_edge_effect_removal: `{scanner.get('remove_edge_effects', '')}`",
         f"- voter_thin_mode: `{voter.get('thin_mode', '')}`",
@@ -776,11 +783,100 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
     if visualization:
         lines.append(f"- visualization: `{visualization}`")
 
+    if workflows:
+        lines.extend(["", "## Workflows", ""])
+        for workflow_name, workflow_report in _ordered_workflows(workflows):
+            workflow_config = _as_mapping(_as_mapping(workflow_report).get("config", {}))
+            workflow_scanner = _as_mapping(workflow_config.get("scanner", {}))
+            workflow_voter = _as_mapping(workflow_config.get("voter", {}))
+            workflow_skinner = _as_mapping(workflow_config.get("skinner", {}))
+            lines.extend(
+                [
+                    f"### {workflow_name}",
+                    "",
+                    f"- workflow_mode: `{workflow_config.get('workflow_mode', workflow_name)}`",
+                    f"- scanner_thin_mode: `{workflow_scanner.get('thin_mode', '')}`",
+                    f"- scanner_edge_effect_removal: `{workflow_scanner.get('remove_edge_effects', '')}`",
+                    f"- voter_thin_mode: `{workflow_voter.get('thin_mode', '')}`",
+                    f"- surface_support_min_fraction: `{workflow_voter.get('surface_support_min_fraction', '')}`",
+                    f"- surface_support_exponent: `{workflow_voter.get('surface_support_exponent', '')}`",
+                    f"- surface_voting_boundary_policy: `{workflow_voter.get('surface_voting_boundary_policy', '')}`",
+                    f"- voter: `{workflow_voter}`",
+                ]
+            )
+            if workflow_skinner:
+                lines.append(f"- skinner: `{workflow_skinner}`")
+            lines.append("")
+
+        for workflow_name, workflow_report in _ordered_workflows(workflows):
+            workflow_crops = list(_as_mapping(workflow_report).get("crops", []))
+            lines.extend([f"## {workflow_name} Crop Metrics", ""])
+            _append_crop_metrics_table(lines, workflow_crops)
+
+        any_figures = False
+        for workflow_name, workflow_report in _ordered_workflows(workflows):
+            workflow_crops = list(_as_mapping(workflow_report).get("crops", []))
+            lines.extend(["", f"## {workflow_name} Figures", ""])
+            any_figures = _append_figures(lines, workflow_crops) or any_figures
+        if not any_figures:
+            lines.append("No PNG figures were written for this run.")
+
+        _append_workflow_delta(lines, _as_mapping(report.get("workflow_delta", {})))
+        lines.extend(
+            [
+                "",
+                "## Interpretation Checklist",
+                "",
+                "- scanner mismatch",
+                "- voting mismatch",
+                "- thinning/ridge shift",
+                "- boundary artifact",
+                "",
+            ]
+        )
+        return "\n".join(lines)
+
     lines.extend(
         [
             "",
             "## Crop Metrics",
             "",
+        ]
+    )
+    _append_crop_metrics_table(lines, crops)
+
+    lines.extend(["", "## Figures", ""])
+    if not _append_figures(lines, crops):
+        lines.append("No PNG figures were written for this run.")
+
+    lines.extend(
+        [
+            "",
+            "## Interpretation Checklist",
+            "",
+            "- scanner mismatch",
+            "- voting mismatch",
+            "- thinning/ridge shift",
+            "- boundary artifact",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _ordered_workflows(workflows: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    ordered = [(name, workflows[name]) for name in ("reference", "quality") if name in workflows]
+    ordered.extend(
+        (str(name), workflow)
+        for name, workflow in workflows.items()
+        if name not in {"reference", "quality"}
+    )
+    return ordered
+
+
+def _append_crop_metrics_table(lines: list[str], crops: list[Any]) -> None:
+    lines.extend(
+        [
             "| Crop | Center | Slices | normalized_correlation.interior.fv | "
             "normalized_correlation.interior.fvt | top_percentile_overlap.interior.fvt.99.jaccard | "
             "buffered_ridge_overlap.interior.fvt.buffered_f1 | "
@@ -803,7 +899,8 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
             f"{_format_metric(_nested(crop_map, 'sparse_ridge_distance_metrics', 'interior', 'fvt', 'candidate_to_reference_median'))} |"
         )
 
-    lines.extend(["", "## Figures", ""])
+
+def _append_figures(lines: list[str], crops: list[Any]) -> bool:
     any_figures = False
     for crop in crops:
         crop_map = _as_mapping(crop)
@@ -816,22 +913,35 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
         for label, path in figure_links:
             lines.append(f"- [{label}]({path})")
         lines.append("")
-    if not any_figures:
-        lines.append("No PNG figures were written for this run.")
+    return any_figures
 
+
+def _append_workflow_delta(lines: list[str], workflow_delta: Mapping[str, Any]) -> None:
+    quality_vs_reference = _as_mapping(workflow_delta.get("quality_vs_reference", {}))
+    per_metric_mean = _as_mapping(quality_vs_reference.get("per_metric_mean", {}))
+    if not per_metric_mean:
+        return
+
+    metrics = [
+        "normalized_correlation.interior.fv",
+        "normalized_correlation.interior.fvt",
+        "top_percentile_overlap.interior.fvt.99.jaccard",
+        "buffered_ridge_overlap.interior.fvt.buffered_f1",
+        "sparse_ridge_distance_metrics.interior.fvt.candidate_to_reference_median",
+    ]
     lines.extend(
         [
             "",
-            "## Interpretation Checklist",
+            "## Workflow Delta",
             "",
-            "- scanner mismatch",
-            "- voting mismatch",
-            "- thinning/ridge shift",
-            "- boundary artifact",
+            "quality_vs_reference per_metric_mean:",
             "",
+            "| Metric | Delta |",
+            "| --- | ---: |",
         ]
     )
-    return "\n".join(lines)
+    for metric in metrics:
+        lines.append(f"| {metric} | {_format_metric(per_metric_mean.get(metric))} |")
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:

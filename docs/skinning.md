@@ -65,11 +65,13 @@ final `reskin(...)` smoothing.
 `FaultSkinner.find_skins` with `method="quality"` uses the same multi-skin
 driver and reskinning stage as `method="reference"`, but lowers the seed
 planarity gate to `ep > 0.5`. If neither a constructor nor call-site
-`min_likelihood` is configured, quality mode chooses an adaptive threshold from
-the positive `ft` values, clipped to a practical synthetic-report range. Passing
-`min_likelihood` explicitly keeps that fixed threshold. Explicit `ep`, `ft`,
-`pt`, and `tt` arrays are honored; otherwise the same convenience mapping as
-reference mode is used.
+`min_likelihood` is configured, quality mode chooses an adaptive seed threshold
+from the positive `ft` values, clipped to a practical synthetic-report range,
+while keeping the grow threshold separately bounded at the quality grow
+default. This prevents adaptive seed selection from over-raising the grow gate.
+Passing `min_likelihood` explicitly keeps that fixed threshold for both seed
+selection and growth. Explicit `ep`, `ft`, `pt`, and `tt` arrays are honored;
+otherwise the same convenience mapping as reference mode is used.
 
 After growth, the reference backend reskins each accepted skin by projecting
 cells to a seed-local `(v, w)` surface, smoothing local `u` offsets with

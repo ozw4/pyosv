@@ -80,7 +80,7 @@ def add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
         default="reference",
         help=(
             "Workflow defaults to apply. reference preserves the reference-first path; "
-            "quality defaults to hybrid voter thinning and support-aware voting."
+            "quality defaults to hybrid voter thinning with support-aware voting inactive."
         ),
     )
 
@@ -123,13 +123,19 @@ def add_surface_support_arguments(parser: argparse.ArgumentParser) -> None:
         "--surface-support-min-fraction",
         type=float,
         default=None,
-        help="Minimum valid surface-vote support fraction; defaults by --workflow-mode.",
+        help=(
+            "Explicit minimum valid surface-vote support fraction override; omitted "
+            "workflow defaults leave support-aware voting inactive."
+        ),
     )
     parser.add_argument(
         "--surface-support-exponent",
         type=float,
         default=None,
-        help="Support-fraction vote down-weighting exponent; defaults by --workflow-mode.",
+        help=(
+            "Explicit support-fraction vote down-weighting exponent override; omitted "
+            "workflow defaults leave support-aware voting inactive."
+        ),
     )
 
 

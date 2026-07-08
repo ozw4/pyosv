@@ -70,19 +70,22 @@ path but enables support-aware surface voting with
 `surface_support_min_fraction=0.5` and `surface_support_exponent=1.0`. This
 skips extracted surfaces with low valid support and down-weights the remaining
 vote by its valid-support fraction, which is useful for boundary-plane edge
-artifact diagnostics. The reference, quality, and diagnostic workflow default support
-policy is `0.0, 0.0`, so reference mode behavior is unchanged unless the report
-CLI flags `--surface-support-min-fraction` or
-`--surface-support-exponent` are set, or the diagnostic variant is selected.
+artifact diagnostics. It is a diagnostic experiment in the matrix, not the
+quality workflow default. The reference, quality, and diagnostic workflow
+default support policy is `0.0, 0.0`, so support-aware voting is inactive
+unless the report CLI flags `--surface-support-min-fraction` or
+`--surface-support-exponent` are set, or this diagnostic variant is selected.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The
 quality skinner reuses reference-like skin growth and reskinning, but uses
 adaptive `min_likelihood` when `--skinner-min-likelihood` is omitted and lowers
-the reference seed planarity threshold from `ep > 0.8` to `ep > 0.5`. Synthetic
-reports record the selected `skinning.method`, whether the likelihood threshold
-is adaptive, the seed `ep` threshold, and `seed_planarity_source=fvt` in
-`metrics.json`.
+the seed planarity gate from `ep > 0.8` to `ep > 0.5`. The adaptive threshold is
+used for seed selection while grow-time likelihood gating remains separately
+bounded, so quality mode does not raise the grow threshold just because it
+chooses stricter seeds. Synthetic reports record the selected
+`skinning.method`, whether the likelihood threshold is adaptive, the seed `ep`
+threshold, and `seed_planarity_source=fvt` in `metrics.json`.
 
 Primary metrics to compare:
 

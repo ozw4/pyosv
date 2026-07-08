@@ -677,8 +677,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{" + ",".join(WORKFLOW_MODES) + "}",
         help=(
             "Workflow defaults: reference keeps reference-like voter thinning, "
-            "quality uses hybrid voter thinning and support-aware voting, diagnostic "
-            "keeps reference thinning and enables reference-vs-normal diagnostics."
+            "quality uses hybrid voter thinning with support-aware voting inactive, "
+            "diagnostic keeps reference thinning and enables reference-vs-normal "
+            "diagnostics."
         ),
     )
     parser.add_argument(
@@ -780,13 +781,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--surface-support-min-fraction",
         type=float,
         default=None,
-        help="Minimum valid surface-vote support fraction required for accumulation; defaults by workflow mode.",
+        help=(
+            "Explicit minimum valid surface-vote support fraction override; omitted "
+            "workflow defaults leave support-aware voting inactive."
+        ),
     )
     parser.add_argument(
         "--surface-support-exponent",
         type=float,
         default=None,
-        help="Exponent for support-fraction surface-vote down-weighting; defaults by workflow mode.",
+        help=(
+            "Explicit support-fraction vote down-weighting exponent override; omitted "
+            "workflow defaults leave support-aware voting inactive."
+        ),
     )
     parser.add_argument(
         "--thinning-diagnostics",
