@@ -423,6 +423,99 @@ def test_quality_find_skins_returns_empty_for_all_zero_volume() -> None:
     assert skins == []
 
 
+def test_quality_adaptive_threshold_uses_reference_grow_default() -> None:
+    fv = np.zeros((17, 17, 17), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[7:10, 8, 7:10] = 0.60
+    fv[8, 8, 8] = 0.95
+    for index in (
+        (1, 1, 1),
+        (1, 1, 15),
+        (1, 15, 1),
+        (1, 15, 15),
+        (15, 1, 1),
+        (15, 1, 15),
+        (15, 15, 1),
+        (15, 15, 15),
+        (3, 3, 13),
+        (13, 3, 3),
+    ):
+        fv[index] = 0.90
+
+    assert _adaptive_skin_likelihood_threshold(fv) == pytest.approx(0.75)
+
+    skins = FaultSkinner(method="quality", min_skin_size=5).find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=None,
+        ru=6,
+        rv=6,
+        rw=6,
+        max_steps=4,
+        reskin=False,
+    )
+
+    assert len(skins) == 1
+    assert set(map(tuple, skins[0].indices())) == {
+        (i1, 8, i3) for i1 in range(7, 10) for i3 in range(7, 10)
+    }
+    assert skins[0].likelihoods().min() == pytest.approx(0.60)
+
+
+def test_quality_explicit_min_likelihood_still_controls_grow_threshold() -> None:
+    fv = np.zeros((17, 17, 17), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[7:10, 8, 7:10] = 0.60
+    fv[8, 8, 8] = 0.95
+
+    skins = FaultSkinner(method="quality", min_skin_size=1).find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.70,
+        ru=6,
+        rv=6,
+        rw=6,
+        max_steps=4,
+        reskin=False,
+    )
+
+    assert len(skins) == 1
+    assert set(map(tuple, skins[0].indices())) == {(8, 8, 8)}
+    assert skins[0].likelihoods().min() >= 0.70
+
+
+def test_reference_method_uses_same_threshold_for_seeds_and_grow() -> None:
+    fv = np.zeros((17, 17, 17), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[7:10, 8, 7:10] = 0.60
+    fv[8, 8, 8] = 0.95
+
+    skins = FaultSkinner(method="reference", min_skin_size=1).find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.70,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        ru=6,
+        rv=6,
+        rw=6,
+        max_steps=4,
+        reskin=False,
+    )
+
+    assert len(skins) == 1
+    assert set(map(tuple, skins[0].indices())) == {(8, 8, 8)}
+    assert skins[0].likelihoods().min() >= 0.70
+
+
 def test_local_transform_maps_horizontal_plane_indices_to_expected_world_coordinates() -> None:
     transform_map = _update_transform_map(
         ru=2,

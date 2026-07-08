@@ -27,6 +27,7 @@ __all__ = [
 _UNSET = object()
 _REFERENCE_SEED_MIN_EP = 0.8
 _QUALITY_SEED_MIN_EP = 0.5
+_QUALITY_DEFAULT_GROW_MIN_LIKELIHOOD = 0.5
 
 
 @dataclass(slots=True, eq=False)
@@ -385,10 +386,12 @@ class FaultSkinner:
         effective_ft = fv if ft is None else ft
         effective_pt = vp if pt is None else pt
         effective_tt = vt if tt is None else tt
+        grow_threshold: float | None = None
         if self.method == "quality":
             seed_min_ep = _QUALITY_SEED_MIN_EP
             if min_likelihood is None and not self._min_likelihood_configured:
                 threshold = _adaptive_skin_likelihood_threshold(effective_ft)
+                grow_threshold = _QUALITY_DEFAULT_GROW_MIN_LIKELIHOOD
             else:
                 threshold = (
                     self.min_likelihood
@@ -411,6 +414,7 @@ class FaultSkinner:
             tt=effective_tt,
             d=d,
             fm=threshold,
+            grow_fmin=grow_threshold,
             seed_min_ep=seed_min_ep,
             min_skin_size=self.min_skin_size,
             ru=ru,
@@ -545,11 +549,17 @@ def _find_reference_skins(
     du: float,
     max_delta_strike: float,
     reskin: bool,
+    grow_fmin: float | None = None,
     seed_min_ep: float = _REFERENCE_SEED_MIN_EP,
     accepted_occupancy_radius: int = 5,
 ) -> list[FaultSkin]:
     should_reskin = _validate_bool(reskin, "reskin")
-    threshold = _validate_nonnegative_finite_float(fm, "fm")
+    seed_threshold = _validate_nonnegative_finite_float(fm, "fm")
+    grow_threshold = (
+        seed_threshold
+        if grow_fmin is None
+        else _validate_nonnegative_finite_float(grow_fmin, "grow_fmin")
+    )
     occupancy_radius = _validate_nonnegative_int(
         accepted_occupancy_radius,
         "accepted_occupancy_radius",
@@ -562,7 +572,7 @@ def _find_reference_skins(
     )
     seeds = _find_reference_seeds(
         d=d,
-        fm=threshold,
+        fm=seed_threshold,
         ep=ep_array,
         ft=ft_array,
         pt=pt_array,
@@ -582,7 +592,7 @@ def _find_reference_skins(
             fv_array,
             vp_array,
             vt_array,
-            fmin=threshold,
+            fmin=grow_threshold,
             ru=ru,
             rv=rv,
             rw=rw,
