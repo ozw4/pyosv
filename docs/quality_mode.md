@@ -13,7 +13,7 @@ remains close to the current reference-oriented path. It is not the place to
 evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
-use hybrid voter thinning, support-aware vote weighting, and
+use hybrid voter thinning, support-aware surface voting, and
 `FaultSkinner(method="quality")`
 (`surface_support_min_fraction=0.5`,
 `surface_support_exponent=1.0`). It is not a universal production profile; use
@@ -49,7 +49,9 @@ For scanner-inclusive quality evaluation, prefer the refined opt-in scanner
 path:
 
 ```bash
---input-mode scanner --scanner-backend quality --scanner-refinement-factor 2
+--input-mode scanner \
+--scanner-backend quality \
+--scanner-refinement-factor 2
 ```
 
 This recommendation is for quality reports only. The report default remains
@@ -93,6 +95,21 @@ Primary metrics to compare:
 - `skin_distance_candidate_to_truth_p95`
 - `edge_false_positive_fraction` columns
 
+## CI Regression Guardrails
+
+The always-on quality workflow regression test is intentionally synthetic-only:
+it does not require F3 data, `reference_osv`, Java/Jython/JTK, or external
+downloads. It builds the `extended` synthetic case set at a small shape for both
+`reference` and `quality` workflows using only `current_default`.
+
+The guardrails are broad. They assert that key overlap, distance, orientation,
+edge false-positive, and skin metrics remain finite, that quality workflow
+effective settings are recorded in `metrics.json`, and that quality mode has not
+clearly regressed relative to reference mode on representative curved,
+vertical, and boundary cases. These thresholds are not benchmark targets. They
+are meant to catch obvious workflow breakage while leaving room for normal
+tuning changes.
+
 ## F3 Real-Data Workflow Comparison
 
 The F3 multi-crop report can also compare `reference` and `quality` workflows
@@ -113,3 +130,11 @@ Because F3 has no independent truth labels, reference agreement is a stability
 diagnostic rather than direct evidence of higher quality. Review whether the
 quality workflow preserves reference geological signal, avoids extra ridges and
 boundary artifacts, and keeps crop-to-crop behavior stable.
+
+F3 reference agreement is not quality itself. A quality-mode change should be
+promoted only when the controlled synthetic `extended` matrix and F3 multi-crop
+comparison both show fewer clear failures than the reference workflow: improved
+or preserved synthetic truth recovery, no new boundary or over-filtering
+failure, and no obvious loss of real-data geological signal across crops. Until
+then, keep `reference` as the default API behavior and use `quality` as an
+explicit workflow mode.
