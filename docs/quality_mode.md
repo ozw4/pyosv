@@ -61,9 +61,9 @@ changed automatically.
 The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
 `voter_thin_normal`, `voter_thin_hybrid`, and
-`surface_support_weighted`. The hybrid voter thinning variant uses
-reference-like thinning in stable-orientation regions and fault-normal thinning
-where local orientation changes rapidly.
+`surface_support_weighted`, and `quality_skinner_v2`. The hybrid voter thinning
+variant uses reference-like thinning in stable-orientation regions and
+fault-normal thinning where local orientation changes rapidly.
 
 The `surface_support_weighted` diagnostic variant keeps the default thinning
 path but enables support-aware surface voting with
@@ -75,6 +75,11 @@ quality workflow default. The reference, quality, and diagnostic workflow
 default support policy is `0.0, 0.0`, so support-aware voting is inactive
 unless the report CLI flags `--surface-support-min-fraction` or
 `--surface-support-exponent` are set, or this diagnostic variant is selected.
+
+The `quality_skinner_v2` diagnostic variant keeps the voter path selected by
+the workflow, but uses the quality skinner with adaptive seed/grow thresholds,
+`growth_source=pre_thin`, and `accepted_occupancy_radius=1`. It is a diagnostic
+candidate and does not change `current_default` or workflow defaults.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The

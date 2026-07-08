@@ -240,7 +240,9 @@ records `surface_support_min_fraction=0.0` and
 `surface_support_exponent=0.0`, so the report config shows that support-aware
 voting is not part of the quality default. Explicit CLI support overrides and
 the `surface_support_weighted` variant record their effective values in the
-same config/report fields. `summary.csv` includes `workflow_mode` near
+same config/report fields. Skinning diagnostics such as `quality_skinner_v2`
+record effective skinning values under each variant's `config.skinning`.
+`summary.csv` includes `workflow_mode` near
 `input_mode` on every row.
 
 ## Curved Surface Thinning Diagnostic
@@ -389,7 +391,7 @@ candidates. This is a controlled synthetic truth metric for cases such as
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set extended \
   --shape 33,33,33 \
-  --variants current_default,no_surface_orientation_smoothing,final_norm_smoothing_1,voter_thin_normal \
+  --variant-preset quality-matrix \
   --output-dir outputs/3d/synthetic_quality/extended_001 \
   --pretty \
   --save-figures \
@@ -954,6 +956,7 @@ final_norm_smoothing_1
 voter_thin_normal
 voter_thin_hybrid
 surface_support_weighted
+quality_skinner_v2
 ```
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
@@ -961,6 +964,10 @@ judgments; they make the same truth metrics comparable across voter settings.
 `surface_support_weighted` is included in the `quality-matrix` preset as a
 diagnostic support-aware voting experiment with `0.5, 1.0`; it is not the
 quality workflow default.
+`quality_skinner_v2` is also included in the `quality-matrix` preset as a
+diagnostic skinning experiment. It uses the quality skinner, adaptive seed and
+grow thresholds, `growth_source=pre_thin`, and
+`accepted_occupancy_radius=1`; it is not the quality workflow default.
 `summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
 pipeline column, variant column, baseline variant, input mode, workflow mode,
 buffered F1, candidate-to-truth p95 distance, fvt median orientation error

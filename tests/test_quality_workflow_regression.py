@@ -65,6 +65,17 @@ def workflow_reports() -> dict[str, dict[str, Any]]:
     }
 
 
+@pytest.fixture(scope="module")
+def quality_skinner_v2_report() -> dict[str, Any]:
+    module = _load_report_module()
+    return module.build_report(
+        case_set="extended",
+        shape=SHAPE,
+        variants=("current_default", "quality_skinner_v2"),
+        workflow_mode="quality",
+    )
+
+
 def _cases_by_id(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cases = {case["case_id"]: case for case in report["cases"]}
     assert tuple(cases) == CASE_IDS
@@ -201,6 +212,54 @@ def test_quality_workflow_key_metrics_are_finite(
             ):
                 assert field in skin
                 _assert_finite_metric_tree(skin[field])
+
+
+def test_quality_skinner_v2_extended_skin_metrics_are_finite(
+    quality_skinner_v2_report: dict[str, Any],
+) -> None:
+    assert quality_skinner_v2_report["config"]["shape"] == list(SHAPE)
+    assert quality_skinner_v2_report["config"]["variants"] == [
+        "current_default",
+        "quality_skinner_v2",
+    ]
+    for case in _cases_by_id(quality_skinner_v2_report).values():
+        variant = case["variants"]["quality_skinner_v2"]
+        skinning = variant["config"]["skinning"]
+        assert skinning["method"] == "quality"
+        assert skinning["growth_source"] == "pre_thin"
+        assert skinning["effective_accepted_occupancy_radius"] == 1
+        skin = variant["quality"]["skin"]
+        assert skin is not None
+        for field in (
+            "topology",
+            "buffered_overlap_radius2",
+            "surface_distance",
+            "orientation_error",
+        ):
+            _assert_finite_metric_tree(skin[field])
+
+
+def test_quality_skinner_v2_skin_f1_guardrail(
+    quality_skinner_v2_report: dict[str, Any],
+) -> None:
+    cases = _cases_by_id(quality_skinner_v2_report)
+    for case_id in ("curved_surface", "crossing_planes"):
+        current_default = _float_metric(
+            cases[case_id],
+            "variants",
+            "current_default",
+            *SKIN_BUFFERED_F1_R2,
+        )
+        quality_skinner_v2 = _float_metric(
+            cases[case_id],
+            "variants",
+            "quality_skinner_v2",
+            *SKIN_BUFFERED_F1_R2,
+        )
+        assert quality_skinner_v2 >= current_default, (
+            f"{case_id} quality_skinner_v2 skin buffered F1 "
+            f"{quality_skinner_v2:.6g} below current_default {current_default:.6g}"
+        )
 
 
 def test_quality_workflow_case_specific_guardrails(

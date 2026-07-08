@@ -30,6 +30,7 @@ DIAGNOSTIC_VARIANTS = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "surface_support_weighted",
+    "quality_skinner_v2",
 )
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
@@ -324,6 +325,12 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weig
     module = _load_report_module()
 
     assert module.parse_variants("surface_support_weighted") == ("surface_support_weighted",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_quality_skinner_v2() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("quality_skinner_v2") == ("quality_skinner_v2",)
 
 
 def test_find_synthetic_skins_thinned_uses_fvt_for_growth_and_seed(
@@ -671,7 +678,7 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         (
             "current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
-            "surface_support_weighted"
+            "surface_support_weighted,quality_skinner_v2"
         ),
     )
 
@@ -1293,6 +1300,55 @@ def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
         "surface_support_min_fraction": 0.5,
         "surface_support_exponent": 1.0,
     }
+
+
+def test_report_3d_synthetic_quality_quality_skinner_v2_records_effective_config(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--variants",
+        "current_default,quality_skinner_v2",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["current_default", "quality_skinner_v2"]
+
+    case = metrics["cases"][0]
+    current_default = case["variants"]["current_default"]["config"]["skinning"]
+    assert current_default == metrics["config"]["skinning"]
+    assert current_default["method"] == "reference"
+    assert current_default["growth_source"] == "thinned"
+    assert current_default["accepted_occupancy_radius"] is None
+    assert current_default["effective_accepted_occupancy_radius"] == 5
+
+    quality_skinner = case["variants"]["quality_skinner_v2"]["config"]["skinning"]
+    assert quality_skinner["method"] == "quality"
+    assert quality_skinner["min_likelihood"] is None
+    assert quality_skinner["adaptive_min_likelihood"] is True
+    assert quality_skinner["seed_min_ep"] == 0.5
+    assert quality_skinner["seed_planarity_source"] == "fvt"
+    assert quality_skinner["growth_source"] == "pre_thin"
+    assert quality_skinner["accepted_occupancy_radius"] == 1
+    assert quality_skinner["effective_accepted_occupancy_radius"] == 1
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["case_id"], row["variant"]) for row in rows] == [
+        ("single_vertical_plane", "current_default"),
+        ("single_vertical_plane", "quality_skinner_v2"),
+    ]
+    assert rows[1]["baseline_variant"] == "current_default"
+    assert math.isfinite(float(rows[1]["skin_buffered_f1_delta_vs_baseline"]))
+    assert math.isfinite(float(rows[1]["skin_count_delta_vs_baseline"]))
 
 
 @pytest.mark.parametrize(

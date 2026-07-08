@@ -106,6 +106,7 @@ VARIANT_NAMES = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "surface_support_weighted",
+    "quality_skinner_v2",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -115,6 +116,7 @@ QUALITY_MATRIX_VARIANTS = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "surface_support_weighted",
+    "quality_skinner_v2",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -263,6 +265,22 @@ def _effective_skinning_config_for_workflow(
     if min_likelihood == SyntheticSkinningConfig().min_likelihood:
         min_likelihood = None
     return replace(skinning_config, method="quality", min_likelihood=min_likelihood)
+
+
+def _effective_skinning_config_for_variant(
+    *,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+) -> SyntheticSkinningConfig:
+    if variant != "quality_skinner_v2":
+        return skinning_config
+    return replace(
+        skinning_config,
+        method="quality",
+        min_likelihood=None,
+        accepted_occupancy_radius=1,
+        growth_source="pre_thin",
+    )
 
 
 def _effective_voter_thin_mode(
@@ -626,7 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
-            "surface_support_weighted \\\n"
+            "surface_support_weighted,quality_skinner_v2 \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -1051,6 +1069,10 @@ def _run_case_variant(
     if variant not in VARIANT_NAMES:
         raise ValueError(f"unknown variant: {variant}")
     valid_input_mode = _validate_input_mode(input_mode)
+    skinning_config = _effective_skinning_config_for_variant(
+        skinning_config=skinning_config,
+        variant=variant,
+    )
 
     if valid_input_mode == "oracle":
         return _run_oracle_pipeline(
@@ -1680,6 +1702,9 @@ def _run_voting_from_attributes(
         ),
     }
     report = {
+        "config": {
+            "skinning": skinning_config.as_report_dict(),
+        },
         "skinning": {"enabled": skinning_config.enabled},
         "pyosv": {
             "fv": _array_summary(fv),
@@ -2018,7 +2043,7 @@ def _build_report_and_volumes(
                 {
                     key: value
                     for key, value in variant_reports[BASELINE_VARIANT].items()
-                    if key not in {"pipelines"}
+                    if key not in {"config", "pipelines"}
                 }
             )
             case_report["pipelines"] = pipelines
