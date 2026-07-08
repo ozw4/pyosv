@@ -29,6 +29,8 @@ DIAGNOSTIC_VARIANTS = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "voter_thin_hybrid_v2",
+    "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
 )
@@ -138,7 +140,11 @@ EXPECTED_SCANNER_SUMMARY_FIELDS = (
     "scanner_strike_median_error",
     "scanner_dip_median_error",
     "scanner_input_contrast",
+    "scanner_matrix_best_fvt_positive_buffered_f1_backend",
+    "scanner_matrix_best_skin_buffered_f1_backend",
+    "scanner_matrix_best_boundary_edge_fp_backend",
 )
+EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
 EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS = (
     "thinning_diag_reference_fvt_buffered_f1_r2",
     "thinning_diag_normal_fvt_buffered_f1_r2",
@@ -221,6 +227,30 @@ def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None
     assert math.isfinite(float(input_association["contrast"]))
 
 
+def _assert_scanner_backend_matrix_contract(matrix: dict[str, object]) -> None:
+    assert set(matrix["backends"]) == set(EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS)
+    backends = matrix["backends"]
+    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+        backend_report = backends[backend]
+        assert backend_report["scanner"]["config"]["backend"] == backend
+        assert backend_report["pyosv"]["fvt"]["finite_fraction"] == 1.0
+        assert "quality" in backend_report
+        _assert_scanner_quality_contract(backend_report["scanner_quality"])
+
+    comparison = matrix["comparison"]
+    assert comparison["selected_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    assert comparison["best_fvt_positive_buffered_f1_backend"] in (
+        EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    )
+    assert comparison["best_skin_buffered_f1_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    assert comparison["best_boundary_edge_fp_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+        values = comparison["metric_values"][backend]
+        assert math.isfinite(float(values["fvt_positive_buffered_f1"]))
+        assert math.isfinite(float(values["skin_buffered_f1"]))
+        assert math.isfinite(float(values["fvt_positive_edge_false_positive_fraction"]))
+
+
 def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> None:
     assert "buffered_f1" in quality["buffered_overlap_radius2"]
     assert "candidate_to_truth_p95" in quality["surface_distance"]
@@ -275,6 +305,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "quality" in result.stdout
     assert "diagnostic" in result.stdout
     assert "--scanner-backend" in result.stdout
+    assert "--scanner-backend-matrix" in result.stdout
     assert "--scanner-thin-mode" in result.stdout
     assert "--save-volumes" in result.stdout
     assert "--save-figures" in result.stdout
@@ -319,6 +350,18 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_voter_thin_hybrid() 
     module = _load_report_module()
 
     assert module.parse_variants("voter_thin_hybrid") == ("voter_thin_hybrid",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_normal_plateau() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("voter_thin_normal_plateau") == ("voter_thin_normal_plateau",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("voter_thin_hybrid_v2") == ("voter_thin_hybrid_v2",)
 
 
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
@@ -678,6 +721,7 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         (
             "current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
+            "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
             "surface_support_weighted,quality_skinner_v2"
         ),
     )
@@ -1274,6 +1318,59 @@ def test_report_3d_synthetic_quality_voter_thin_hybrid_variant_passes(
     assert hybrid["pyosv"]["fvt"]["max"] > 0.0
 
 
+def test_report_3d_synthetic_quality_voter_thin_normal_plateau_variant_passes(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "extended",
+        "--shape",
+        "21,21,21",
+        "--output-dir",
+        str(output_dir),
+        "--variants",
+        "voter_thin_normal_plateau",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    boundary_case = next(case for case in metrics["cases"] if case["case_id"] == "boundary_plane")
+    variant = boundary_case["variants"]["voter_thin_normal_plateau"]
+    assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+    assert (
+        variant["quality"]["fvt_positive_top_truth_count"]["buffered_overlap_radius2"][
+            "candidate_count"
+        ]
+        > 0
+    )
+
+
+def test_report_3d_synthetic_quality_voter_thin_hybrid_v2_variant_passes(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--variants",
+        "voter_thin_hybrid_v2",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["voter_thin_hybrid_v2"]
+    assert variant["pyosv"]["fvt"]["max"] > 0.0
+
+
 def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
     tmp_path: Path,
 ) -> None:
@@ -1436,9 +1533,11 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["enabled"] is False
     assert report["config"]["skinning"]["method"] == "quality"
-    assert report["config"]["skinning"]["growth_source"] == "thinned"
+    assert report["config"]["skinning"]["growth_source"] == "pre_thin"
     assert report["config"]["skinning"]["min_likelihood"] is None
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is True
+    assert report["config"]["skinning"]["accepted_occupancy_radius"] == 1
+    assert report["config"]["skinning"]["effective_accepted_occupancy_radius"] == 1
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins() -> None:
@@ -1607,13 +1706,80 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["skinning"]["method"] == "quality"
-    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
+    assert metrics["config"]["skinning"]["growth_source"] == "pre_thin"
     assert metrics["config"]["skinning"]["min_likelihood"] is None
     assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is True
+    assert metrics["config"]["skinning"]["accepted_occupancy_radius"] == 1
+    assert metrics["config"]["skinning"]["effective_accepted_occupancy_radius"] == 1
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert rows[0]["workflow_mode"] == "quality"
+
+
+def test_report_3d_synthetic_quality_quality_workflow_explicit_skinner_knobs_win(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--skinner-min-likelihood",
+        "0.5",
+        "--skinner-growth-source",
+        "thinned",
+        "--skinner-accepted-occupancy-radius",
+        "none",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
+    assert metrics["config"]["skinning"]["min_likelihood"] == 0.5
+    assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is False
+    assert metrics["config"]["skinning"]["accepted_occupancy_radius"] is None
+    assert metrics["config"]["skinning"]["effective_accepted_occupancy_radius"] == 5
+
+
+def test_report_3d_synthetic_quality_quality_workflow_explicit_skinner_equals_form_wins(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--skinner-min-likelihood=0.5",
+        "--skinner-growth-source=thinned",
+        "--skinner-accepted-occupancy-radius=none",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
+    assert metrics["config"]["skinning"]["min_likelihood"] == 0.5
+    assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is False
+    assert metrics["config"]["skinning"]["accepted_occupancy_radius"] is None
+    assert metrics["config"]["skinning"]["effective_accepted_occupancy_radius"] == 5
 
 
 def test_report_3d_synthetic_quality_quality_workflow_explicit_skinner_reference_wins(
@@ -2160,6 +2326,146 @@ def test_report_synthetic_quality_scanner_backend_quality_runs(tmp_path: Path) -
     assert variant["scanner"]["confidence"]["shape"] == [17, 17, 17]
     assert variant["scanner"]["confidence"]["finite_fraction"] == 1.0
     assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+
+
+def test_scanner_backend_matrix_scanner_mode_reports_all_backends(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "fast",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    matrix = variant["scanner_backend_matrix"]
+    assert metrics["config"]["scanner_backend_matrix"] is True
+    assert variant["scanner"]["config"]["backend"] == "fast"
+    _assert_scanner_backend_matrix_contract(matrix)
+    assert matrix["comparison"]["selected_backend"] == "fast"
+
+
+def test_scanner_backend_matrix_both_mode_lives_on_scanner_pipeline(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    scanner_pipeline = variant["pipelines"]["scanner"]
+    assert metrics["config"]["scanner_backend_matrix"] is True
+    assert "scanner_backend_matrix" not in variant
+    _assert_scanner_backend_matrix_contract(scanner_pipeline["scanner_backend_matrix"])
+
+
+def test_scanner_backend_matrix_oracle_mode_is_noop(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "oracle",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["scanner_backend_matrix"] is False
+    assert "scanner_backend_matrix" not in variant
+    assert "scanner_quality" not in variant
+
+
+def test_scanner_backend_matrix_summary_csv_columns(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+
+    row = rows[0]
+    for field in (
+        "scanner_matrix_best_fvt_positive_buffered_f1_backend",
+        "scanner_matrix_best_skin_buffered_f1_backend",
+        "scanner_matrix_best_boundary_edge_fp_backend",
+    ):
+        assert field in row
+        assert row[field] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+
+
+def test_scanner_backend_matrix_default_off_keeps_report_without_matrix(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["scanner_backend_matrix"] is False
+    assert "scanner_backend_matrix" not in variant
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["scanner_matrix_best_fvt_positive_buffered_f1_backend"] == ""
+    assert rows[0]["scanner_matrix_best_skin_buffered_f1_backend"] == ""
+    assert rows[0]["scanner_matrix_best_boundary_edge_fp_backend"] == ""
 
 
 def test_report_synthetic_quality_scanner_thin_mode_none_runs(tmp_path: Path) -> None:

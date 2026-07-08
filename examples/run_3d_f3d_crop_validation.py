@@ -52,7 +52,7 @@ VOLUME_NAMES = (
     "fvt_py.dat",
 )
 WORKFLOW_MODES = ("reference", "quality")
-THIN_MODES = ("normal", "reference", "hybrid")
+THIN_MODES = ("normal", "reference", "hybrid", "hybrid_v2")
 SCANNER_THIN_MODES = ("normal", "reference")
 VOTER_THIN_MODES = THIN_MODES
 FINAL_NORMALIZATION_SMOOTHING_HELP = (

@@ -149,10 +149,10 @@ crossing, boundary, and weak/noisy faults, voter variants, and skinning
 metrics. That document also explains controlled report workflow modes:
 `reference` is the default reference-alignment mode, `quality` defaults voter
 thinning to the truth-quality-favored `hybrid` path with support-aware surface
-voting and quality skinning, and `diagnostic` keeps the reference path while
-enabling reference-vs-normal thinning diagnostics. The current quality workflow
-profile and guardrails are summarized in `docs/quality_mode.md`. A typical
-extended report run is:
+voting inactive and the quality skinner v2 profile, and `diagnostic` keeps
+the reference path while enabling reference-vs-normal thinning diagnostics.
+The current quality workflow profile and guardrails are summarized in
+`docs/quality_mode.md`. A typical extended report run is:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
@@ -187,7 +187,9 @@ to reference-like strike-binned thinning with scanner edge-effect removal; pass
 legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` also defaults
 to reference-like strike-binned thinning, with voter-specific retained-sample
 reinforcement and no scanner edge-effect cleanup. Use `mode="normal"` for the
-legacy fault-normal voter path.
+legacy fault-normal voter path. Voter diagnostics can also use `mode="hybrid"`,
+`mode="hybrid_v2"`, or `mode="normal_plateau"` to compare reference-like,
+fault-normal, and plateau-aware thinning behavior without changing defaults.
 
 Backward-compatible 3D thinning calls are explicit:
 

@@ -105,6 +105,8 @@ VARIANT_NAMES = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "voter_thin_hybrid_v2",
+    "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
 )
@@ -115,6 +117,8 @@ QUALITY_MATRIX_VARIANTS = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "voter_thin_hybrid_v2",
+    "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
 )
@@ -128,6 +132,7 @@ SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
 SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
+SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
 SKINNER_METHODS = ("reference", "quality", "connected_component")
 SKINNER_GROWTH_SOURCES = ("thinned", "pre_thin")
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
@@ -254,17 +259,39 @@ def _effective_skinning_config_for_workflow(
     workflow_mode: str,
     skinning_config: SyntheticSkinningConfig,
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
 ) -> SyntheticSkinningConfig:
-    if (
-        workflow_mode != "quality"
-        or skinner_method_explicit
-        or skinning_config.method != "reference"
-    ):
+    if workflow_mode != "quality" or skinning_config.method not in {"reference", "quality"}:
+        return skinning_config
+    if skinner_method_explicit and skinning_config.method != "quality":
         return skinning_config
     min_likelihood = skinning_config.min_likelihood
-    if min_likelihood == SyntheticSkinningConfig().min_likelihood:
+    if (
+        not skinner_min_likelihood_explicit
+        and min_likelihood == SyntheticSkinningConfig().min_likelihood
+    ):
         min_likelihood = None
-    return replace(skinning_config, method="quality", min_likelihood=min_likelihood)
+    accepted_occupancy_radius = skinning_config.accepted_occupancy_radius
+    if (
+        not skinner_accepted_occupancy_radius_explicit
+        and accepted_occupancy_radius == SyntheticSkinningConfig().accepted_occupancy_radius
+    ):
+        accepted_occupancy_radius = 1
+    growth_source = skinning_config.growth_source
+    if (
+        not skinner_growth_source_explicit
+        and growth_source == SyntheticSkinningConfig().growth_source
+    ):
+        growth_source = "pre_thin"
+    return replace(
+        skinning_config,
+        method="quality",
+        min_likelihood=min_likelihood,
+        accepted_occupancy_radius=accepted_occupancy_radius,
+        growth_source=growth_source,
+    )
 
 
 def _effective_skinning_config_for_variant(
@@ -644,6 +671,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
+            "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
             "surface_support_weighted,quality_skinner_v2 \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
@@ -731,6 +759,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--scanner-backend-matrix",
+        action="store_true",
+        help=(
+            "Run reference-like, quality, and fast scanner backends as an opt-in "
+            "diagnostic matrix for scanner/both input mode."
+        ),
+    )
+    parser.add_argument(
         "--scanner-phi-min",
         type=float,
         default=0.0,
@@ -806,7 +842,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--voter-thin-mode",
-        choices=("reference", "normal", "hybrid"),
+        choices=("reference", "normal", "hybrid", "hybrid_v2", "normal_plateau"),
         default=None,
         help="Thinning mode passed to OptimalSurfaceVoter.thin(); defaults by workflow mode.",
     )
@@ -1018,6 +1054,7 @@ def run_case(
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     variant: str = "current_default",
     input_mode: str = "oracle",
+    scanner_backend_matrix: bool = False,
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
@@ -1035,6 +1072,7 @@ def run_case(
         skinning_config=skinning_config,
         variant=variant,
         input_mode=input_mode,
+        scanner_backend_matrix=scanner_backend_matrix,
         include_thinning_diagnostic=(
             include_thinning_diagnostic and case.case_id in diagnostic_case_ids
         ),
@@ -1064,6 +1102,7 @@ def _run_case_variant(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
     input_mode: str,
+    scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     if variant not in VARIANT_NAMES:
@@ -1105,6 +1144,7 @@ def _run_case_variant(
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variant=variant,
+        scanner_backend_matrix=scanner_backend_matrix,
         include_thinning_diagnostic=include_thinning_diagnostic,
     )
     pipelines["scanner"] = scanner_report
@@ -1221,6 +1261,7 @@ def _run_scanner_pipeline(
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
     variant: str,
+    scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     scanner_report, scanner_volumes = _scanner_attributes_from_case(case, scanner_config)
@@ -1241,8 +1282,149 @@ def _run_scanner_pipeline(
         scanner_volumes=scanner_volumes,
         truth_metric_config=truth_metric_config,
     )
+    if scanner_backend_matrix:
+        report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
+            case,
+            voting_config=voting_config,
+            scanner_config=scanner_config,
+            truth_metric_config=truth_metric_config,
+            skinning_config=skinning_config,
+            variant=variant,
+            include_thinning_diagnostic=include_thinning_diagnostic,
+            selected_report=report,
+        )
     volumes.update(scanner_volumes)
     return report, volumes, skins_output
+
+
+def _scanner_backend_matrix_report(
+    case: Synthetic3DCase,
+    *,
+    voting_config: SyntheticVotingConfig,
+    scanner_config: SyntheticScannerConfig,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+    include_thinning_diagnostic: bool,
+    selected_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    backend_reports: dict[str, Any] = {}
+    for backend in SCANNER_BACKEND_MATRIX_BACKENDS:
+        if backend == scanner_config.backend:
+            backend_reports[backend] = dict(selected_report)
+        else:
+            backend_report, _, _ = _run_scanner_pipeline(
+                case,
+                voting_config=voting_config,
+                scanner_config=replace(scanner_config, backend=backend),
+                truth_metric_config=truth_metric_config,
+                skinning_config=skinning_config,
+                variant=variant,
+                scanner_backend_matrix=False,
+                include_thinning_diagnostic=include_thinning_diagnostic,
+            )
+            backend_reports[backend] = backend_report
+    return {
+        "backends": backend_reports,
+        "comparison": _scanner_backend_matrix_comparison(
+            backend_reports,
+            selected_backend=scanner_config.backend,
+        ),
+    }
+
+
+def _scanner_backend_matrix_comparison(
+    backend_reports: Mapping[str, Mapping[str, Any]],
+    *,
+    selected_backend: str,
+) -> dict[str, Any]:
+    metric_values = {
+        backend: _scanner_backend_matrix_metric_values(report)
+        for backend, report in backend_reports.items()
+    }
+    selected_values = metric_values.get(selected_backend, {})
+    deltas_vs_selected = {
+        backend: {
+            metric: _metric_delta(value, selected_values.get(metric))
+            for metric, value in values.items()
+        }
+        for backend, values in metric_values.items()
+    }
+    return {
+        "selected_backend": selected_backend,
+        "metric_values": metric_values,
+        "deltas_vs_selected_backend": deltas_vs_selected,
+        "best_fvt_positive_buffered_f1_backend": _best_backend(
+            metric_values,
+            "fvt_positive_buffered_f1",
+            higher_is_better=True,
+        ),
+        "best_skin_buffered_f1_backend": _best_backend(
+            metric_values,
+            "skin_buffered_f1",
+            higher_is_better=True,
+        ),
+        "best_boundary_edge_fp_backend": _best_backend(
+            metric_values,
+            "fvt_positive_edge_false_positive_fraction",
+            higher_is_better=False,
+        ),
+    }
+
+
+def _scanner_backend_matrix_metric_values(report: Mapping[str, Any]) -> dict[str, float | None]:
+    quality = report["quality"]
+    fvt_positive_overlap = quality["fvt_positive_top_truth_count"]["buffered_overlap_radius2"]
+    edge_false_positive = quality["edge_false_positive"]["fvt_positive_top_truth_count"]
+    skin_quality = quality["skin"]
+    skin_buffered_f1 = None
+    if skin_quality is not None:
+        skin_buffered_f1 = _finite_metric_or_none(
+            skin_quality["buffered_overlap_radius2"]["buffered_f1"]
+        )
+    return {
+        "fvt_positive_buffered_f1": _finite_metric_or_none(fvt_positive_overlap["buffered_f1"]),
+        "skin_buffered_f1": skin_buffered_f1,
+        "fvt_positive_edge_false_positive_fraction": _finite_metric_or_none(
+            edge_false_positive["edge_false_positive_fraction_of_candidates"]
+        ),
+    }
+
+
+def _finite_metric_or_none(value: object) -> float | None:
+    try:
+        metric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(metric):
+        return None
+    return metric
+
+
+def _metric_delta(value: float | None, baseline: float | None) -> float | None:
+    if value is None or baseline is None:
+        return None
+    return float(value - baseline)
+
+
+def _best_backend(
+    metric_values: Mapping[str, Mapping[str, float | None]],
+    metric: str,
+    *,
+    higher_is_better: bool,
+) -> str | None:
+    candidates = [
+        (backend, values[metric])
+        for backend, values in metric_values.items()
+        if values.get(metric) is not None
+    ]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda item: item[1] if higher_is_better else -item[1],
+        reverse=True,
+    )[0][0]
 
 
 def _scanner_attributes_from_case(
@@ -1651,14 +1833,18 @@ def _run_voting_from_attributes(
     variant_thin_modes = {
         "voter_thin_normal": "normal",
         "voter_thin_hybrid": "hybrid",
+        "voter_thin_hybrid_v2": "hybrid_v2",
+        "voter_thin_normal_plateau": "normal_plateau",
     }
     thin_mode = variant_thin_modes.get(variant, voting_config.voter_thin_mode)
+    plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
     fvt = voter.thin(
         fv,
         vp,
         vt,
         mode=thin_mode,
         reference_sigma=voting_config.reference_thin_sigma,
+        plateau_tie_breaker=plateau_tie_breaker,
     )
 
     truth_surface_half_width = _validate_nonnegative_finite_scalar(
@@ -1902,6 +2088,11 @@ def _skin_cell_json(cell: Any) -> dict[str, float | int]:
     }
 
 
+def _argv_has_long_option(argv: Sequence[str], option: str) -> bool:
+    option_with_value = f"{option}="
+    return any(arg == option or arg.startswith(option_with_value) for arg in argv)
+
+
 def _truth_report(
     case: Synthetic3DCase,
     truth_metric_config: SyntheticTruthMetricConfig,
@@ -1929,8 +2120,12 @@ def build_report(
     variant_preset: str = DEFAULT_VARIANT_PRESET,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
+    scanner_backend_matrix: bool = False,
     workflow_mode: str = "reference",
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
@@ -1944,8 +2139,12 @@ def build_report(
         variant_preset=variant_preset,
         skinning_config=skinning_config,
         input_mode=input_mode,
+        scanner_backend_matrix=scanner_backend_matrix,
         workflow_mode=workflow_mode,
         skinner_method_explicit=skinner_method_explicit,
+        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
+        skinner_growth_source_explicit=skinner_growth_source_explicit,
+        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -1963,8 +2162,12 @@ def _build_report_and_volumes(
     variant_preset: str = DEFAULT_VARIANT_PRESET,
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
+    scanner_backend_matrix: bool = False,
     workflow_mode: str = "reference",
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[
@@ -1976,11 +2179,15 @@ def _build_report_and_volumes(
     valid_variants = _validate_variants(variants)
     valid_variant_preset = _validate_variant_preset(variant_preset)
     valid_input_mode = _validate_input_mode(input_mode)
+    effective_scanner_backend_matrix = bool(scanner_backend_matrix and valid_input_mode != "oracle")
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
     skinning_config = _effective_skinning_config_for_workflow(
         workflow_mode=valid_workflow_mode,
         skinning_config=skinning_config,
         skinner_method_explicit=skinner_method_explicit,
+        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
+        skinner_growth_source_explicit=skinner_growth_source_explicit,
+        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
     )
     if voting_config is None:
         support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
@@ -2022,6 +2229,7 @@ def _build_report_and_volumes(
                 skinning_config=skinning_config,
                 variant=variant,
                 input_mode=valid_input_mode,
+                scanner_backend_matrix=effective_scanner_backend_matrix,
                 include_thinning_diagnostic=(
                     include_thinning_diagnostic and case.case_id in diagnostic_case_ids
                 ),
@@ -2064,6 +2272,7 @@ def _build_report_and_volumes(
         "voting": voting_config.as_report_dict(),
         "truth_metrics": truth_metric_config.as_report_dict(),
         "skinning": skinning_config.as_report_dict(),
+        "scanner_backend_matrix": effective_scanner_backend_matrix,
     }
     if valid_input_mode != "oracle":
         config["input_mode"] = valid_input_mode
@@ -2248,6 +2457,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_strike_median_error",
                 "scanner_dip_median_error",
                 "scanner_input_contrast",
+                "scanner_matrix_best_fvt_positive_buffered_f1_backend",
+                "scanner_matrix_best_skin_buffered_f1_backend",
+                "scanner_matrix_best_boundary_edge_fp_backend",
                 "thinning_diag_reference_fvt_buffered_f1_r2",
                 "thinning_diag_normal_fvt_buffered_f1_r2",
                 "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
@@ -2303,6 +2515,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     scanner_row = _summary_csv_scanner_row(
                         variant_report=variant_report,
                         input_mode=input_mode,
+                    )
+                    scanner_matrix_row = _summary_csv_scanner_backend_matrix_row(
+                        variant_report=variant_report,
                     )
                     thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
                         variant_report.get("thinning_diagnostic"),
@@ -2367,6 +2582,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
                             **skin_summary,
                             **scanner_row,
+                            **scanner_matrix_row,
                             **thinning_diagnostic_row,
                             **comparison_row,
                         }
@@ -2410,6 +2626,34 @@ def _summary_csv_scanner_row(
         "scanner_strike_median_error": orientation_error["strike_median"],
         "scanner_dip_median_error": orientation_error["dip_median"],
         "scanner_input_contrast": input_association["contrast"],
+    }
+
+
+def _summary_csv_scanner_backend_matrix_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, str | None]:
+    empty_row = {
+        "scanner_matrix_best_fvt_positive_buffered_f1_backend": None,
+        "scanner_matrix_best_skin_buffered_f1_backend": None,
+        "scanner_matrix_best_boundary_edge_fp_backend": None,
+    }
+    matrix = variant_report.get("scanner_backend_matrix")
+    if not isinstance(matrix, Mapping):
+        return empty_row
+    comparison = matrix.get("comparison")
+    if not isinstance(comparison, Mapping):
+        return empty_row
+    return {
+        "scanner_matrix_best_fvt_positive_buffered_f1_backend": comparison.get(
+            "best_fvt_positive_buffered_f1_backend"
+        ),
+        "scanner_matrix_best_skin_buffered_f1_backend": comparison.get(
+            "best_skin_buffered_f1_backend"
+        ),
+        "scanner_matrix_best_boundary_edge_fp_backend": comparison.get(
+            "best_boundary_edge_fp_backend"
+        ),
     }
 
 
@@ -3299,8 +3543,12 @@ def run_example(
     variants: Sequence[str] = DEFAULT_VARIANTS,
     variant_preset: str = DEFAULT_VARIANT_PRESET,
     input_mode: str = "oracle",
+    scanner_backend_matrix: bool = False,
     workflow_mode: str = "reference",
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -3318,8 +3566,12 @@ def run_example(
         variants=variants,
         variant_preset=variant_preset,
         input_mode=input_mode,
+        scanner_backend_matrix=scanner_backend_matrix,
         workflow_mode=workflow_mode,
         skinner_method_explicit=skinner_method_explicit,
+        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
+        skinner_growth_source_explicit=skinner_growth_source_explicit,
+        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -3340,8 +3592,9 @@ def run_example(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = tuple(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     voter_thin_mode = _effective_voter_thin_mode(
         workflow_mode=args.workflow_mode,
         voter_thin_mode=args.voter_thin_mode,
@@ -3421,8 +3674,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             variants=variants,
             variant_preset=args.variant_preset,
             input_mode=args.input_mode,
+            scanner_backend_matrix=args.scanner_backend_matrix,
             workflow_mode=args.workflow_mode,
             skinner_method_explicit=args.skinner_method is not None,
+            skinner_min_likelihood_explicit=_argv_has_long_option(
+                raw_argv,
+                "--skinner-min-likelihood",
+            ),
+            skinner_growth_source_explicit=_argv_has_long_option(
+                raw_argv,
+                "--skinner-growth-source",
+            ),
+            skinner_accepted_occupancy_radius_explicit=(
+                _argv_has_long_option(raw_argv, "--skinner-accepted-occupancy-radius")
+            ),
             include_thinning_diagnostic=include_thinning_diagnostic,
             thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,

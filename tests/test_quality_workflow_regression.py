@@ -27,6 +27,12 @@ FVT_BUFFERED_F1_R2 = (
     "buffered_overlap_radius2",
     "buffered_f1",
 )
+FVT_POSITIVE_BUFFERED_F1_R2 = (
+    "quality",
+    "fvt_positive_top_truth_count",
+    "buffered_overlap_radius2",
+    "buffered_f1",
+)
 SKIN_BUFFERED_F1_R2 = (
     "quality",
     "skin",
@@ -167,12 +173,12 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert quality["voting"]["surface_support_min_fraction"] == 0.0
     assert quality["voting"]["surface_support_exponent"] == 0.0
     assert quality["skinning"]["method"] == "quality"
-    assert quality["skinning"]["growth_source"] == "thinned"
+    assert quality["skinning"]["growth_source"] == "pre_thin"
     assert quality["skinning"]["min_likelihood"] is None
     assert quality["skinning"]["adaptive_min_likelihood"] is True
     assert quality["skinning"]["seed_min_ep"] == 0.5
-    assert quality["skinning"]["accepted_occupancy_radius"] is None
-    assert quality["skinning"]["effective_accepted_occupancy_radius"] == 5
+    assert quality["skinning"]["accepted_occupancy_radius"] == 1
+    assert quality["skinning"]["effective_accepted_occupancy_radius"] == 1
 
 
 def test_quality_workflow_key_metrics_are_finite(
@@ -223,6 +229,10 @@ def test_quality_skinner_v2_extended_skin_metrics_are_finite(
         "quality_skinner_v2",
     ]
     for case in _cases_by_id(quality_skinner_v2_report).values():
+        assert (
+            case["variants"]["current_default"]["config"]["skinning"]
+            == case["variants"]["quality_skinner_v2"]["config"]["skinning"]
+        )
         variant = case["variants"]["quality_skinner_v2"]
         skinning = variant["config"]["skinning"]
         assert skinning["method"] == "quality"
@@ -283,6 +293,13 @@ def test_quality_workflow_case_specific_guardrails(
     _assert_quality_at_least_reference_delta(
         reference_cases,
         quality_cases,
+        "single_vertical_plane",
+        FVT_POSITIVE_BUFFERED_F1_R2,
+        -0.02,
+    )
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
         "parallel_planes",
         FVT_BUFFERED_F1_R2,
         -0.02,
@@ -290,16 +307,23 @@ def test_quality_workflow_case_specific_guardrails(
     _assert_quality_at_least_reference_delta(
         reference_cases,
         quality_cases,
+        "single_dipping_plane",
+        SKIN_BUFFERED_F1_R2,
+        -0.02,
+    )
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
         "curved_surface",
-        FVT_BUFFERED_F1_R2,
-        0.15,
+        SKIN_BUFFERED_F1_R2,
+        0.10,
     )
     _assert_quality_at_least_reference_delta(
         reference_cases,
         quality_cases,
         "crossing_planes",
         SKIN_BUFFERED_F1_R2,
-        -0.10,
+        -0.02,
     )
     _assert_quality_at_least_reference_delta(
         reference_cases,
@@ -314,4 +338,11 @@ def test_quality_workflow_case_specific_guardrails(
         "boundary_plane",
         FVT_EDGE_FALSE_POSITIVE_FRACTION,
         0.05,
+    )
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
+        "boundary_plane",
+        SKIN_BUFFERED_F1_R2,
+        -0.02,
     )
