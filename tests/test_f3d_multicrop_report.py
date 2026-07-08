@@ -464,6 +464,147 @@ def test_compare_workflows_honors_explicit_surface_support_override(
     assert received_kwargs[1]["surface_support_exponent"] == 2.0
 
 
+def test_visual_report_markdown_compare_report_includes_workflow_figures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    report = {
+        "data_root": "/tmp/f3_reference",
+        "config": {
+            "comparison": "scan_vote_thin_fv_fvt_multicrop",
+            "compare_workflows": True,
+            "crop_selection": {"crop_shape": [6, 6, 6], "selected_count": 1},
+        },
+        "workflows": {
+            "reference": {
+                "config": {
+                    "workflow_mode": "reference",
+                    "scanner": {"thin_mode": "reference", "remove_edge_effects": True},
+                    "voter": {
+                        "thin_mode": "reference",
+                        "surface_support_min_fraction": 0.0,
+                        "surface_support_exponent": 0.0,
+                    },
+                },
+                "crops": [
+                    {
+                        "index": 1,
+                        "crop_center": [2, 2, 2],
+                        "crop_slices": [{"axis": "i3", "start": 0, "stop": 6}],
+                        "normalized_correlation": {"interior": {"fv": 0.9, "fvt": 0.8}},
+                        "figures": {
+                            "files": {
+                                "scanner_fl_vs_ftpy": {
+                                    "i3": "figures/reference/crop_001/scanner.png"
+                                }
+                            }
+                        },
+                    }
+                ],
+            },
+            "quality": {
+                "config": {
+                    "workflow_mode": "quality",
+                    "scanner": {"thin_mode": "reference", "remove_edge_effects": True},
+                    "voter": {
+                        "thin_mode": "hybrid",
+                        "surface_support_min_fraction": 0.0,
+                        "surface_support_exponent": 0.0,
+                    },
+                },
+                "crops": [
+                    {
+                        "index": 1,
+                        "crop_center": [2, 2, 2],
+                        "crop_slices": [{"axis": "i3", "start": 0, "stop": 6}],
+                        "normalized_correlation": {"interior": {"fv": 0.95, "fvt": 0.85}},
+                        "figures": {
+                            "files": {"fv_ref_vs_py": {"i3": "figures/quality/crop_001/fv.png"}}
+                        },
+                    }
+                ],
+            },
+        },
+        "workflow_delta": {
+            "quality_vs_reference": {
+                "per_metric_mean": {"normalized_correlation.interior.fv": 0.05}
+            }
+        },
+    }
+
+    markdown = module.visual_report_markdown(report)
+
+    assert "### reference" in markdown
+    assert "### quality" in markdown
+    assert "## reference Crop Metrics" in markdown
+    assert "## quality Crop Metrics" in markdown
+    assert "crop_001" in markdown
+    assert "figures/reference/crop_001/scanner.png" in markdown
+    assert "figures/quality/crop_001/fv.png" in markdown
+    assert "voter_thin_mode: `reference`" in markdown
+    assert "voter_thin_mode: `hybrid`" in markdown
+    assert "surface_support_min_fraction: `0.0`" in markdown
+    assert "quality_vs_reference per_metric_mean" in markdown
+    assert "No PNG figures were written for this run." not in markdown
+
+
+def test_compare_workflows_writes_markdown_index_with_figures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_json = tmp_path / "outputs" / "metrics.json"
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+    monkeypatch.setattr(
+        module.crop_validation,
+        "run_pipeline",
+        lambda ep, **kwargs: _synthetic_outputs(ep.shape),
+    )
+    monkeypatch.setattr(module.crop_validation, "require_figure_support", lambda: None)
+
+    def fake_write_figures(output_dir: Path, **kwargs: object) -> dict[str, object]:
+        relative_dir = Path(output_dir).relative_to(output_json.parent).as_posix()
+        return {
+            "directory": relative_dir,
+            "files": {
+                "scanner_fl_vs_ftpy": {"i3": f"{relative_dir}/scanner_fl_vs_ftpy_i3.png"},
+                "fv": {"mip": f"{relative_dir}/fv_mip.png"},
+            },
+        }
+
+    monkeypatch.setattr(module.crop_validation, "write_crop_figures", fake_write_figures)
+
+    module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        compare_workflows=True,
+        save_figures=True,
+        write_markdown_index=True,
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+    )
+
+    markdown_path = output_json.parent / "visual_report.md"
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert markdown_path.is_file()
+    assert "## reference Crop Metrics" in markdown
+    assert "## quality Crop Metrics" in markdown
+    assert "## reference Figures" in markdown
+    assert "## quality Figures" in markdown
+    assert "crop_001" in markdown
+    assert "figures/reference/crop_001/scanner_fl_vs_ftpy_i3.png" in markdown
+    assert "figures/quality/crop_001/scanner_fl_vs_ftpy_i3.png" in markdown
+    assert "No PNG figures were written for this run." not in markdown
+
+
 def test_save_volumes_writes_crop_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
