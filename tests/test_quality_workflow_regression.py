@@ -21,6 +21,24 @@ CASE_IDS = (
     "boundary_plane",
     "weak_noisy_plane",
 )
+FVT_BUFFERED_F1_R2 = (
+    "quality",
+    "fvt_top_truth_count",
+    "buffered_overlap_radius2",
+    "buffered_f1",
+)
+SKIN_BUFFERED_F1_R2 = (
+    "quality",
+    "skin",
+    "buffered_overlap_radius2",
+    "buffered_f1",
+)
+FVT_EDGE_FALSE_POSITIVE_FRACTION = (
+    "quality",
+    "edge_false_positive",
+    "fvt_top_truth_count",
+    "edge_false_positive_fraction_of_candidates",
+)
 
 
 def _load_report_module() -> object:
@@ -64,6 +82,42 @@ def _float_metric(report: dict[str, Any], *path: str) -> float:
     value = float(_nested(report, *path))
     assert math.isfinite(value)
     return value
+
+
+def _metric_path(*path: str) -> str:
+    return ".".join(path)
+
+
+def _assert_quality_at_least_reference_delta(
+    reference_cases: dict[str, dict[str, Any]],
+    quality_cases: dict[str, dict[str, Any]],
+    case_id: str,
+    path: tuple[str, ...],
+    min_delta: float,
+) -> None:
+    reference = _float_metric(reference_cases[case_id], *path)
+    quality = _float_metric(quality_cases[case_id], *path)
+    threshold = reference + min_delta
+    assert quality >= threshold, (
+        f"{case_id} {_metric_path(*path)}: quality={quality:.6g}, "
+        f"reference={reference:.6g}, expected quality >= {threshold:.6g}"
+    )
+
+
+def _assert_quality_at_most_reference_delta(
+    reference_cases: dict[str, dict[str, Any]],
+    quality_cases: dict[str, dict[str, Any]],
+    case_id: str,
+    path: tuple[str, ...],
+    max_delta: float,
+) -> None:
+    reference = _float_metric(reference_cases[case_id], *path)
+    quality = _float_metric(quality_cases[case_id], *path)
+    threshold = reference + max_delta
+    assert quality <= threshold, (
+        f"{case_id} {_metric_path(*path)}: quality={quality:.6g}, "
+        f"reference={reference:.6g}, expected quality <= {threshold:.6g}"
+    )
 
 
 def _assert_finite_metric_tree(value: Any) -> None:
@@ -136,56 +190,51 @@ def test_quality_workflow_key_metrics_are_finite(
                 _assert_finite_metric_tree(skin[field])
 
 
-def test_quality_workflow_broad_guardrails(
+def test_quality_workflow_case_specific_guardrails(
     workflow_reports: dict[str, dict[str, Any]],
 ) -> None:
     reference_cases = _cases_by_id(workflow_reports["reference"])
     quality_cases = _cases_by_id(workflow_reports["quality"])
 
-    curved_reference_f1 = _float_metric(
-        reference_cases["curved_surface"],
-        "quality",
-        "fvt_top_truth_count",
-        "buffered_overlap_radius2",
-        "buffered_f1",
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
+        "single_vertical_plane",
+        FVT_BUFFERED_F1_R2,
+        -0.02,
     )
-    curved_quality_f1 = _float_metric(
-        quality_cases["curved_surface"],
-        "quality",
-        "fvt_top_truth_count",
-        "buffered_overlap_radius2",
-        "buffered_f1",
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
+        "parallel_planes",
+        FVT_BUFFERED_F1_R2,
+        -0.02,
     )
-    assert curved_quality_f1 >= curved_reference_f1 - 0.05
-
-    vertical_reference_f1 = _float_metric(
-        reference_cases["single_vertical_plane"],
-        "quality",
-        "fvt_top_truth_count",
-        "buffered_overlap_radius2",
-        "buffered_f1",
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
+        "curved_surface",
+        FVT_BUFFERED_F1_R2,
+        0.15,
     )
-    vertical_quality_f1 = _float_metric(
-        quality_cases["single_vertical_plane"],
-        "quality",
-        "fvt_top_truth_count",
-        "buffered_overlap_radius2",
-        "buffered_f1",
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
+        "crossing_planes",
+        SKIN_BUFFERED_F1_R2,
+        -0.10,
     )
-    assert vertical_quality_f1 >= vertical_reference_f1 - 0.08
-
-    boundary_reference_edge_fraction = _float_metric(
-        reference_cases["boundary_plane"],
-        "quality",
-        "edge_false_positive",
-        "fvt_top_truth_count",
-        "edge_false_positive_fraction_of_candidates",
+    _assert_quality_at_least_reference_delta(
+        reference_cases,
+        quality_cases,
+        "weak_noisy_plane",
+        SKIN_BUFFERED_F1_R2,
+        -0.08,
     )
-    boundary_quality_edge_fraction = _float_metric(
-        quality_cases["boundary_plane"],
-        "quality",
-        "edge_false_positive",
-        "fvt_top_truth_count",
-        "edge_false_positive_fraction_of_candidates",
+    _assert_quality_at_most_reference_delta(
+        reference_cases,
+        quality_cases,
+        "boundary_plane",
+        FVT_EDGE_FALSE_POSITIVE_FRACTION,
+        0.05,
     )
-    assert boundary_quality_edge_fraction <= boundary_reference_edge_fraction + 0.05
