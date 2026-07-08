@@ -278,7 +278,11 @@ class OptimalSurfaceVoter:
             reference_sigma=reference_sigma,
         )
         normal = _thin_fault_normal_3d(fv_array, vp_array, vt_array)
-        roughness = _orientation_roughness_3d(vp_array, vt_array)
+        roughness = _orientation_roughness_3d(
+            vp_array,
+            vt_array,
+            support=fv_array > np.float32(0.0),
+        )
         return np.where(roughness <= threshold, reference, normal).astype(
             np.float32,
             copy=False,
@@ -1002,9 +1006,20 @@ def _thin_fault_normal_3d(
     return thinned
 
 
-def _orientation_roughness_3d(vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
+def _orientation_roughness_3d(
+    vp: np.ndarray,
+    vt: np.ndarray,
+    support: np.ndarray | None = None,
+) -> np.ndarray:
     if vp.size == 0:
         return np.zeros(vp.shape, dtype=np.float32)
+
+    if support is None:
+        support_array = np.ones(vp.shape, dtype=np.bool_)
+    else:
+        support_array = np.asarray(support, dtype=np.bool_)
+        if support_array.shape != vp.shape:
+            raise ValueError("support shape must match vp shape")
 
     roughness_squared = np.zeros(vp.shape, dtype=np.float32)
     for axis in range(3):
@@ -1021,6 +1036,11 @@ def _orientation_roughness_3d(vp: np.ndarray, vt: np.ndarray) -> np.ndarray:
         upper = [slice(None)] * 3
         lower[axis] = slice(0, -1)
         upper[axis] = slice(1, None)
+        pair_support = support_array[tuple(lower)] & support_array[tuple(upper)]
+        diff_squared = np.where(pair_support, diff_squared, np.float32(0.0)).astype(
+            np.float32,
+            copy=False,
+        )
         np.maximum(
             roughness_squared[tuple(lower)], diff_squared, out=roughness_squared[tuple(lower)]
         )

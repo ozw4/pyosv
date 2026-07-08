@@ -13,10 +13,10 @@ remains close to the current reference-oriented path. It is not the place to
 evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
-use hybrid voter thinning, support-aware surface voting, and
+use hybrid voter thinning, disable support-aware surface voting, and
 `FaultSkinner(method="quality")`
-(`surface_support_min_fraction=0.5`,
-`surface_support_exponent=1.0`). It is not a universal production profile; use
+(`surface_support_min_fraction=0.0`,
+`surface_support_exponent=0.0`). It is not a universal production profile; use
 it while reviewing the controlled synthetic benchmark matrix and checking that
 the candidate set is not over-filtered for the cases under study.
 
@@ -70,11 +70,10 @@ path but enables support-aware surface voting with
 `surface_support_min_fraction=0.5` and `surface_support_exponent=1.0`. This
 skips extracted surfaces with low valid support and down-weights the remaining
 vote by its valid-support fraction, which is useful for boundary-plane edge
-artifact diagnostics. The reference and diagnostic workflow default support
+artifact diagnostics. The reference, quality, and diagnostic workflow default support
 policy is `0.0, 0.0`, so reference mode behavior is unchanged unless the report
 CLI flags `--surface-support-min-fraction` or
 `--surface-support-exponent` are set, or the diagnostic variant is selected.
-The quality workflow uses the same `0.5, 1.0` support-aware policy by default.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The

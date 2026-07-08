@@ -358,12 +358,12 @@ def test_quality_workflow_defaults_and_explicit_voter_override(
 
     assert quality_report["config"]["workflow_mode"] == "quality"
     assert quality_report["config"]["voter"]["thin_mode"] == "hybrid"
-    assert quality_report["config"]["voter"]["surface_support_min_fraction"] == 0.5
-    assert quality_report["config"]["voter"]["surface_support_exponent"] == 1.0
+    assert quality_report["config"]["voter"]["surface_support_min_fraction"] == 0.0
+    assert quality_report["config"]["voter"]["surface_support_exponent"] == 0.0
     assert override_report["config"]["voter"]["thin_mode"] == "reference"
     assert received_kwargs[0]["voter_thin_mode"] == "hybrid"
-    assert received_kwargs[0]["surface_support_min_fraction"] == 0.5
-    assert received_kwargs[0]["surface_support_exponent"] == 1.0
+    assert received_kwargs[0]["surface_support_min_fraction"] == 0.0
+    assert received_kwargs[0]["surface_support_exponent"] == 0.0
     assert received_kwargs[1]["voter_thin_mode"] == "reference"
 
 

@@ -1463,6 +1463,55 @@ def test_thin_hybrid_constant_orientation_matches_reference_mode() -> None:
     np.testing.assert_array_equal(hybrid, reference)
 
 
+def test_orientation_roughness_ignores_orientation_sentinel_outside_support() -> None:
+    fv = np.zeros((4, 4, 4), dtype=np.float32)
+    fv[1:3, 1:3, 1:3] = 1.0
+    support = fv > 0.0
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    vp[support] = 30.0
+    vt[support] = 45.0
+
+    roughness = voting3d._orientation_roughness_3d(vp, vt, support=support)
+    unmasked_roughness = voting3d._orientation_roughness_3d(vp, vt)
+
+    np.testing.assert_array_equal(roughness[support], np.zeros(np.count_nonzero(support)))
+    assert np.max(unmasked_roughness[support]) > np.float32(8.0)
+
+
+def test_orientation_roughness_detects_orientation_change_inside_support() -> None:
+    support = np.zeros((4, 4, 4), dtype=np.bool_)
+    support[1:3, 1:3, 1:3] = True
+    vp = np.zeros(support.shape, dtype=np.float32)
+    vt = np.zeros(support.shape, dtype=np.float32)
+    vp[support] = 30.0
+    vt[support] = 45.0
+    vt[1, 1, 2] = 80.0
+
+    roughness = voting3d._orientation_roughness_3d(vp, vt, support=support)
+
+    assert roughness[1, 1, 1] > np.float32(20.0)
+    assert roughness[1, 1, 2] > np.float32(20.0)
+
+
+def test_thin_hybrid_ignores_zero_vote_orientation_sentinel_for_constant_plane() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    fv[1:4, 2, 1:4] = 1.0
+    fv[1:4, 1, 1:4] = 0.4
+    fv[1:4, 3, 1:4] = 0.4
+    support = fv > 0.0
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    vp[support] = 30.0
+    vt[support] = 45.0
+
+    reference = voter.thin(fv, vp, vt, mode="reference", reference_sigma=0.0)
+    hybrid = voter.thin(fv, vp, vt, mode="hybrid", reference_sigma=0.0)
+
+    np.testing.assert_array_equal(hybrid, reference)
+
+
 def test_thin_hybrid_uses_normal_mode_in_unstable_orientation_region() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     fv = np.zeros((5, 5, 5), dtype=np.float32)

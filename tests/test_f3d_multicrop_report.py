@@ -369,7 +369,8 @@ def test_compare_workflows_runs_same_centers_and_reports_delta(
     assert loaded["workflows"]["quality"]["crops"][0]["crop_center"] == [2, 2, 2]
     assert loaded["workflows"]["reference"]["config"]["voter"]["thin_mode"] == "reference"
     assert loaded["workflows"]["quality"]["config"]["voter"]["thin_mode"] == "hybrid"
-    assert loaded["workflows"]["quality"]["config"]["voter"]["surface_support_min_fraction"] == 0.5
+    assert loaded["workflows"]["quality"]["config"]["voter"]["surface_support_min_fraction"] == 0.0
+    assert loaded["workflows"]["quality"]["config"]["voter"]["surface_support_exponent"] == 0.0
     assert loaded["workflow_delta"]["quality_vs_reference"]
     delta = loaded["workflow_delta"]["quality_vs_reference"]["per_metric_mean"]
     assert "normalized_correlation.interior.fv" in delta
@@ -417,6 +418,50 @@ def test_compare_workflows_honors_explicit_voter_override(
     )
 
     assert report["workflows"]["quality"]["config"]["voter"]["thin_mode"] == "reference"
+
+
+def test_compare_workflows_honors_explicit_surface_support_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_json = tmp_path / "outputs" / "metrics.json"
+    received_kwargs: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+
+    def fake_run_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
+        received_kwargs.append(dict(kwargs))
+        return _synthetic_outputs(ep.shape)
+
+    monkeypatch.setattr(module.crop_validation, "run_pipeline", fake_run_pipeline)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        compare_workflows=True,
+        surface_support_min_fraction=0.25,
+        surface_support_exponent=2.0,
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+    )
+
+    reference_voter = report["workflows"]["reference"]["config"]["voter"]
+    quality_voter = report["workflows"]["quality"]["config"]["voter"]
+    assert reference_voter["surface_support_min_fraction"] == 0.25
+    assert reference_voter["surface_support_exponent"] == 2.0
+    assert quality_voter["surface_support_min_fraction"] == 0.25
+    assert quality_voter["surface_support_exponent"] == 2.0
+    assert received_kwargs[0]["surface_support_min_fraction"] == 0.25
+    assert received_kwargs[0]["surface_support_exponent"] == 2.0
+    assert received_kwargs[1]["surface_support_min_fraction"] == 0.25
+    assert received_kwargs[1]["surface_support_exponent"] == 2.0
 
 
 def test_save_volumes_writes_crop_outputs(

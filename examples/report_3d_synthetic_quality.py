@@ -206,8 +206,6 @@ def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
 def _default_surface_support_policy_for_workflow(
     workflow_mode: str,
 ) -> tuple[float, float]:
-    if workflow_mode == "quality":
-        return 0.5, 1.0
     return 0.0, 0.0
 
 
