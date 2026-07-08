@@ -261,12 +261,9 @@ def test_quality_skinner_v2_skin_f1_guardrail(
     assert any(
         quality_skinner_v2 >= current_default
         for current_default, quality_skinner_v2 in comparisons.values()
-    ), (
-        "quality_skinner_v2 skin buffered F1 was below current_default for "
-        + ", ".join(
-            f"{case_id}: {quality_skinner_v2:.6g} < {current_default:.6g}"
-            for case_id, (current_default, quality_skinner_v2) in comparisons.items()
-        )
+    ), "quality_skinner_v2 skin buffered F1 was below current_default for " + ", ".join(
+        f"{case_id}: {quality_skinner_v2:.6g} < {current_default:.6g}"
+        for case_id, (current_default, quality_skinner_v2) in comparisons.items()
     )
 
 
