@@ -179,6 +179,30 @@ python examples/report_3d_f3d_multicrop.py \
   --write-markdown-index
 ```
 
+Run a multi-crop comparison between the reference workflow and the quality
+workflow on the same deterministic centers:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/report_3d_f3d_multicrop.py \
+  --output-json outputs/3d/f3d/multicrop_quality_compare_001/metrics.json \
+  --count 3 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --compare-workflows \
+  --pretty \
+  --save-figures
+```
+
+F3 crops do not have independent truth labels. Agreement with the reference
+workflow therefore does not directly mean that the quality workflow is better.
+Use this report to check that the quality workflow has not removed visible
+geological signal from the reference-oriented path, has not introduced excess
+ridges or boundary artifacts, and has not become less stable across crops. In
+compare mode, metrics and figures are written under workflow-specific
+directories such as `volumes/reference/`, `volumes/quality/`,
+`figures/reference/`, and `figures/quality/`.
+
 Run the thinning ablation report to compare normal/normal, mixed, and
 reference/reference thinning cases:
 

@@ -68,6 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON output path. Parent directories are created as needed.",
     )
+    crop_validation.add_workflow_arguments(parser)
+    parser.add_argument(
+        "--compare-workflows",
+        action="store_true",
+        help="Run reference and quality workflows on the same selected crop centers.",
+    )
     parser.add_argument(
         "--save-volumes",
         action="store_true",
@@ -173,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Surface smoothing in the second voting dimension.",
     )
     crop_validation.add_final_normalization_smoothing_argument(parser)
+    crop_validation.add_surface_support_arguments(parser)
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
     crop_validation.add_thinning_arguments(parser)
@@ -213,9 +220,13 @@ def run_example(
     d: int = 4,
     fm: float = 0.3,
     scanner_thin_mode: str = "reference",
-    voter_thin_mode: str = "reference",
+    voter_thin_mode: str | None = None,
     reference_thin_sigma: float = 1.0,
     remove_scanner_edge_effects: bool = True,
+    workflow_mode: str = "reference",
+    compare_workflows: bool = False,
+    surface_support_min_fraction: float | None = None,
+    surface_support_exponent: float | None = None,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_json is not None:
@@ -250,54 +261,28 @@ def run_example(
         min_separation=min_separation,
         crop_shape=crop_shape,
     )
-    config = build_config(
-        crop_shape=crop_shape,
-        interior_margin=interior_margin,
-        count=count,
-        centers=selected_centers,
-        explicit_centers=centers is not None,
-        percentile=percentile,
-        min_separation=min_separation,
-        save_volumes=save_volumes,
-        volume_dir=resolved_volume_dir,
-        save_figures=save_figures,
-        figure_percentile=figure_percentile,
-        ridge_buffer_radius=ridge_buffer_radius,
-        write_markdown_index=write_markdown_index,
-        visual_report_path=output_base_dir / "visual_report.md" if output_base_dir else None,
-        sigma1=sigma1,
-        sigma2=sigma2,
-        phi_min=phi_min,
-        phi_max=phi_max,
-        theta_min=theta_min,
-        theta_max=theta_max,
-        ru=ru,
-        rv=rv,
-        rw=rw,
-        strain_max1=strain_max1,
-        strain_max2=strain_max2,
-        surface_smoothing1=surface_smoothing1,
-        surface_smoothing2=surface_smoothing2,
-        final_normalization_smoothing=final_normalization_smoothing,
-        d=d,
-        fm=fm,
-        scanner_thin_mode=scanner_thin_mode,
-        voter_thin_mode=voter_thin_mode,
-        reference_thin_sigma=reference_thin_sigma,
-        remove_scanner_edge_effects=remove_scanner_edge_effects,
-    )
     if save_figures and "fl.dat" not in arrays:
         arrays["fl.dat"] = crop_validation.read_f3d_file("fl.dat", data_root)
 
-    crops = []
-    for crop_index, center in enumerate(selected_centers, start=1):
-        slices = crop_slices(center, crop_shape, full_shape=arrays["ep.dat"].shape)
-        ep_crop = _crop(arrays["ep.dat"], slices)
-        reference_fv = _crop(arrays["fv.dat"], slices)
-        reference_fvt = _crop(arrays["fvt.dat"], slices)
-        reference_fl = _crop(arrays["fl.dat"], slices) if save_figures else None
-        outputs = crop_validation.run_pipeline(
-            ep_crop,
+    workflow_names = ("reference", "quality") if compare_workflows else (workflow_mode,)
+    workflow_reports: dict[str, Any] = {}
+    for workflow_name in workflow_names:
+        workflow_config, workflow_crops = run_workflow_crops(
+            arrays=arrays,
+            selected_centers=selected_centers,
+            crop_shape=crop_shape,
+            interior_margin=interior_margin,
+            output_base_dir=output_base_dir,
+            resolved_volume_dir=resolved_volume_dir,
+            save_volumes=save_volumes,
+            save_figures=save_figures,
+            figure_percentile=figure_percentile,
+            ridge_buffer_radius=ridge_buffer_radius,
+            count=count,
+            centers=selected_centers,
+            explicit_centers=centers is not None,
+            percentile=percentile,
+            min_separation=min_separation,
             sigma1=sigma1,
             sigma2=sigma2,
             phi_min=phi_min,
@@ -318,51 +303,45 @@ def run_example(
             voter_thin_mode=voter_thin_mode,
             reference_thin_sigma=reference_thin_sigma,
             remove_scanner_edge_effects=remove_scanner_edge_effects,
+            surface_support_min_fraction=surface_support_min_fraction,
+            surface_support_exponent=surface_support_exponent,
+            workflow_mode=workflow_name,
+            compare_workflows=compare_workflows,
+            write_markdown_index=write_markdown_index,
         )
+        workflow_reports[workflow_name] = {
+            "config": workflow_config,
+            "crops": workflow_crops,
+            "aggregate": aggregate_crop_metrics(workflow_crops),
+        }
 
-        if resolved_volume_dir is not None:
-            crop_validation.write_crop_volumes(
-                Path(resolved_volume_dir) / f"crop_{crop_index:03d}",
-                outputs,
-            )
-
-        crop_report = crop_validation.build_crop_report(
-            crop_index=crop_index,
-            center=center,
-            slices=slices,
-            crop_shape=ep_crop.shape,
-            outputs=outputs,
-            reference_fv=reference_fv,
-            reference_fvt=reference_fvt,
-            interior_margin=interior_margin,
-        )
-        if save_figures:
-            if output_base_dir is None:
-                raise ValueError("--save-figures requires --output-json")
-            if reference_fl is None:
-                raise ValueError("fl.dat is required when --save-figures is passed")
-            crop_report["figures"] = crop_validation.write_crop_figures(
-                output_base_dir / f"crop_{crop_index:03d}" / "figures",
-                metrics_base_dir=output_base_dir,
-                reference_fl=reference_fl,
-                reference_fv=reference_fv,
-                reference_fvt=reference_fvt,
-                outputs=outputs,
-                figure_percentile=figure_percentile,
-                ridge_buffer_radius=ridge_buffer_radius,
-                figure_slices="center",
-            )
-        crops.append(crop_report)
-
-    report = _json_compatible(
-        {
+    if compare_workflows:
+        config = dict(workflow_reports["reference"]["config"])
+        config["compare_workflows"] = True
+        config["workflow_modes"] = list(workflow_names)
+        report_content: dict[str, Any] = {
             "format_version": 1,
             "data_root": str(data_root),
             "config": config,
-            "crops": crops,
-            "aggregate": aggregate_crop_metrics(crops),
+            "workflows": workflow_reports,
+            "workflow_delta": {
+                "quality_vs_reference": aggregate_delta(
+                    workflow_reports["reference"]["aggregate"],
+                    workflow_reports["quality"]["aggregate"],
+                )
+            },
         }
-    )
+    else:
+        single = workflow_reports[workflow_mode]
+        report_content = {
+            "format_version": 1,
+            "data_root": str(data_root),
+            "config": single["config"],
+            "crops": single["crops"],
+            "aggregate": single["aggregate"],
+        }
+
+    report = _json_compatible(report_content)
 
     if output_json is not None:
         write_report_json(report, output_json, pretty=pretty)
@@ -417,6 +396,176 @@ def resolve_volume_dir(
     raise ValueError("--save-volumes requires --volume-dir or --output-json")
 
 
+def run_workflow_crops(
+    *,
+    arrays: Mapping[str, np.ndarray],
+    selected_centers: list[tuple[int, int, int]],
+    crop_shape: tuple[int, int, int],
+    interior_margin: int,
+    output_base_dir: Path | None,
+    resolved_volume_dir: Path | None,
+    save_volumes: bool,
+    save_figures: bool,
+    figure_percentile: float,
+    ridge_buffer_radius: float,
+    count: int,
+    centers: list[tuple[int, int, int]],
+    explicit_centers: bool,
+    percentile: float,
+    min_separation: float,
+    sigma1: float,
+    sigma2: float,
+    phi_min: float,
+    phi_max: float,
+    theta_min: float,
+    theta_max: float,
+    ru: int,
+    rv: int,
+    rw: int,
+    strain_max1: float,
+    strain_max2: float,
+    surface_smoothing1: float,
+    surface_smoothing2: float,
+    final_normalization_smoothing: float | None,
+    d: int,
+    fm: float,
+    scanner_thin_mode: str,
+    voter_thin_mode: str | None,
+    reference_thin_sigma: float,
+    remove_scanner_edge_effects: bool,
+    surface_support_min_fraction: float | None,
+    surface_support_exponent: float | None,
+    workflow_mode: str,
+    compare_workflows: bool,
+    write_markdown_index: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    workflow_options = crop_validation.resolve_workflow_options(
+        workflow_mode=workflow_mode,
+        voter_thin_mode=voter_thin_mode,
+        surface_support_min_fraction=surface_support_min_fraction,
+        surface_support_exponent=surface_support_exponent,
+    )
+    effective_voter_thin_mode = str(workflow_options["voter_thin_mode"])
+    effective_support_min_fraction = float(workflow_options["surface_support_min_fraction"])
+    effective_support_exponent = float(workflow_options["surface_support_exponent"])
+
+    workflow_volume_dir = resolved_volume_dir
+    if compare_workflows and workflow_volume_dir is not None:
+        workflow_volume_dir = workflow_volume_dir / workflow_mode
+
+    config = build_config(
+        crop_shape=crop_shape,
+        interior_margin=interior_margin,
+        count=count,
+        centers=centers,
+        explicit_centers=explicit_centers,
+        percentile=percentile,
+        min_separation=min_separation,
+        save_volumes=save_volumes,
+        volume_dir=workflow_volume_dir,
+        save_figures=save_figures,
+        figure_percentile=figure_percentile,
+        ridge_buffer_radius=ridge_buffer_radius,
+        write_markdown_index=write_markdown_index,
+        visual_report_path=output_base_dir / "visual_report.md" if output_base_dir else None,
+        sigma1=sigma1,
+        sigma2=sigma2,
+        phi_min=phi_min,
+        phi_max=phi_max,
+        theta_min=theta_min,
+        theta_max=theta_max,
+        ru=ru,
+        rv=rv,
+        rw=rw,
+        strain_max1=strain_max1,
+        strain_max2=strain_max2,
+        surface_smoothing1=surface_smoothing1,
+        surface_smoothing2=surface_smoothing2,
+        final_normalization_smoothing=final_normalization_smoothing,
+        d=d,
+        fm=fm,
+        scanner_thin_mode=scanner_thin_mode,
+        voter_thin_mode=effective_voter_thin_mode,
+        reference_thin_sigma=reference_thin_sigma,
+        remove_scanner_edge_effects=remove_scanner_edge_effects,
+        workflow_mode=workflow_mode,
+        surface_support_min_fraction=effective_support_min_fraction,
+        surface_support_exponent=effective_support_exponent,
+    )
+
+    crops = []
+    for crop_index, center in enumerate(selected_centers, start=1):
+        slices = crop_slices(center, crop_shape, full_shape=arrays["ep.dat"].shape)
+        ep_crop = _crop(arrays["ep.dat"], slices)
+        reference_fv = _crop(arrays["fv.dat"], slices)
+        reference_fvt = _crop(arrays["fvt.dat"], slices)
+        reference_fl = _crop(arrays["fl.dat"], slices) if save_figures else None
+        outputs = crop_validation.run_pipeline(
+            ep_crop,
+            sigma1=sigma1,
+            sigma2=sigma2,
+            phi_min=phi_min,
+            phi_max=phi_max,
+            theta_min=theta_min,
+            theta_max=theta_max,
+            ru=ru,
+            rv=rv,
+            rw=rw,
+            strain_max1=strain_max1,
+            strain_max2=strain_max2,
+            surface_smoothing1=surface_smoothing1,
+            surface_smoothing2=surface_smoothing2,
+            final_normalization_smoothing=final_normalization_smoothing,
+            surface_support_min_fraction=effective_support_min_fraction,
+            surface_support_exponent=effective_support_exponent,
+            d=d,
+            fm=fm,
+            scanner_thin_mode=scanner_thin_mode,
+            voter_thin_mode=effective_voter_thin_mode,
+            reference_thin_sigma=reference_thin_sigma,
+            remove_scanner_edge_effects=remove_scanner_edge_effects,
+        )
+
+        if workflow_volume_dir is not None:
+            crop_validation.write_crop_volumes(
+                workflow_volume_dir / f"crop_{crop_index:03d}",
+                outputs,
+            )
+
+        crop_report = crop_validation.build_crop_report(
+            crop_index=crop_index,
+            center=center,
+            slices=slices,
+            crop_shape=ep_crop.shape,
+            outputs=outputs,
+            reference_fv=reference_fv,
+            reference_fvt=reference_fvt,
+            interior_margin=interior_margin,
+        )
+        if save_figures:
+            if output_base_dir is None:
+                raise ValueError("--save-figures requires --output-json")
+            if reference_fl is None:
+                raise ValueError("fl.dat is required when --save-figures is passed")
+            figure_dir = output_base_dir / f"crop_{crop_index:03d}" / "figures"
+            if compare_workflows:
+                figure_dir = output_base_dir / "figures" / workflow_mode / f"crop_{crop_index:03d}"
+            crop_report["figures"] = crop_validation.write_crop_figures(
+                figure_dir,
+                metrics_base_dir=output_base_dir,
+                reference_fl=reference_fl,
+                reference_fv=reference_fv,
+                reference_fvt=reference_fvt,
+                outputs=outputs,
+                figure_percentile=figure_percentile,
+                ridge_buffer_radius=ridge_buffer_radius,
+                figure_slices="center",
+            )
+        crops.append(crop_report)
+
+    return config, crops
+
+
 def build_config(
     *,
     crop_shape: tuple[int, int, int],
@@ -453,8 +602,12 @@ def build_config(
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
     remove_scanner_edge_effects: bool = True,
+    workflow_mode: str = "reference",
+    surface_support_min_fraction: float = 0.0,
+    surface_support_exponent: float = 0.0,
 ) -> dict[str, Any]:
     config: dict[str, Any] = {
+        "workflow_mode": workflow_mode,
         "input": "ep.dat",
         "reference": ["fv.dat", "fvt.dat"],
         "comparison": "scan_vote_thin_fv_fvt_multicrop",
@@ -495,6 +648,8 @@ def build_config(
             "fm": float(fm),
             "thin_mode": voter_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
+            "surface_support_min_fraction": float(surface_support_min_fraction),
+            "surface_support_exponent": float(surface_support_exponent),
             "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
         },
         "overlap_percentiles": [float(p) for p in crop_validation.OVERLAP_PERCENTILES],
@@ -546,6 +701,25 @@ def aggregate_crop_metrics(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         summaries["per_metric_max"][path] = float(np.max(values))
 
     return summaries
+
+
+def aggregate_delta(reference: Any, quality: Any) -> Any:
+    if isinstance(reference, Mapping) and isinstance(quality, Mapping):
+        keys = sorted(set(reference) | set(quality))
+        return {str(key): aggregate_delta(reference.get(key), quality.get(key)) for key in keys}
+
+    if reference is None or quality is None:
+        return None
+    if isinstance(reference, bool) or isinstance(quality, bool):
+        return None
+    if isinstance(reference, int | float | np.generic) and isinstance(
+        quality, int | float | np.generic
+    ):
+        reference_value = float(reference)
+        quality_value = float(quality)
+        if math.isfinite(reference_value) and math.isfinite(quality_value):
+            return quality_value - reference_value
+    return None
 
 
 def write_report_json(
@@ -804,12 +978,16 @@ def main(argv: list[str] | None = None) -> int:
             surface_smoothing1=args.surface_smoothing1,
             surface_smoothing2=args.surface_smoothing2,
             final_normalization_smoothing=args.final_normalization_smoothing,
+            surface_support_min_fraction=args.surface_support_min_fraction,
+            surface_support_exponent=args.surface_support_exponent,
             d=args.d,
             fm=args.fm,
             scanner_thin_mode=args.scanner_thin_mode,
-            voter_thin_mode=args.voter_thin_mode,
+            voter_thin_mode=(args.voter_thin_mode if args.voter_thin_mode_explicit else None),
             reference_thin_sigma=args.reference_thin_sigma,
             remove_scanner_edge_effects=args.remove_scanner_edge_effects,
+            workflow_mode=args.workflow_mode,
+            compare_workflows=args.compare_workflows,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

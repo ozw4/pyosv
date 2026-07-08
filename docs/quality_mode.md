@@ -92,3 +92,24 @@ Primary metrics to compare:
 - `skin_buffered_f1_r2`
 - `skin_distance_candidate_to_truth_p95`
 - `edge_false_positive_fraction` columns
+
+## F3 Real-Data Workflow Comparison
+
+The F3 multi-crop report can also compare `reference` and `quality` workflows
+on the same real-data crop centers:
+
+```bash
+PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
+  --data-root "$PYOSV_F3D_DATA_ROOT" \
+  --count 2 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --compare-workflows \
+  --output-json outputs/3d/f3d/quality_compare_001/metrics.json \
+  --pretty
+```
+
+Because F3 has no independent truth labels, reference agreement is a stability
+diagnostic rather than direct evidence of higher quality. Review whether the
+quality workflow preserves reference geological signal, avoids extra ridges and
+boundary artifacts, and keeps crop-to-crop behavior stable.

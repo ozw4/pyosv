@@ -51,25 +51,56 @@ VOLUME_NAMES = (
     "vt_py.dat",
     "fvt_py.dat",
 )
-THIN_MODES = ("normal", "reference")
+WORKFLOW_MODES = ("reference", "quality")
+THIN_MODES = ("normal", "reference", "hybrid")
+SCANNER_THIN_MODES = ("normal", "reference")
+VOTER_THIN_MODES = THIN_MODES
+QUALITY_SURFACE_SUPPORT_MIN_FRACTION = 0.5
+QUALITY_SURFACE_SUPPORT_EXPONENT = 1.0
 FINAL_NORMALIZATION_SMOOTHING_HELP = (
     "Default uses reference-like final normalization with no final vote-map smoothing. "
     "Use 1.0 to compare the older practical smoothing behavior."
 )
 
 
+class StoreExplicitValue(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | None,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"{self.dest}_explicit", True)
+
+
+def add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--workflow-mode",
+        choices=WORKFLOW_MODES,
+        default="reference",
+        help=(
+            "Workflow defaults to apply. reference preserves the reference-first path; "
+            "quality defaults to hybrid voter thinning and support-aware voting."
+        ),
+    )
+
+
 def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.set_defaults(voter_thin_mode_explicit=False)
     parser.add_argument(
         "--scanner-thin-mode",
-        choices=THIN_MODES,
+        choices=SCANNER_THIN_MODES,
         default="reference",
         help="Scanner thinning mode. Defaults to the reference-like scanner thinning path.",
     )
     parser.add_argument(
         "--voter-thin-mode",
-        choices=THIN_MODES,
+        choices=VOTER_THIN_MODES,
         default="reference",
-        help="Voter thinning mode. Defaults to the reference-like voter thinning path.",
+        action=StoreExplicitValue,
+        help="Voter thinning mode. Defaults by --workflow-mode unless explicitly passed.",
     )
     parser.add_argument(
         "--reference-thin-sigma",
@@ -86,6 +117,21 @@ def add_thinning_arguments(parser: argparse.ArgumentParser) -> None:
             "Disable scanner reference-thinning edge-effect removal for diagnostics. "
             "The default removes scanner edge effects."
         ),
+    )
+
+
+def add_surface_support_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--surface-support-min-fraction",
+        type=float,
+        default=None,
+        help="Minimum valid surface-vote support fraction; defaults by --workflow-mode.",
+    )
+    parser.add_argument(
+        "--surface-support-exponent",
+        type=float,
+        default=None,
+        help="Support-fraction vote down-weighting exponent; defaults by --workflow-mode.",
     )
 
 
@@ -117,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional directory for metrics.json and, with --save-volumes, crop DAT outputs.",
     )
+    add_workflow_arguments(parser)
     parser.add_argument(
         "--save-volumes",
         action="store_true",
@@ -223,6 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     add_final_normalization_smoothing_argument(parser)
+    add_surface_support_arguments(parser)
     parser.add_argument("--d", type=int, default=4, help="Seed exclusion distance.")
     parser.add_argument("--fm", type=float, default=0.3, help="Minimum seed likelihood.")
     parser.add_argument(
@@ -270,10 +318,23 @@ def run_example(
     fm: float = 0.3,
     interior_margin: int | None = None,
     scanner_thin_mode: str = "reference",
-    voter_thin_mode: str = "reference",
+    voter_thin_mode: str | None = None,
     reference_thin_sigma: float = 1.0,
     remove_scanner_edge_effects: bool = True,
+    workflow_mode: str = "reference",
+    surface_support_min_fraction: float | None = None,
+    surface_support_exponent: float | None = None,
 ) -> dict[str, Any]:
+    workflow_options = resolve_workflow_options(
+        workflow_mode=workflow_mode,
+        voter_thin_mode=voter_thin_mode,
+        surface_support_min_fraction=surface_support_min_fraction,
+        surface_support_exponent=surface_support_exponent,
+    )
+    voter_thin_mode = workflow_options["voter_thin_mode"]
+    surface_support_min_fraction = workflow_options["surface_support_min_fraction"]
+    surface_support_exponent = workflow_options["surface_support_exponent"]
+
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_dir is not None:
         ensure_output_not_in_data_root(output_dir, data_root)
@@ -291,6 +352,7 @@ def run_example(
     )
     arrays = read_reference_arrays(data_root)
     config = {
+        "workflow_mode": workflow_options["workflow_mode"],
         "crop_shape": list(crop_shape),
         "crop_center": list(center) if center is not None else None,
         "crop_selection_boundary_margin": "crop_shape" if center is None else None,
@@ -329,6 +391,8 @@ def run_example(
             "fm": float(fm),
             "thin_mode": voter_thin_mode,
             "reference_thin_sigma": float(reference_thin_sigma),
+            "surface_support_min_fraction": float(surface_support_min_fraction),
+            "surface_support_exponent": float(surface_support_exponent),
             "surface_voting_boundary_policy": "reference-like-i2-i3-interior",
         },
         "interior_margin": int(interior_margin),
@@ -377,6 +441,8 @@ def run_example(
             surface_smoothing2=surface_smoothing2,
             surface_orientation_smoothing=surface_orientation_smoothing,
             final_normalization_smoothing=final_normalization_smoothing,
+            surface_support_min_fraction=surface_support_min_fraction,
+            surface_support_exponent=surface_support_exponent,
             d=d,
             fm=fm,
             scanner_thin_mode=scanner_thin_mode,
@@ -473,6 +539,37 @@ def resolve_crop_config(
     return resolved_shape, int(resolved_margin)
 
 
+def resolve_workflow_options(
+    *,
+    workflow_mode: str,
+    voter_thin_mode: str | None,
+    surface_support_min_fraction: float | None,
+    surface_support_exponent: float | None,
+) -> dict[str, Any]:
+    if workflow_mode not in WORKFLOW_MODES:
+        raise ValueError("workflow_mode must be one of: " + ", ".join(WORKFLOW_MODES))
+    if voter_thin_mode is None:
+        voter_thin_mode = "hybrid" if workflow_mode == "quality" else "reference"
+    if voter_thin_mode not in VOTER_THIN_MODES:
+        raise ValueError("voter_thin_mode must be one of: " + ", ".join(VOTER_THIN_MODES))
+
+    default_min_fraction = (
+        QUALITY_SURFACE_SUPPORT_MIN_FRACTION if workflow_mode == "quality" else 0.0
+    )
+    default_exponent = QUALITY_SURFACE_SUPPORT_EXPONENT if workflow_mode == "quality" else 0.0
+    if surface_support_min_fraction is not None:
+        default_min_fraction = surface_support_min_fraction
+    if surface_support_exponent is not None:
+        default_exponent = surface_support_exponent
+
+    return {
+        "workflow_mode": workflow_mode,
+        "voter_thin_mode": voter_thin_mode,
+        "surface_support_min_fraction": float(default_min_fraction),
+        "surface_support_exponent": float(default_exponent),
+    }
+
+
 def run_pipeline(
     ep: np.ndarray,
     *,
@@ -493,6 +590,8 @@ def run_pipeline(
     fm: float,
     surface_orientation_smoothing: float | None = None,
     final_normalization_smoothing: float | None = None,
+    surface_support_min_fraction: float = 0.0,
+    surface_support_exponent: float = 0.0,
     scanner_thin_mode: str = "reference",
     voter_thin_mode: str = "reference",
     reference_thin_sigma: float = 1.0,
@@ -515,6 +614,10 @@ def run_pipeline(
     voter = OptimalSurfaceVoter(ru=ru, rv=rv, rw=rw)
     voter.set_strain_max(strain_max1, strain_max2)
     voter.set_surface_smoothing(surface_smoothing1, surface_smoothing2)
+    voter.set_surface_support_policy(
+        min_fraction=surface_support_min_fraction,
+        exponent=surface_support_exponent,
+    )
     if surface_orientation_smoothing is not None:
         voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
     if final_normalization_smoothing is not None:
@@ -900,13 +1003,16 @@ def main(argv: list[str] | None = None) -> int:
             surface_smoothing2=args.surface_smoothing2,
             surface_orientation_smoothing=args.surface_orientation_smoothing,
             final_normalization_smoothing=args.final_normalization_smoothing,
+            surface_support_min_fraction=args.surface_support_min_fraction,
+            surface_support_exponent=args.surface_support_exponent,
             d=args.d,
             fm=args.fm,
             interior_margin=args.interior_margin,
             scanner_thin_mode=args.scanner_thin_mode,
-            voter_thin_mode=args.voter_thin_mode,
+            voter_thin_mode=(args.voter_thin_mode if args.voter_thin_mode_explicit else None),
             reference_thin_sigma=args.reference_thin_sigma,
             remove_scanner_edge_effects=args.remove_scanner_edge_effects,
+            workflow_mode=args.workflow_mode,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
