@@ -230,28 +230,44 @@ def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None
     assert math.isfinite(float(input_association["contrast"]))
 
 
-def _assert_scanner_backend_matrix_contract(matrix: dict[str, object]) -> None:
-    assert set(matrix["backends"]) == set(EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS)
+def _assert_scanner_backend_matrix_contract(
+    matrix: dict[str, object],
+    *,
+    expected_selected_backend: str | None = None,
+) -> None:
     backends = matrix["backends"]
-    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+    comparison = matrix["comparison"]
+    selected_backend = comparison["selected_backend"]
+    if expected_selected_backend is not None:
+        assert selected_backend == expected_selected_backend
+    expected_backends = set(EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS)
+    if selected_backend not in expected_backends:
+        expected_backends.add(selected_backend)
+    assert set(backends) == expected_backends
+
+    for backend in expected_backends:
         backend_report = backends[backend]
         assert backend_report["scanner"]["config"]["backend"] == backend
         assert backend_report["pyosv"]["fvt"]["finite_fraction"] == 1.0
         assert "quality" in backend_report
         _assert_scanner_quality_contract(backend_report["scanner_quality"])
 
-    comparison = matrix["comparison"]
-    assert comparison["selected_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    assert comparison["best_fvt_positive_buffered_f1_backend"] in (
-        EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    )
-    assert comparison["best_skin_buffered_f1_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    assert comparison["best_boundary_edge_fp_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+    assert selected_backend in expected_backends
+    assert comparison["best_fvt_positive_buffered_f1_backend"] in expected_backends
+    assert comparison["best_skin_buffered_f1_backend"] in expected_backends
+    assert comparison["best_boundary_edge_fp_backend"] in expected_backends
+    deltas = comparison["deltas_vs_selected_backend"]
+    for backend in expected_backends:
         values = comparison["metric_values"][backend]
         assert math.isfinite(float(values["fvt_positive_buffered_f1"]))
         assert math.isfinite(float(values["skin_buffered_f1"]))
         assert math.isfinite(float(values["fvt_positive_edge_false_positive_fraction"]))
+        for metric, delta in deltas[backend].items():
+            assert metric in values
+            assert delta is not None
+            assert math.isfinite(float(delta))
+    for delta in deltas[selected_backend].values():
+        assert delta == 0.0
 
 
 def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> None:
@@ -2420,8 +2436,34 @@ def test_scanner_backend_matrix_scanner_mode_reports_all_backends(
     matrix = variant["scanner_backend_matrix"]
     assert metrics["config"]["scanner_backend_matrix"] is True
     assert variant["scanner"]["config"]["backend"] == "fast"
-    _assert_scanner_backend_matrix_contract(matrix)
-    assert matrix["comparison"]["selected_backend"] == "fast"
+    _assert_scanner_backend_matrix_contract(matrix, expected_selected_backend="fast")
+
+
+def test_scanner_backend_matrix_ensemble_selected_has_baseline(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "ensemble",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    matrix = variant["scanner_backend_matrix"]
+    assert variant["scanner"]["config"]["backend"] == "ensemble"
+    _assert_scanner_backend_matrix_contract(matrix, expected_selected_backend="ensemble")
 
 
 def test_scanner_backend_matrix_both_mode_lives_on_scanner_pipeline(

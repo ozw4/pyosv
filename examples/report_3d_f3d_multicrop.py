@@ -1,6 +1,6 @@
 """Run deterministic multi-crop F3 scan/vote validation.
 
-The JSON schema has three top-level sections:
+The JSON schema has four top-level sections:
 
 ``config``
     CLI/runtime settings, including crop selection mode and volume output policy.

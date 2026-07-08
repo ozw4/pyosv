@@ -1320,7 +1320,10 @@ def _scanner_backend_matrix_report(
     selected_report: Mapping[str, Any],
 ) -> dict[str, Any]:
     backend_reports: dict[str, Any] = {}
-    for backend in SCANNER_BACKEND_MATRIX_BACKENDS:
+    matrix_backends = SCANNER_BACKEND_MATRIX_BACKENDS
+    if scanner_config.backend not in matrix_backends:
+        matrix_backends = (*matrix_backends, scanner_config.backend)
+    for backend in matrix_backends:
         if backend == scanner_config.backend:
             backend_reports[backend] = dict(selected_report)
         else:
