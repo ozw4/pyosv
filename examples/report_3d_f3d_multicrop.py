@@ -1,6 +1,6 @@
 """Run deterministic multi-crop F3 scan/vote validation.
 
-The JSON schema has three top-level sections:
+The JSON schema has four top-level sections:
 
 ``config``
     CLI/runtime settings, including crop selection mode and volume output policy.
@@ -12,6 +12,10 @@ The JSON schema has three top-level sections:
     ``normalized_correlation.interior.fv`` or
     ``sparse_ridge_distance_metrics.interior.fvt.candidate_to_reference_median``.
     Empty sparse-mask distance values are reported as ``None``.
+``consensus``
+    Workflow-level truthless crop-stability summaries derived from the saved
+    crop metrics. Compare reports also include quality-minus-reference
+    consensus deltas.
 """
 
 from __future__ import annotations
@@ -315,15 +319,29 @@ def run_example(
             "aggregate": aggregate_crop_metrics(workflow_crops),
         }
 
+    consensus_workflows = {
+        workflow_name: build_consensus_summary(workflow_report["crops"])
+        for workflow_name, workflow_report in workflow_reports.items()
+    }
+    consensus: dict[str, Any] = {"workflows": consensus_workflows}
+    if compare_workflows:
+        consensus["workflow_comparison"] = {
+            "quality_minus_reference": build_consensus_delta(
+                consensus_workflows["reference"],
+                consensus_workflows["quality"],
+            )
+        }
+
     if compare_workflows:
         config = dict(workflow_reports["reference"]["config"])
         config["compare_workflows"] = True
         config["workflow_modes"] = list(workflow_names)
         report_content: dict[str, Any] = {
-            "format_version": 1,
+            "format_version": 2,
             "data_root": str(data_root),
             "config": config,
             "workflows": workflow_reports,
+            "consensus": consensus,
             "workflow_delta": {
                 "quality_vs_reference": aggregate_delta(
                     workflow_reports["reference"]["aggregate"],
@@ -334,11 +352,12 @@ def run_example(
     else:
         single = workflow_reports[workflow_mode]
         report_content = {
-            "format_version": 1,
+            "format_version": 2,
             "data_root": str(data_root),
             "config": single["config"],
             "crops": single["crops"],
             "aggregate": single["aggregate"],
+            "consensus": consensus,
         }
 
     report = _json_compatible(report_content)
@@ -722,6 +741,151 @@ def aggregate_delta(reference: Any, quality: Any) -> Any:
     return None
 
 
+def build_consensus_summary(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    crop_list = list(crops)
+    fvt_nonzero = _crop_metric_values(crop_list, ("pyosv", "fvt", "nonzero_fraction"))
+    fv_nonzero = _crop_metric_values(crop_list, ("pyosv", "fv", "nonzero_fraction"))
+    fvt_reference_correlation = _crop_metric_values(
+        crop_list,
+        ("normalized_correlation", "interior", "fvt"),
+    )
+    fvt_buffered_precision = _crop_metric_values(
+        crop_list,
+        ("buffered_ridge_overlap", "interior", "fvt", "buffered_precision"),
+    )
+    fvt_buffered_recall = _crop_metric_values(
+        crop_list,
+        ("buffered_ridge_overlap", "interior", "fvt", "buffered_recall"),
+    )
+    fvt_sparse_distance_p95 = _crop_metric_values(
+        crop_list,
+        ("sparse_ridge_distance_metrics", "interior", "fvt", "candidate_to_reference_p95"),
+    )
+    fvt_edge_density_proxy = []
+    for crop in crop_list:
+        edge_proxy = _edge_density_proxy(crop, "fvt")
+        if edge_proxy is not None:
+            fvt_edge_density_proxy.append(edge_proxy)
+
+    return {
+        "crop_count": len(crop_list),
+        **_mean_std_cv("fvt_nonzero_fraction", fvt_nonzero),
+        **_mean_std_cv("fv_nonzero_fraction", fv_nonzero),
+        **_mean_std("fvt_reference_correlation", fvt_reference_correlation),
+        "fvt_buffered_overlap_precision_mean": _mean_or_none(fvt_buffered_precision),
+        "fvt_buffered_overlap_recall_mean": _mean_or_none(fvt_buffered_recall),
+        "fvt_sparse_distance_p95_mean": _mean_or_none(fvt_sparse_distance_p95),
+        **_mean_std("fvt_edge_density_proxy", fvt_edge_density_proxy),
+        "finite_failure_count": sum(
+            _finite_failure_count(crop.get("finite_checks", {})) for crop in crop_list
+        ),
+    }
+
+
+def build_consensus_delta(
+    reference: Mapping[str, Any], quality: Mapping[str, Any]
+) -> dict[str, Any]:
+    metric_map = {
+        "fvt_nonzero_fraction_delta_mean": "fvt_nonzero_fraction_mean",
+        "fvt_reference_correlation_delta_mean": "fvt_reference_correlation_mean",
+        "fvt_edge_density_proxy_delta_mean": "fvt_edge_density_proxy_mean",
+        "fvt_sparse_distance_p95_delta_mean": "fvt_sparse_distance_p95_mean",
+    }
+    delta: dict[str, Any] = {}
+    for output_key, summary_key in metric_map.items():
+        reference_value = _finite_float_or_none(reference.get(summary_key))
+        quality_value = _finite_float_or_none(quality.get(summary_key))
+        delta[output_key] = (
+            quality_value - reference_value
+            if reference_value is not None and quality_value is not None
+            else None
+        )
+    delta["finite_failure_count_delta"] = _number_delta(
+        reference.get("finite_failure_count"),
+        quality.get("finite_failure_count"),
+    )
+    return delta
+
+
+def _crop_metric_values(crops: list[Mapping[str, Any]], path: tuple[str, ...]) -> list[float]:
+    values: list[float] = []
+    for crop in crops:
+        value = _finite_float_or_none(_nested(crop, *path))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _edge_density_proxy(crop: Mapping[str, Any], name: str) -> float | None:
+    full_fraction = _finite_float_or_none(_nested(crop, "pyosv", name, "nonzero_fraction"))
+    interior_fraction = _finite_float_or_none(
+        _nested(crop, "pyosv_interior", name, "nonzero_fraction")
+    )
+    if full_fraction is None or interior_fraction is None:
+        return None
+    return max(0.0, full_fraction - interior_fraction)
+
+
+def _mean_std_cv(prefix: str, values: list[float]) -> dict[str, float | None]:
+    result = _mean_std(prefix, values)
+    mean_value = result[f"{prefix}_mean"]
+    std_value = result[f"{prefix}_std"]
+    if mean_value is None or std_value is None:
+        result[f"{prefix}_cv"] = None
+    elif mean_value == 0.0:
+        result[f"{prefix}_cv"] = 0.0
+    else:
+        result[f"{prefix}_cv"] = float(std_value / abs(mean_value))
+    return result
+
+
+def _mean_std(prefix: str, values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {f"{prefix}_mean": None, f"{prefix}_std": None}
+    array = np.asarray(values, dtype=np.float64)
+    return {
+        f"{prefix}_mean": float(np.mean(array)),
+        f"{prefix}_std": float(np.std(array)),
+    }
+
+
+def _mean_or_none(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(np.mean(np.asarray(values, dtype=np.float64)))
+
+
+def _finite_failure_count(value: Any) -> int:
+    if isinstance(value, Mapping):
+        if {"finite_count", "size"} <= set(value):
+            finite_count = _finite_float_or_none(value.get("finite_count"))
+            size = _finite_float_or_none(value.get("size"))
+            return int(finite_count is not None and size is not None and finite_count < size)
+        return sum(_finite_failure_count(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return sum(_finite_failure_count(item) for item in value)
+    return 0
+
+
+def _number_delta(reference: Any, quality: Any) -> float | int | None:
+    reference_value = _finite_float_or_none(reference)
+    quality_value = _finite_float_or_none(quality)
+    if reference_value is None or quality_value is None:
+        return None
+    delta = quality_value - reference_value
+    return int(delta) if float(delta).is_integer() else delta
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float | np.generic):
+        numeric_value = float(value)
+        if math.isfinite(numeric_value):
+            return numeric_value
+    return None
+
+
 def write_report_json(
     report: Mapping[str, Any],
     output_json: str | PathLike[str],
@@ -751,6 +915,7 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
     voter = _as_mapping(config.get("voter", {}))
     visualization = _as_mapping(config.get("visualization", {}))
     workflows = _as_mapping(report.get("workflows", {}))
+    consensus = _as_mapping(report.get("consensus", {}))
     crops = list(report.get("crops", []))
     data_root = Path(str(report.get("data_root", "")))
     selected_count = crop_selection.get("selected_count", len(crops))
@@ -808,6 +973,8 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
                 lines.append(f"- skinner: `{workflow_skinner}`")
             lines.append("")
 
+        _append_consensus_section(lines, consensus)
+
         for workflow_name, workflow_report in _ordered_workflows(workflows):
             workflow_crops = list(_as_mapping(workflow_report).get("crops", []))
             lines.extend([f"## {workflow_name} Crop Metrics", ""])
@@ -835,6 +1002,8 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
             ]
         )
         return "\n".join(lines)
+
+    _append_consensus_section(lines, consensus)
 
     lines.extend(
         [
@@ -942,6 +1111,68 @@ def _append_workflow_delta(lines: list[str], workflow_delta: Mapping[str, Any]) 
     )
     for metric in metrics:
         lines.append(f"| {metric} | {_format_metric(per_metric_mean.get(metric))} |")
+
+
+def _append_consensus_section(lines: list[str], consensus: Mapping[str, Any]) -> None:
+    workflows = _as_mapping(consensus.get("workflows", {}))
+    if not workflows:
+        return
+
+    metrics = [
+        "crop_count",
+        "fvt_nonzero_fraction_mean",
+        "fvt_nonzero_fraction_cv",
+        "fv_nonzero_fraction_mean",
+        "fv_nonzero_fraction_cv",
+        "fvt_reference_correlation_mean",
+        "fvt_buffered_overlap_precision_mean",
+        "fvt_buffered_overlap_recall_mean",
+        "fvt_sparse_distance_p95_mean",
+        "fvt_edge_density_proxy_mean",
+        "finite_failure_count",
+    ]
+    lines.extend(
+        [
+            "",
+            "## Consensus",
+            "",
+            "Crop-to-crop stability summary computed from saved crop metrics.",
+            "",
+            "| Workflow | " + " | ".join(metrics) + " |",
+            "| --- | " + " | ".join("---:" for _ in metrics) + " |",
+        ]
+    )
+    for workflow_name, summary in _ordered_workflows(workflows):
+        summary_map = _as_mapping(summary)
+        lines.append(
+            f"| {workflow_name} | "
+            + " | ".join(_format_metric(summary_map.get(metric)) for metric in metrics)
+            + " |"
+        )
+
+    comparison = _as_mapping(consensus.get("workflow_comparison", {}))
+    quality_minus_reference = _as_mapping(comparison.get("quality_minus_reference", {}))
+    if not quality_minus_reference:
+        return
+
+    delta_metrics = [
+        "fvt_nonzero_fraction_delta_mean",
+        "fvt_reference_correlation_delta_mean",
+        "fvt_edge_density_proxy_delta_mean",
+        "fvt_sparse_distance_p95_delta_mean",
+        "finite_failure_count_delta",
+    ]
+    lines.extend(
+        [
+            "",
+            "quality_minus_reference consensus delta:",
+            "",
+            "| Metric | Delta |",
+            "| --- | ---: |",
+        ]
+    )
+    for metric in delta_metrics:
+        lines.append(f"| {metric} | {_format_metric(quality_minus_reference.get(metric))} |")
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:

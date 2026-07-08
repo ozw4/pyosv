@@ -249,7 +249,7 @@ def test_run_example_writes_json_and_uses_explicit_centers(
 
     assert output_json.is_file()
     loaded = json.loads(output_json.read_text(encoding="utf-8"))
-    assert loaded["format_version"] == 1
+    assert loaded["format_version"] == 2
     assert loaded["config"]["workflow_mode"] == "reference"
     assert loaded["config"]["crop_selection"]["source"] == "explicit_centers"
     assert loaded["config"]["crop_selection"]["selected_count"] == 2
@@ -266,6 +266,14 @@ def test_run_example_writes_json_and_uses_explicit_centers(
     )
     assert [crop["crop_center"] for crop in loaded["crops"]] == [[2, 2, 2], [5, 5, 5]]
     assert loaded["aggregate"]["crop_count"] == 2
+    consensus = loaded["consensus"]["workflows"]["reference"]
+    assert consensus["crop_count"] == 2
+    assert consensus["fvt_nonzero_fraction_mean"] == pytest.approx(1.0 / 216.0)
+    assert consensus["fvt_nonzero_fraction_cv"] == pytest.approx(0.0)
+    assert consensus["fv_nonzero_fraction_mean"] == pytest.approx(1.0 / 216.0)
+    assert "fvt_reference_correlation_mean" in consensus
+    assert consensus["fvt_edge_density_proxy_mean"] == pytest.approx(0.0)
+    assert consensus["finite_failure_count"] == 0
     assert report == loaded
     assert not (data_root / "metrics.json").exists()
     _assert_finite_or_none(loaded)
@@ -365,6 +373,7 @@ def test_compare_workflows_runs_same_centers_and_reports_delta(
     loaded = json.loads(output_json.read_text(encoding="utf-8"))
     assert loaded == report
     assert set(loaded["workflows"]) == {"reference", "quality"}
+    assert set(loaded["consensus"]["workflows"]) == {"reference", "quality"}
     assert loaded["workflows"]["reference"]["crops"][0]["crop_center"] == [2, 2, 2]
     assert loaded["workflows"]["quality"]["crops"][0]["crop_center"] == [2, 2, 2]
     assert loaded["workflows"]["reference"]["config"]["voter"]["thin_mode"] == "reference"
@@ -377,6 +386,12 @@ def test_compare_workflows_runs_same_centers_and_reports_delta(
     assert "normalized_correlation.interior.fvt" in delta
     assert "buffered_ridge_overlap.interior.fvt.buffered_recall" in delta
     assert "sparse_ridge_distance_metrics.interior.fvt.candidate_to_reference_median" in delta
+    comparison = loaded["consensus"]["workflow_comparison"]["quality_minus_reference"]
+    assert "fvt_nonzero_fraction_delta_mean" in comparison
+    assert "fvt_reference_correlation_delta_mean" in comparison
+    assert "fvt_edge_density_proxy_delta_mean" in comparison
+    assert "fvt_sparse_distance_p95_delta_mean" in comparison
+    assert comparison["finite_failure_count_delta"] == 0
     _assert_finite_or_none(loaded["workflow_delta"]["quality_vs_reference"])
     assert received_kwargs[0]["voter_thin_mode"] == "reference"
     assert received_kwargs[1]["voter_thin_mode"] == "hybrid"
@@ -418,6 +433,58 @@ def test_compare_workflows_honors_explicit_voter_override(
     )
 
     assert report["workflows"]["quality"]["config"]["voter"]["thin_mode"] == "reference"
+
+
+def test_consensus_summary_handles_single_crop_and_finite_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    crops = [
+        {
+            "pyosv": {
+                "fv": {"nonzero_fraction": 0.0},
+                "fvt": {"nonzero_fraction": 0.0},
+            },
+            "pyosv_interior": {"fvt": {"nonzero_fraction": 0.0}},
+            "normalized_correlation": {"interior": {"fvt": 0.25}},
+            "buffered_ridge_overlap": {
+                "interior": {
+                    "fvt": {
+                        "buffered_precision": 0.5,
+                        "buffered_recall": 0.75,
+                    }
+                }
+            },
+            "sparse_ridge_distance_metrics": {
+                "interior": {"fvt": {"candidate_to_reference_p95": 3.0}}
+            },
+            "finite_checks": {
+                "pyosv": {
+                    "fv_py": {
+                        "size": 8,
+                        "finite_count": 7,
+                        "nan_count": 1,
+                        "posinf_count": 0,
+                        "neginf_count": 0,
+                    }
+                }
+            },
+        }
+    ]
+
+    consensus = module.build_consensus_summary(crops)
+
+    assert consensus["crop_count"] == 1
+    assert consensus["fvt_nonzero_fraction_mean"] == 0.0
+    assert consensus["fvt_nonzero_fraction_std"] == 0.0
+    assert consensus["fvt_nonzero_fraction_cv"] == 0.0
+    assert consensus["fv_nonzero_fraction_cv"] == 0.0
+    assert consensus["fvt_reference_correlation_std"] == 0.0
+    assert consensus["fvt_buffered_overlap_precision_mean"] == 0.5
+    assert consensus["fvt_buffered_overlap_recall_mean"] == 0.75
+    assert consensus["fvt_sparse_distance_p95_mean"] == 3.0
+    assert consensus["fvt_edge_density_proxy_mean"] == 0.0
+    assert consensus["finite_failure_count"] == 1
 
 
 def test_compare_workflows_honors_explicit_surface_support_override(
@@ -530,6 +597,45 @@ def test_visual_report_markdown_compare_report_includes_workflow_figures(
                 "per_metric_mean": {"normalized_correlation.interior.fv": 0.05}
             }
         },
+        "consensus": {
+            "workflows": {
+                "reference": {
+                    "crop_count": 1,
+                    "fvt_nonzero_fraction_mean": 0.1,
+                    "fvt_nonzero_fraction_cv": 0.0,
+                    "fv_nonzero_fraction_mean": 0.2,
+                    "fv_nonzero_fraction_cv": 0.0,
+                    "fvt_reference_correlation_mean": 0.8,
+                    "fvt_buffered_overlap_precision_mean": 1.0,
+                    "fvt_buffered_overlap_recall_mean": 1.0,
+                    "fvt_sparse_distance_p95_mean": 0.0,
+                    "fvt_edge_density_proxy_mean": 0.0,
+                    "finite_failure_count": 0,
+                },
+                "quality": {
+                    "crop_count": 1,
+                    "fvt_nonzero_fraction_mean": 0.15,
+                    "fvt_nonzero_fraction_cv": 0.0,
+                    "fv_nonzero_fraction_mean": 0.25,
+                    "fv_nonzero_fraction_cv": 0.0,
+                    "fvt_reference_correlation_mean": 0.85,
+                    "fvt_buffered_overlap_precision_mean": 1.0,
+                    "fvt_buffered_overlap_recall_mean": 1.0,
+                    "fvt_sparse_distance_p95_mean": 0.0,
+                    "fvt_edge_density_proxy_mean": 0.0,
+                    "finite_failure_count": 0,
+                },
+            },
+            "workflow_comparison": {
+                "quality_minus_reference": {
+                    "fvt_nonzero_fraction_delta_mean": 0.05,
+                    "fvt_reference_correlation_delta_mean": 0.05,
+                    "fvt_edge_density_proxy_delta_mean": 0.0,
+                    "fvt_sparse_distance_p95_delta_mean": 0.0,
+                    "finite_failure_count_delta": 0,
+                }
+            },
+        },
     }
 
     markdown = module.visual_report_markdown(report)
@@ -544,6 +650,9 @@ def test_visual_report_markdown_compare_report_includes_workflow_figures(
     assert "voter_thin_mode: `reference`" in markdown
     assert "voter_thin_mode: `hybrid`" in markdown
     assert "surface_support_min_fraction: `0.0`" in markdown
+    assert "## Consensus" in markdown
+    assert "quality_minus_reference consensus delta" in markdown
+    assert "fvt_edge_density_proxy_delta_mean" in markdown
     assert "quality_vs_reference per_metric_mean" in markdown
     assert "No PNG figures were written for this run." not in markdown
 
@@ -597,6 +706,8 @@ def test_compare_workflows_writes_markdown_index_with_figures(
     assert markdown_path.is_file()
     assert "## reference Crop Metrics" in markdown
     assert "## quality Crop Metrics" in markdown
+    assert "## Consensus" in markdown
+    assert "quality_minus_reference consensus delta" in markdown
     assert "## reference Figures" in markdown
     assert "## quality Figures" in markdown
     assert "crop_001" in markdown
@@ -684,6 +795,8 @@ def test_visual_report_writes_markdown_pngs_and_metrics(
     assert "voter_thin_mode: `reference`" in markdown
     assert "reference_thin_sigma: `1.0`" in markdown
     assert "surface_voting_boundary_policy: `reference-like-i2-i3-interior`" in markdown
+    assert "## Consensus" in markdown
+    assert "fvt_edge_density_proxy_mean" in markdown
     assert "](crop_001/figures/" in markdown
     assert ".png)" in markdown
     assert (figures_dir / "scanner_fl_vs_ftpy_i3_3.png").is_file()

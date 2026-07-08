@@ -134,6 +134,9 @@ SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
 EXPECTED_SCANNER_SUMMARY_FIELDS = (
     "input_mode",
     "scanner_backend",
+    "scanner_ensemble_reference_like_fraction",
+    "scanner_ensemble_quality_fraction",
+    "scanner_ensemble_fast_fraction",
     "scanner_thin_mode",
     "scanner_ft_buffered_f1_r2",
     "scanner_ft_distance_p95",
@@ -227,28 +230,44 @@ def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None
     assert math.isfinite(float(input_association["contrast"]))
 
 
-def _assert_scanner_backend_matrix_contract(matrix: dict[str, object]) -> None:
-    assert set(matrix["backends"]) == set(EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS)
+def _assert_scanner_backend_matrix_contract(
+    matrix: dict[str, object],
+    *,
+    expected_selected_backend: str | None = None,
+) -> None:
     backends = matrix["backends"]
-    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+    comparison = matrix["comparison"]
+    selected_backend = comparison["selected_backend"]
+    if expected_selected_backend is not None:
+        assert selected_backend == expected_selected_backend
+    expected_backends = set(EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS)
+    if selected_backend not in expected_backends:
+        expected_backends.add(selected_backend)
+    assert set(backends) == expected_backends
+
+    for backend in expected_backends:
         backend_report = backends[backend]
         assert backend_report["scanner"]["config"]["backend"] == backend
         assert backend_report["pyosv"]["fvt"]["finite_fraction"] == 1.0
         assert "quality" in backend_report
         _assert_scanner_quality_contract(backend_report["scanner_quality"])
 
-    comparison = matrix["comparison"]
-    assert comparison["selected_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    assert comparison["best_fvt_positive_buffered_f1_backend"] in (
-        EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    )
-    assert comparison["best_skin_buffered_f1_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    assert comparison["best_boundary_edge_fp_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
-    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+    assert selected_backend in expected_backends
+    assert comparison["best_fvt_positive_buffered_f1_backend"] in expected_backends
+    assert comparison["best_skin_buffered_f1_backend"] in expected_backends
+    assert comparison["best_boundary_edge_fp_backend"] in expected_backends
+    deltas = comparison["deltas_vs_selected_backend"]
+    for backend in expected_backends:
         values = comparison["metric_values"][backend]
         assert math.isfinite(float(values["fvt_positive_buffered_f1"]))
         assert math.isfinite(float(values["skin_buffered_f1"]))
         assert math.isfinite(float(values["fvt_positive_edge_false_positive_fraction"]))
+        for metric, delta in deltas[backend].items():
+            assert metric in values
+            assert delta is not None
+            assert math.isfinite(float(delta))
+    for delta in deltas[selected_backend].values():
+        assert delta == 0.0
 
 
 def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> None:
@@ -320,7 +339,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--buffer-radius" in result.stdout
     assert "--skip-skinning" in result.stdout
     assert "--scanner-refinement-factor" in result.stdout
-    assert "--scanner-backend {reference-like,fast,quality}" in result.stdout
+    assert "--scanner-backend {reference-like,fast,quality,ensemble}" in result.stdout
     assert "--skinner-min-likelihood" in result.stdout
     assert "--skinner-method" in result.stdout
     assert "--skinner-growth-source" in result.stdout
@@ -2300,6 +2319,15 @@ def test_synthetic_scanner_config_accepts_quality_backend() -> None:
     assert config.as_report_dict()["refinement_factor"] == 2
 
 
+def test_synthetic_scanner_config_accepts_ensemble_backend() -> None:
+    module = _load_report_module()
+
+    config = module.SyntheticScannerConfig(backend="ensemble", refinement_factor=2)
+
+    assert config.backend == "ensemble"
+    assert config.as_report_dict()["backend"] == "ensemble"
+
+
 def test_report_synthetic_quality_scanner_backend_quality_runs(tmp_path: Path) -> None:
     output_dir = tmp_path / "synthetic_quality"
 
@@ -2328,6 +2356,61 @@ def test_report_synthetic_quality_scanner_backend_quality_runs(tmp_path: Path) -
     assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
 
 
+def test_report_synthetic_quality_scanner_backend_ensemble_runs(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--workflow-mode",
+        "quality",
+        "--scanner-backend",
+        "ensemble",
+        "--scanner-refinement-factor",
+        "2",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    scanner = variant["scanner"]
+    assert scanner["config"]["backend"] == "ensemble"
+    assert scanner["ft"]["finite_fraction"] == 1.0
+    assert scanner["pt"]["finite_fraction"] == 1.0
+    assert scanner["tt"]["finite_fraction"] == 1.0
+    assert scanner["ft"]["shape"] == [17, 17, 17]
+    assert scanner["pt"]["shape"] == [17, 17, 17]
+    assert scanner["tt"]["shape"] == [17, 17, 17]
+
+    fractions = scanner["selection_fraction_by_backend"]
+    assert set(fractions) == {"reference-like", "quality", "fast"}
+    assert math.isclose(sum(float(value) for value in fractions.values()), 1.0, abs_tol=1e-6)
+    assert scanner["ensemble"]["selection_fraction_by_backend"] == fractions
+    assert set(scanner["ensemble"]["components"]) == {"reference-like", "quality", "fast"}
+    assert "confidence" in scanner["ensemble"]["components"]["quality"]
+    assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    assert row["scanner_backend"] == "ensemble"
+    csv_fraction_sum = sum(
+        float(row[field])
+        for field in (
+            "scanner_ensemble_reference_like_fraction",
+            "scanner_ensemble_quality_fraction",
+            "scanner_ensemble_fast_fraction",
+        )
+    )
+    assert math.isclose(csv_fraction_sum, 1.0, abs_tol=1e-6)
+
+
 def test_scanner_backend_matrix_scanner_mode_reports_all_backends(
     tmp_path: Path,
 ) -> None:
@@ -2353,8 +2436,34 @@ def test_scanner_backend_matrix_scanner_mode_reports_all_backends(
     matrix = variant["scanner_backend_matrix"]
     assert metrics["config"]["scanner_backend_matrix"] is True
     assert variant["scanner"]["config"]["backend"] == "fast"
-    _assert_scanner_backend_matrix_contract(matrix)
-    assert matrix["comparison"]["selected_backend"] == "fast"
+    _assert_scanner_backend_matrix_contract(matrix, expected_selected_backend="fast")
+
+
+def test_scanner_backend_matrix_ensemble_selected_has_baseline(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "ensemble",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    matrix = variant["scanner_backend_matrix"]
+    assert variant["scanner"]["config"]["backend"] == "ensemble"
+    _assert_scanner_backend_matrix_contract(matrix, expected_selected_backend="ensemble")
 
 
 def test_scanner_backend_matrix_both_mode_lives_on_scanner_pipeline(

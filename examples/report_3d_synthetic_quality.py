@@ -132,7 +132,16 @@ SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
 SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
+SCANNER_BACKENDS = ("reference-like", "fast", "quality", "ensemble")
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
+SCANNER_ENSEMBLE_COMPONENT_BACKENDS = ("reference-like", "quality", "fast")
+SCANNER_ENSEMBLE_PRIORS = {
+    "reference-like": 1.00,
+    "quality": 1.05,
+    "fast": 1.00,
+}
+SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE = 0.75
+SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE = 0.25
 SKINNER_METHODS = ("reference", "quality", "connected_component")
 SKINNER_GROWTH_SOURCES = ("thinned", "pre_thin")
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
@@ -439,8 +448,10 @@ class SyntheticScannerConfig:
     input_config: SyntheticScannerInputConfig = SyntheticScannerInputConfig()
 
     def __post_init__(self) -> None:
-        if self.backend not in {"reference-like", "fast", "quality"}:
-            raise ValueError("scanner_backend must be 'reference-like', 'fast', or 'quality'")
+        if self.backend not in SCANNER_BACKENDS:
+            raise ValueError(
+                "scanner_backend must be 'reference-like', 'fast', 'quality', or 'ensemble'"
+            )
         if self.scanner_thin_mode not in {"none", "reference", "normal"}:
             raise ValueError("scanner_thin_mode must be 'none', 'reference', or 'normal'")
         if not isinstance(self.remove_edge_effects, bool):
@@ -751,11 +762,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scanner-backend",
-        choices=("reference-like", "fast", "quality"),
+        choices=SCANNER_BACKENDS,
         default="reference-like",
         help=(
             "FaultOrientScanner3 backend for scanner/both mode: reference-like scan, "
-            "fast scan, or refined quality scan."
+            "fast scan, refined quality scan, or diagnostic ensemble scan."
         ),
     )
     parser.add_argument(
@@ -1309,7 +1320,10 @@ def _scanner_backend_matrix_report(
     selected_report: Mapping[str, Any],
 ) -> dict[str, Any]:
     backend_reports: dict[str, Any] = {}
-    for backend in SCANNER_BACKEND_MATRIX_BACKENDS:
+    matrix_backends = SCANNER_BACKEND_MATRIX_BACKENDS
+    if scanner_config.backend not in matrix_backends:
+        matrix_backends = (*matrix_backends, scanner_config.backend)
+    for backend in matrix_backends:
         if backend == scanner_config.backend:
             backend_reports[backend] = dict(selected_report)
         else:
@@ -1433,35 +1447,20 @@ def _scanner_attributes_from_case(
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
     scanner = FaultOrientScanner3(scanner_config.sigma1, scanner_config.sigma2)
-    confidence: np.ndarray | None = None
-    if scanner_config.backend == "reference-like":
-        ft_scan, pt_scan, tt_scan = scanner.scan(
-            scanner_config.phi_min,
-            scanner_config.phi_max,
-            scanner_config.theta_min,
-            scanner_config.theta_max,
-            scanner_input,
-        )
-    elif scanner_config.backend == "quality":
-        ft_scan, pt_scan, tt_scan, confidence = scanner.scan_quality(
-            scanner_config.phi_min,
-            scanner_config.phi_max,
-            scanner_config.theta_min,
-            scanner_config.theta_max,
-            scanner_input,
-            refinement_factor=scanner_config.refinement_factor,
-            return_confidence=True,
-        )
-    elif scanner_config.backend == "fast":
-        ft_scan, pt_scan, tt_scan = scanner.scan_fast(
-            scanner_config.phi_min,
-            scanner_config.phi_max,
-            scanner_config.theta_min,
-            scanner_config.theta_max,
+    ensemble_report: dict[str, Any] | None = None
+    if scanner_config.backend == "ensemble":
+        ft_scan, pt_scan, tt_scan, confidence, ensemble_report = _scan_ensemble_attributes(
+            scanner,
+            scanner_config,
             scanner_input,
         )
     else:
-        raise ValueError("scanner_backend must be 'reference-like', 'fast', or 'quality'")
+        ft_scan, pt_scan, tt_scan, confidence = _scan_backend_attributes(
+            scanner,
+            scanner_config,
+            scanner_input,
+            scanner_config.backend,
+        )
 
     if scanner_config.scanner_thin_mode == "none":
         ft_used = ft_scan
@@ -1498,7 +1497,130 @@ def _scanner_attributes_from_case(
     if confidence is not None:
         scanner_report["confidence"] = _array_summary(confidence)
         scanner_volumes["scanner_confidence"] = confidence
+    if ensemble_report is not None:
+        scanner_report["selection_fraction_by_backend"] = ensemble_report[
+            "selection_fraction_by_backend"
+        ]
+        scanner_report["ensemble"] = ensemble_report
     return scanner_report, scanner_volumes
+
+
+def _scan_backend_attributes(
+    scanner: FaultOrientScanner3,
+    scanner_config: SyntheticScannerConfig,
+    scanner_input: np.ndarray,
+    backend: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    if backend == "reference-like":
+        ft_scan, pt_scan, tt_scan = scanner.scan(
+            scanner_config.phi_min,
+            scanner_config.phi_max,
+            scanner_config.theta_min,
+            scanner_config.theta_max,
+            scanner_input,
+        )
+        return ft_scan, pt_scan, tt_scan, None
+    if backend == "quality":
+        ft_scan, pt_scan, tt_scan, confidence = scanner.scan_quality(
+            scanner_config.phi_min,
+            scanner_config.phi_max,
+            scanner_config.theta_min,
+            scanner_config.theta_max,
+            scanner_input,
+            refinement_factor=scanner_config.refinement_factor,
+            return_confidence=True,
+        )
+        return ft_scan, pt_scan, tt_scan, confidence
+    if backend == "fast":
+        ft_scan, pt_scan, tt_scan = scanner.scan_fast(
+            scanner_config.phi_min,
+            scanner_config.phi_max,
+            scanner_config.theta_min,
+            scanner_config.theta_max,
+            scanner_input,
+        )
+        return ft_scan, pt_scan, tt_scan, None
+    raise ValueError("scanner_backend must be 'reference-like', 'fast', 'quality', or 'ensemble'")
+
+
+def _scan_ensemble_attributes(
+    scanner: FaultOrientScanner3,
+    scanner_config: SyntheticScannerConfig,
+    scanner_input: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, None, dict[str, Any]]:
+    components: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]] = {}
+    for backend in SCANNER_ENSEMBLE_COMPONENT_BACKENDS:
+        components[backend] = _scan_backend_attributes(
+            scanner,
+            scanner_config,
+            scanner_input,
+            backend,
+        )
+
+    adjusted_scores: list[np.ndarray] = []
+    component_reports: dict[str, Any] = {}
+    for backend in SCANNER_ENSEMBLE_COMPONENT_BACKENDS:
+        ft_scan, pt_scan, tt_scan, confidence = components[backend]
+        adjusted_score = _unit_range_normalize(ft_scan) * np.float32(
+            SCANNER_ENSEMBLE_PRIORS[backend]
+        )
+        if backend == "quality":
+            if confidence is None:
+                raise ValueError("quality ensemble component must provide confidence")
+            quality_weight = (
+                np.float32(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE)
+                + np.float32(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE) * confidence
+            )
+            adjusted_score = adjusted_score * quality_weight
+        adjusted_score = adjusted_score.astype(np.float32, copy=False)
+        adjusted_scores.append(adjusted_score)
+        component_report = {
+            "ft": _array_summary(ft_scan),
+            "pt": _array_summary(pt_scan),
+            "tt": _array_summary(tt_scan),
+            "adjusted_score": _array_summary(adjusted_score),
+        }
+        if confidence is not None:
+            component_report["confidence"] = _array_summary(confidence)
+        component_reports[backend] = component_report
+
+    selection = np.argmax(np.stack(adjusted_scores, axis=0), axis=0)
+    ft_ensemble = np.empty(scanner_input.shape, dtype=np.float32)
+    pt_ensemble = np.empty(scanner_input.shape, dtype=np.float32)
+    tt_ensemble = np.empty(scanner_input.shape, dtype=np.float32)
+    total_count = float(selection.size)
+    selection_fraction_by_backend: dict[str, float] = {}
+    for index, backend in enumerate(SCANNER_ENSEMBLE_COMPONENT_BACKENDS):
+        selected = selection == index
+        ft_scan, pt_scan, tt_scan, _ = components[backend]
+        ft_ensemble[selected] = ft_scan[selected]
+        pt_ensemble[selected] = pt_scan[selected]
+        tt_ensemble[selected] = tt_scan[selected]
+        selection_fraction_by_backend[backend] = float(np.count_nonzero(selected) / total_count)
+
+    report = {
+        "component_backends": list(SCANNER_ENSEMBLE_COMPONENT_BACKENDS),
+        "component_priors": {
+            backend: float(prior) for backend, prior in SCANNER_ENSEMBLE_PRIORS.items()
+        },
+        "quality_confidence_weight": {
+            "base": float(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE),
+            "scale": float(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE),
+        },
+        "selection_fraction_by_backend": selection_fraction_by_backend,
+        "components": component_reports,
+    }
+    return ft_ensemble, pt_ensemble, tt_ensemble, None, report
+
+
+def _unit_range_normalize(array: np.ndarray) -> np.ndarray:
+    array_float32 = np.maximum(np.asarray(array, dtype=np.float32), np.float32(0.0))
+    low = float(np.min(array_float32))
+    high = float(np.max(array_float32))
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        return np.zeros_like(array_float32, dtype=np.float32)
+    normalized = (array_float32 - np.float32(low)) / np.float32(high - low)
+    return np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False)
 
 
 def _scanner_truth_quality(
@@ -2408,6 +2530,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "input_mode",
                 "workflow_mode",
                 "scanner_backend",
+                "scanner_ensemble_reference_like_fraction",
+                "scanner_ensemble_quality_fraction",
+                "scanner_ensemble_fast_fraction",
                 "scanner_thin_mode",
                 "shape_n3",
                 "shape_n2",
@@ -2597,6 +2722,9 @@ def _summary_csv_scanner_row(
 ) -> dict[str, str | float | None]:
     empty_row: dict[str, str | float | None] = {
         "scanner_backend": None,
+        "scanner_ensemble_reference_like_fraction": None,
+        "scanner_ensemble_quality_fraction": None,
+        "scanner_ensemble_fast_fraction": None,
         "scanner_thin_mode": None,
         "scanner_ft_buffered_f1_r2": None,
         "scanner_ft_distance_p95": None,
@@ -2618,8 +2746,14 @@ def _summary_csv_scanner_row(
     ft_quality = scanner_quality["ft_top_truth_count"]
     orientation_error = scanner_quality["orientation_error"]["raw_scan_top_truth_count"]
     input_association = scanner_quality["input_association"]
+    selection_fraction = scanner.get("selection_fraction_by_backend")
+    if not isinstance(selection_fraction, Mapping):
+        selection_fraction = {}
     return {
         "scanner_backend": scanner["config"]["backend"],
+        "scanner_ensemble_reference_like_fraction": selection_fraction.get("reference-like"),
+        "scanner_ensemble_quality_fraction": selection_fraction.get("quality"),
+        "scanner_ensemble_fast_fraction": selection_fraction.get("fast"),
         "scanner_thin_mode": scanner["config"]["scanner_thin_mode"],
         "scanner_ft_buffered_f1_r2": ft_quality["buffered_overlap_radius2"]["buffered_f1"],
         "scanner_ft_distance_p95": ft_quality["surface_distance"]["candidate_to_truth_p95"],

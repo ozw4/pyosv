@@ -60,6 +60,18 @@ This recommendation is for quality reports only. The report default remains
 `--scanner-backend reference-like` so reference-oriented scanner behavior is not
 changed automatically.
 
+For diagnostic scanner-inclusive experiments, `--scanner-backend ensemble`
+combines the `reference-like`, `quality`, and `fast` scanner outputs. The rule
+is deterministic: normalize each backend `ft` to unit range, multiply by fixed
+backend priors, apply the quality confidence map as a small extra quality
+weight, then select the winning backend's `ft/pt/tt` per voxel. The report
+records `scanner.selection_fraction_by_backend`,
+`scanner.ensemble.components`, and the
+`scanner_ensemble_reference_like_fraction`,
+`scanner_ensemble_quality_fraction`, and `scanner_ensemble_fast_fraction`
+summary CSV columns. This is a diagnostic backend and is not the F3 or
+synthetic report default.
+
 To compare scanner backend tradeoffs in one run, add
 `--scanner-backend-matrix` with `--input-mode scanner` or `--input-mode both`.
 The matrix writes `reference-like`, `quality`, and `fast` scanner pipeline
@@ -151,7 +163,12 @@ PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
 Because F3 has no independent truth labels, reference agreement is a stability
 diagnostic rather than direct evidence of higher quality. Review whether the
 quality workflow preserves reference geological signal, avoids extra ridges and
-boundary artifacts, and keeps crop-to-crop behavior stable.
+boundary artifacts, and keeps crop-to-crop behavior stable. The multi-crop JSON
+and markdown include `consensus.workflows` for each workflow and
+`consensus.workflow_comparison.quality_minus_reference` in compare mode. Use
+the consensus density means/std/cv, fvt edge-density proxy, sparse distance p95,
+and finite failure count as truthless stability checks alongside the existing
+reference-overlap metrics.
 
 F3 reference agreement is not quality itself. A quality-mode change should be
 promoted only when the controlled synthetic `extended` matrix and F3 multi-crop

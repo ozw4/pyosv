@@ -686,6 +686,10 @@ def build_crop_report(
             "vt": summarize_array(py_vt),
             "fvt": summarize_array(py_fvt),
         },
+        "pyosv_interior": {
+            "fv": summarize_array(py_fv_interior),
+            "fvt": summarize_array(py_fvt_interior),
+        },
         "voting": {
             "orientation": orientation_field_report(
                 py_fv,
