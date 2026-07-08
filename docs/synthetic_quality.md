@@ -541,6 +541,11 @@ fvt_buffered_f1_r2
 fvt_distance_p95
 fvt_strike_median_error
 fvt_dip_median_error
+fv_positive_candidate_count
+fvt_positive_candidate_count
+fvt_positive_buffered_f1_r2
+fvt_positive_distance_p95
+fvt_positive_edge_false_positive_fraction
 skin_count
 skin_cell_count
 skin_largest_fraction
@@ -937,7 +942,8 @@ not the general `FaultSkinner` API defaults.
 Skinning can be disabled with `--skip-skinning`. Skin extraction is configured
 with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
 `--skinner-ru`, `--skinner-rv`, `--skinner-rw`, `--skinner-max-steps`,
-`--skinner-du`, `--skinner-max-delta-strike`, `--no-skinner-reskin`, and
+`--skinner-du`, `--skinner-max-delta-strike`, `--skinner-growth-source`,
+`--skinner-accepted-occupancy-radius`, `--no-skinner-reskin`, and
 `--small-skin-size`.
 
 The `geometry` and `extended` case sets keep the same top-level JSON contract
@@ -972,9 +978,22 @@ grow thresholds, `growth_source=pre_thin`, and
 pipeline column, variant column, baseline variant, input mode, workflow mode,
 buffered F1, candidate-to-truth p95 distance, fvt median orientation error
 columns, `fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`,
-skin topology and truth metric columns, and fvt and skin delta columns against
-the baseline. Scanner columns are always in the header; they are populated for
-scanner pipeline rows and empty for oracle pipeline rows:
+positive-only top-truth candidate and fvt metric columns, skin topology and
+truth metric columns, and fvt and skin delta columns against the baseline.
+Scanner columns are always in the header; they are populated for scanner
+pipeline rows and empty for oracle pipeline rows.
+
+Positive-only top-truth columns:
+
+```text
+fv_positive_candidate_count
+fvt_positive_candidate_count
+fvt_positive_buffered_f1_r2
+fvt_positive_distance_p95
+fvt_positive_edge_false_positive_fraction
+```
+
+Scanner columns:
 
 ```text
 pipeline
