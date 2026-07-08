@@ -216,8 +216,9 @@ reference
 
 quality
   Truth-quality mode for controlled synthetic evaluation. Effective
-  voter_thin_mode is hybrid unless --voter-thin-mode is passed, and
-  support-aware surface voting plus the quality skinner are enabled by default.
+  voter_thin_mode is hybrid unless --voter-thin-mode is passed. Support-aware
+  surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
+  is enabled by default.
 
 diagnostic
   Diagnostic mode. Effective voter_thin_mode is reference unless
@@ -234,10 +235,12 @@ still enables reference-vs-normal thinning diagnostics in `reference` or
 
 The report config always records `config.workflow_mode`. The voting config
 records the effective `config.voting.voter_thin_mode`, after applying the
-workflow preset and any explicit override. For quality mode it also records the
-effective support policy
-(`surface_support_min_fraction=0.5`, `surface_support_exponent=1.0`) and
-quality skinning settings. `summary.csv` includes `workflow_mode` near
+workflow preset and any explicit override. For quality mode, `current_default`
+records `surface_support_min_fraction=0.0` and
+`surface_support_exponent=0.0`, so the report config shows that support-aware
+voting is not part of the quality default. Explicit CLI support overrides and
+the `surface_support_weighted` variant record their effective values in the
+same config/report fields. `summary.csv` includes `workflow_mode` near
 `input_mode` on every row.
 
 ## Curved Surface Thinning Diagnostic
@@ -949,10 +952,15 @@ current_default
 no_surface_orientation_smoothing
 final_norm_smoothing_1
 voter_thin_normal
+voter_thin_hybrid
+surface_support_weighted
 ```
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
+`surface_support_weighted` is included in the `quality-matrix` preset as a
+diagnostic support-aware voting experiment with `0.5, 1.0`; it is not the
+quality workflow default.
 `summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
 pipeline column, variant column, baseline variant, input mode, workflow mode,
 buffered F1, candidate-to-truth p95 distance, fvt median orientation error

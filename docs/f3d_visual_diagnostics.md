@@ -95,10 +95,12 @@ python examples/report_3d_f3d_multicrop.py \
 ```
 
 In compare mode, the JSON contains `workflows.reference`,
-`workflows.quality`, and `workflow_delta.quality_vs_reference`. Figure
-directories are split by workflow, for example
-`figures/reference/crop_001/` and `figures/quality/crop_001/`, so the two runs
-do not overwrite each other.
+`workflows.quality`, and `workflow_delta.quality_vs_reference`, so the markdown
+index shows both the reference and quality workflow results. Figure directories
+are split by workflow, for example `figures/reference/crop_001/` and
+`figures/quality/crop_001/`, so the two runs do not overwrite each other.
+Support-aware voting is not a quality default in this report; pass explicit
+`--surface-support-*` overrides only for a diagnostic comparison.
 
 For reference-like thinning diagnostics, run the same visual reports with
 `--scanner-thin-mode reference` and `--voter-thin-mode reference`, or run the

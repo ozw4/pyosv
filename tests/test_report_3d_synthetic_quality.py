@@ -1292,7 +1292,7 @@ def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() 
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
 
 
-def test_quality_workflow_current_default_uses_hybrid_and_support(
+def test_quality_workflow_current_default_uses_hybrid_without_support(
     tmp_path: Path,
 ) -> None:
     reference_dir = tmp_path / "synthetic_quality_reference"
