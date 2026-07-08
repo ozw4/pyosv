@@ -112,6 +112,15 @@ orientation sweeps. Pass `return_confidence=True` to receive
 as an explicit practical backend for diagnostics or workflows that prefer its
 ridge/contrast score and sigma-derived dense angle sampling.
 
+The synthetic quality report also has a report-local diagnostic
+`--scanner-backend ensemble` option. It runs `reference-like`, `quality`, and
+`fast`, normalizes each `ft` response to unit range, applies fixed reliability
+priors, applies the quality confidence map as a small quality score weight, and
+selects the best adjusted backend per voxel. This option creates ordinary
+`ft/pt/tt` scanner attributes for the existing thinning, voting, and skinning
+path; it does not change the `FaultOrientScanner3.scan()`, `scan_quality()`, or
+`scan_fast()` API defaults.
+
 Migration note: callers that used the old derivative-bank `scan()` behavior
 should call `scan_fast()` explicitly. Callers that used the old scanner
 fault-normal thinning default should pass `mode="normal"` explicitly.
