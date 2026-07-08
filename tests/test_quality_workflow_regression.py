@@ -96,8 +96,8 @@ def test_quality_workflow_effective_settings_are_recorded(
     quality = workflow_reports["quality"]["config"]
     assert quality["workflow_mode"] == "quality"
     assert quality["voting"]["voter_thin_mode"] == "hybrid"
-    assert quality["voting"]["surface_support_min_fraction"] == 0.5
-    assert quality["voting"]["surface_support_exponent"] == 1.0
+    assert quality["voting"]["surface_support_min_fraction"] == 0.0
+    assert quality["voting"]["surface_support_exponent"] == 0.0
     assert quality["skinning"]["method"] == "quality"
     assert quality["skinning"]["min_likelihood"] is None
     assert quality["skinning"]["adaptive_min_likelihood"] is True

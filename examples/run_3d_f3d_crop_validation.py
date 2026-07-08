@@ -55,8 +55,6 @@ WORKFLOW_MODES = ("reference", "quality")
 THIN_MODES = ("normal", "reference", "hybrid")
 SCANNER_THIN_MODES = ("normal", "reference")
 VOTER_THIN_MODES = THIN_MODES
-QUALITY_SURFACE_SUPPORT_MIN_FRACTION = 0.5
-QUALITY_SURFACE_SUPPORT_EXPONENT = 1.0
 FINAL_NORMALIZATION_SMOOTHING_HELP = (
     "Default uses reference-like final normalization with no final vote-map smoothing. "
     "Use 1.0 to compare the older practical smoothing behavior."
@@ -553,10 +551,8 @@ def resolve_workflow_options(
     if voter_thin_mode not in VOTER_THIN_MODES:
         raise ValueError("voter_thin_mode must be one of: " + ", ".join(VOTER_THIN_MODES))
 
-    default_min_fraction = (
-        QUALITY_SURFACE_SUPPORT_MIN_FRACTION if workflow_mode == "quality" else 0.0
-    )
-    default_exponent = QUALITY_SURFACE_SUPPORT_EXPONENT if workflow_mode == "quality" else 0.0
+    default_min_fraction = 0.0
+    default_exponent = 0.0
     if surface_support_min_fraction is not None:
         default_min_fraction = surface_support_min_fraction
     if surface_support_exponent is not None:

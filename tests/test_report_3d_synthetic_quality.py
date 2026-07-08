@@ -1175,8 +1175,8 @@ def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
     ),
     [
         ("reference", None, "reference", 0.0, 0.0),
-        ("quality", None, "hybrid", 0.5, 1.0),
-        ("quality", "reference", "reference", 0.5, 1.0),
+        ("quality", None, "hybrid", 0.0, 0.0),
+        ("quality", "reference", "reference", 0.0, 0.0),
         ("reference", "normal", "normal", 0.0, 0.0),
         ("reference", "hybrid", "hybrid", 0.0, 0.0),
         ("diagnostic", None, "reference", 0.0, 0.0),
@@ -1246,8 +1246,8 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
 
     assert report["config"]["workflow_mode"] == "quality"
     assert report["config"]["voting"]["voter_thin_mode"] == "hybrid"
-    assert report["config"]["voting"]["surface_support_min_fraction"] == 0.5
-    assert report["config"]["voting"]["surface_support_exponent"] == 1.0
+    assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["enabled"] is False
     assert report["config"]["skinning"]["method"] == "quality"
     assert report["config"]["skinning"]["min_likelihood"] is None
@@ -1334,8 +1334,8 @@ def test_quality_workflow_current_default_uses_hybrid_and_support(
     assert reference_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert quality_metrics["config"]["workflow_mode"] == "quality"
     assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
-    assert quality_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.5
-    assert quality_metrics["config"]["voting"]["surface_support_exponent"] == 1.0
+    assert quality_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert quality_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
 
     with (reference_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         reference_rows = list(csv.DictReader(file))
@@ -1417,8 +1417,8 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "quality"
     assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
-    assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.5
-    assert metrics["config"]["voting"]["surface_support_exponent"] == 1.0
+    assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["skinning"]["method"] == "quality"
     assert metrics["config"]["skinning"]["min_likelihood"] is None
     assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is True
@@ -1492,9 +1492,9 @@ def test_report_3d_synthetic_quality_quality_workflow_support_cli_override(
         "--workflow-mode",
         "quality",
         "--surface-support-min-fraction",
-        "0.0",
+        "0.25",
         "--surface-support-exponent",
-        "0.0",
+        "2.0",
         "--output-dir",
         str(output_dir),
         "--skip-skinning",
@@ -1504,8 +1504,8 @@ def test_report_3d_synthetic_quality_quality_workflow_support_cli_override(
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "quality"
     assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
-    assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
-    assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
+    assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.25
+    assert metrics["config"]["voting"]["surface_support_exponent"] == 2.0
 
 
 def test_report_3d_synthetic_quality_diagnostic_workflow_records_mode_and_defaults(
