@@ -308,10 +308,13 @@ class OptimalSurfaceVoter:
             reference_sigma=reference_sigma,
         )
         normal = _thin_fault_normal_3d(fv_array, vp_array, vt_array)
+        roughness_support = fv_array > np.float32(0.0)
+        if mode == "hybrid_v2":
+            roughness_support = fv_array > np.float32(1.0e-6)
         roughness = _orientation_roughness_3d(
             vp_array,
             vt_array,
-            support=fv_array > np.float32(1.0e-6),
+            support=roughness_support,
         )
         if mode == "hybrid_v2":
             plateau = _thin_fault_normal_plateau_3d(
