@@ -199,6 +199,42 @@ curvature or large orientation variation is a stress case. In the observed
 `skin_buffered_f1_r2` about `0.9753`). Treat this as a model-limit and
 thinning-sensitivity signal unless a narrower regression is demonstrated.
 
+## Workflow Modes
+
+Controlled synthetic reports expose an explicit workflow contract through
+`--workflow-mode reference|quality|diagnostic`. The default is `reference` so
+existing reference-first runs keep reference-like voter thinning unless a run
+passes an explicit `--voter-thin-mode` override.
+
+```text
+reference
+  Reference-alignment mode. Effective voter_thin_mode is reference unless
+  --voter-thin-mode is passed.
+
+quality
+  Truth-quality mode for controlled synthetic evaluation. Effective
+  voter_thin_mode is normal unless --voter-thin-mode is passed. On the same
+  case and shape, this makes the active current_default thinning behavior match
+  the existing voter_thin_normal diagnostic variant.
+
+diagnostic
+  Diagnostic mode. Effective voter_thin_mode is reference unless
+  --voter-thin-mode is passed, and reference-vs-normal thinning diagnostics are
+  enabled by default.
+```
+
+Explicit `--voter-thin-mode reference|normal` always wins over the workflow
+preset. The `--thinning-diagnostics` / `--include-thinning-diagnostic` flag
+still enables reference-vs-normal thinning diagnostics in `reference` or
+`quality` mode. When diagnostics are enabled by the flag or by
+`--workflow-mode diagnostic`, `metrics.json` records
+`config.thinning_diagnostic.enabled: true`.
+
+The report config always records `config.workflow_mode`. The voting config
+records the effective `config.voting.voter_thin_mode`, after applying the
+workflow preset and any explicit override. `summary.csv` includes
+`workflow_mode` near `input_mode` on every row.
+
 ## Curved Surface Thinning Diagnostic
 
 `curved_surface` is not a basic pass/fail case for reference-first OSV. It is a
@@ -213,18 +249,21 @@ better against analytic truth on curved synthetic surfaces because it thins
 along the local fault-normal field instead of the reference-like strike-binned
 path. A better `normal` result on `curved_surface` does not automatically mean
 the default should change; read it as evidence about curved-surface
-truth-quality behavior, not as a reference-agreement requirement.
+truth-quality behavior, not as a reference-agreement requirement. Use
+`--workflow-mode quality` when the active controlled synthetic report should
+favor this truth-quality behavior, or keep `--workflow-mode reference` for
+reference-alignment checks.
 
-Use `--thinning-diagnostics` to compute both thinning modes from the same
-pre-thin voter output:
+Use `--workflow-mode diagnostic`, or pass `--thinning-diagnostics` explicitly,
+to compute both thinning modes from the same pre-thin voter output:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set geometry \
   --shape 33,33,33 \
   --input-mode oracle \
+  --workflow-mode diagnostic \
   --variants current_default \
-  --thinning-diagnostics \
   --save-volumes \
   --save-figures \
   --write-markdown-index \
@@ -406,6 +445,7 @@ p = Path("outputs/3d/synthetic_quality/oracle_extended_001/summary.csv")
 cols = [
     "case_id",
     "input_mode",
+    "workflow_mode",
     "variant",
     "fvt_buffered_f1_r2",
     "fvt_distance_p95",
@@ -485,6 +525,7 @@ Important summary columns are:
 case_id
 pipeline
 input_mode
+workflow_mode
 variant
 fvt_buffered_f1_r2
 fvt_distance_p95
@@ -606,9 +647,13 @@ an active-pipeline alias; in `--input-mode both`, it is a `pipelines` map.
   "format_version": 1,
   "config": {
     "case_set": "minimal",
+    "workflow_mode": "reference",
     "shape": [33, 33, 33],
     "variants": ["current_default"],
     "input_mode": "both",
+    "voting": {
+      "voter_thin_mode": "reference"
+    },
     "skinning": {
       "enabled": true,
       "min_likelihood": 0.5,
@@ -904,16 +949,17 @@ voter_thin_normal
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
 `summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
-pipeline column, variant column, baseline variant, input mode, buffered F1,
-candidate-to-truth p95 distance, fvt median orientation error columns,
-`fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`, skin
-topology and truth metric columns, and fvt and skin delta columns against the
-baseline. Scanner columns are always in the header; they are populated for
+pipeline column, variant column, baseline variant, input mode, workflow mode,
+buffered F1, candidate-to-truth p95 distance, fvt median orientation error
+columns, `fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`,
+skin topology and truth metric columns, and fvt and skin delta columns against
+the baseline. Scanner columns are always in the header; they are populated for
 scanner pipeline rows and empty for oracle pipeline rows:
 
 ```text
 pipeline
 input_mode
+workflow_mode
 scanner_backend
 scanner_thin_mode
 scanner_ft_buffered_f1_r2

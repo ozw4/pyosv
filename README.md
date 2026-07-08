@@ -146,9 +146,11 @@ Controlled synthetic 3D truth-quality checks are documented in
 `docs/synthetic_quality.md`, including the default `minimal` case set and the
 `geometry` and `extended` case sets for vertical, dipping, curved, parallel,
 crossing, boundary, and weak/noisy faults, voter variants, and skinning
-metrics. That document also explains the opt-in curved-surface thinning
-diagnostic for comparing `reference` and `normal` thinning without changing
-defaults. A typical extended report run is:
+metrics. That document also explains controlled report workflow modes:
+`reference` is the default reference-alignment mode, `quality` defaults voter
+thinning to the truth-quality-favored `normal` path, and `diagnostic` keeps the
+reference path while enabling reference-vs-normal thinning diagnostics. A
+typical extended report run is:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
