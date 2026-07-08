@@ -998,6 +998,77 @@ def test_report_3d_synthetic_quality_normal_thin_mode_passes(tmp_path: Path) -> 
     assert metrics["cases"][0]["pyosv"]["fvt"]["max"] > 0.0
 
 
+@pytest.mark.parametrize(
+    ("workflow_mode", "override", "expected_voter_thin_mode"),
+    [
+        ("reference", None, "reference"),
+        ("quality", None, "normal"),
+        ("quality", "reference", "reference"),
+        ("reference", "normal", "normal"),
+        ("diagnostic", None, "reference"),
+        ("diagnostic", "normal", "normal"),
+    ],
+)
+def test_report_3d_synthetic_quality_workflow_mode_resolves_voter_thin_mode(
+    tmp_path: Path,
+    workflow_mode: str,
+    override: str | None,
+    expected_voter_thin_mode: str,
+) -> None:
+    output_dir = tmp_path / f"synthetic_quality_{workflow_mode}_{override or 'default'}"
+    args = [
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        workflow_mode,
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    ]
+    if override is not None:
+        args.extend(["--voter-thin-mode", override])
+
+    result = _run_script(*args)
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == workflow_mode
+    assert metrics["config"]["voting"]["voter_thin_mode"] == expected_voter_thin_mode
+
+
+@pytest.mark.parametrize("override", [None, "normal"])
+def test_report_3d_synthetic_quality_workflow_mode_diagnostic_enables_thinning_diagnostic(
+    tmp_path: Path,
+    override: str | None,
+) -> None:
+    output_dir = tmp_path / f"synthetic_quality_diagnostic_{override or 'default'}"
+    args = [
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "diagnostic",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    ]
+    if override is not None:
+        args.extend(["--voter-thin-mode", override])
+
+    result = _run_script(*args)
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "diagnostic"
+    assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
+    assert metrics["config"]["voting"]["voter_thin_mode"] == (override or "reference")
+    curved = next(case for case in metrics["cases"] if case["case_id"] == "curved_surface")
+    assert "thinning_diagnostic" in curved["variants"]["current_default"]
+
+
 def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     tmp_path: Path,
 ) -> None:

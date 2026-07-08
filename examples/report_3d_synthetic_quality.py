@@ -172,6 +172,24 @@ def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
     return "normal" if workflow_mode == "quality" else "reference"
 
 
+def _effective_voter_thin_mode(
+    *,
+    workflow_mode: str,
+    voter_thin_mode: str | None,
+) -> str:
+    if voter_thin_mode is not None:
+        return voter_thin_mode
+    return _default_voter_thin_mode_for_workflow(workflow_mode)
+
+
+def _effective_include_thinning_diagnostic(
+    *,
+    workflow_mode: str,
+    include_thinning_diagnostic: bool,
+) -> bool:
+    return include_thinning_diagnostic or workflow_mode == "diagnostic"
+
+
 CSV_VARIANT_COMPARISON_FIELDS = (
     (
         "fvt_buffered_f1_delta_vs_baseline",
@@ -1646,7 +1664,10 @@ def _build_report_and_volumes(
         voting_config = SyntheticVotingConfig(
             voter_thin_mode=_default_voter_thin_mode_for_workflow(valid_workflow_mode),
         )
-    include_thinning_diagnostic = include_thinning_diagnostic or valid_workflow_mode == "diagnostic"
+    include_thinning_diagnostic = _effective_include_thinning_diagnostic(
+        workflow_mode=valid_workflow_mode,
+        include_thinning_diagnostic=include_thinning_diagnostic,
+    )
     diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
     try:
         case_definitions = CASE_SETS[case_set]
@@ -2938,9 +2959,14 @@ def run_example(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    voter_thin_mode = args.voter_thin_mode
-    if voter_thin_mode is None:
-        voter_thin_mode = _default_voter_thin_mode_for_workflow(args.workflow_mode)
+    voter_thin_mode = _effective_voter_thin_mode(
+        workflow_mode=args.workflow_mode,
+        voter_thin_mode=args.voter_thin_mode,
+    )
+    include_thinning_diagnostic = _effective_include_thinning_diagnostic(
+        workflow_mode=args.workflow_mode,
+        include_thinning_diagnostic=args.include_thinning_diagnostic,
+    )
 
     try:
         run_example(
@@ -2989,7 +3015,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             variants=args.variants,
             input_mode=args.input_mode,
             workflow_mode=args.workflow_mode,
-            include_thinning_diagnostic=args.include_thinning_diagnostic,
+            include_thinning_diagnostic=include_thinning_diagnostic,
             thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,
             save_volumes=args.save_volumes,
