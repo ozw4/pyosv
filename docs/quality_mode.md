@@ -60,6 +60,11 @@ This recommendation is for quality reports only. The report default remains
 `--scanner-backend reference-like` so reference-oriented scanner behavior is not
 changed automatically.
 
+To compare scanner backend tradeoffs in one run, add
+`--scanner-backend-matrix` with `--input-mode scanner` or `--input-mode both`.
+The matrix writes `reference-like`, `quality`, and `fast` scanner pipeline
+reports plus best-backend summary columns in `summary.csv`.
+
 The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
 `voter_thin_normal`, `voter_thin_hybrid`, `voter_thin_hybrid_v2`,

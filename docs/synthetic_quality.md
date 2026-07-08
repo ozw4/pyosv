@@ -614,17 +614,24 @@ scanner  # scanner_input -> FaultOrientScanner3 -> optional scanner thin -> voti
 both     # compare oracle and scanner pipelines on the same truth case/variant
 ```
 
-Scanner mode is configured with `--scanner-backend reference-like|fast`,
-`--scanner-phi-min`, `--scanner-phi-max`, `--scanner-theta-min`,
-`--scanner-theta-max`, `--scanner-sigma1`, `--scanner-sigma2`,
-`--scanner-thin-mode none|reference|normal`, and
+Scanner mode is configured with `--scanner-backend reference-like|fast|quality`,
+`--scanner-backend-matrix`, `--scanner-phi-min`, `--scanner-phi-max`,
+`--scanner-theta-min`, `--scanner-theta-max`, `--scanner-sigma1`,
+`--scanner-sigma2`, `--scanner-thin-mode none|reference|normal`, and
 `--keep-scanner-edge-effects`. The scanner defaults are reference-like backend,
 strike range `0..180`, dip range `45..90`, `sigma1=sigma2=2`, and reference
 scanner thinning with edge-effect removal. `--scanner-backend reference-like`
-uses the reference-like scan path; `fast` uses the accelerated scanner path.
+uses the reference-like scan path; `fast` uses the accelerated scanner path;
+`quality` uses refined scanner sampling.
 `--scanner-thin-mode none` passes raw scanner attributes to voting,
 `reference` applies strike-binned scanner thinning, and `normal` uses the
 legacy fault-normal scanner thinning path.
+
+`--scanner-backend-matrix` is an opt-in diagnostic for `--input-mode scanner`
+and `--input-mode both`. It runs `reference-like`, `quality`, and `fast` for
+the same case, variant, scanner angle/sigma/thinning config, and downstream
+workflow. Oracle-only mode treats the flag as a no-op and records
+`scanner_backend_matrix: false` in the report config.
 
 With optional visual outputs enabled, each case also gets a case directory. For
 the `minimal` case set this is:
@@ -891,6 +898,14 @@ thinning, or skinning failures. The input association uses
 `abs(truth_distance) >= max(3.0, --truth-surface-half-width + 2.0)` as the far
 mask; positive contrast means the low-on-fault scanner input is lower near truth
 than far from truth.
+
+When `--scanner-backend-matrix` is enabled, scanner pipeline variant reports
+also include `scanner_backend_matrix.backends.<backend>` for `reference-like`,
+`quality`, and `fast`. Each backend entry has the normal scanner pipeline
+report shape, including `scanner`, `scanner_quality`, `pyosv`, `quality`, and
+`skinning`. `scanner_backend_matrix.comparison` records the selected backend,
+metric values, deltas versus the selected backend, and best-backend names for
+FVT positive buffered F1, skin buffered F1, and boundary edge false positives.
 `quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
 the truth target. `quality.*.surface_distance` uses the thin truth surface mask
 defined by
@@ -1010,6 +1025,9 @@ scanner_ft_distance_p95
 scanner_strike_median_error
 scanner_dip_median_error
 scanner_input_contrast
+scanner_matrix_best_fvt_positive_buffered_f1_backend
+scanner_matrix_best_skin_buffered_f1_backend
+scanner_matrix_best_boundary_edge_fp_backend
 ```
 
 The skin columns are written in deterministic order:

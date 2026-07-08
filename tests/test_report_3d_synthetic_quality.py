@@ -140,7 +140,11 @@ EXPECTED_SCANNER_SUMMARY_FIELDS = (
     "scanner_strike_median_error",
     "scanner_dip_median_error",
     "scanner_input_contrast",
+    "scanner_matrix_best_fvt_positive_buffered_f1_backend",
+    "scanner_matrix_best_skin_buffered_f1_backend",
+    "scanner_matrix_best_boundary_edge_fp_backend",
 )
+EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
 EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS = (
     "thinning_diag_reference_fvt_buffered_f1_r2",
     "thinning_diag_normal_fvt_buffered_f1_r2",
@@ -223,6 +227,30 @@ def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None
     assert math.isfinite(float(input_association["contrast"]))
 
 
+def _assert_scanner_backend_matrix_contract(matrix: dict[str, object]) -> None:
+    assert set(matrix["backends"]) == set(EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS)
+    backends = matrix["backends"]
+    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+        backend_report = backends[backend]
+        assert backend_report["scanner"]["config"]["backend"] == backend
+        assert backend_report["pyosv"]["fvt"]["finite_fraction"] == 1.0
+        assert "quality" in backend_report
+        _assert_scanner_quality_contract(backend_report["scanner_quality"])
+
+    comparison = matrix["comparison"]
+    assert comparison["selected_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    assert comparison["best_fvt_positive_buffered_f1_backend"] in (
+        EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    )
+    assert comparison["best_skin_buffered_f1_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    assert comparison["best_boundary_edge_fp_backend"] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+    for backend in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS:
+        values = comparison["metric_values"][backend]
+        assert math.isfinite(float(values["fvt_positive_buffered_f1"]))
+        assert math.isfinite(float(values["skin_buffered_f1"]))
+        assert math.isfinite(float(values["fvt_positive_edge_false_positive_fraction"]))
+
+
 def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> None:
     assert "buffered_f1" in quality["buffered_overlap_radius2"]
     assert "candidate_to_truth_p95" in quality["surface_distance"]
@@ -277,6 +305,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "quality" in result.stdout
     assert "diagnostic" in result.stdout
     assert "--scanner-backend" in result.stdout
+    assert "--scanner-backend-matrix" in result.stdout
     assert "--scanner-thin-mode" in result.stdout
     assert "--save-volumes" in result.stdout
     assert "--save-figures" in result.stdout
@@ -2297,6 +2326,146 @@ def test_report_synthetic_quality_scanner_backend_quality_runs(tmp_path: Path) -
     assert variant["scanner"]["confidence"]["shape"] == [17, 17, 17]
     assert variant["scanner"]["confidence"]["finite_fraction"] == 1.0
     assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+
+
+def test_scanner_backend_matrix_scanner_mode_reports_all_backends(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "fast",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    matrix = variant["scanner_backend_matrix"]
+    assert metrics["config"]["scanner_backend_matrix"] is True
+    assert variant["scanner"]["config"]["backend"] == "fast"
+    _assert_scanner_backend_matrix_contract(matrix)
+    assert matrix["comparison"]["selected_backend"] == "fast"
+
+
+def test_scanner_backend_matrix_both_mode_lives_on_scanner_pipeline(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    scanner_pipeline = variant["pipelines"]["scanner"]
+    assert metrics["config"]["scanner_backend_matrix"] is True
+    assert "scanner_backend_matrix" not in variant
+    _assert_scanner_backend_matrix_contract(scanner_pipeline["scanner_backend_matrix"])
+
+
+def test_scanner_backend_matrix_oracle_mode_is_noop(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "oracle",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["scanner_backend_matrix"] is False
+    assert "scanner_backend_matrix" not in variant
+    assert "scanner_quality" not in variant
+
+
+def test_scanner_backend_matrix_summary_csv_columns(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend-matrix",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+
+    row = rows[0]
+    for field in (
+        "scanner_matrix_best_fvt_positive_buffered_f1_backend",
+        "scanner_matrix_best_skin_buffered_f1_backend",
+        "scanner_matrix_best_boundary_edge_fp_backend",
+    ):
+        assert field in row
+        assert row[field] in EXPECTED_SCANNER_BACKEND_MATRIX_BACKENDS
+
+
+def test_scanner_backend_matrix_default_off_keeps_report_without_matrix(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["scanner_backend_matrix"] is False
+    assert "scanner_backend_matrix" not in variant
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["scanner_matrix_best_fvt_positive_buffered_f1_backend"] == ""
+    assert rows[0]["scanner_matrix_best_skin_buffered_f1_backend"] == ""
+    assert rows[0]["scanner_matrix_best_boundary_edge_fp_backend"] == ""
 
 
 def test_report_synthetic_quality_scanner_thin_mode_none_runs(tmp_path: Path) -> None:
