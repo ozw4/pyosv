@@ -1038,6 +1038,90 @@ def test_report_3d_synthetic_quality_workflow_mode_resolves_voter_thin_mode(
     assert metrics["config"]["voting"]["voter_thin_mode"] == expected_voter_thin_mode
 
 
+def test_quality_workflow_current_default_matches_reference_workflow_voter_thin_normal(
+    tmp_path: Path,
+) -> None:
+    reference_dir = tmp_path / "synthetic_quality_reference"
+    quality_dir = tmp_path / "synthetic_quality_quality"
+
+    reference_result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "reference",
+        "--variants",
+        "current_default,voter_thin_normal",
+        "--output-dir",
+        str(reference_dir),
+        "--skip-skinning",
+    )
+    quality_result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--variants",
+        "current_default",
+        "--output-dir",
+        str(quality_dir),
+        "--skip-skinning",
+    )
+
+    assert reference_result.returncode == 0, reference_result.stderr
+    assert quality_result.returncode == 0, quality_result.stderr
+
+    reference_metrics = json.loads((reference_dir / "metrics.json").read_text(encoding="utf-8"))
+    quality_metrics = json.loads((quality_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert reference_metrics["config"]["workflow_mode"] == "reference"
+    assert reference_metrics["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert quality_metrics["config"]["workflow_mode"] == "quality"
+    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "normal"
+
+    with (reference_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        reference_rows = list(csv.DictReader(file))
+    with (quality_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        quality_rows = list(csv.DictReader(file))
+
+    def curved_oracle_row(rows: list[dict[str, str]], variant: str) -> dict[str, str]:
+        return next(
+            row
+            for row in rows
+            if row["case_id"] == "curved_surface"
+            and row["pipeline"] == "oracle"
+            and row["variant"] == variant
+        )
+
+    reference_current = curved_oracle_row(reference_rows, "current_default")
+    reference_normal = curved_oracle_row(reference_rows, "voter_thin_normal")
+    quality_current = curved_oracle_row(quality_rows, "current_default")
+
+    quality_fields = (
+        "fvt_buffered_f1_r2",
+        "fvt_distance_p95",
+        "fvt_strike_median_error",
+        "fvt_dip_median_error",
+    )
+    for field in quality_fields:
+        assert math.isclose(
+            float(quality_current[field]),
+            float(reference_normal[field]),
+            abs_tol=1.0e-12,
+        )
+
+    assert any(
+        not math.isclose(
+            float(reference_current[field]),
+            float(quality_current[field]),
+            abs_tol=1.0e-12,
+        )
+        for field in quality_fields
+    )
+
+
 @pytest.mark.parametrize("override", [None, "normal"])
 def test_report_3d_synthetic_quality_workflow_mode_diagnostic_enables_thinning_diagnostic(
     tmp_path: Path,
