@@ -187,7 +187,9 @@ to reference-like strike-binned thinning with scanner edge-effect removal; pass
 legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` also defaults
 to reference-like strike-binned thinning, with voter-specific retained-sample
 reinforcement and no scanner edge-effect cleanup. Use `mode="normal"` for the
-legacy fault-normal voter path.
+legacy fault-normal voter path. Voter diagnostics can also use `mode="hybrid"`,
+`mode="hybrid_v2"`, or `mode="normal_plateau"` to compare reference-like,
+fault-normal, and plateau-aware thinning behavior without changing defaults.
 
 Backward-compatible 3D thinning calls are explicit:
 

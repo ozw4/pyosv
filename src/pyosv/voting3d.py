@@ -249,6 +249,7 @@ class OptimalSurfaceVoter:
         mode: str = "reference",
         reference_sigma: float = 1.0,
         hybrid_orientation_gradient_threshold: float = 8.0,
+        hybrid_v2_edge_margin: int = 2,
         plateau_tie_breaker: np.ndarray | None = None,
         plateau_tolerance: float = 1.0e-6,
     ) -> np.ndarray:
@@ -267,11 +268,17 @@ class OptimalSurfaceVoter:
             )
             if tie_breaker_array.shape != fv_array.shape:
                 raise ValueError("fv and plateau_tie_breaker shapes must match")
-        if mode not in {"reference", "normal", "hybrid", "normal_plateau"}:
-            raise ValueError("mode must be 'reference', 'normal', 'hybrid', or 'normal_plateau'")
+        if mode not in {"reference", "normal", "hybrid", "hybrid_v2", "normal_plateau"}:
+            raise ValueError(
+                "mode must be 'reference', 'normal', 'hybrid', 'hybrid_v2', or 'normal_plateau'"
+            )
         threshold = _validate_nonnegative_float(
             hybrid_orientation_gradient_threshold,
             "hybrid_orientation_gradient_threshold",
+        )
+        edge_margin = _validate_nonnegative_int(
+            hybrid_v2_edge_margin,
+            "hybrid_v2_edge_margin",
         )
         if mode == "reference":
             thinned, _ = _thin_reference_like_3d(
@@ -304,8 +311,31 @@ class OptimalSurfaceVoter:
         roughness = _orientation_roughness_3d(
             vp_array,
             vt_array,
-            support=fv_array > np.float32(0.0),
+            support=fv_array > np.float32(1.0e-6),
         )
+        if mode == "hybrid_v2":
+            plateau = _thin_fault_normal_plateau_3d(
+                fv_array,
+                vp_array,
+                vt_array,
+                plateau_tie_breaker=tie_breaker_array,
+                tolerance=_validate_nonnegative_float(
+                    plateau_tolerance,
+                    "plateau_tolerance",
+                ),
+            )
+            use_normal = (roughness > np.float32(threshold)) & (normal > np.float32(0.0))
+            sparse_normal = _local_candidate_count_3d(normal > np.float32(0.0)) <= 1
+            use_plateau = (
+                _edge_region_mask_3d(fv_array.shape, edge_margin)
+                & (plateau > np.float32(0.0))
+                & ((normal <= np.float32(0.0)) | sparse_normal)
+            )
+            result = reference.copy()
+            result[use_normal] = normal[use_normal]
+            result[use_plateau] = plateau[use_plateau]
+            return result.astype(np.float32, copy=False)
+
         return np.where(roughness <= threshold, reference, normal).astype(
             np.float32,
             copy=False,
@@ -1115,6 +1145,39 @@ def _retain_plateau_run_sample(
     else:
         keep_offset = start + int(np.argmax(run_tie_breaker))
     thinned_line[keep_offset] = fv_line[keep_offset]
+
+
+def _edge_region_mask_3d(shape: tuple[int, int, int], margin: int) -> np.ndarray:
+    mask = np.zeros(shape, dtype=np.bool_)
+    if margin == 0 or mask.size == 0:
+        return mask
+
+    n3, n2, n1 = shape
+    m3 = min(margin, n3)
+    m2 = min(margin, n2)
+    m1 = min(margin, n1)
+    mask[:m3, :, :] = True
+    mask[n3 - m3 :, :, :] = True
+    mask[:, :m2, :] = True
+    mask[:, n2 - m2 :, :] = True
+    mask[:, :, :m1] = True
+    mask[:, :, n1 - m1 :] = True
+    return mask
+
+
+def _local_candidate_count_3d(candidate: np.ndarray) -> np.ndarray:
+    candidate_array = np.asarray(candidate, dtype=np.uint8)
+    padded = np.pad(candidate_array, 1, mode="constant", constant_values=0)
+    counts = np.zeros(candidate_array.shape, dtype=np.uint8)
+    for d3 in range(3):
+        for d2 in range(3):
+            for d1 in range(3):
+                counts += padded[
+                    d3 : d3 + candidate_array.shape[0],
+                    d2 : d2 + candidate_array.shape[1],
+                    d1 : d1 + candidate_array.shape[2],
+                ]
+    return counts
 
 
 def _orientation_roughness_3d(

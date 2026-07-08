@@ -29,6 +29,7 @@ DIAGNOSTIC_VARIANTS = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "voter_thin_hybrid_v2",
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
@@ -326,6 +327,12 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_normal_plateau() -> 
     module = _load_report_module()
 
     assert module.parse_variants("voter_thin_normal_plateau") == ("voter_thin_normal_plateau",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("voter_thin_hybrid_v2") == ("voter_thin_hybrid_v2",)
 
 
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
@@ -685,7 +692,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         (
             "current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
-            "voter_thin_normal_plateau,surface_support_weighted,quality_skinner_v2"
+            "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
+            "surface_support_weighted,quality_skinner_v2"
         ),
     )
 
@@ -1309,6 +1317,29 @@ def test_report_3d_synthetic_quality_voter_thin_normal_plateau_variant_passes(
         ]
         > 0
     )
+
+
+def test_report_3d_synthetic_quality_voter_thin_hybrid_v2_variant_passes(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--variants",
+        "voter_thin_hybrid_v2",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["voter_thin_hybrid_v2"]
+    assert variant["pyosv"]["fvt"]["max"] > 0.0
 
 
 def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(

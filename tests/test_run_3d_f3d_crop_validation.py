@@ -131,6 +131,8 @@ def test_parser_accepts_and_rejects_thinning_modes(monkeypatch: pytest.MonkeyPat
         module.build_parser().parse_args(["--scanner-thin-mode", "hybrid"])
     hybrid_args = module.build_parser().parse_args(["--voter-thin-mode", "hybrid"])
     assert hybrid_args.voter_thin_mode == "hybrid"
+    hybrid_v2_args = module.build_parser().parse_args(["--voter-thin-mode", "hybrid_v2"])
+    assert hybrid_v2_args.voter_thin_mode == "hybrid_v2"
 
 
 def test_crop_shape_center_and_large_preset_parsing(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -105,6 +105,7 @@ VARIANT_NAMES = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "voter_thin_hybrid_v2",
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
@@ -116,6 +117,7 @@ QUALITY_MATRIX_VARIANTS = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "voter_thin_hybrid_v2",
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
@@ -668,7 +670,8 @@ def build_parser() -> argparse.ArgumentParser:
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
-            "voter_thin_normal_plateau,surface_support_weighted,quality_skinner_v2 \\\n"
+            "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
+            "surface_support_weighted,quality_skinner_v2 \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -830,7 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--voter-thin-mode",
-        choices=("reference", "normal", "hybrid", "normal_plateau"),
+        choices=("reference", "normal", "hybrid", "hybrid_v2", "normal_plateau"),
         default=None,
         help="Thinning mode passed to OptimalSurfaceVoter.thin(); defaults by workflow mode.",
     )
@@ -1675,10 +1678,11 @@ def _run_voting_from_attributes(
     variant_thin_modes = {
         "voter_thin_normal": "normal",
         "voter_thin_hybrid": "hybrid",
+        "voter_thin_hybrid_v2": "hybrid_v2",
         "voter_thin_normal_plateau": "normal_plateau",
     }
     thin_mode = variant_thin_modes.get(variant, voting_config.voter_thin_mode)
-    plateau_tie_breaker = ft if thin_mode == "normal_plateau" else None
+    plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
     fvt = voter.thin(
         fv,
         vp,
