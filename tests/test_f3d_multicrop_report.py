@@ -103,15 +103,20 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.ridge_buffer_radius == 2.0
     assert defaults.write_markdown_index is False
     assert defaults.volume_dir is None
+    assert defaults.workflow_mode == "reference"
+    assert defaults.compare_workflows is False
     assert defaults.count == 3
     assert defaults.crop_shape == (128, 128, 100)
     assert defaults.interior_margin == 40
     assert defaults.center is None
     assert defaults.scanner_thin_mode == "reference"
     assert defaults.voter_thin_mode == "reference"
+    assert defaults.voter_thin_mode_explicit is False
     assert defaults.reference_thin_sigma == 1.0
     assert defaults.remove_scanner_edge_effects is True
     assert defaults.final_normalization_smoothing is None
+    assert defaults.surface_support_min_fraction is None
+    assert defaults.surface_support_exponent is None
     assert "--final-normalization-smoothing" in module.build_parser().format_help()
 
     args = module.build_parser().parse_args(
@@ -135,6 +140,9 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
             "--keep-scanner-edge-effects",
             "--final-normalization-smoothing",
             "1.0",
+            "--workflow-mode",
+            "quality",
+            "--compare-workflows",
         ]
     )
     assert args.crop_shape == (16, 14, 12)
@@ -146,6 +154,8 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert args.reference_thin_sigma == 1.5
     assert args.remove_scanner_edge_effects is False
     assert args.final_normalization_smoothing == 1.0
+    assert args.workflow_mode == "quality"
+    assert args.compare_workflows is True
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--voter-thin-mode", "bad"])
 
@@ -240,6 +250,7 @@ def test_run_example_writes_json_and_uses_explicit_centers(
     assert output_json.is_file()
     loaded = json.loads(output_json.read_text(encoding="utf-8"))
     assert loaded["format_version"] == 1
+    assert loaded["config"]["workflow_mode"] == "reference"
     assert loaded["config"]["crop_selection"]["source"] == "explicit_centers"
     assert loaded["config"]["crop_selection"]["selected_count"] == 2
     assert loaded["config"]["scanner"]["thin_mode"] == "reference"
@@ -248,6 +259,8 @@ def test_run_example_writes_json_and_uses_explicit_centers(
     assert loaded["config"]["scanner"]["remove_edge_effects"] is True
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
     assert loaded["config"]["voter"]["final_normalization_smoothing"] == 0.0
+    assert loaded["config"]["voter"]["surface_support_min_fraction"] == 0.0
+    assert loaded["config"]["voter"]["surface_support_exponent"] == 0.0
     assert loaded["config"]["voter"]["surface_voting_boundary_policy"] == (
         "reference-like-i2-i3-interior"
     )
@@ -306,6 +319,104 @@ def test_run_example_records_selected_thinning_modes(
     assert received_kwargs["reference_thin_sigma"] == 1.25
     assert received_kwargs["remove_scanner_edge_effects"] is False
     assert received_kwargs["final_normalization_smoothing"] == 1.0
+
+
+def test_compare_workflows_runs_same_centers_and_reports_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_json = tmp_path / "outputs" / "metrics.json"
+    received_kwargs: list[dict[str, object]] = []
+    figure_dirs: list[Path] = []
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+
+    def fake_run_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
+        received_kwargs.append(dict(kwargs))
+        return _synthetic_outputs(ep.shape)
+
+    def fake_write_figures(output_dir: Path, **kwargs: object) -> dict[str, object]:
+        figure_dirs.append(Path(output_dir))
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        return {"directory": Path(output_dir).relative_to(output_json.parent).as_posix()}
+
+    monkeypatch.setattr(module.crop_validation, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(module.crop_validation, "require_figure_support", lambda: None)
+    monkeypatch.setattr(module.crop_validation, "write_crop_figures", fake_write_figures)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        compare_workflows=True,
+        save_volumes=True,
+        save_figures=True,
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+        pretty=True,
+    )
+
+    loaded = json.loads(output_json.read_text(encoding="utf-8"))
+    assert loaded == report
+    assert set(loaded["workflows"]) == {"reference", "quality"}
+    assert loaded["workflows"]["reference"]["crops"][0]["crop_center"] == [2, 2, 2]
+    assert loaded["workflows"]["quality"]["crops"][0]["crop_center"] == [2, 2, 2]
+    assert loaded["workflows"]["reference"]["config"]["voter"]["thin_mode"] == "reference"
+    assert loaded["workflows"]["quality"]["config"]["voter"]["thin_mode"] == "hybrid"
+    assert loaded["workflows"]["quality"]["config"]["voter"]["surface_support_min_fraction"] == 0.5
+    assert loaded["workflow_delta"]["quality_vs_reference"]
+    delta = loaded["workflow_delta"]["quality_vs_reference"]["per_metric_mean"]
+    assert "normalized_correlation.interior.fv" in delta
+    assert "normalized_correlation.interior.fvt" in delta
+    assert "buffered_ridge_overlap.interior.fvt.buffered_recall" in delta
+    assert "sparse_ridge_distance_metrics.interior.fvt.candidate_to_reference_median" in delta
+    _assert_finite_or_none(loaded["workflow_delta"]["quality_vs_reference"])
+    assert received_kwargs[0]["voter_thin_mode"] == "reference"
+    assert received_kwargs[1]["voter_thin_mode"] == "hybrid"
+    assert (output_json.parent / "volumes" / "reference" / "crop_001").is_dir()
+    assert (output_json.parent / "volumes" / "quality" / "crop_001").is_dir()
+    assert figure_dirs == [
+        output_json.parent / "figures" / "reference" / "crop_001",
+        output_json.parent / "figures" / "quality" / "crop_001",
+    ]
+
+
+def test_compare_workflows_honors_explicit_voter_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    output_json = tmp_path / "outputs" / "metrics.json"
+    monkeypatch.setattr(
+        module.crop_validation,
+        "read_reference_arrays",
+        lambda root: _synthetic_reference_arrays(),
+    )
+    monkeypatch.setattr(
+        module.crop_validation,
+        "run_pipeline",
+        lambda ep, **kwargs: _synthetic_outputs(ep.shape),
+    )
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        compare_workflows=True,
+        voter_thin_mode="reference",
+        count=1,
+        crop_shape=(6, 6, 6),
+        interior_margin=1,
+        centers=[(2, 2, 2)],
+    )
+
+    assert report["workflows"]["quality"]["config"]["voter"]["thin_mode"] == "reference"
 
 
 def test_save_volumes_writes_crop_outputs(

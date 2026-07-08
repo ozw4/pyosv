@@ -86,16 +86,23 @@ def test_parser_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.d == 4
     assert args.fm == 0.3
     assert args.interior_margin is None
+    assert args.workflow_mode == "reference"
     assert args.scanner_thin_mode == "reference"
     assert args.voter_thin_mode == "reference"
+    assert args.voter_thin_mode_explicit is False
     assert args.reference_thin_sigma == 1.0
     assert args.remove_scanner_edge_effects is True
+    assert args.surface_support_min_fraction is None
+    assert args.surface_support_exponent is None
 
     override_args = module.build_parser().parse_args(["--surface-orientation-smoothing", "0"])
     assert override_args.surface_orientation_smoothing == 0.0
     final_args = module.build_parser().parse_args(["--final-normalization-smoothing", "1.0"])
     assert final_args.final_normalization_smoothing == 1.0
     assert "--final-normalization-smoothing" in module.build_parser().format_help()
+
+    quality_args = module.build_parser().parse_args(["--workflow-mode", "quality"])
+    assert quality_args.workflow_mode == "quality"
 
 
 def test_parser_accepts_and_rejects_thinning_modes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,10 +122,15 @@ def test_parser_accepts_and_rejects_thinning_modes(monkeypatch: pytest.MonkeyPat
 
     assert args.scanner_thin_mode == "reference"
     assert args.voter_thin_mode == "reference"
+    assert args.voter_thin_mode_explicit is True
     assert args.reference_thin_sigma == 1.5
     assert args.remove_scanner_edge_effects is False
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--scanner-thin-mode", "bad"])
+    with pytest.raises(SystemExit):
+        module.build_parser().parse_args(["--scanner-thin-mode", "hybrid"])
+    hybrid_args = module.build_parser().parse_args(["--voter-thin-mode", "hybrid"])
+    assert hybrid_args.voter_thin_mode == "hybrid"
 
 
 def test_crop_shape_center_and_large_preset_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,8 +256,11 @@ def test_run_example_writes_metrics_json_to_output_dir(
     assert loaded["data_root"] == str(data_root)
     assert loaded["crops"][0]["crop_center"] == [3, 3, 3]
     assert report["config"]["crop_shape"] == [6, 6, 6]
+    assert loaded["config"]["workflow_mode"] == "reference"
     assert loaded["config"]["scanner"]["thin_mode"] == "reference"
     assert loaded["config"]["voter"]["thin_mode"] == "reference"
+    assert loaded["config"]["voter"]["surface_support_min_fraction"] == 0.0
+    assert loaded["config"]["voter"]["surface_support_exponent"] == 0.0
     assert loaded["config"]["scanner"]["reference_thin_sigma"] == 1.0
     assert loaded["config"]["scanner"]["remove_edge_effects"] is True
     assert loaded["config"]["voter"]["reference_thin_sigma"] == 1.0
@@ -304,6 +319,52 @@ def test_run_example_records_selected_thinning_modes(
     assert received_kwargs["remove_scanner_edge_effects"] is False
     assert received_kwargs["surface_orientation_smoothing"] == 0.0
     assert received_kwargs["final_normalization_smoothing"] == 1.0
+
+
+def test_quality_workflow_defaults_and_explicit_voter_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    received_kwargs: list[dict[str, object]] = []
+    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+
+    def fake_run_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
+        received_kwargs.append(dict(kwargs))
+        return _synthetic_outputs(ep.shape)
+
+    monkeypatch.setattr(module, "run_pipeline", fake_run_pipeline)
+
+    quality_report = module.run_example(
+        data_root_arg=data_root,
+        workflow_mode="quality",
+        crop_shape=(6, 6, 6),
+        max_crops=1,
+        percentile=99.0,
+        min_separation=1.0,
+        interior_margin=1,
+    )
+    override_report = module.run_example(
+        data_root_arg=data_root,
+        workflow_mode="quality",
+        voter_thin_mode="reference",
+        crop_shape=(6, 6, 6),
+        max_crops=1,
+        percentile=99.0,
+        min_separation=1.0,
+        interior_margin=1,
+    )
+
+    assert quality_report["config"]["workflow_mode"] == "quality"
+    assert quality_report["config"]["voter"]["thin_mode"] == "hybrid"
+    assert quality_report["config"]["voter"]["surface_support_min_fraction"] == 0.5
+    assert quality_report["config"]["voter"]["surface_support_exponent"] == 1.0
+    assert override_report["config"]["voter"]["thin_mode"] == "reference"
+    assert received_kwargs[0]["voter_thin_mode"] == "hybrid"
+    assert received_kwargs[0]["surface_support_min_fraction"] == 0.5
+    assert received_kwargs[0]["surface_support_exponent"] == 1.0
+    assert received_kwargs[1]["voter_thin_mode"] == "reference"
 
 
 def test_small_pipeline_accepts_reference_thinning_and_final_normalization_smoothing(

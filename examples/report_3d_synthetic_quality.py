@@ -19,7 +19,7 @@ import json
 import numbers
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from os import PathLike
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -125,6 +125,9 @@ SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
 SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
+SKINNER_METHODS = ("reference", "quality", "connected_component")
+REFERENCE_SKINNER_SEED_MIN_EP = 0.8
+QUALITY_SKINNER_SEED_MIN_EP = 0.5
 VARIANT_COMPARISON_METRICS = (
     (
         "fvt_buffered_f1_r2_delta_vs_current",
@@ -206,6 +209,60 @@ def _default_surface_support_policy_for_workflow(
     if workflow_mode == "quality":
         return 0.5, 1.0
     return 0.0, 0.0
+
+
+def _default_skinner_method_for_workflow(workflow_mode: str) -> str:
+    return "quality" if workflow_mode == "quality" else "reference"
+
+
+def _default_skinner_min_likelihood_for_method(method: str) -> float | None:
+    return None if method == "quality" else 0.5
+
+
+def _skinner_seed_min_ep_for_method(method: str) -> float | None:
+    if method == "reference":
+        return REFERENCE_SKINNER_SEED_MIN_EP
+    if method == "quality":
+        return QUALITY_SKINNER_SEED_MIN_EP
+    return None
+
+
+def _effective_skinner_method(
+    *,
+    workflow_mode: str,
+    skinner_method: str | None,
+) -> str:
+    if skinner_method is not None:
+        return skinner_method
+    return _default_skinner_method_for_workflow(workflow_mode)
+
+
+def _effective_skinner_min_likelihood(
+    *,
+    skinner_method: str,
+    min_likelihood: float | None,
+) -> float | None:
+    if min_likelihood is not None:
+        return min_likelihood
+    return _default_skinner_min_likelihood_for_method(skinner_method)
+
+
+def _effective_skinning_config_for_workflow(
+    *,
+    workflow_mode: str,
+    skinning_config: SyntheticSkinningConfig,
+    skinner_method_explicit: bool = False,
+) -> SyntheticSkinningConfig:
+    if (
+        workflow_mode != "quality"
+        or skinner_method_explicit
+        or skinning_config.method != "reference"
+    ):
+        return skinning_config
+    min_likelihood = skinning_config.min_likelihood
+    if min_likelihood == SyntheticSkinningConfig().min_likelihood:
+        min_likelihood = None
+    return replace(skinning_config, method="quality", min_likelihood=min_likelihood)
 
 
 def _effective_voter_thin_mode(
@@ -452,7 +509,8 @@ class SyntheticSkinningConfig:
     """Configuration for controlled synthetic skinning."""
 
     enabled: bool = True
-    min_likelihood: float = 0.5
+    method: str = "reference"
+    min_likelihood: float | None = 0.5
     min_skin_size: int | None = 1
     d: int = 1
     ru: int = 10
@@ -469,7 +527,10 @@ class SyntheticSkinningConfig:
             raise ValueError("enabled must be a bool")
         if not isinstance(self.reskin, bool):
             raise ValueError("reskin must be a bool")
-        _validate_nonnegative_finite_scalar(self.min_likelihood, "skinner_min_likelihood")
+        if self.method not in SKINNER_METHODS:
+            raise ValueError("skinner_method must be one of: " + ", ".join(SKINNER_METHODS))
+        if self.min_likelihood is not None:
+            _validate_nonnegative_finite_scalar(self.min_likelihood, "skinner_min_likelihood")
         _validate_optional_nonnegative_int(self.min_skin_size, "skinner_min_skin_size")
         _validate_nonnegative_int(self.d, "skinner_d")
         _validate_skinner_radius(self.ru, "skinner_ru")
@@ -483,10 +544,14 @@ class SyntheticSkinningConfig:
         )
         _validate_nonnegative_int(self.small_skin_size, "small_skin_size")
 
-    def as_report_dict(self) -> dict[str, bool | int | float | None]:
+    def as_report_dict(self) -> dict[str, bool | int | float | str | None]:
         return {
             "enabled": self.enabled,
-            "min_likelihood": float(self.min_likelihood),
+            "method": self.method,
+            "min_likelihood": (None if self.min_likelihood is None else float(self.min_likelihood)),
+            "adaptive_min_likelihood": self.method == "quality" and self.min_likelihood is None,
+            "seed_min_ep": _skinner_seed_min_ep_for_method(self.method),
+            "seed_planarity_source": "fvt",
             "min_skin_size": (None if self.min_skin_size is None else int(self.min_skin_size)),
             "d": int(self.d),
             "ru": int(self.ru),
@@ -758,8 +823,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skinner-min-likelihood",
         type=float,
-        default=0.5,
-        help="Minimum thinned vote likelihood for FaultSkinner.",
+        default=None,
+        help=(
+            "Minimum thinned vote likelihood for FaultSkinner; defaults by workflow/skinner method."
+        ),
+    )
+    parser.add_argument(
+        "--skinner-method",
+        choices=SKINNER_METHODS,
+        default=None,
+        help="FaultSkinner backend: reference, quality, or connected_component.",
     )
     parser.add_argument(
         "--skinner-min-skin-size",
@@ -1740,6 +1813,7 @@ def build_report(
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
+    skinner_method_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
@@ -1754,6 +1828,7 @@ def build_report(
         skinning_config=skinning_config,
         input_mode=input_mode,
         workflow_mode=workflow_mode,
+        skinner_method_explicit=skinner_method_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -1772,6 +1847,7 @@ def _build_report_and_volumes(
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
+    skinner_method_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[
@@ -1784,6 +1860,11 @@ def _build_report_and_volumes(
     valid_variant_preset = _validate_variant_preset(variant_preset)
     valid_input_mode = _validate_input_mode(input_mode)
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
+    skinning_config = _effective_skinning_config_for_workflow(
+        workflow_mode=valid_workflow_mode,
+        skinning_config=skinning_config,
+        skinner_method_explicit=skinner_method_explicit,
+    )
     if voting_config is None:
         support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
             valid_workflow_mode
@@ -2365,16 +2446,22 @@ def _find_synthetic_skins(
     *,
     skinning_config: SyntheticSkinningConfig,
 ) -> list[Any]:
-    skinner = FaultSkinner(
-        method="reference",
-        min_likelihood=skinning_config.min_likelihood,
-        min_skin_size=skinning_config.min_skin_size,
-    )
+    skinner_kwargs: dict[str, Any] = {
+        "method": skinning_config.method,
+        "min_skin_size": skinning_config.min_skin_size,
+    }
+    if skinning_config.min_likelihood is not None:
+        skinner_kwargs["min_likelihood"] = skinning_config.min_likelihood
+    skinner = FaultSkinner(**skinner_kwargs)
     return skinner.find_skins(
         fvt,
         vp,
         vt,
         min_likelihood=skinning_config.min_likelihood,
+        ep=fvt,
+        ft=fvt,
+        pt=vp,
+        tt=vt,
         d=skinning_config.d,
         ru=skinning_config.ru,
         rv=skinning_config.rv,
@@ -3067,6 +3154,7 @@ def run_example(
     variant_preset: str = DEFAULT_VARIANT_PRESET,
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
+    skinner_method_explicit: bool = False,
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -3085,6 +3173,7 @@ def run_example(
         variant_preset=variant_preset,
         input_mode=input_mode,
         workflow_mode=workflow_mode,
+        skinner_method_explicit=skinner_method_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -3119,6 +3208,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     include_thinning_diagnostic = _effective_include_thinning_diagnostic(
         workflow_mode=args.workflow_mode,
         include_thinning_diagnostic=args.include_thinning_diagnostic,
+    )
+    skinner_method = _effective_skinner_method(
+        workflow_mode=args.workflow_mode,
+        skinner_method=args.skinner_method,
+    )
+    skinner_min_likelihood = _effective_skinner_min_likelihood(
+        skinner_method=skinner_method,
+        min_likelihood=args.skinner_min_likelihood,
     )
     variants = _resolve_variants(
         variants=args.variants,
@@ -3160,7 +3257,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             skinning_config=SyntheticSkinningConfig(
                 enabled=not args.skip_skinning,
-                min_likelihood=args.skinner_min_likelihood,
+                method=skinner_method,
+                min_likelihood=skinner_min_likelihood,
                 min_skin_size=args.skinner_min_skin_size,
                 d=args.skinner_d,
                 ru=args.skinner_ru,
@@ -3176,6 +3274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             variant_preset=args.variant_preset,
             input_mode=args.input_mode,
             workflow_mode=args.workflow_mode,
+            skinner_method_explicit=args.skinner_method is not None,
             include_thinning_diagnostic=include_thinning_diagnostic,
             thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,

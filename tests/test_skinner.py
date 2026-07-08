@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 
@@ -6,6 +8,7 @@ from pyosv.skin import FaultSkin
 from pyosv.skinner import (
     ConnectedComponentSkinner,
     FaultSkinner,
+    _adaptive_skin_likelihood_threshold,
     _candidate_slice_above_below,
     _candidate_slice_left_right,
     _find_reference_skins,
@@ -78,6 +81,10 @@ def test_constructor_rejects_unknown_connectivity() -> None:
 def test_constructor_rejects_unknown_method() -> None:
     with pytest.raises(ValueError, match="method"):
         FaultSkinner(method="fast")
+
+
+def test_constructor_accepts_quality_method() -> None:
+    assert FaultSkinner(method="quality").method == "quality"
 
 
 def test_cells_from_votes_extracts_thresholded_fault_cells_in_volume_order() -> None:
@@ -219,6 +226,55 @@ def test_find_reference_seeds_uses_planarity_and_thinned_likelihood_thresholds()
     assert [seed.ft for seed in seeds] == pytest.approx([50.0, 80.0])
 
 
+def test_find_reference_seeds_explicit_min_ep_matches_reference_default() -> None:
+    ep = np.array([[[0.81, 0.80, 0.90, 0.95]]], dtype=np.float32)
+    ft = np.array([[[0.60, 0.70, 0.50, 0.51]]], dtype=np.float32)
+    pt = np.array([[[10.0, 20.0, 30.0, 40.0]]], dtype=np.float32)
+    tt = np.array([[[50.0, 60.0, 70.0, 80.0]]], dtype=np.float32)
+
+    default_seeds = _find_reference_seeds(d=0, fm=0.5, ep=ep, ft=ft, pt=pt, tt=tt)
+    explicit_seeds = _find_reference_seeds(
+        d=0,
+        fm=0.5,
+        ep=ep,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+        min_ep=0.8,
+    )
+
+    assert [seed.index for seed in explicit_seeds] == [seed.index for seed in default_seeds]
+
+
+def test_find_reference_seeds_lower_min_ep_does_not_reduce_seed_count() -> None:
+    ep = np.array([[[0.55, 0.85, 0.60]]], dtype=np.float32)
+    ft = np.array([[[0.90, 0.80, 0.70]]], dtype=np.float32)
+    pt = np.zeros_like(ep)
+    tt = np.full_like(ep, 90.0)
+
+    reference_seeds = _find_reference_seeds(
+        d=0,
+        fm=0.5,
+        ep=ep,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+        min_ep=0.8,
+    )
+    quality_seeds = _find_reference_seeds(
+        d=0,
+        fm=0.5,
+        ep=ep,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+        min_ep=0.5,
+    )
+
+    assert len(quality_seeds) >= len(reference_seeds)
+    assert len(quality_seeds) > len(reference_seeds)
+
+
 def test_find_reference_seeds_orders_candidates_by_likelihood_with_deterministic_ties() -> None:
     ep = np.ones((2, 2, 3), dtype=np.float32)
     ft = np.zeros_like(ep)
@@ -318,6 +374,53 @@ def test_find_reference_seeds_rejects_invalid_parameters(
             pt=pt,
             tt=tt,
         )
+
+
+@pytest.mark.parametrize("min_ep", [-0.1, 1.1, np.nan, np.inf, True, "0.5"])
+def test_find_reference_seeds_rejects_invalid_min_ep(min_ep: object) -> None:
+    ep = np.zeros((1, 1, 1), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.zeros_like(ep)
+    tt = np.zeros_like(ep)
+
+    with pytest.raises(ValueError, match="min_ep"):
+        _find_reference_seeds(
+            d=1,
+            fm=0.5,
+            ep=ep,
+            ft=ft,
+            pt=pt,
+            tt=tt,
+            min_ep=min_ep,  # type: ignore[arg-type]
+        )
+
+
+def test_adaptive_skin_likelihood_threshold_uses_positive_distribution() -> None:
+    values = np.array([[[0.0, 0.1, 0.2, 0.5, 0.9]]], dtype=np.float32)
+
+    threshold = _adaptive_skin_likelihood_threshold(values)
+
+    assert math.isfinite(threshold)
+    assert 0.25 <= threshold <= 0.75
+    assert threshold == pytest.approx(0.54)
+
+
+def test_quality_find_skins_returns_empty_for_all_zero_volume() -> None:
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+
+    skins = FaultSkinner(method="quality").find_skins(
+        fv,
+        vp,
+        vt,
+        ru=5,
+        rv=5,
+        rw=5,
+        reskin=False,
+    )
+
+    assert skins == []
 
 
 def test_local_transform_maps_horizontal_plane_indices_to_expected_world_coordinates() -> None:

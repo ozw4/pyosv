@@ -216,9 +216,8 @@ reference
 
 quality
   Truth-quality mode for controlled synthetic evaluation. Effective
-  voter_thin_mode is normal unless --voter-thin-mode is passed. On the same
-  case and shape, this makes the active current_default thinning behavior match
-  the existing voter_thin_normal diagnostic variant.
+  voter_thin_mode is hybrid unless --voter-thin-mode is passed, and
+  support-aware surface voting plus the quality skinner are enabled by default.
 
 diagnostic
   Diagnostic mode. Effective voter_thin_mode is reference unless
@@ -235,8 +234,11 @@ still enables reference-vs-normal thinning diagnostics in `reference` or
 
 The report config always records `config.workflow_mode`. The voting config
 records the effective `config.voting.voter_thin_mode`, after applying the
-workflow preset and any explicit override. `summary.csv` includes
-`workflow_mode` near `input_mode` on every row.
+workflow preset and any explicit override. For quality mode it also records the
+effective support policy
+(`surface_support_min_fraction=0.5`, `surface_support_exponent=1.0`) and
+quality skinning settings. `summary.csv` includes `workflow_mode` near
+`input_mode` on every row.
 
 ## Curved Surface Thinning Diagnostic
 
@@ -250,12 +252,12 @@ pre-thin `fv` / `vp` / `vt` volumes. `reference` thinning is closer to the
 Java-reference style and remains the default path. `normal` thinning can score
 better against analytic truth on curved synthetic surfaces because it thins
 along the local fault-normal field instead of the reference-like strike-binned
-path. A better `normal` result on `curved_surface` does not automatically mean
-the default should change; read it as evidence about curved-surface
-truth-quality behavior, not as a reference-agreement requirement. Use
-`--workflow-mode quality` when the active controlled synthetic report should
-favor this truth-quality behavior, or keep `--workflow-mode reference` for
-reference-alignment checks.
+path. A better `normal` or `hybrid` result on `curved_surface` does not
+automatically mean the default should change; read it as evidence about
+curved-surface truth-quality behavior, not as a reference-agreement
+requirement. Use `--workflow-mode quality` when the active controlled synthetic
+report should favor this truth-quality behavior, or keep
+`--workflow-mode reference` for reference-alignment checks.
 
 Use `--workflow-mode diagnostic`, or pass `--thinning-diagnostics` explicitly,
 to compute both thinning modes from the same pre-thin voter output:

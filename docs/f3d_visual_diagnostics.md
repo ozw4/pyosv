@@ -79,6 +79,27 @@ is requested. It writes metrics to that JSON path, writes per-crop PNGs under
 the metrics JSON when `--write-markdown-index` is set. Use the markdown index as
 the first browsing surface, then open individual PNGs for detail.
 
+To compare the reference and quality workflows on the same crop centers, add
+`--compare-workflows`:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/report_3d_f3d_multicrop.py \
+  --output-json outputs/3d/f3d/multicrop_visual_quality_compare_001/metrics.json \
+  --count 3 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --compare-workflows \
+  --save-figures \
+  --pretty
+```
+
+In compare mode, the JSON contains `workflows.reference`,
+`workflows.quality`, and `workflow_delta.quality_vs_reference`. Figure
+directories are split by workflow, for example
+`figures/reference/crop_001/` and `figures/quality/crop_001/`, so the two runs
+do not overwrite each other.
+
 For reference-like thinning diagnostics, run the same visual reports with
 `--scanner-thin-mode reference` and `--voter-thin-mode reference`, or run the
 dedicated ablation report. Copy-pastable commands are in
@@ -118,6 +139,12 @@ statistics look less alarming while ridge placement is still wrong.
 For `fvt`, always inspect ridge overlays and sparse-ridge metrics such as
 buffered overlap and ridge-distance summaries. Treat correlation as one signal,
 not as the tuning target.
+
+When comparing F3 reference and quality workflows, remember that the F3 data has
+no independent truth volume. A higher match to the reference workflow is not, by
+itself, higher processing quality. Use the side-by-side crops to check that the
+quality workflow preserves geological signal, does not add excessive ridges or
+boundary artifacts, and remains consistent across crop locations.
 
 For reference-like thinning experiments, first look for `fvt` sparsity moving
 closer to the reference, better buffered ridge overlap, smaller sparse-ridge

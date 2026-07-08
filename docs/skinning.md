@@ -2,9 +2,11 @@
 
 `pyosv.skin` and `pyosv.skinner` provide the Python skinning layer for 3D
 voting outputs. `FaultSkinner` defaults to `method="reference"`, the
-reference-like primary path for skinning. Use
-`method="connected_component"` or `ConnectedComponentSkinner` only when an
-explicit fallback or diagnostic connected-component grouping is needed.
+reference-like primary path for skinning. Use `method="quality"` when a
+quality-first extraction should keep the reference-like grower but use adaptive
+thresholding and looser seed gating. Use `method="connected_component"` or
+`ConnectedComponentSkinner` only when an explicit fallback or diagnostic
+connected-component grouping is needed.
 
 ## Scope
 
@@ -60,6 +62,15 @@ This is the multi-skin driver corresponding to the reference sequence of
 `findSeeds(...)`, repeated `findSkin(...)` growth, accepted-cell occupancy, and
 final `reskin(...)` smoothing.
 
+`FaultSkinner.find_skins` with `method="quality"` uses the same multi-skin
+driver and reskinning stage as `method="reference"`, but lowers the seed
+planarity gate to `ep > 0.5`. If neither a constructor nor call-site
+`min_likelihood` is configured, quality mode chooses an adaptive threshold from
+the positive `ft` values, clipped to a practical synthetic-report range. Passing
+`min_likelihood` explicitly keeps that fixed threshold. Explicit `ep`, `ft`,
+`pt`, and `tt` arrays are honored; otherwise the same convenience mapping as
+reference mode is used.
+
 After growth, the reference backend reskins each accepted skin by projecting
 cells to a seed-local `(v, w)` surface, smoothing local `u` offsets with
 likelihood weights, recomputing strike/dip from the smoothed surface
@@ -109,6 +120,10 @@ fvt = voter.thin(fv, vp, vt)
 
 skinner = FaultSkinner(min_likelihood=0.7, min_skin_size=20)
 skins = skinner.find_skins(fvt, vp, vt, ep=fvt, ft=fvt, pt=vp, tt=vt)
+
+quality_skins = FaultSkinner(method="quality", min_skin_size=20).find_skins(
+    fvt, vp, vt, ep=fvt, ft=fvt, pt=vp, tt=vt
+)
 
 fallback_skins = find_connected_component_skins(fvt, vp, vt, min_likelihood=0.7)
 ```

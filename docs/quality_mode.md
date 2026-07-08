@@ -13,7 +13,8 @@ remains close to the current reference-oriented path. It is not the place to
 evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
-use hybrid voter thinning and support-aware vote weighting
+use hybrid voter thinning, support-aware surface voting, and
+`FaultSkinner(method="quality")`
 (`surface_support_min_fraction=0.5`,
 `surface_support_exponent=1.0`). It is not a universal production profile; use
 it while reviewing the controlled synthetic benchmark matrix and checking that
@@ -48,7 +49,9 @@ For scanner-inclusive quality evaluation, prefer the refined opt-in scanner
 path:
 
 ```bash
---input-mode scanner --scanner-backend quality --scanner-refinement-factor 2
+--input-mode scanner \
+--scanner-backend quality \
+--scanner-refinement-factor 2
 ```
 
 This recommendation is for quality reports only. The report default remains
@@ -73,6 +76,15 @@ CLI flags `--surface-support-min-fraction` or
 `--surface-support-exponent` are set, or the diagnostic variant is selected.
 The quality workflow uses the same `0.5, 1.0` support-aware policy by default.
 
+For skin extraction, `--workflow-mode quality` defaults to
+`--skinner-method quality` unless `--skinner-method` is passed explicitly. The
+quality skinner reuses reference-like skin growth and reskinning, but uses
+adaptive `min_likelihood` when `--skinner-min-likelihood` is omitted and lowers
+the reference seed planarity threshold from `ep > 0.8` to `ep > 0.5`. Synthetic
+reports record the selected `skinning.method`, whether the likelihood threshold
+is adaptive, the seed `ep` threshold, and `seed_planarity_source=fvt` in
+`metrics.json`.
+
 Primary metrics to compare:
 
 - `fvt_buffered_f1_r2`
@@ -82,3 +94,47 @@ Primary metrics to compare:
 - `skin_buffered_f1_r2`
 - `skin_distance_candidate_to_truth_p95`
 - `edge_false_positive_fraction` columns
+
+## CI Regression Guardrails
+
+The always-on quality workflow regression test is intentionally synthetic-only:
+it does not require F3 data, `reference_osv`, Java/Jython/JTK, or external
+downloads. It builds the `extended` synthetic case set at a small shape for both
+`reference` and `quality` workflows using only `current_default`.
+
+The guardrails are broad. They assert that key overlap, distance, orientation,
+edge false-positive, and skin metrics remain finite, that quality workflow
+effective settings are recorded in `metrics.json`, and that quality mode has not
+clearly regressed relative to reference mode on representative curved,
+vertical, and boundary cases. These thresholds are not benchmark targets. They
+are meant to catch obvious workflow breakage while leaving room for normal
+tuning changes.
+
+## F3 Real-Data Workflow Comparison
+
+The F3 multi-crop report can also compare `reference` and `quality` workflows
+on the same real-data crop centers:
+
+```bash
+PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
+  --data-root "$PYOSV_F3D_DATA_ROOT" \
+  --count 2 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --compare-workflows \
+  --output-json outputs/3d/f3d/quality_compare_001/metrics.json \
+  --pretty
+```
+
+Because F3 has no independent truth labels, reference agreement is a stability
+diagnostic rather than direct evidence of higher quality. Review whether the
+quality workflow preserves reference geological signal, avoids extra ridges and
+boundary artifacts, and keeps crop-to-crop behavior stable.
+
+F3 reference agreement is not quality itself. A quality-mode change should be
+promoted only when the controlled synthetic `extended` matrix and F3 multi-crop
+comparison both show fewer clear failures than the reference workflow: improved
+or preserved synthetic truth recovery, no new boundary or over-filtering
+failure, and no obvious loss of real-data geological signal across crops. Until
+then, keep `reference` as the default API behavior and use `quality` as an
+explicit workflow mode.
