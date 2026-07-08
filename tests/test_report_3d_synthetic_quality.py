@@ -291,6 +291,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--scanner-backend {reference-like,fast,quality}" in result.stdout
     assert "--skinner-min-likelihood" in result.stdout
     assert "--skinner-method" in result.stdout
+    assert "--skinner-growth-source" in result.stdout
     assert "--skinner-ru" in result.stdout
     assert "--skinner-accepted-occupancy-radius" in result.stdout
     assert "--no-skinner-reskin" in result.stdout
@@ -323,6 +324,102 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weig
     module = _load_report_module()
 
     assert module.parse_variants("surface_support_weighted") == ("surface_support_weighted",)
+
+
+def test_find_synthetic_skins_thinned_uses_fvt_for_growth_and_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    fv = np.full((3, 3, 3), 1.0, dtype=np.float32)
+    fvt = np.full((3, 3, 3), 2.0, dtype=np.float32)
+    vp = np.zeros((3, 3, 3), dtype=np.float32)
+    vt = np.zeros((3, 3, 3), dtype=np.float32)
+    captured: dict[str, object] = {}
+
+    class FakeSkinner:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init_kwargs"] = kwargs
+
+        def find_skins(
+            self,
+            volume: np.ndarray,
+            p: np.ndarray,
+            t: np.ndarray,
+            **kwargs: object,
+        ) -> list[object]:
+            captured["volume"] = volume
+            captured["p"] = p
+            captured["t"] = t
+            captured["kwargs"] = kwargs
+            return []
+
+    monkeypatch.setattr(module, "FaultSkinner", FakeSkinner)
+
+    skins = module._find_synthetic_skins(
+        fv,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(growth_source="thinned"),
+    )
+
+    assert skins == []
+    assert captured["volume"] is fvt
+    assert captured["p"] is vp
+    assert captured["t"] is vt
+    kwargs = captured["kwargs"]
+    assert kwargs["ep"] is fvt
+    assert kwargs["ft"] is fvt
+    assert kwargs["pt"] is vp
+    assert kwargs["tt"] is vt
+
+
+def test_find_synthetic_skins_pre_thin_uses_fv_for_growth_and_fvt_for_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    fv = np.full((3, 3, 3), 1.0, dtype=np.float32)
+    fvt = np.full((3, 3, 3), 2.0, dtype=np.float32)
+    vp = np.zeros((3, 3, 3), dtype=np.float32)
+    vt = np.zeros((3, 3, 3), dtype=np.float32)
+    captured: dict[str, object] = {}
+
+    class FakeSkinner:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init_kwargs"] = kwargs
+
+        def find_skins(
+            self,
+            volume: np.ndarray,
+            p: np.ndarray,
+            t: np.ndarray,
+            **kwargs: object,
+        ) -> list[object]:
+            captured["volume"] = volume
+            captured["p"] = p
+            captured["t"] = t
+            captured["kwargs"] = kwargs
+            return []
+
+    monkeypatch.setattr(module, "FaultSkinner", FakeSkinner)
+
+    skins = module._find_synthetic_skins(
+        fv,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(growth_source="pre_thin"),
+    )
+
+    assert skins == []
+    assert captured["volume"] is fv
+    assert captured["p"] is vp
+    assert captured["t"] is vt
+    kwargs = captured["kwargs"]
+    assert kwargs["ep"] is fvt
+    assert kwargs["ft"] is fv
+    assert kwargs["pt"] is vp
+    assert kwargs["tt"] is vt
 
 
 def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
@@ -1283,6 +1380,7 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["enabled"] is False
     assert report["config"]["skinning"]["method"] == "quality"
+    assert report["config"]["skinning"]["growth_source"] == "thinned"
     assert report["config"]["skinning"]["min_likelihood"] is None
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is True
 
@@ -1453,6 +1551,7 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
     assert metrics["config"]["skinning"]["min_likelihood"] is None
     assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is True
 
@@ -1663,6 +1762,8 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "--no-skinner-reskin",
         "--skinner-accepted-occupancy-radius",
         "1",
+        "--skinner-growth-source",
+        "pre_thin",
         "--small-skin-size",
         "5",
     )
@@ -1672,6 +1773,7 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
     assert metrics["config"]["skinning"] == {
         "enabled": True,
         "method": "reference",
+        "growth_source": "pre_thin",
         "min_likelihood": 0.4,
         "adaptive_min_likelihood": False,
         "seed_min_ep": 0.8,
@@ -1689,6 +1791,13 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "effective_accepted_occupancy_radius": 1,
         "small_skin_size": 5,
     }
+
+
+def test_report_3d_synthetic_quality_invalid_growth_source_fails() -> None:
+    module = _load_report_module()
+
+    with pytest.raises(ValueError, match="skinner_growth_source must be one of"):
+        module.SyntheticSkinningConfig(growth_source="dense")
 
 
 def test_report_synthetic_quality_accepts_input_mode_scanner(tmp_path: Path) -> None:

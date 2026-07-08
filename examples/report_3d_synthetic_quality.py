@@ -127,6 +127,7 @@ SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
 SKINNER_METHODS = ("reference", "quality", "connected_component")
+SKINNER_GROWTH_SOURCES = ("thinned", "pre_thin")
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
 QUALITY_SKINNER_SEED_MIN_EP = 0.5
 VARIANT_COMPARISON_METRICS = (
@@ -509,6 +510,7 @@ class SyntheticSkinningConfig:
 
     enabled: bool = True
     method: str = "reference"
+    growth_source: str = "thinned"
     min_likelihood: float | None = 0.5
     min_skin_size: int | None = 1
     d: int = 1
@@ -529,6 +531,10 @@ class SyntheticSkinningConfig:
             raise ValueError("reskin must be a bool")
         if self.method not in SKINNER_METHODS:
             raise ValueError("skinner_method must be one of: " + ", ".join(SKINNER_METHODS))
+        if self.growth_source not in SKINNER_GROWTH_SOURCES:
+            raise ValueError(
+                "skinner_growth_source must be one of: " + ", ".join(SKINNER_GROWTH_SOURCES)
+            )
         if self.min_likelihood is not None:
             _validate_nonnegative_finite_scalar(self.min_likelihood, "skinner_min_likelihood")
         _validate_optional_nonnegative_int(self.min_skin_size, "skinner_min_skin_size")
@@ -552,6 +558,7 @@ class SyntheticSkinningConfig:
         return {
             "enabled": self.enabled,
             "method": self.method,
+            "growth_source": self.growth_source,
             "min_likelihood": (None if self.min_likelihood is None else float(self.min_likelihood)),
             "adaptive_min_likelihood": self.method == "quality" and self.min_likelihood is None,
             "seed_min_ep": _skinner_seed_min_ep_for_method(self.method),
@@ -852,6 +859,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SKINNER_METHODS,
         default=None,
         help="FaultSkinner backend: reference, quality, or connected_component.",
+    )
+    parser.add_argument(
+        "--skinner-growth-source",
+        choices=SKINNER_GROWTH_SOURCES,
+        default="thinned",
+        help="FaultSkinner growth source: thinned or pre_thin.",
     )
     parser.add_argument(
         "--skinner-min-skin-size",
@@ -1767,6 +1780,7 @@ def _run_voting_from_attributes(
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
         skins = _find_synthetic_skins(
+            fv,
             fvt,
             vp,
             vt,
@@ -2540,6 +2554,7 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
 
 
 def _find_synthetic_skins(
+    fv: np.ndarray,
     fvt: np.ndarray,
     vp: np.ndarray,
     vt: np.ndarray,
@@ -2553,13 +2568,18 @@ def _find_synthetic_skins(
     if skinning_config.min_likelihood is not None:
         skinner_kwargs["min_likelihood"] = skinning_config.min_likelihood
     skinner = FaultSkinner(**skinner_kwargs)
+    grow_volume = fvt
+    grow_ft = fvt
+    if skinning_config.growth_source == "pre_thin":
+        grow_volume = fv
+        grow_ft = fv
     return skinner.find_skins(
-        fvt,
+        grow_volume,
         vp,
         vt,
         min_likelihood=skinning_config.min_likelihood,
         ep=fvt,
-        ft=fvt,
+        ft=grow_ft,
         pt=vp,
         tt=vt,
         d=skinning_config.d,
@@ -3359,6 +3379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             skinning_config=SyntheticSkinningConfig(
                 enabled=not args.skip_skinning,
                 method=skinner_method,
+                growth_source=args.skinner_growth_source,
                 min_likelihood=skinner_min_likelihood,
                 min_skin_size=args.skinner_min_skin_size,
                 d=args.skinner_d,

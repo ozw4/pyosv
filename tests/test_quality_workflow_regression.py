@@ -144,6 +144,7 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert reference["voting"]["surface_support_min_fraction"] == 0.0
     assert reference["voting"]["surface_support_exponent"] == 0.0
     assert reference["skinning"]["method"] == "reference"
+    assert reference["skinning"]["growth_source"] == "thinned"
     assert reference["skinning"]["adaptive_min_likelihood"] is False
     assert reference["skinning"]["seed_min_ep"] == 0.8
     assert reference["skinning"]["accepted_occupancy_radius"] is None
@@ -155,6 +156,7 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert quality["voting"]["surface_support_min_fraction"] == 0.0
     assert quality["voting"]["surface_support_exponent"] == 0.0
     assert quality["skinning"]["method"] == "quality"
+    assert quality["skinning"]["growth_source"] == "thinned"
     assert quality["skinning"]["min_likelihood"] is None
     assert quality["skinning"]["adaptive_min_likelihood"] is True
     assert quality["skinning"]["seed_min_ep"] == 0.5
