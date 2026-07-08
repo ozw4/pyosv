@@ -1436,9 +1436,11 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["enabled"] is False
     assert report["config"]["skinning"]["method"] == "quality"
-    assert report["config"]["skinning"]["growth_source"] == "thinned"
+    assert report["config"]["skinning"]["growth_source"] == "pre_thin"
     assert report["config"]["skinning"]["min_likelihood"] is None
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is True
+    assert report["config"]["skinning"]["accepted_occupancy_radius"] == 1
+    assert report["config"]["skinning"]["effective_accepted_occupancy_radius"] == 1
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins() -> None:
@@ -1607,13 +1609,80 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["skinning"]["method"] == "quality"
-    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
+    assert metrics["config"]["skinning"]["growth_source"] == "pre_thin"
     assert metrics["config"]["skinning"]["min_likelihood"] is None
     assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is True
+    assert metrics["config"]["skinning"]["accepted_occupancy_radius"] == 1
+    assert metrics["config"]["skinning"]["effective_accepted_occupancy_radius"] == 1
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert rows[0]["workflow_mode"] == "quality"
+
+
+def test_report_3d_synthetic_quality_quality_workflow_explicit_skinner_knobs_win(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--skinner-min-likelihood",
+        "0.5",
+        "--skinner-growth-source",
+        "thinned",
+        "--skinner-accepted-occupancy-radius",
+        "none",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
+    assert metrics["config"]["skinning"]["min_likelihood"] == 0.5
+    assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is False
+    assert metrics["config"]["skinning"]["accepted_occupancy_radius"] is None
+    assert metrics["config"]["skinning"]["effective_accepted_occupancy_radius"] == 5
+
+
+def test_report_3d_synthetic_quality_quality_workflow_explicit_skinner_equals_form_wins(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--skinner-min-likelihood=0.5",
+        "--skinner-growth-source=thinned",
+        "--skinner-accepted-occupancy-radius=none",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
+    assert metrics["config"]["skinning"]["min_likelihood"] == 0.5
+    assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is False
+    assert metrics["config"]["skinning"]["accepted_occupancy_radius"] is None
+    assert metrics["config"]["skinning"]["effective_accepted_occupancy_radius"] == 5
 
 
 def test_report_3d_synthetic_quality_quality_workflow_explicit_skinner_reference_wins(

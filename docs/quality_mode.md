@@ -13,12 +13,14 @@ remains close to the current reference-oriented path. It is not the place to
 evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
-use hybrid voter thinning, disable support-aware surface voting, and
-`FaultSkinner(method="quality")`
+use hybrid voter thinning, disable support-aware surface voting, and the quality
+skinner v2 profile
 (`surface_support_min_fraction=0.0`,
-`surface_support_exponent=0.0`). It is not a universal production profile; use
-it while reviewing the controlled synthetic benchmark matrix and checking that
-the candidate set is not over-filtered for the cases under study.
+`surface_support_exponent=0.0`, `FaultSkinner(method="quality")`,
+`growth_source=pre_thin`, `accepted_occupancy_radius=1`). It is not a universal
+production profile; use it while reviewing the controlled synthetic benchmark
+matrix and checking that the candidate set is not over-filtered for the cases
+under study.
 
 `diagnostic` workflow keeps the reference workflow defaults and enables
 thinning diagnostics. Use it when comparing current behavior, diagnostic
@@ -78,19 +80,20 @@ unless the report CLI flags `--surface-support-min-fraction` or
 
 The `quality_skinner_v2` diagnostic variant keeps the voter path selected by
 the workflow, but uses the quality skinner with adaptive seed/grow thresholds,
-`growth_source=pre_thin`, and `accepted_occupancy_radius=1`. It is a diagnostic
-candidate and does not change `current_default` or workflow defaults.
+`growth_source=pre_thin`, and `accepted_occupancy_radius=1`. In
+`--workflow-mode quality`, it matches `current_default`; in `reference` and
+`diagnostic` workflows, it remains an explicit diagnostic skinning override.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The
 quality skinner reuses reference-like skin growth and reskinning, but uses
 adaptive `min_likelihood` when `--skinner-min-likelihood` is omitted and lowers
-the seed planarity gate from `ep > 0.8` to `ep > 0.5`. The adaptive threshold is
-used for seed selection while grow-time likelihood gating remains separately
-bounded, so quality mode does not raise the grow threshold just because it
-chooses stricter seeds. Synthetic reports record the selected
+the seed planarity gate from `ep > 0.8` to `ep > 0.5`. The quality workflow
+grows from the pre-thin vote volume and records
+`effective_accepted_occupancy_radius=1`. Synthetic reports record the selected
 `skinning.method`, whether the likelihood threshold is adaptive, the seed `ep`
-threshold, and `seed_planarity_source=fvt` in `metrics.json`.
+threshold, `growth_source`, `effective_accepted_occupancy_radius`, and
+`seed_planarity_source=fvt` in `metrics.json`.
 
 Primary metrics to compare:
 

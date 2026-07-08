@@ -254,17 +254,39 @@ def _effective_skinning_config_for_workflow(
     workflow_mode: str,
     skinning_config: SyntheticSkinningConfig,
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
 ) -> SyntheticSkinningConfig:
-    if (
-        workflow_mode != "quality"
-        or skinner_method_explicit
-        or skinning_config.method != "reference"
-    ):
+    if workflow_mode != "quality" or skinning_config.method not in {"reference", "quality"}:
+        return skinning_config
+    if skinner_method_explicit and skinning_config.method != "quality":
         return skinning_config
     min_likelihood = skinning_config.min_likelihood
-    if min_likelihood == SyntheticSkinningConfig().min_likelihood:
+    if (
+        not skinner_min_likelihood_explicit
+        and min_likelihood == SyntheticSkinningConfig().min_likelihood
+    ):
         min_likelihood = None
-    return replace(skinning_config, method="quality", min_likelihood=min_likelihood)
+    accepted_occupancy_radius = skinning_config.accepted_occupancy_radius
+    if (
+        not skinner_accepted_occupancy_radius_explicit
+        and accepted_occupancy_radius == SyntheticSkinningConfig().accepted_occupancy_radius
+    ):
+        accepted_occupancy_radius = 1
+    growth_source = skinning_config.growth_source
+    if (
+        not skinner_growth_source_explicit
+        and growth_source == SyntheticSkinningConfig().growth_source
+    ):
+        growth_source = "pre_thin"
+    return replace(
+        skinning_config,
+        method="quality",
+        min_likelihood=min_likelihood,
+        accepted_occupancy_radius=accepted_occupancy_radius,
+        growth_source=growth_source,
+    )
 
 
 def _effective_skinning_config_for_variant(
@@ -1902,6 +1924,11 @@ def _skin_cell_json(cell: Any) -> dict[str, float | int]:
     }
 
 
+def _argv_has_long_option(argv: Sequence[str], option: str) -> bool:
+    option_with_value = f"{option}="
+    return any(arg == option or arg.startswith(option_with_value) for arg in argv)
+
+
 def _truth_report(
     case: Synthetic3DCase,
     truth_metric_config: SyntheticTruthMetricConfig,
@@ -1931,6 +1958,9 @@ def build_report(
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
@@ -1946,6 +1976,9 @@ def build_report(
         input_mode=input_mode,
         workflow_mode=workflow_mode,
         skinner_method_explicit=skinner_method_explicit,
+        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
+        skinner_growth_source_explicit=skinner_growth_source_explicit,
+        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -1965,6 +1998,9 @@ def _build_report_and_volumes(
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[
@@ -1981,6 +2017,9 @@ def _build_report_and_volumes(
         workflow_mode=valid_workflow_mode,
         skinning_config=skinning_config,
         skinner_method_explicit=skinner_method_explicit,
+        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
+        skinner_growth_source_explicit=skinner_growth_source_explicit,
+        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
     )
     if voting_config is None:
         support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
@@ -3301,6 +3340,9 @@ def run_example(
     input_mode: str = "oracle",
     workflow_mode: str = "reference",
     skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -3320,6 +3362,9 @@ def run_example(
         input_mode=input_mode,
         workflow_mode=workflow_mode,
         skinner_method_explicit=skinner_method_explicit,
+        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
+        skinner_growth_source_explicit=skinner_growth_source_explicit,
+        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
@@ -3340,8 +3385,9 @@ def run_example(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = tuple(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     voter_thin_mode = _effective_voter_thin_mode(
         workflow_mode=args.workflow_mode,
         voter_thin_mode=args.voter_thin_mode,
@@ -3423,6 +3469,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             input_mode=args.input_mode,
             workflow_mode=args.workflow_mode,
             skinner_method_explicit=args.skinner_method is not None,
+            skinner_min_likelihood_explicit=_argv_has_long_option(
+                raw_argv,
+                "--skinner-min-likelihood",
+            ),
+            skinner_growth_source_explicit=_argv_has_long_option(
+                raw_argv,
+                "--skinner-growth-source",
+            ),
+            skinner_accepted_occupancy_radius_explicit=(
+                _argv_has_long_option(raw_argv, "--skinner-accepted-occupancy-radius")
+            ),
             include_thinning_diagnostic=include_thinning_diagnostic,
             thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,
