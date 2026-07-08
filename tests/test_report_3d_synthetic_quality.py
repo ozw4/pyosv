@@ -30,6 +30,7 @@ DIAGNOSTIC_VARIANTS = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "surface_support_weighted",
+    "quality_skinner_v2",
 )
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
@@ -229,6 +230,15 @@ def _assert_top_truth_quality_has_orientation(quality: dict[str, object]) -> Non
     assert math.isfinite(float(orientation["dip_median"]))
 
 
+def _assert_positive_top_truth_quality_is_finite(quality: dict[str, object]) -> None:
+    assert "buffered_f1" in quality["buffered_overlap_radius2"]
+    assert "candidate_to_truth_p95" in quality["surface_distance"]
+    orientation = quality["orientation_error"]
+    assert orientation["count"] >= 0
+    assert math.isfinite(float(orientation["strike_median"]))
+    assert math.isfinite(float(orientation["dip_median"]))
+
+
 def _assert_finite_thinning_diagnostic_quality(diagnostic: dict[str, object]) -> None:
     for mode in ("reference", "normal"):
         mode_report = diagnostic[mode]
@@ -282,7 +292,9 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--scanner-backend {reference-like,fast,quality}" in result.stdout
     assert "--skinner-min-likelihood" in result.stdout
     assert "--skinner-method" in result.stdout
+    assert "--skinner-growth-source" in result.stdout
     assert "--skinner-ru" in result.stdout
+    assert "--skinner-accepted-occupancy-radius" in result.stdout
     assert "--no-skinner-reskin" in result.stdout
     assert "--small-skin-size" in result.stdout
 
@@ -313,6 +325,108 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weig
     module = _load_report_module()
 
     assert module.parse_variants("surface_support_weighted") == ("surface_support_weighted",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_quality_skinner_v2() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("quality_skinner_v2") == ("quality_skinner_v2",)
+
+
+def test_find_synthetic_skins_thinned_uses_fvt_for_growth_and_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    fv = np.full((3, 3, 3), 1.0, dtype=np.float32)
+    fvt = np.full((3, 3, 3), 2.0, dtype=np.float32)
+    vp = np.zeros((3, 3, 3), dtype=np.float32)
+    vt = np.zeros((3, 3, 3), dtype=np.float32)
+    captured: dict[str, object] = {}
+
+    class FakeSkinner:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init_kwargs"] = kwargs
+
+        def find_skins(
+            self,
+            volume: np.ndarray,
+            p: np.ndarray,
+            t: np.ndarray,
+            **kwargs: object,
+        ) -> list[object]:
+            captured["volume"] = volume
+            captured["p"] = p
+            captured["t"] = t
+            captured["kwargs"] = kwargs
+            return []
+
+    monkeypatch.setattr(module, "FaultSkinner", FakeSkinner)
+
+    skins = module._find_synthetic_skins(
+        fv,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(growth_source="thinned"),
+    )
+
+    assert skins == []
+    assert captured["volume"] is fvt
+    assert captured["p"] is vp
+    assert captured["t"] is vt
+    kwargs = captured["kwargs"]
+    assert kwargs["ep"] is fvt
+    assert kwargs["ft"] is fvt
+    assert kwargs["pt"] is vp
+    assert kwargs["tt"] is vt
+
+
+def test_find_synthetic_skins_pre_thin_uses_fv_for_growth_and_fvt_for_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    fv = np.full((3, 3, 3), 1.0, dtype=np.float32)
+    fvt = np.full((3, 3, 3), 2.0, dtype=np.float32)
+    vp = np.zeros((3, 3, 3), dtype=np.float32)
+    vt = np.zeros((3, 3, 3), dtype=np.float32)
+    captured: dict[str, object] = {}
+
+    class FakeSkinner:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init_kwargs"] = kwargs
+
+        def find_skins(
+            self,
+            volume: np.ndarray,
+            p: np.ndarray,
+            t: np.ndarray,
+            **kwargs: object,
+        ) -> list[object]:
+            captured["volume"] = volume
+            captured["p"] = p
+            captured["t"] = t
+            captured["kwargs"] = kwargs
+            return []
+
+    monkeypatch.setattr(module, "FaultSkinner", FakeSkinner)
+
+    skins = module._find_synthetic_skins(
+        fv,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(growth_source="pre_thin"),
+    )
+
+    assert skins == []
+    assert captured["volume"] is fv
+    assert captured["p"] is vp
+    assert captured["t"] is vt
+    kwargs = captured["kwargs"]
+    assert kwargs["ep"] is fvt
+    assert kwargs["ft"] is fv
+    assert kwargs["pt"] is vp
+    assert kwargs["tt"] is vt
 
 
 def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
@@ -353,6 +467,10 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     _assert_top_truth_quality_has_orientation(fv_quality)
     fvt_quality = quality["fvt_top_truth_count"]
     _assert_top_truth_quality_has_orientation(fvt_quality)
+    fv_positive_quality = quality["fv_positive_top_truth_count"]
+    _assert_positive_top_truth_quality_is_finite(fv_positive_quality)
+    fvt_positive_quality = quality["fvt_positive_top_truth_count"]
+    _assert_positive_top_truth_quality_is_finite(fvt_positive_quality)
     skin_quality = quality["skin"]
     assert skin_quality is not None
     assert "buffered_f1" in skin_quality["buffered_overlap_radius2"]
@@ -385,6 +503,7 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fv_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fv_distance_p95"]) >= 0.0
     assert math.isfinite(float(rows[0]["fv_edge_false_positive_fraction"]))
+    assert int(rows[0]["fv_positive_candidate_count"]) > 0
     assert math.isfinite(float(rows[0]["fv_strike_median_error"]))
     assert math.isfinite(float(rows[0]["fv_dip_median_error"]))
     assert float(rows[0]["fvt_max"]) > 0.0
@@ -392,6 +511,10 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert float(rows[0]["fvt_buffered_f1_r2"]) > 0.0
     assert float(rows[0]["fvt_distance_p95"]) >= 0.0
     assert math.isfinite(float(rows[0]["fvt_edge_false_positive_fraction"]))
+    assert int(rows[0]["fvt_positive_candidate_count"]) > 0
+    assert math.isfinite(float(rows[0]["fvt_positive_buffered_f1_r2"]))
+    assert float(rows[0]["fvt_positive_distance_p95"]) >= 0.0
+    assert math.isfinite(float(rows[0]["fvt_positive_edge_false_positive_fraction"]))
     assert float(rows[0]["fvt_strike_median_error"]) >= 0.0
     assert float(rows[0]["fvt_dip_median_error"]) >= 0.0
     assert rows[0]["skinning_enabled"] == "True"
@@ -486,7 +609,11 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
     for case in metrics["cases"]:
         quality = case["quality"]
         assert "buffered_overlap_radius2" in quality["fvt_top_truth_count"]
+        assert "fvt_top_truth_count" in quality
+        assert "fvt_positive_top_truth_count" in quality
+        assert "buffered_overlap_radius2" in quality["fvt_positive_top_truth_count"]
         assert "fvt_top_truth_count" in quality["edge_false_positive"]
+        assert "fvt_positive_top_truth_count" in quality["edge_false_positive"]
         assert math.isfinite(
             float(
                 quality["edge_false_positive"]["fvt_top_truth_count"][
@@ -512,8 +639,18 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
             assert math.isfinite(float(row[field]))
         assert "fvt_edge_false_positive_fraction" in row
         assert "fv_edge_false_positive_fraction" in row
+        assert "fv_positive_candidate_count" in row
+        assert "fvt_positive_candidate_count" in row
+        assert "fvt_positive_buffered_f1_r2" in row
+        assert "fvt_positive_distance_p95" in row
+        assert "fvt_positive_edge_false_positive_fraction" in row
         assert math.isfinite(float(row["fvt_edge_false_positive_fraction"]))
         assert math.isfinite(float(row["fv_edge_false_positive_fraction"]))
+        assert int(row["fv_positive_candidate_count"]) >= 0
+        assert int(row["fvt_positive_candidate_count"]) >= 0
+        assert math.isfinite(float(row["fvt_positive_buffered_f1_r2"]))
+        assert math.isfinite(float(row["fvt_positive_distance_p95"]))
+        assert math.isfinite(float(row["fvt_positive_edge_false_positive_fraction"]))
 
     for case_id in EXTENDED_CASE_IDS:
         assert (output_dir / case_id).is_dir()
@@ -541,7 +678,7 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         (
             "current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
-            "surface_support_weighted"
+            "surface_support_weighted,quality_skinner_v2"
         ),
     )
 
@@ -1165,6 +1302,55 @@ def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
     }
 
 
+def test_report_3d_synthetic_quality_quality_skinner_v2_records_effective_config(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--variants",
+        "current_default,quality_skinner_v2",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["current_default", "quality_skinner_v2"]
+
+    case = metrics["cases"][0]
+    current_default = case["variants"]["current_default"]["config"]["skinning"]
+    assert current_default == metrics["config"]["skinning"]
+    assert current_default["method"] == "reference"
+    assert current_default["growth_source"] == "thinned"
+    assert current_default["accepted_occupancy_radius"] is None
+    assert current_default["effective_accepted_occupancy_radius"] == 5
+
+    quality_skinner = case["variants"]["quality_skinner_v2"]["config"]["skinning"]
+    assert quality_skinner["method"] == "quality"
+    assert quality_skinner["min_likelihood"] is None
+    assert quality_skinner["adaptive_min_likelihood"] is True
+    assert quality_skinner["seed_min_ep"] == 0.5
+    assert quality_skinner["seed_planarity_source"] == "fvt"
+    assert quality_skinner["growth_source"] == "pre_thin"
+    assert quality_skinner["accepted_occupancy_radius"] == 1
+    assert quality_skinner["effective_accepted_occupancy_radius"] == 1
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["case_id"], row["variant"]) for row in rows] == [
+        ("single_vertical_plane", "current_default"),
+        ("single_vertical_plane", "quality_skinner_v2"),
+    ]
+    assert rows[1]["baseline_variant"] == "current_default"
+    assert math.isfinite(float(rows[1]["skin_buffered_f1_delta_vs_baseline"]))
+    assert math.isfinite(float(rows[1]["skin_count_delta_vs_baseline"]))
+
+
 @pytest.mark.parametrize(
     (
         "workflow_mode",
@@ -1250,6 +1436,7 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["enabled"] is False
     assert report["config"]["skinning"]["method"] == "quality"
+    assert report["config"]["skinning"]["growth_source"] == "thinned"
     assert report["config"]["skinning"]["min_likelihood"] is None
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is True
 
@@ -1420,6 +1607,7 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["config"]["skinning"]["growth_source"] == "thinned"
     assert metrics["config"]["skinning"]["min_likelihood"] is None
     assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is True
 
@@ -1628,6 +1816,10 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "--skinner-max-delta-strike",
         "20",
         "--no-skinner-reskin",
+        "--skinner-accepted-occupancy-radius",
+        "1",
+        "--skinner-growth-source",
+        "pre_thin",
         "--small-skin-size",
         "5",
     )
@@ -1637,6 +1829,7 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
     assert metrics["config"]["skinning"] == {
         "enabled": True,
         "method": "reference",
+        "growth_source": "pre_thin",
         "min_likelihood": 0.4,
         "adaptive_min_likelihood": False,
         "seed_min_ep": 0.8,
@@ -1650,8 +1843,17 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "du": 4.5,
         "max_delta_strike": 20.0,
         "reskin": False,
+        "accepted_occupancy_radius": 1,
+        "effective_accepted_occupancy_radius": 1,
         "small_skin_size": 5,
     }
+
+
+def test_report_3d_synthetic_quality_invalid_growth_source_fails() -> None:
+    module = _load_report_module()
+
+    with pytest.raises(ValueError, match="skinner_growth_source must be one of"):
+        module.SyntheticSkinningConfig(growth_source="dense")
 
 
 def test_report_synthetic_quality_accepts_input_mode_scanner(tmp_path: Path) -> None:
@@ -2761,3 +2963,32 @@ def test_report_3d_synthetic_quality_default_case_meets_smoke_thresholds(
     assert variant_quality["surface_distance"]["candidate_to_truth_p95"] <= 3.0
     assert variant_quality["orientation_error"]["strike_median"] <= 10.0
     assert variant_quality["orientation_error"]["dip_median"] <= 10.0
+
+
+def test_report_3d_synthetic_quality_boundary_plane_zero_fvt_has_no_positive_candidates() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="extended",
+        shape=(17, 17, 17),
+        variants=("current_default",),
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    boundary_case = next(case for case in report["cases"] if case["case_id"] == "boundary_plane")
+    variant = boundary_case["variants"]["current_default"]
+
+    assert variant["pyosv"]["fvt"]["max"] == 0.0
+    assert (
+        variant["quality"]["fvt_top_truth_count"]["buffered_overlap_radius2"]["candidate_count"] > 0
+    )
+    assert (
+        variant["quality"]["fvt_positive_top_truth_count"]["buffered_overlap_radius2"][
+            "candidate_count"
+        ]
+        == 0
+    )
+    assert (
+        variant["quality"]["edge_false_positive"]["fvt_positive_top_truth_count"]["candidate_count"]
+        == 0
+    )

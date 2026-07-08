@@ -13,6 +13,7 @@ from pyosv.synthetic_metrics import (
     skin_truth_metrics,
     surface_distance_metrics,
     top_k_mask,
+    top_positive_truth_count_mask,
     top_truth_count_mask,
 )
 
@@ -48,6 +49,43 @@ def test_top_truth_count_mask_matches_truth_voxel_count() -> None:
     mask = top_truth_count_mask(values, truth)
 
     assert int(np.count_nonzero(mask)) == int(np.count_nonzero(truth))
+
+
+def test_top_positive_truth_count_mask_returns_empty_for_all_zero_values() -> None:
+    values = np.zeros((2, 3), dtype=np.float32)
+    truth = np.array([[True, False, True], [False, True, False]])
+
+    mask = top_positive_truth_count_mask(values, truth)
+
+    assert mask.dtype == np.bool_
+    assert mask.shape == values.shape
+    assert int(np.count_nonzero(mask)) == 0
+
+
+def test_top_positive_truth_count_mask_selects_available_positive_candidates() -> None:
+    values = np.array([[0.0, 0.5, 0.0], [1.5, 0.0, 0.0]], dtype=np.float32)
+    truth = np.ones_like(values, dtype=bool)
+
+    mask = top_positive_truth_count_mask(values, truth)
+
+    np.testing.assert_array_equal(
+        mask,
+        np.array([[False, True, False], [True, False, False]]),
+    )
+
+
+def test_top_positive_truth_count_mask_tie_break_is_deterministic() -> None:
+    values = np.array([[2.0, 2.0, 0.0], [1.0, 2.0, 0.0]], dtype=np.float32)
+    truth = np.array([[True, False, False], [False, True, False]])
+
+    first = top_positive_truth_count_mask(values, truth)
+    second = top_positive_truth_count_mask(values, truth)
+
+    np.testing.assert_array_equal(first, second)
+    np.testing.assert_array_equal(
+        first,
+        np.array([[True, True, False], [False, False, False]]),
+    )
 
 
 def test_buffered_surface_overlap_identical_masks_are_perfect() -> None:
@@ -263,6 +301,8 @@ def test_synthetic_metrics_reject_shape_mismatch_and_invalid_radius() -> None:
         surface_distance_metrics(mask, mismatched)
     with pytest.raises(ValueError, match="shapes must match"):
         top_truth_count_mask(np.zeros((2, 2), dtype=np.float32), mismatched)
+    with pytest.raises(ValueError, match="shapes must match"):
+        top_positive_truth_count_mask(np.zeros((2, 2), dtype=np.float32), mismatched)
     with pytest.raises(ValueError, match="shapes must match"):
         masked_orientation_error(mask, mask, mask, mask, mismatched)
     with pytest.raises(ValueError, match="shapes must match"):

@@ -158,7 +158,7 @@ extended report run is:
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set extended \
   --shape 33,33,33 \
-  --variants current_default,no_surface_orientation_smoothing,final_norm_smoothing_1,voter_thin_normal \
+  --variant-preset quality-matrix \
   --output-dir outputs/3d/synthetic_quality/extended_001 \
   --pretty \
   --save-figures \

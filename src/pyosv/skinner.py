@@ -374,10 +374,19 @@ class FaultSkinner:
         du: float = 5.0,
         max_delta_strike: float = 30.0,
         reskin: bool = True,
+        accepted_occupancy_radius: int | None = None,
     ) -> list[FaultSkin]:
         """Find skins with the configured backend."""
 
         should_reskin = _validate_bool(reskin, "reskin")
+        occupancy_radius = (
+            5
+            if accepted_occupancy_radius is None
+            else _validate_nonnegative_int(
+                accepted_occupancy_radius,
+                "accepted_occupancy_radius",
+            )
+        )
         if self.method == "connected_component":
             return self._fallback.find_skins(fv, vp, vt, min_likelihood=min_likelihood)
 
@@ -424,6 +433,7 @@ class FaultSkinner:
             du=du,
             max_delta_strike=max_delta_strike,
             reskin=should_reskin,
+            accepted_occupancy_radius=occupancy_radius,
         )
 
     def find_skin(
@@ -479,6 +489,7 @@ def find_skins(
     du: float = 5.0,
     max_delta_strike: float = 30.0,
     reskin: bool = True,
+    accepted_occupancy_radius: int | None = None,
 ) -> list[FaultSkin]:
     """Find reference-like skins from 3D voting outputs.
 
@@ -505,6 +516,7 @@ def find_skins(
         du=du,
         max_delta_strike=max_delta_strike,
         reskin=reskin,
+        accepted_occupancy_radius=accepted_occupancy_radius,
     )
 
 

@@ -47,6 +47,7 @@ from pyosv.synthetic_metrics import (
     skin_topology_metrics,
     skin_truth_metrics,
     surface_distance_metrics,
+    top_positive_truth_count_mask,
     top_truth_count_mask,
 )
 from pyosv.orient3d import FaultOrientScanner3
@@ -105,6 +106,7 @@ VARIANT_NAMES = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "surface_support_weighted",
+    "quality_skinner_v2",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -114,6 +116,7 @@ QUALITY_MATRIX_VARIANTS = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "surface_support_weighted",
+    "quality_skinner_v2",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -126,6 +129,7 @@ SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
 SKINNER_METHODS = ("reference", "quality", "connected_component")
+SKINNER_GROWTH_SOURCES = ("thinned", "pre_thin")
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
 QUALITY_SKINNER_SEED_MIN_EP = 0.5
 VARIANT_COMPARISON_METRICS = (
@@ -261,6 +265,22 @@ def _effective_skinning_config_for_workflow(
     if min_likelihood == SyntheticSkinningConfig().min_likelihood:
         min_likelihood = None
     return replace(skinning_config, method="quality", min_likelihood=min_likelihood)
+
+
+def _effective_skinning_config_for_variant(
+    *,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+) -> SyntheticSkinningConfig:
+    if variant != "quality_skinner_v2":
+        return skinning_config
+    return replace(
+        skinning_config,
+        method="quality",
+        min_likelihood=None,
+        accepted_occupancy_radius=1,
+        growth_source="pre_thin",
+    )
 
 
 def _effective_voter_thin_mode(
@@ -508,6 +528,7 @@ class SyntheticSkinningConfig:
 
     enabled: bool = True
     method: str = "reference"
+    growth_source: str = "thinned"
     min_likelihood: float | None = 0.5
     min_skin_size: int | None = 1
     d: int = 1
@@ -518,6 +539,7 @@ class SyntheticSkinningConfig:
     du: float = 5.0
     max_delta_strike: float = 30.0
     reskin: bool = True
+    accepted_occupancy_radius: int | None = None
     small_skin_size: int = 10
 
     def __post_init__(self) -> None:
@@ -527,6 +549,10 @@ class SyntheticSkinningConfig:
             raise ValueError("reskin must be a bool")
         if self.method not in SKINNER_METHODS:
             raise ValueError("skinner_method must be one of: " + ", ".join(SKINNER_METHODS))
+        if self.growth_source not in SKINNER_GROWTH_SOURCES:
+            raise ValueError(
+                "skinner_growth_source must be one of: " + ", ".join(SKINNER_GROWTH_SOURCES)
+            )
         if self.min_likelihood is not None:
             _validate_nonnegative_finite_scalar(self.min_likelihood, "skinner_min_likelihood")
         _validate_optional_nonnegative_int(self.min_skin_size, "skinner_min_skin_size")
@@ -540,12 +566,17 @@ class SyntheticSkinningConfig:
             self.max_delta_strike,
             "skinner_max_delta_strike",
         )
+        _validate_optional_nonnegative_int(
+            self.accepted_occupancy_radius,
+            "skinner_accepted_occupancy_radius",
+        )
         _validate_nonnegative_int(self.small_skin_size, "small_skin_size")
 
     def as_report_dict(self) -> dict[str, bool | int | float | str | None]:
         return {
             "enabled": self.enabled,
             "method": self.method,
+            "growth_source": self.growth_source,
             "min_likelihood": (None if self.min_likelihood is None else float(self.min_likelihood)),
             "adaptive_min_likelihood": self.method == "quality" and self.min_likelihood is None,
             "seed_min_ep": _skinner_seed_min_ep_for_method(self.method),
@@ -559,6 +590,14 @@ class SyntheticSkinningConfig:
             "du": float(self.du),
             "max_delta_strike": float(self.max_delta_strike),
             "reskin": self.reskin,
+            "accepted_occupancy_radius": (
+                None
+                if self.accepted_occupancy_radius is None
+                else int(self.accepted_occupancy_radius)
+            ),
+            "effective_accepted_occupancy_radius": (
+                5 if self.accepted_occupancy_radius is None else int(self.accepted_occupancy_radius)
+            ),
             "small_skin_size": int(self.small_skin_size),
         }
 
@@ -605,7 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
-            "surface_support_weighted \\\n"
+            "surface_support_weighted,quality_skinner_v2 \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -840,6 +879,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="FaultSkinner backend: reference, quality, or connected_component.",
     )
     parser.add_argument(
+        "--skinner-growth-source",
+        choices=SKINNER_GROWTH_SOURCES,
+        default="thinned",
+        help="FaultSkinner growth source: thinned or pre_thin.",
+    )
+    parser.add_argument(
         "--skinner-min-skin-size",
         type=parse_optional_nonnegative_int,
         default=1,
@@ -886,6 +931,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-skinner-reskin",
         action="store_true",
         help="Disable reference-like reskin smoothing/reorientation.",
+    )
+    parser.add_argument(
+        "--skinner-accepted-occupancy-radius",
+        type=parse_optional_nonnegative_int,
+        default=None,
+        help=(
+            "Accepted skin occupancy radius for reference-like FaultSkinner, "
+            "or 'none' for the backend default."
+        ),
     )
     parser.add_argument(
         "--small-skin-size",
@@ -1015,6 +1069,10 @@ def _run_case_variant(
     if variant not in VARIANT_NAMES:
         raise ValueError(f"unknown variant: {variant}")
     valid_input_mode = _validate_input_mode(input_mode)
+    skinning_config = _effective_skinning_config_for_variant(
+        skinning_config=skinning_config,
+        variant=variant,
+    )
 
     if valid_input_mode == "oracle":
         return _run_oracle_pipeline(
@@ -1615,6 +1673,8 @@ def _run_voting_from_attributes(
     truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
     fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
     fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
+    fv_positive_top_truth_count = top_positive_truth_count_mask(fv, truth_surface_mask)
+    fvt_positive_top_truth_count = top_positive_truth_count_mask(fvt, truth_surface_mask)
     edge_false_positive_metrics = {
         "fv_top_truth_count": edge_false_positive_ratio(
             fv_top_truth_count,
@@ -1628,8 +1688,23 @@ def _run_voting_from_attributes(
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
             truth_buffer_radius=buffer_radius,
         ),
+        "fv_positive_top_truth_count": edge_false_positive_ratio(
+            fv_positive_top_truth_count,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
+        "fvt_positive_top_truth_count": edge_false_positive_ratio(
+            fvt_positive_top_truth_count,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
     }
     report = {
+        "config": {
+            "skinning": skinning_config.as_report_dict(),
+        },
         "skinning": {"enabled": skinning_config.enabled},
         "pyosv": {
             "fv": _array_summary(fv),
@@ -1676,6 +1751,42 @@ def _run_voting_from_attributes(
                     fvt_top_truth_count,
                 ),
             },
+            "fv_positive_top_truth_count": {
+                "buffered_overlap_radius2": buffered_surface_overlap(
+                    fv_positive_top_truth_count,
+                    truth_fault_mask,
+                    radius=buffer_radius,
+                ),
+                "surface_distance": surface_distance_metrics(
+                    fv_positive_top_truth_count,
+                    truth_surface_mask,
+                ),
+                "orientation_error": masked_orientation_error(
+                    vp,
+                    vt,
+                    case.truth_strike,
+                    case.truth_dip,
+                    fv_positive_top_truth_count,
+                ),
+            },
+            "fvt_positive_top_truth_count": {
+                "buffered_overlap_radius2": buffered_surface_overlap(
+                    fvt_positive_top_truth_count,
+                    truth_fault_mask,
+                    radius=buffer_radius,
+                ),
+                "surface_distance": surface_distance_metrics(
+                    fvt_positive_top_truth_count,
+                    truth_surface_mask,
+                ),
+                "orientation_error": masked_orientation_error(
+                    vp,
+                    vt,
+                    case.truth_strike,
+                    case.truth_dip,
+                    fvt_positive_top_truth_count,
+                ),
+            },
             "edge_false_positive": edge_false_positive_metrics,
         },
     }
@@ -1694,6 +1805,7 @@ def _run_voting_from_attributes(
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
         skins = _find_synthetic_skins(
+            fv,
             fvt,
             vp,
             vt,
@@ -1931,7 +2043,7 @@ def _build_report_and_volumes(
                 {
                     key: value
                     for key, value in variant_reports[BASELINE_VARIANT].items()
-                    if key not in {"pipelines"}
+                    if key not in {"config", "pipelines"}
                 }
             )
             case_report["pipelines"] = pipelines
@@ -2097,6 +2209,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fv_buffered_f1_r2",
                 "fv_distance_p95",
                 "fv_edge_false_positive_fraction",
+                "fv_positive_candidate_count",
                 "fv_strike_median_error",
                 "fv_dip_median_error",
                 "fvt_max",
@@ -2105,6 +2218,10 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fvt_buffered_f1_r2",
                 "fvt_distance_p95",
                 "fvt_edge_false_positive_fraction",
+                "fvt_positive_candidate_count",
+                "fvt_positive_buffered_f1_r2",
+                "fvt_positive_distance_p95",
+                "fvt_positive_edge_false_positive_fraction",
                 "fvt_strike_median_error",
                 "fvt_dip_median_error",
                 "skinning_enabled",
@@ -2171,6 +2288,8 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     quality = variant_report["quality"]
                     fv_quality = quality["fv_top_truth_count"]
                     fvt_quality = quality["fvt_top_truth_count"]
+                    fv_positive_quality = quality["fv_positive_top_truth_count"]
+                    fvt_positive_quality = quality["fvt_positive_top_truth_count"]
                     edge_false_positive = quality["edge_false_positive"]
                     skinning = variant_report["skinning"]
                     skin_quality = quality["skin"]
@@ -2211,6 +2330,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "fv_edge_false_positive_fraction": edge_false_positive[
                                 "fv_top_truth_count"
                             ]["edge_false_positive_fraction_of_candidates"],
+                            "fv_positive_candidate_count": fv_positive_quality[
+                                "buffered_overlap_radius2"
+                            ]["candidate_count"],
                             "fv_strike_median_error": fv_quality["orientation_error"][
                                 "strike_median"
                             ],
@@ -2226,6 +2348,18 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             ],
                             "fvt_edge_false_positive_fraction": edge_false_positive[
                                 "fvt_top_truth_count"
+                            ]["edge_false_positive_fraction_of_candidates"],
+                            "fvt_positive_candidate_count": fvt_positive_quality[
+                                "buffered_overlap_radius2"
+                            ]["candidate_count"],
+                            "fvt_positive_buffered_f1_r2": fvt_positive_quality[
+                                "buffered_overlap_radius2"
+                            ]["buffered_f1"],
+                            "fvt_positive_distance_p95": fvt_positive_quality["surface_distance"][
+                                "candidate_to_truth_p95"
+                            ],
+                            "fvt_positive_edge_false_positive_fraction": edge_false_positive[
+                                "fvt_positive_top_truth_count"
                             ]["edge_false_positive_fraction_of_candidates"],
                             "fvt_strike_median_error": fvt_quality["orientation_error"][
                                 "strike_median"
@@ -2445,6 +2579,7 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
 
 
 def _find_synthetic_skins(
+    fv: np.ndarray,
     fvt: np.ndarray,
     vp: np.ndarray,
     vt: np.ndarray,
@@ -2458,13 +2593,18 @@ def _find_synthetic_skins(
     if skinning_config.min_likelihood is not None:
         skinner_kwargs["min_likelihood"] = skinning_config.min_likelihood
     skinner = FaultSkinner(**skinner_kwargs)
+    grow_volume = fvt
+    grow_ft = fvt
+    if skinning_config.growth_source == "pre_thin":
+        grow_volume = fv
+        grow_ft = fv
     return skinner.find_skins(
-        fvt,
+        grow_volume,
         vp,
         vt,
         min_likelihood=skinning_config.min_likelihood,
         ep=fvt,
-        ft=fvt,
+        ft=grow_ft,
         pt=vp,
         tt=vt,
         d=skinning_config.d,
@@ -2475,6 +2615,7 @@ def _find_synthetic_skins(
         du=skinning_config.du,
         max_delta_strike=skinning_config.max_delta_strike,
         reskin=skinning_config.reskin,
+        accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
     )
 
 
@@ -3263,6 +3404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             skinning_config=SyntheticSkinningConfig(
                 enabled=not args.skip_skinning,
                 method=skinner_method,
+                growth_source=args.skinner_growth_source,
                 min_likelihood=skinner_min_likelihood,
                 min_skin_size=args.skinner_min_skin_size,
                 d=args.skinner_d,
@@ -3273,6 +3415,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 du=args.skinner_du,
                 max_delta_strike=args.skinner_max_delta_strike,
                 reskin=not args.no_skinner_reskin,
+                accepted_occupancy_radius=args.skinner_accepted_occupancy_radius,
                 small_skin_size=args.small_skin_size,
             ),
             variants=variants,

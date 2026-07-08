@@ -65,6 +65,17 @@ def workflow_reports() -> dict[str, dict[str, Any]]:
     }
 
 
+@pytest.fixture(scope="module")
+def quality_skinner_v2_report() -> dict[str, Any]:
+    module = _load_report_module()
+    return module.build_report(
+        case_set="extended",
+        shape=SHAPE,
+        variants=("current_default", "quality_skinner_v2"),
+        workflow_mode="quality",
+    )
+
+
 def _cases_by_id(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cases = {case["case_id"]: case for case in report["cases"]}
     assert tuple(cases) == CASE_IDS
@@ -144,8 +155,11 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert reference["voting"]["surface_support_min_fraction"] == 0.0
     assert reference["voting"]["surface_support_exponent"] == 0.0
     assert reference["skinning"]["method"] == "reference"
+    assert reference["skinning"]["growth_source"] == "thinned"
     assert reference["skinning"]["adaptive_min_likelihood"] is False
     assert reference["skinning"]["seed_min_ep"] == 0.8
+    assert reference["skinning"]["accepted_occupancy_radius"] is None
+    assert reference["skinning"]["effective_accepted_occupancy_radius"] == 5
 
     quality = workflow_reports["quality"]["config"]
     assert quality["workflow_mode"] == "quality"
@@ -153,9 +167,12 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert quality["voting"]["surface_support_min_fraction"] == 0.0
     assert quality["voting"]["surface_support_exponent"] == 0.0
     assert quality["skinning"]["method"] == "quality"
+    assert quality["skinning"]["growth_source"] == "thinned"
     assert quality["skinning"]["min_likelihood"] is None
     assert quality["skinning"]["adaptive_min_likelihood"] is True
     assert quality["skinning"]["seed_min_ep"] == 0.5
+    assert quality["skinning"]["accepted_occupancy_radius"] is None
+    assert quality["skinning"]["effective_accepted_occupancy_radius"] == 5
 
 
 def test_quality_workflow_key_metrics_are_finite(
@@ -169,7 +186,12 @@ def test_quality_workflow_key_metrics_are_finite(
             assert case["variants"]["current_default"]["skinning"] == {"enabled": True}
 
             quality = case["quality"]
-            for field in ("fv_top_truth_count", "fvt_top_truth_count"):
+            for field in (
+                "fv_top_truth_count",
+                "fvt_top_truth_count",
+                "fv_positive_top_truth_count",
+                "fvt_positive_top_truth_count",
+            ):
                 _assert_finite_metric_tree(quality[field]["buffered_overlap_radius2"])
                 _assert_finite_metric_tree(quality[field]["surface_distance"])
                 _assert_finite_metric_tree(quality[field]["orientation_error"])
@@ -177,6 +199,8 @@ def test_quality_workflow_key_metrics_are_finite(
             edge_false_positive = quality["edge_false_positive"]
             _assert_finite_metric_tree(edge_false_positive["fv_top_truth_count"])
             _assert_finite_metric_tree(edge_false_positive["fvt_top_truth_count"])
+            _assert_finite_metric_tree(edge_false_positive["fv_positive_top_truth_count"])
+            _assert_finite_metric_tree(edge_false_positive["fvt_positive_top_truth_count"])
 
             skin = quality["skin"]
             assert skin is not None
@@ -188,6 +212,59 @@ def test_quality_workflow_key_metrics_are_finite(
             ):
                 assert field in skin
                 _assert_finite_metric_tree(skin[field])
+
+
+def test_quality_skinner_v2_extended_skin_metrics_are_finite(
+    quality_skinner_v2_report: dict[str, Any],
+) -> None:
+    assert quality_skinner_v2_report["config"]["shape"] == list(SHAPE)
+    assert quality_skinner_v2_report["config"]["variants"] == [
+        "current_default",
+        "quality_skinner_v2",
+    ]
+    for case in _cases_by_id(quality_skinner_v2_report).values():
+        variant = case["variants"]["quality_skinner_v2"]
+        skinning = variant["config"]["skinning"]
+        assert skinning["method"] == "quality"
+        assert skinning["growth_source"] == "pre_thin"
+        assert skinning["effective_accepted_occupancy_radius"] == 1
+        skin = variant["quality"]["skin"]
+        assert skin is not None
+        for field in (
+            "topology",
+            "buffered_overlap_radius2",
+            "surface_distance",
+            "orientation_error",
+        ):
+            _assert_finite_metric_tree(skin[field])
+
+
+def test_quality_skinner_v2_skin_f1_guardrail(
+    quality_skinner_v2_report: dict[str, Any],
+) -> None:
+    cases = _cases_by_id(quality_skinner_v2_report)
+    comparisons: dict[str, tuple[float, float]] = {}
+    for case_id in ("curved_surface", "crossing_planes"):
+        current_default = _float_metric(
+            cases[case_id],
+            "variants",
+            "current_default",
+            *SKIN_BUFFERED_F1_R2,
+        )
+        quality_skinner_v2 = _float_metric(
+            cases[case_id],
+            "variants",
+            "quality_skinner_v2",
+            *SKIN_BUFFERED_F1_R2,
+        )
+        comparisons[case_id] = (current_default, quality_skinner_v2)
+    assert any(
+        quality_skinner_v2 >= current_default
+        for current_default, quality_skinner_v2 in comparisons.values()
+    ), "quality_skinner_v2 skin buffered F1 was below current_default for " + ", ".join(
+        f"{case_id}: {quality_skinner_v2:.6g} < {current_default:.6g}"
+        for case_id, (current_default, quality_skinner_v2) in comparisons.items()
+    )
 
 
 def test_quality_workflow_case_specific_guardrails(
