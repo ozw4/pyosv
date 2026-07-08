@@ -98,9 +98,12 @@ in-bounds boundary source samples.
 strike-bin mode: it uses SciPy smoothing before strike-binned comparison in
 the `i2-i3` plane. The legacy pyosv path remains available with
 `mode="normal"` and uses SciPy interpolation along fault normals derived from
-`vp` and `vt`. Voter reference-like thinning may reinforce retained
-near-vertical strike samples, and it does not apply scanner edge-effect cleanup.
-Neither mode is a bit-exact Mines JTK implementation.
+`vp` and `vt`. `mode="normal_plateau"` is a diagnostic fault-normal variant
+that collapses contiguous plateau runs along each sample's dominant normal axis
+and can use `plateau_tie_breaker` to choose the retained layer. Voter
+reference-like thinning may reinforce retained near-vertical strike samples,
+and it does not apply scanner edge-effect cleanup. These modes are not
+bit-exact Mines JTK implementations.
 
 For F3 diagnostics and other reference-style comparisons, the default call is
 the reference-like strike-bin path:
@@ -113,7 +116,9 @@ Reference-like thinning uses `fv` for values and `vp` for strike-angle bins,
 compares local maxima in the `i2-i3` plane, and writes the smoothed comparison
 values to retained samples. `reference_sigma` controls smoothing inside the
 comparison helper. Code that needs the old fault-normal voter thinning should
-pass `mode="normal"` explicitly.
+pass `mode="normal"` explicitly. Boundary diagnostics that need plateau-aware
+fault-normal thinning can use `mode="normal_plateau"`; when
+`plateau_tie_breaker` is omitted, `fv` is used for tie-breaking.
 
 ```python
 fvt = voter.thin(fv, vp, vt, mode="normal")

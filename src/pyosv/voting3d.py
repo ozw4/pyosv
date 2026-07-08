@@ -249,6 +249,8 @@ class OptimalSurfaceVoter:
         mode: str = "reference",
         reference_sigma: float = 1.0,
         hybrid_orientation_gradient_threshold: float = 8.0,
+        plateau_tie_breaker: np.ndarray | None = None,
+        plateau_tolerance: float = 1.0e-6,
     ) -> np.ndarray:
         """Keep 3D voting-score maxima using the selected thinning mode."""
 
@@ -256,8 +258,17 @@ class OptimalSurfaceVoter:
             (fv, vp, vt),
             ("fv", "vp", "vt"),
         )
-        if mode not in {"reference", "normal", "hybrid"}:
-            raise ValueError("mode must be 'reference', 'normal', or 'hybrid'")
+        if plateau_tie_breaker is None:
+            tie_breaker_array = fv_array
+        else:
+            tie_breaker_array = _validate_finite_array3(
+                plateau_tie_breaker,
+                "plateau_tie_breaker",
+            )
+            if tie_breaker_array.shape != fv_array.shape:
+                raise ValueError("fv and plateau_tie_breaker shapes must match")
+        if mode not in {"reference", "normal", "hybrid", "normal_plateau"}:
+            raise ValueError("mode must be 'reference', 'normal', 'hybrid', or 'normal_plateau'")
         threshold = _validate_nonnegative_float(
             hybrid_orientation_gradient_threshold,
             "hybrid_orientation_gradient_threshold",
@@ -271,6 +282,18 @@ class OptimalSurfaceVoter:
             return thinned
         if mode == "normal":
             return _thin_fault_normal_3d(fv_array, vp_array, vt_array)
+        if mode == "normal_plateau":
+            tolerance = _validate_nonnegative_float(
+                plateau_tolerance,
+                "plateau_tolerance",
+            )
+            return _thin_fault_normal_plateau_3d(
+                fv_array,
+                vp_array,
+                vt_array,
+                plateau_tie_breaker=tie_breaker_array,
+                tolerance=tolerance,
+            )
 
         reference, _ = _thin_reference_like_3d(
             fv_array,
@@ -1004,6 +1027,94 @@ def _thin_fault_normal_3d(
     keep = (fp < fs) & (fm < fs)
     thinned[keep] = fv[keep]
     return thinned
+
+
+def _thin_fault_normal_plateau_3d(
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    *,
+    plateau_tie_breaker: np.ndarray,
+    tolerance: float,
+) -> np.ndarray:
+    n3, n2, n1 = fv.shape
+    thinned = np.zeros((n3, n2, n1), dtype=np.float32)
+    if fv.size == 0:
+        return thinned
+
+    fs = smooth3d(fv, 1.0).astype(np.float32, copy=False)
+    i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
+    w1, w2, w3 = _fault_normal_components_from_strike_and_dip(vp, vt)
+
+    fp = sample3(fs, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
+    fm = sample3(fs, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
+    eps = np.float32(1.0e-6)
+    candidate = (fv > eps) & (fs >= fp - np.float32(tolerance)) & (fs >= fm - np.float32(tolerance))
+    if not np.any(candidate):
+        return thinned
+
+    dominant_axis = np.argmax(
+        np.stack((np.abs(w1), np.abs(w2), np.abs(w3)), axis=0),
+        axis=0,
+    )
+    axis_to_array_axis = (2, 1, 0)
+    for normal_axis, array_axis in enumerate(axis_to_array_axis):
+        axis_candidates = candidate & (dominant_axis == normal_axis)
+        _collapse_candidate_runs_along_axis(
+            fv,
+            plateau_tie_breaker,
+            axis_candidates,
+            array_axis,
+            thinned,
+        )
+
+    return thinned
+
+
+def _collapse_candidate_runs_along_axis(
+    fv: np.ndarray,
+    tie_breaker: np.ndarray,
+    candidate: np.ndarray,
+    axis: int,
+    thinned: np.ndarray,
+) -> None:
+    moved_candidate = np.moveaxis(candidate, axis, -1)
+    moved_fv = np.moveaxis(fv, axis, -1)
+    moved_tie_breaker = np.moveaxis(tie_breaker, axis, -1)
+    moved_thinned = np.moveaxis(thinned, axis, -1)
+
+    line_length = moved_candidate.shape[-1]
+    for line_index in np.ndindex(moved_candidate.shape[:-1]):
+        line = moved_candidate[line_index]
+        start: int | None = None
+        for offset in range(line_length + 1):
+            in_run = offset < line_length and bool(line[offset])
+            if in_run and start is None:
+                start = offset
+            if (not in_run) and start is not None:
+                _retain_plateau_run_sample(
+                    moved_fv[line_index],
+                    moved_tie_breaker[line_index],
+                    moved_thinned[line_index],
+                    start,
+                    offset,
+                )
+                start = None
+
+
+def _retain_plateau_run_sample(
+    fv_line: np.ndarray,
+    tie_breaker_line: np.ndarray,
+    thinned_line: np.ndarray,
+    start: int,
+    stop: int,
+) -> None:
+    run_tie_breaker = tie_breaker_line[start:stop]
+    if np.all(run_tie_breaker == run_tie_breaker[0]):
+        keep_offset = (start + stop - 1) // 2
+    else:
+        keep_offset = start + int(np.argmax(run_tie_breaker))
+    thinned_line[keep_offset] = fv_line[keep_offset]
 
 
 def _orientation_roughness_3d(

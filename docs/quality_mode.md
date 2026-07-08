@@ -62,10 +62,13 @@ changed automatically.
 
 The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
-`voter_thin_normal`, `voter_thin_hybrid`, and
+`voter_thin_normal`, `voter_thin_hybrid`, `voter_thin_normal_plateau`,
 `surface_support_weighted`, and `quality_skinner_v2`. The hybrid voter thinning
 variant uses reference-like thinning in stable-orientation regions and
-fault-normal thinning where local orientation changes rapidly.
+fault-normal thinning where local orientation changes rapidly. The
+`voter_thin_normal_plateau` diagnostic variant keeps fault-normal thinning
+explicit, but collapses normal-direction plateau runs with the input fault
+likelihood as the retained-layer tie-breaker.
 
 The `surface_support_weighted` diagnostic variant keeps the default thinning
 path but enables support-aware surface voting with

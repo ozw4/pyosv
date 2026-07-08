@@ -1703,6 +1703,69 @@ def test_thin_suppresses_broad_planar_ridge_to_center_plane() -> None:
     np.testing.assert_array_equal(fvt[:, 4, :], fv[:, 4, :])
 
 
+def test_thin_normal_plateau_keeps_tie_breaker_max_layer() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 7, 5), dtype=np.float32)
+    fv[1:4, 2:5, 1:4] = 1.0
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    tie_breaker = np.zeros_like(fv)
+    tie_breaker[:, 2, :] = 0.2
+    tie_breaker[:, 3, :] = 0.9
+    tie_breaker[:, 4, :] = 0.6
+
+    fvt = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="normal_plateau",
+        plateau_tie_breaker=tie_breaker,
+        plateau_tolerance=1.0,
+    )
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    assert np.count_nonzero(fvt[:, 3, :]) == 9
+    assert np.count_nonzero(fvt[:, :3, :]) == 0
+    assert np.count_nonzero(fvt[:, 4:, :]) == 0
+    np.testing.assert_array_equal(fvt[:, 3, :], fv[:, 3, :])
+
+
+def test_thin_normal_plateau_tie_breaker_equal_run_keeps_center_layer() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 7, 5), dtype=np.float32)
+    fv[1:4, 2:5, 1:4] = 1.0
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+
+    fvt = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="normal_plateau",
+        plateau_tolerance=1.0,
+    )
+
+    assert np.count_nonzero(fvt[:, 3, :]) == 9
+    assert np.count_nonzero(fvt[:, :3, :]) == 0
+    assert np.count_nonzero(fvt[:, 4:, :]) == 0
+
+
+def test_thin_normal_plateau_returns_zero_for_all_zero_volume() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((4, 5, 6), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+
+    fvt = voter.thin(fv, vp, vt, mode="normal_plateau")
+
+    assert fvt.shape == fv.shape
+    assert fvt.dtype == np.float32
+    assert np.isfinite(fvt).all()
+    np.testing.assert_array_equal(fvt, np.zeros_like(fv))
+
+
 def test_thin_returns_zero_for_flat_volume() -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
     fv = np.full((4, 5, 6), 0.75, dtype=np.float32)
@@ -1741,6 +1804,41 @@ def test_thin_rejects_mismatched_shapes() -> None:
 
     with pytest.raises(ValueError, match="shapes must match"):
         voter.thin(fv, vp, vt)
+
+
+def test_thin_normal_plateau_rejects_tie_breaker_shape_mismatch() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    tie_breaker = np.zeros((3, 3, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="plateau_tie_breaker shapes must match"):
+        voter.thin(
+            fv,
+            vp,
+            vt,
+            mode="normal_plateau",
+            plateau_tie_breaker=tie_breaker,
+        )
+
+
+def test_thin_normal_plateau_rejects_nonfinite_tie_breaker() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    tie_breaker = np.zeros_like(fv)
+    tie_breaker[1, 1, 1] = np.nan
+
+    with pytest.raises(ValueError, match="plateau_tie_breaker"):
+        voter.thin(
+            fv,
+            vp,
+            vt,
+            mode="normal_plateau",
+            plateau_tie_breaker=tie_breaker,
+        )
 
 
 @pytest.mark.parametrize(
