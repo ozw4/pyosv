@@ -163,7 +163,12 @@ PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
 Because F3 has no independent truth labels, reference agreement is a stability
 diagnostic rather than direct evidence of higher quality. Review whether the
 quality workflow preserves reference geological signal, avoids extra ridges and
-boundary artifacts, and keeps crop-to-crop behavior stable.
+boundary artifacts, and keeps crop-to-crop behavior stable. The multi-crop JSON
+and markdown include `consensus.workflows` for each workflow and
+`consensus.workflow_comparison.quality_minus_reference` in compare mode. Use
+the consensus density means/std/cv, fvt edge-density proxy, sparse distance p95,
+and finite failure count as truthless stability checks alongside the existing
+reference-overlap metrics.
 
 F3 reference agreement is not quality itself. A quality-mode change should be
 promoted only when the controlled synthetic `extended` matrix and F3 multi-crop

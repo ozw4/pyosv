@@ -95,12 +95,19 @@ python examples/report_3d_f3d_multicrop.py \
 ```
 
 In compare mode, the JSON contains `workflows.reference`,
-`workflows.quality`, and `workflow_delta.quality_vs_reference`, so the markdown
-index shows both the reference and quality workflow results. Figure directories
-are split by workflow, for example `figures/reference/crop_001/` and
-`figures/quality/crop_001/`, so the two runs do not overwrite each other.
-Support-aware voting is not a quality default in this report; pass explicit
-`--surface-support-*` overrides only for a diagnostic comparison.
+`workflows.quality`, `consensus.workflows`, and
+`workflow_delta.quality_vs_reference`, so the markdown index shows both the
+reference and quality workflow results. The consensus section summarizes
+truthless crop-to-crop stability from the saved crop metrics, including fvt/fv
+nonzero density, fvt reference correlation, buffered ridge overlap, sparse
+ridge distance p95, finite-check failures, and an fvt edge-density proxy from
+full-crop minus interior density. In compare mode,
+`consensus.workflow_comparison.quality_minus_reference` reports the matching
+quality-minus-reference deltas. Figure directories are split by workflow, for
+example `figures/reference/crop_001/` and `figures/quality/crop_001/`, so the
+two runs do not overwrite each other. Support-aware voting is not a quality
+default in this report; pass explicit `--surface-support-*` overrides only for
+a diagnostic comparison.
 
 For reference-like thinning diagnostics, run the same visual reports with
 `--scanner-thin-mode reference` and `--voter-thin-mode reference`, or run the
