@@ -186,7 +186,15 @@ def parse_workflow_mode(text: str) -> str:
 
 
 def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
-    return "normal" if workflow_mode == "quality" else "reference"
+    return "hybrid" if workflow_mode == "quality" else "reference"
+
+
+def _default_surface_support_policy_for_workflow(
+    workflow_mode: str,
+) -> tuple[float, float]:
+    if workflow_mode == "quality":
+        return 0.5, 1.0
+    return 0.0, 0.0
 
 
 def _effective_voter_thin_mode(
@@ -197,6 +205,22 @@ def _effective_voter_thin_mode(
     if voter_thin_mode is not None:
         return voter_thin_mode
     return _default_voter_thin_mode_for_workflow(workflow_mode)
+
+
+def _effective_surface_support_policy(
+    *,
+    workflow_mode: str,
+    min_fraction: float | None,
+    exponent: float | None,
+) -> tuple[float, float]:
+    default_min_fraction, default_exponent = _default_surface_support_policy_for_workflow(
+        workflow_mode
+    )
+    if min_fraction is not None:
+        default_min_fraction = min_fraction
+    if exponent is not None:
+        default_exponent = exponent
+    return default_min_fraction, default_exponent
 
 
 def _effective_include_thinning_diagnostic(
@@ -576,8 +600,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{" + ",".join(WORKFLOW_MODES) + "}",
         help=(
             "Workflow defaults: reference keeps reference-like voter thinning, "
-            "quality defaults voter thinning to normal, diagnostic keeps reference "
-            "thinning and enables reference-vs-normal diagnostics."
+            "quality uses hybrid voter thinning and support-aware voting, diagnostic "
+            "keeps reference thinning and enables reference-vs-normal diagnostics."
         ),
     )
     parser.add_argument(
@@ -669,14 +693,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--surface-support-min-fraction",
         type=float,
-        default=0.0,
-        help="Minimum valid surface-vote support fraction required for accumulation.",
+        default=None,
+        help="Minimum valid surface-vote support fraction required for accumulation; defaults by workflow mode.",
     )
     parser.add_argument(
         "--surface-support-exponent",
         type=float,
-        default=0.0,
-        help="Exponent for support-fraction surface-vote down-weighting.",
+        default=None,
+        help="Exponent for support-fraction surface-vote down-weighting; defaults by workflow mode.",
     )
     parser.add_argument(
         "--thinning-diagnostics",
@@ -1724,8 +1748,13 @@ def _build_report_and_volumes(
     valid_input_mode = _validate_input_mode(input_mode)
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
     if voting_config is None:
+        support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
+            valid_workflow_mode
+        )
         voting_config = SyntheticVotingConfig(
             voter_thin_mode=_default_voter_thin_mode_for_workflow(valid_workflow_mode),
+            surface_support_min_fraction=support_min_fraction,
+            surface_support_exponent=support_exponent,
         )
     include_thinning_diagnostic = _effective_include_thinning_diagnostic(
         workflow_mode=valid_workflow_mode,
@@ -3045,6 +3074,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         workflow_mode=args.workflow_mode,
         voter_thin_mode=args.voter_thin_mode,
     )
+    surface_support_min_fraction, surface_support_exponent = _effective_surface_support_policy(
+        workflow_mode=args.workflow_mode,
+        min_fraction=args.surface_support_min_fraction,
+        exponent=args.surface_support_exponent,
+    )
     include_thinning_diagnostic = _effective_include_thinning_diagnostic(
         workflow_mode=args.workflow_mode,
         include_thinning_diagnostic=args.include_thinning_diagnostic,
@@ -3068,8 +3102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 attribute_smoothing=args.attribute_smoothing,
                 voter_thin_mode=voter_thin_mode,
                 reference_thin_sigma=args.reference_thin_sigma,
-                surface_support_min_fraction=args.surface_support_min_fraction,
-                surface_support_exponent=args.surface_support_exponent,
+                surface_support_min_fraction=surface_support_min_fraction,
+                surface_support_exponent=surface_support_exponent,
             ),
             scanner_config=SyntheticScannerConfig(
                 backend=args.scanner_backend,
