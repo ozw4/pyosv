@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import numbers
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -78,6 +79,7 @@ SCANNER_VOLUME_NAMES = (
     ("scanner_fet", "ft_used"),
     ("scanner_fpt", "pt_used"),
     ("scanner_ftt", "tt_used"),
+    ("scanner_confidence", "scanner_confidence"),
 )
 SCANNER_FIGURE_VOLUME_NAMES = (
     ("scanner_input", "scanner_input"),
@@ -178,6 +180,15 @@ def _validate_workflow_mode(value: str) -> str:
     return value
 
 
+def _validate_scanner_refinement_factor(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise ValueError("scanner_refinement_factor must be an integer from 1 to 4")
+    factor = int(value)
+    if factor < 1 or factor > 4:
+        raise ValueError("scanner_refinement_factor must be an integer from 1 to 4")
+    return factor
+
+
 def parse_workflow_mode(text: str) -> str:
     try:
         return _validate_workflow_mode(text)
@@ -186,7 +197,15 @@ def parse_workflow_mode(text: str) -> str:
 
 
 def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
-    return "normal" if workflow_mode == "quality" else "reference"
+    return "hybrid" if workflow_mode == "quality" else "reference"
+
+
+def _default_surface_support_policy_for_workflow(
+    workflow_mode: str,
+) -> tuple[float, float]:
+    if workflow_mode == "quality":
+        return 0.5, 1.0
+    return 0.0, 0.0
 
 
 def _effective_voter_thin_mode(
@@ -197,6 +216,22 @@ def _effective_voter_thin_mode(
     if voter_thin_mode is not None:
         return voter_thin_mode
     return _default_voter_thin_mode_for_workflow(workflow_mode)
+
+
+def _effective_surface_support_policy(
+    *,
+    workflow_mode: str,
+    min_fraction: float | None,
+    exponent: float | None,
+) -> tuple[float, float]:
+    default_min_fraction, default_exponent = _default_surface_support_policy_for_workflow(
+        workflow_mode
+    )
+    if min_fraction is not None:
+        default_min_fraction = min_fraction
+    if exponent is not None:
+        default_exponent = exponent
+    return default_min_fraction, default_exponent
 
 
 def _effective_include_thinning_diagnostic(
@@ -296,13 +331,14 @@ class SyntheticScannerConfig:
     theta_max: float = 90.0
     sigma1: float = 2.0
     sigma2: float = 2.0
+    refinement_factor: int = 2
     scanner_thin_mode: str = "reference"
     remove_edge_effects: bool = True
     input_config: SyntheticScannerInputConfig = SyntheticScannerInputConfig()
 
     def __post_init__(self) -> None:
-        if self.backend not in {"reference-like", "fast"}:
-            raise ValueError("scanner_backend must be 'reference-like' or 'fast'")
+        if self.backend not in {"reference-like", "fast", "quality"}:
+            raise ValueError("scanner_backend must be 'reference-like', 'fast', or 'quality'")
         if self.scanner_thin_mode not in {"none", "reference", "normal"}:
             raise ValueError("scanner_thin_mode must be 'none', 'reference', or 'normal'")
         if not isinstance(self.remove_edge_effects, bool):
@@ -315,6 +351,7 @@ class SyntheticScannerConfig:
         _validate_finite_scalar(self.theta_max, "scanner_theta_max")
         _validate_positive_finite_scalar(self.sigma1, "scanner_sigma1")
         _validate_positive_finite_scalar(self.sigma2, "scanner_sigma2")
+        _validate_scanner_refinement_factor(self.refinement_factor)
         if self.phi_max < self.phi_min:
             raise ValueError("scanner_phi_max must be greater than or equal to scanner_phi_min")
         if self.theta_max < self.theta_min:
@@ -329,6 +366,7 @@ class SyntheticScannerConfig:
             "theta_max": float(self.theta_max),
             "sigma1": float(self.sigma1),
             "sigma2": float(self.sigma2),
+            "refinement_factor": int(self.refinement_factor),
             "scanner_thin_mode": self.scanner_thin_mode,
             "remove_edge_effects": self.remove_edge_effects,
             "input": {
@@ -576,15 +614,18 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{" + ",".join(WORKFLOW_MODES) + "}",
         help=(
             "Workflow defaults: reference keeps reference-like voter thinning, "
-            "quality defaults voter thinning to normal, diagnostic keeps reference "
-            "thinning and enables reference-vs-normal diagnostics."
+            "quality uses hybrid voter thinning and support-aware voting, diagnostic "
+            "keeps reference thinning and enables reference-vs-normal diagnostics."
         ),
     )
     parser.add_argument(
         "--scanner-backend",
-        choices=("reference-like", "fast"),
+        choices=("reference-like", "fast", "quality"),
         default="reference-like",
-        help="FaultOrientScanner3 backend for scanner/both mode: reference-like scan or fast scan.",
+        help=(
+            "FaultOrientScanner3 backend for scanner/both mode: reference-like scan, "
+            "fast scan, or refined quality scan."
+        ),
     )
     parser.add_argument(
         "--scanner-phi-min",
@@ -621,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="Scanner sigma2 control.",
+    )
+    parser.add_argument(
+        "--scanner-refinement-factor",
+        type=int,
+        default=2,
+        help="Refined sampling factor used by --scanner-backend quality.",
     )
     parser.add_argument(
         "--scanner-thin-mode",
@@ -669,14 +716,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--surface-support-min-fraction",
         type=float,
-        default=0.0,
-        help="Minimum valid surface-vote support fraction required for accumulation.",
+        default=None,
+        help="Minimum valid surface-vote support fraction required for accumulation; defaults by workflow mode.",
     )
     parser.add_argument(
         "--surface-support-exponent",
         type=float,
-        default=0.0,
-        help="Exponent for support-fraction surface-vote down-weighting.",
+        default=None,
+        help="Exponent for support-fraction surface-vote down-weighting; defaults by workflow mode.",
     )
     parser.add_argument(
         "--thinning-diagnostics",
@@ -1068,6 +1115,7 @@ def _scanner_attributes_from_case(
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
     scanner = FaultOrientScanner3(scanner_config.sigma1, scanner_config.sigma2)
+    confidence: np.ndarray | None = None
     if scanner_config.backend == "reference-like":
         ft_scan, pt_scan, tt_scan = scanner.scan(
             scanner_config.phi_min,
@@ -1075,6 +1123,16 @@ def _scanner_attributes_from_case(
             scanner_config.theta_min,
             scanner_config.theta_max,
             scanner_input,
+        )
+    elif scanner_config.backend == "quality":
+        ft_scan, pt_scan, tt_scan, confidence = scanner.scan_quality(
+            scanner_config.phi_min,
+            scanner_config.phi_max,
+            scanner_config.theta_min,
+            scanner_config.theta_max,
+            scanner_input,
+            refinement_factor=scanner_config.refinement_factor,
+            return_confidence=True,
         )
     elif scanner_config.backend == "fast":
         ft_scan, pt_scan, tt_scan = scanner.scan_fast(
@@ -1085,7 +1143,7 @@ def _scanner_attributes_from_case(
             scanner_input,
         )
     else:
-        raise ValueError("scanner_backend must be 'reference-like' or 'fast'")
+        raise ValueError("scanner_backend must be 'reference-like', 'fast', or 'quality'")
 
     if scanner_config.scanner_thin_mode == "none":
         ft_used = ft_scan
@@ -1119,6 +1177,9 @@ def _scanner_attributes_from_case(
         "scanner_tt": tt_scan,
         "scanner_ftt": tt_used,
     }
+    if confidence is not None:
+        scanner_report["confidence"] = _array_summary(confidence)
+        scanner_volumes["scanner_confidence"] = confidence
     return scanner_report, scanner_volumes
 
 
@@ -1724,8 +1785,13 @@ def _build_report_and_volumes(
     valid_input_mode = _validate_input_mode(input_mode)
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
     if voting_config is None:
+        support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
+            valid_workflow_mode
+        )
         voting_config = SyntheticVotingConfig(
             voter_thin_mode=_default_voter_thin_mode_for_workflow(valid_workflow_mode),
+            surface_support_min_fraction=support_min_fraction,
+            surface_support_exponent=support_exponent,
         )
     include_thinning_diagnostic = _effective_include_thinning_diagnostic(
         workflow_mode=valid_workflow_mode,
@@ -3045,6 +3111,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         workflow_mode=args.workflow_mode,
         voter_thin_mode=args.voter_thin_mode,
     )
+    surface_support_min_fraction, surface_support_exponent = _effective_surface_support_policy(
+        workflow_mode=args.workflow_mode,
+        min_fraction=args.surface_support_min_fraction,
+        exponent=args.surface_support_exponent,
+    )
     include_thinning_diagnostic = _effective_include_thinning_diagnostic(
         workflow_mode=args.workflow_mode,
         include_thinning_diagnostic=args.include_thinning_diagnostic,
@@ -3068,8 +3139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 attribute_smoothing=args.attribute_smoothing,
                 voter_thin_mode=voter_thin_mode,
                 reference_thin_sigma=args.reference_thin_sigma,
-                surface_support_min_fraction=args.surface_support_min_fraction,
-                surface_support_exponent=args.surface_support_exponent,
+                surface_support_min_fraction=surface_support_min_fraction,
+                surface_support_exponent=surface_support_exponent,
             ),
             scanner_config=SyntheticScannerConfig(
                 backend=args.scanner_backend,
@@ -3079,6 +3150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 theta_max=args.scanner_theta_max,
                 sigma1=args.scanner_sigma1,
                 sigma2=args.scanner_sigma2,
+                refinement_factor=args.scanner_refinement_factor,
                 scanner_thin_mode=args.scanner_thin_mode,
                 remove_edge_effects=not args.keep_scanner_edge_effects,
             ),

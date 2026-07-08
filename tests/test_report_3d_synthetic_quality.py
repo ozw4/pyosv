@@ -278,6 +278,8 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--truth-surface-half-width" in result.stdout
     assert "--buffer-radius" in result.stdout
     assert "--skip-skinning" in result.stdout
+    assert "--scanner-refinement-factor" in result.stdout
+    assert "--scanner-backend {reference-like,fast,quality}" in result.stdout
     assert "--skinner-min-likelihood" in result.stdout
     assert "--skinner-ru" in result.stdout
     assert "--no-skinner-reskin" in result.stdout
@@ -1126,7 +1128,10 @@ def test_report_3d_synthetic_quality_voter_thin_hybrid_variant_passes(
 
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
-    assert set(metrics["cases"][0]["variants"]) == {"current_default", "voter_thin_hybrid"}
+    assert set(metrics["cases"][0]["variants"]) == {
+        "current_default",
+        "voter_thin_hybrid",
+    }
     hybrid = metrics["cases"][0]["variants"]["voter_thin_hybrid"]
     assert hybrid["pyosv"]["fvt"]["max"] > 0.0
 
@@ -1160,15 +1165,21 @@ def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
 
 
 @pytest.mark.parametrize(
-    ("workflow_mode", "override", "expected_voter_thin_mode"),
+    (
+        "workflow_mode",
+        "override",
+        "expected_voter_thin_mode",
+        "expected_support_min_fraction",
+        "expected_support_exponent",
+    ),
     [
-        ("reference", None, "reference"),
-        ("quality", None, "normal"),
-        ("quality", "reference", "reference"),
-        ("reference", "normal", "normal"),
-        ("reference", "hybrid", "hybrid"),
-        ("diagnostic", None, "reference"),
-        ("diagnostic", "normal", "normal"),
+        ("reference", None, "reference", 0.0, 0.0),
+        ("quality", None, "hybrid", 0.5, 1.0),
+        ("quality", "reference", "reference", 0.5, 1.0),
+        ("reference", "normal", "normal", 0.0, 0.0),
+        ("reference", "hybrid", "hybrid", 0.0, 0.0),
+        ("diagnostic", None, "reference", 0.0, 0.0),
+        ("diagnostic", "normal", "normal", 0.0, 0.0),
     ],
 )
 def test_report_3d_synthetic_quality_workflow_mode_resolves_voter_thin_mode(
@@ -1176,6 +1187,8 @@ def test_report_3d_synthetic_quality_workflow_mode_resolves_voter_thin_mode(
     workflow_mode: str,
     override: str | None,
     expected_voter_thin_mode: str,
+    expected_support_min_fraction: float,
+    expected_support_exponent: float,
 ) -> None:
     output_dir = tmp_path / f"synthetic_quality_{workflow_mode}_{override or 'default'}"
     args = [
@@ -1198,9 +1211,66 @@ def test_report_3d_synthetic_quality_workflow_mode_resolves_voter_thin_mode(
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == workflow_mode
     assert metrics["config"]["voting"]["voter_thin_mode"] == expected_voter_thin_mode
+    assert (
+        metrics["config"]["voting"]["surface_support_min_fraction"] == expected_support_min_fraction
+    )
+    assert metrics["config"]["voting"]["surface_support_exponent"] == expected_support_exponent
 
 
-def test_quality_workflow_current_default_matches_reference_workflow_voter_thin_normal(
+def test_report_3d_synthetic_quality_build_report_reference_workflow_defaults() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        workflow_mode="reference",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    assert report["config"]["workflow_mode"] == "reference"
+    assert report["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert report["config"]["voting"]["surface_support_exponent"] == 0.0
+
+
+def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        workflow_mode="quality",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    assert report["config"]["workflow_mode"] == "quality"
+    assert report["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert report["config"]["voting"]["surface_support_min_fraction"] == 0.5
+    assert report["config"]["voting"]["surface_support_exponent"] == 1.0
+
+
+def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        workflow_mode="quality",
+        voting_config=module.SyntheticVotingConfig(
+            voter_thin_mode="reference",
+            surface_support_min_fraction=0.0,
+            surface_support_exponent=0.0,
+        ),
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    assert report["config"]["workflow_mode"] == "quality"
+    assert report["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert report["config"]["voting"]["surface_support_exponent"] == 0.0
+
+
+def test_quality_workflow_current_default_uses_hybrid_and_support(
     tmp_path: Path,
 ) -> None:
     reference_dir = tmp_path / "synthetic_quality_reference"
@@ -1213,8 +1283,6 @@ def test_quality_workflow_current_default_matches_reference_workflow_voter_thin_
         "17,17,17",
         "--workflow-mode",
         "reference",
-        "--variants",
-        "current_default,voter_thin_normal",
         "--output-dir",
         str(reference_dir),
         "--skip-skinning",
@@ -1240,8 +1308,12 @@ def test_quality_workflow_current_default_matches_reference_workflow_voter_thin_
     quality_metrics = json.loads((quality_dir / "metrics.json").read_text(encoding="utf-8"))
     assert reference_metrics["config"]["workflow_mode"] == "reference"
     assert reference_metrics["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert reference_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert reference_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert quality_metrics["config"]["workflow_mode"] == "quality"
-    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "normal"
+    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert quality_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.5
+    assert quality_metrics["config"]["voting"]["surface_support_exponent"] == 1.0
 
     with (reference_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         reference_rows = list(csv.DictReader(file))
@@ -1258,7 +1330,6 @@ def test_quality_workflow_current_default_matches_reference_workflow_voter_thin_
         )
 
     reference_current = curved_oracle_row(reference_rows, "current_default")
-    reference_normal = curved_oracle_row(reference_rows, "voter_thin_normal")
     quality_current = curved_oracle_row(quality_rows, "current_default")
 
     quality_fields = (
@@ -1267,21 +1338,10 @@ def test_quality_workflow_current_default_matches_reference_workflow_voter_thin_
         "fvt_strike_median_error",
         "fvt_dip_median_error",
     )
-    for field in quality_fields:
-        assert math.isclose(
-            float(quality_current[field]),
-            float(reference_normal[field]),
-            abs_tol=1.0e-12,
-        )
-
-    assert any(
-        not math.isclose(
-            float(reference_current[field]),
-            float(quality_current[field]),
-            abs_tol=1.0e-12,
-        )
-        for field in quality_fields
-    )
+    for row in (reference_current, quality_current):
+        for field in quality_fields:
+            assert math.isfinite(float(row[field]))
+        assert float(row["fvt_nonzero_fraction"]) > 0.0
 
 
 @pytest.mark.parametrize("override", [None, "normal"])
@@ -1334,11 +1394,42 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "quality"
-    assert metrics["config"]["voting"]["voter_thin_mode"] == "normal"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.5
+    assert metrics["config"]["voting"]["surface_support_exponent"] == 1.0
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert rows[0]["workflow_mode"] == "quality"
+
+
+def test_report_3d_synthetic_quality_quality_workflow_support_cli_override(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--surface-support-min-fraction",
+        "0.0",
+        "--surface-support-exponent",
+        "0.0",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
 
 
 def test_report_3d_synthetic_quality_diagnostic_workflow_records_mode_and_defaults(
@@ -1361,10 +1452,14 @@ def test_report_3d_synthetic_quality_diagnostic_workflow_records_mode_and_defaul
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "diagnostic"
     assert metrics["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
+    assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
 
 
-def test_report_3d_synthetic_quality_invalid_workflow_mode_fails(tmp_path: Path) -> None:
+def test_report_3d_synthetic_quality_invalid_workflow_mode_fails(
+    tmp_path: Path,
+) -> None:
     output_dir = tmp_path / "synthetic_quality"
 
     result = _run_script(
@@ -1679,6 +1774,7 @@ def test_report_synthetic_quality_scanner_mode_records_scanner_config(
         "theta_max": 70.0,
         "sigma1": 1.5,
         "sigma2": 2.5,
+        "refinement_factor": 2,
         "scanner_thin_mode": "normal",
         "remove_edge_effects": False,
         "input": {
@@ -1744,6 +1840,43 @@ def test_report_synthetic_quality_scanner_backend_fast_runs(tmp_path: Path) -> N
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     variant = metrics["cases"][0]["variants"]["current_default"]
     assert variant["scanner"]["config"]["backend"] == "fast"
+    assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+
+
+def test_synthetic_scanner_config_accepts_quality_backend() -> None:
+    module = _load_report_module()
+
+    config = module.SyntheticScannerConfig(backend="quality", refinement_factor=2)
+
+    assert config.backend == "quality"
+    assert config.as_report_dict()["refinement_factor"] == 2
+
+
+def test_report_synthetic_quality_scanner_backend_quality_runs(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "quality",
+        "--scanner-refinement-factor",
+        "2",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert variant["scanner"]["config"]["backend"] == "quality"
+    assert variant["scanner"]["config"]["refinement_factor"] == 2
+    assert variant["scanner"]["confidence"]["shape"] == [17, 17, 17]
+    assert variant["scanner"]["confidence"]["finite_fraction"] == 1.0
     assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
 
 
@@ -2112,7 +2245,9 @@ def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_skins_json(
     assert "skinning disabled" in markdown
 
 
-def test_report_3d_synthetic_quality_invalid_skinner_options_fail(tmp_path: Path) -> None:
+def test_report_3d_synthetic_quality_invalid_skinner_options_fail(
+    tmp_path: Path,
+) -> None:
     output_dir = tmp_path / "synthetic_quality"
 
     result = _run_script(
@@ -2205,6 +2340,32 @@ def test_scanner_mode_save_volumes_writes_scanner_dat_files(tmp_path: Path) -> N
     ft_scan = np.fromfile(case_dir / "ft_scan.dat", dtype=">f4").astype(np.float32)
     ft_used = np.fromfile(case_dir / "ft_used.dat", dtype=">f4").astype(np.float32)
     assert np.count_nonzero(ft_scan) >= np.count_nonzero(ft_used)
+
+
+def test_scanner_quality_save_volumes_writes_confidence_dat_file(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+    shape = (17, 17, 17)
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        ",".join(str(size) for size in shape),
+        "--input-mode",
+        "scanner",
+        "--scanner-backend",
+        "quality",
+        "--scanner-refinement-factor",
+        "2",
+        "--output-dir",
+        str(output_dir),
+        "--save-volumes",
+    )
+
+    assert result.returncode == 0, result.stderr
+    path = output_dir / "single_vertical_plane" / "scanner_confidence.dat"
+    assert path.is_file()
+    assert path.stat().st_size == shape[0] * shape[1] * shape[2] * 4
 
 
 def test_report_3d_synthetic_quality_geometry_save_volumes_splits_case_directories(

@@ -88,6 +88,26 @@ scanner's smooth-then-semblance-power likelihood semantics more closely than
 the older Python ridge/contrast score. They remain Pythonic SciPy
 approximations, not bit-exact Mines JTK ports.
 
+`FaultOrientScanner3.scan_with_confidence(...)` runs the same reference-like
+scan and returns `(ft, pt, tt, confidence)`. The first three arrays have the
+same semantics as `scan_reference_like(...)`. `confidence` is a `float32`
+diagnostic volume in `[0, 1]` formed from the normalized response gap between
+the best sampled orientation and the second-best sampled orientation. High
+confidence means that gap is large; low confidence indicates stronger
+orientation ambiguity and can be used as a candidate downstream weighting map
+for voting or skinning. This confidence map is pyosv quality/diagnostic
+metadata, not an output from the original Java reference implementation.
+
+`FaultOrientScanner3.scan_quality(...)` is an opt-in quality-oriented scanner
+path that uses the same reference-like scoring backend but refines the sampled
+strike and dip grids. It starts from `reference_like_*_sampling()` and inserts
+evenly spaced interior samples between adjacent base samples. The default
+`refinement_factor=2` adds midpoints; `refinement_factor=1` is equivalent to
+`scan_reference_like(...)` for the same backend and options. Refinement factors
+are intentionally limited to the range `1..4` to avoid accidental excessive
+orientation sweeps. Pass `return_confidence=True` to receive
+`(ft, pt, tt, confidence)`.
+
 `FaultOrientScanner3.scan_fast(...)` exposes the older derivative-bank scanner
 as an explicit practical backend for diagnostics or workflows that prefer its
 ridge/contrast score and sigma-derived dense angle sampling.
