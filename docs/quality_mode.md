@@ -44,6 +44,17 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
 Review `summary.csv` first, then use `metrics.json` and visual overlays for
 drill-down.
 
+For scanner-inclusive quality evaluation, prefer the refined opt-in scanner
+path:
+
+```bash
+--input-mode scanner --scanner-backend quality --scanner-refinement-factor 2
+```
+
+This recommendation is for quality reports only. The report default remains
+`--scanner-backend reference-like` so reference-oriented scanner behavior is not
+changed automatically.
+
 The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
 `voter_thin_normal`, `voter_thin_hybrid`, and

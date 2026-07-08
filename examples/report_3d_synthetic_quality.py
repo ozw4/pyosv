@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import numbers
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -78,6 +79,7 @@ SCANNER_VOLUME_NAMES = (
     ("scanner_fet", "ft_used"),
     ("scanner_fpt", "pt_used"),
     ("scanner_ftt", "tt_used"),
+    ("scanner_confidence", "scanner_confidence"),
 )
 SCANNER_FIGURE_VOLUME_NAMES = (
     ("scanner_input", "scanner_input"),
@@ -176,6 +178,15 @@ def _validate_workflow_mode(value: str) -> str:
     if value not in WORKFLOW_MODES:
         raise ValueError("workflow_mode must be one of: " + ", ".join(WORKFLOW_MODES))
     return value
+
+
+def _validate_scanner_refinement_factor(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise ValueError("scanner_refinement_factor must be an integer from 1 to 4")
+    factor = int(value)
+    if factor < 1 or factor > 4:
+        raise ValueError("scanner_refinement_factor must be an integer from 1 to 4")
+    return factor
 
 
 def parse_workflow_mode(text: str) -> str:
@@ -320,13 +331,14 @@ class SyntheticScannerConfig:
     theta_max: float = 90.0
     sigma1: float = 2.0
     sigma2: float = 2.0
+    refinement_factor: int = 2
     scanner_thin_mode: str = "reference"
     remove_edge_effects: bool = True
     input_config: SyntheticScannerInputConfig = SyntheticScannerInputConfig()
 
     def __post_init__(self) -> None:
-        if self.backend not in {"reference-like", "fast"}:
-            raise ValueError("scanner_backend must be 'reference-like' or 'fast'")
+        if self.backend not in {"reference-like", "fast", "quality"}:
+            raise ValueError("scanner_backend must be 'reference-like', 'fast', or 'quality'")
         if self.scanner_thin_mode not in {"none", "reference", "normal"}:
             raise ValueError("scanner_thin_mode must be 'none', 'reference', or 'normal'")
         if not isinstance(self.remove_edge_effects, bool):
@@ -339,6 +351,7 @@ class SyntheticScannerConfig:
         _validate_finite_scalar(self.theta_max, "scanner_theta_max")
         _validate_positive_finite_scalar(self.sigma1, "scanner_sigma1")
         _validate_positive_finite_scalar(self.sigma2, "scanner_sigma2")
+        _validate_scanner_refinement_factor(self.refinement_factor)
         if self.phi_max < self.phi_min:
             raise ValueError("scanner_phi_max must be greater than or equal to scanner_phi_min")
         if self.theta_max < self.theta_min:
@@ -353,6 +366,7 @@ class SyntheticScannerConfig:
             "theta_max": float(self.theta_max),
             "sigma1": float(self.sigma1),
             "sigma2": float(self.sigma2),
+            "refinement_factor": int(self.refinement_factor),
             "scanner_thin_mode": self.scanner_thin_mode,
             "remove_edge_effects": self.remove_edge_effects,
             "input": {
@@ -606,9 +620,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scanner-backend",
-        choices=("reference-like", "fast"),
+        choices=("reference-like", "fast", "quality"),
         default="reference-like",
-        help="FaultOrientScanner3 backend for scanner/both mode: reference-like scan or fast scan.",
+        help=(
+            "FaultOrientScanner3 backend for scanner/both mode: reference-like scan, "
+            "fast scan, or refined quality scan."
+        ),
     )
     parser.add_argument(
         "--scanner-phi-min",
@@ -645,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="Scanner sigma2 control.",
+    )
+    parser.add_argument(
+        "--scanner-refinement-factor",
+        type=int,
+        default=2,
+        help="Refined sampling factor used by --scanner-backend quality.",
     )
     parser.add_argument(
         "--scanner-thin-mode",
@@ -1092,6 +1115,7 @@ def _scanner_attributes_from_case(
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
     scanner = FaultOrientScanner3(scanner_config.sigma1, scanner_config.sigma2)
+    confidence: np.ndarray | None = None
     if scanner_config.backend == "reference-like":
         ft_scan, pt_scan, tt_scan = scanner.scan(
             scanner_config.phi_min,
@@ -1099,6 +1123,16 @@ def _scanner_attributes_from_case(
             scanner_config.theta_min,
             scanner_config.theta_max,
             scanner_input,
+        )
+    elif scanner_config.backend == "quality":
+        ft_scan, pt_scan, tt_scan, confidence = scanner.scan_quality(
+            scanner_config.phi_min,
+            scanner_config.phi_max,
+            scanner_config.theta_min,
+            scanner_config.theta_max,
+            scanner_input,
+            refinement_factor=scanner_config.refinement_factor,
+            return_confidence=True,
         )
     elif scanner_config.backend == "fast":
         ft_scan, pt_scan, tt_scan = scanner.scan_fast(
@@ -1109,7 +1143,7 @@ def _scanner_attributes_from_case(
             scanner_input,
         )
     else:
-        raise ValueError("scanner_backend must be 'reference-like' or 'fast'")
+        raise ValueError("scanner_backend must be 'reference-like', 'fast', or 'quality'")
 
     if scanner_config.scanner_thin_mode == "none":
         ft_used = ft_scan
@@ -1143,6 +1177,9 @@ def _scanner_attributes_from_case(
         "scanner_tt": tt_scan,
         "scanner_ftt": tt_used,
     }
+    if confidence is not None:
+        scanner_report["confidence"] = _array_summary(confidence)
+        scanner_volumes["scanner_confidence"] = confidence
     return scanner_report, scanner_volumes
 
 
@@ -3113,6 +3150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 theta_max=args.scanner_theta_max,
                 sigma1=args.scanner_sigma1,
                 sigma2=args.scanner_sigma2,
+                refinement_factor=args.scanner_refinement_factor,
                 scanner_thin_mode=args.scanner_thin_mode,
                 remove_edge_effects=not args.keep_scanner_edge_effects,
             ),

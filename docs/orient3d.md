@@ -98,6 +98,16 @@ orientation ambiguity and can be used as a candidate downstream weighting map
 for voting or skinning. This confidence map is pyosv quality/diagnostic
 metadata, not an output from the original Java reference implementation.
 
+`FaultOrientScanner3.scan_quality(...)` is an opt-in quality-oriented scanner
+path that uses the same reference-like scoring backend but refines the sampled
+strike and dip grids. It starts from `reference_like_*_sampling()` and inserts
+evenly spaced interior samples between adjacent base samples. The default
+`refinement_factor=2` adds midpoints; `refinement_factor=1` is equivalent to
+`scan_reference_like(...)` for the same backend and options. Refinement factors
+are intentionally limited to the range `1..4` to avoid accidental excessive
+orientation sweeps. Pass `return_confidence=True` to receive
+`(ft, pt, tt, confidence)`.
+
 `FaultOrientScanner3.scan_fast(...)` exposes the older derivative-bank scanner
 as an explicit practical backend for diagnostics or workflows that prefer its
 ridge/contrast score and sigma-derived dense angle sampling.

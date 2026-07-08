@@ -85,6 +85,34 @@ class FaultOrientScanner3:
 
         return _reference_like_dip_sampling(theta_min, theta_max)
 
+    def refined_reference_like_strike_sampling(
+        self,
+        phi_min: float,
+        phi_max: float,
+        *,
+        refinement_factor: int = 2,
+    ) -> np.ndarray:
+        """Return reference-like strike samples with optional interval refinement."""
+
+        return _refined_reference_like_sampling(
+            self.reference_like_strike_sampling(phi_min, phi_max),
+            refinement_factor=refinement_factor,
+        )
+
+    def refined_reference_like_dip_sampling(
+        self,
+        theta_min: float,
+        theta_max: float,
+        *,
+        refinement_factor: int = 2,
+    ) -> np.ndarray:
+        """Return reference-like dip samples with optional interval refinement."""
+
+        return _refined_reference_like_sampling(
+            self.reference_like_dip_sampling(theta_min, theta_max),
+            refinement_factor=refinement_factor,
+        )
+
     def validate_image(self, image: np.ndarray, name: str = "image") -> np.ndarray:
         """Return a finite global 3D image volume as a float32 array.
 
@@ -209,6 +237,50 @@ class FaultOrientScanner3:
             normalize=normalize,
         )
 
+    def scan_quality(
+        self,
+        phi_min: float,
+        phi_max: float,
+        theta_min: float,
+        theta_max: float,
+        g: np.ndarray,
+        *,
+        backend: str = "rotate_shear",
+        refinement_factor: int = 2,
+        interpolation_order: int = 1,
+        smoothing_sigma: float | None = None,
+        normalize: bool = True,
+        return_confidence: bool = False,
+    ) -> (
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+        | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ):
+        """Scan with opt-in refined reference-like sampling for quality studies."""
+
+        include_confidence = _validate_bool(return_confidence, "return_confidence")
+        phi_sampling = self.refined_reference_like_strike_sampling(
+            phi_min,
+            phi_max,
+            refinement_factor=refinement_factor,
+        )
+        theta_sampling = self.refined_reference_like_dip_sampling(
+            theta_min,
+            theta_max,
+            refinement_factor=refinement_factor,
+        )
+        ft, pt, tt, confidence = self._scan_reference_like_samples_with_confidence(
+            phi_sampling,
+            theta_sampling,
+            g,
+            backend=backend,
+            interpolation_order=interpolation_order,
+            smoothing_sigma=smoothing_sigma,
+            normalize=normalize,
+        )
+        if include_confidence:
+            return ft, pt, tt, confidence
+        return ft, pt, tt
+
     def _scan_reference_like_with_confidence(
         self,
         phi_min: float,
@@ -224,6 +296,27 @@ class FaultOrientScanner3:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         phi_sampling = self.reference_like_strike_sampling(phi_min, phi_max)
         theta_sampling = self.reference_like_dip_sampling(theta_min, theta_max)
+        return self._scan_reference_like_samples_with_confidence(
+            phi_sampling,
+            theta_sampling,
+            g,
+            backend=backend,
+            interpolation_order=interpolation_order,
+            smoothing_sigma=smoothing_sigma,
+            normalize=normalize,
+        )
+
+    def _scan_reference_like_samples_with_confidence(
+        self,
+        phi_sampling: np.ndarray,
+        theta_sampling: np.ndarray,
+        g: np.ndarray,
+        *,
+        backend: str,
+        interpolation_order: int,
+        smoothing_sigma: float | None,
+        normalize: bool,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         image = self.validate_image(g, "g")
         backend_name = _validate_reference_like_backend(backend)
         order = _validate_interpolation_order(interpolation_order)
@@ -589,6 +682,37 @@ def _reference_like_dip_sampling(theta_min: float, theta_max: float) -> np.ndarr
 
     count = max(2, int(round((tmax - tmin) / 5.0)) + 1)
     return np.linspace(tmin, tmax, count, dtype=np.float32)
+
+
+def _refined_reference_like_sampling(
+    base_samples: np.ndarray,
+    *,
+    refinement_factor: int,
+) -> np.ndarray:
+    factor = _validate_refinement_factor(refinement_factor)
+    base = np.asarray(base_samples, dtype=np.float32)
+    if factor == 1 or base.size <= 1:
+        return base.astype(np.float32, copy=True)
+
+    refined = [base]
+    fractions = np.arange(1, factor, dtype=np.float32) / np.float32(factor)
+    lower = base[:-1]
+    upper = base[1:]
+    for fraction in fractions:
+        refined.append(lower + fraction * (upper - lower))
+
+    samples = np.concatenate(refined).astype(np.float32, copy=False)
+    return np.unique(samples).astype(np.float32, copy=False)
+
+
+def _validate_refinement_factor(refinement_factor: int) -> int:
+    if isinstance(refinement_factor, bool) or not isinstance(refinement_factor, numbers.Integral):
+        raise ValueError("refinement_factor must be an integer from 1 to 4")
+
+    factor = int(refinement_factor)
+    if factor < 1 or factor > 4:
+        raise ValueError("refinement_factor must be an integer from 1 to 4")
+    return factor
 
 
 def _validate_positive_float(value: float, name: str) -> float:

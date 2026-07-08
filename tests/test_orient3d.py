@@ -88,6 +88,77 @@ def test_reference_like_sampling_keeps_narrow_valid_ranges_callable() -> None:
     np.testing.assert_array_equal(thetas, np.array([42.5], dtype=np.float32))
 
 
+def test_refined_reference_like_sampling_factor_one_matches_base_sampling() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    np.testing.assert_array_equal(
+        scanner.refined_reference_like_strike_sampling(
+            0.0,
+            100.0,
+            refinement_factor=1,
+        ),
+        scanner.reference_like_strike_sampling(0.0, 100.0),
+    )
+    np.testing.assert_array_equal(
+        scanner.refined_reference_like_dip_sampling(
+            45.0,
+            60.0,
+            refinement_factor=1,
+        ),
+        scanner.reference_like_dip_sampling(45.0, 60.0),
+    )
+
+
+def test_refined_reference_like_sampling_factor_two_includes_midpoints() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    base_phis = scanner.reference_like_strike_sampling(0.0, 60.0)
+    refined_phis = scanner.refined_reference_like_strike_sampling(
+        0.0,
+        60.0,
+        refinement_factor=2,
+    )
+    base_thetas = scanner.reference_like_dip_sampling(45.0, 60.0)
+    refined_thetas = scanner.refined_reference_like_dip_sampling(
+        45.0,
+        60.0,
+        refinement_factor=2,
+    )
+
+    assert refined_phis.dtype == np.float32
+    assert refined_thetas.dtype == np.float32
+    np.testing.assert_array_equal(
+        refined_phis,
+        np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        refined_thetas,
+        np.array([45.0, 47.5, 50.0, 52.5, 55.0, 57.5, 60.0], dtype=np.float32),
+    )
+    assert set(base_phis.tolist()).issubset(set(refined_phis.tolist()))
+    assert set(base_thetas.tolist()).issubset(set(refined_thetas.tolist()))
+    assert np.diff(refined_phis).min() > 0.0
+    assert np.diff(refined_thetas).min() > 0.0
+    assert refined_phis[0] >= np.float32(0.0)
+    assert refined_phis[-1] <= np.float32(60.0)
+    assert refined_thetas[0] >= np.float32(45.0)
+    assert refined_thetas[-1] <= np.float32(60.0)
+
+
+@pytest.mark.parametrize("refinement_factor", [0, 5, 1.5, True])
+def test_refined_reference_like_sampling_rejects_invalid_refinement_factor(
+    refinement_factor: object,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+
+    with pytest.raises(ValueError, match="refinement_factor"):
+        scanner.refined_reference_like_strike_sampling(
+            0.0,
+            60.0,
+            refinement_factor=refinement_factor,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     ("sigma1", "sigma2", "message"),
     [
@@ -427,6 +498,57 @@ def test_scan_with_confidence_directional_backend_returns_confidence() -> None:
         assert array.shape == image.shape
         assert array.dtype == np.float32
         assert np.isfinite(array).all()
+    assert float(confidence.min()) >= 0.0
+    assert float(confidence.max()) <= 1.0
+
+
+def test_scan_quality_factor_one_matches_reference_like() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(40.0, 55.0, shape=(8, 9, 10), width=1.0)
+
+    reference_like = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    quality = scanner.scan_quality(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        refinement_factor=1,
+        smoothing_sigma=0.75,
+    )
+
+    for reference_array, quality_array in zip(reference_like, quality):
+        np.testing.assert_array_equal(reference_array, quality_array)
+
+
+def test_scan_quality_can_return_confidence() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(40.0, 55.0, shape=(8, 9, 10), width=1.0)
+
+    ft, pt, tt, confidence = scanner.scan_quality(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        refinement_factor=2,
+        smoothing_sigma=0.75,
+        return_confidence=True,
+    )
+
+    for array in (ft, pt, tt, confidence):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert float(ft.min()) >= 0.0
+    assert float(ft.max()) <= 1.0
     assert float(confidence.min()) >= 0.0
     assert float(confidence.max()) <= 1.0
 
