@@ -40,9 +40,20 @@ drill-down.
 
 The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
-`voter_thin_normal`, and `voter_thin_hybrid`. The hybrid voter thinning variant
-uses reference-like thinning in stable-orientation regions and fault-normal
-thinning where local orientation changes rapidly.
+`voter_thin_normal`, `voter_thin_hybrid`, and
+`surface_support_weighted`. The hybrid voter thinning variant uses
+reference-like thinning in stable-orientation regions and fault-normal thinning
+where local orientation changes rapidly.
+
+The `surface_support_weighted` diagnostic variant keeps the default thinning
+path but enables support-aware surface voting with
+`surface_support_min_fraction=0.5` and `surface_support_exponent=1.0`. This
+skips extracted surfaces with low valid support and down-weights the remaining
+vote by its valid-support fraction, which is useful for boundary-plane edge
+artifact diagnostics. The default support policy is `0.0, 0.0`, so reference
+mode behavior is unchanged unless the report CLI flags
+`--surface-support-min-fraction` or `--surface-support-exponent` are set, or
+the diagnostic variant is selected.
 
 Primary metrics to compare:
 

@@ -40,6 +40,8 @@ class OptimalSurfaceVoter:
         self.surface_smoothing2 = 2.0
         self.surface_orientation_smoothing = float(max(self.rv, self.rw))
         self.final_normalization_smoothing = 0.0
+        self.surface_support_min_fraction = 0.0
+        self.surface_support_exponent = 0.0
         self.lmins: np.ndarray
         self.lmaxs: np.ndarray
         self._update_shift_ranges()
@@ -95,6 +97,22 @@ class OptimalSurfaceVoter:
         self.final_normalization_smoothing = _validate_nonnegative_float(
             sigma,
             "final_normalization_smoothing",
+        )
+
+    def set_surface_support_policy(
+        self,
+        min_fraction: float = 0.0,
+        exponent: float = 0.0,
+    ) -> None:
+        """Set support-aware skip/down-weighting for extracted surface votes."""
+
+        self.surface_support_min_fraction = _validate_fraction_float(
+            min_fraction,
+            "surface_support_min_fraction",
+        )
+        self.surface_support_exponent = _validate_nonnegative_float(
+            exponent,
+            "surface_support_exponent",
         )
 
     def _update_shift_ranges(self) -> None:
@@ -382,6 +400,17 @@ class OptimalSurfaceVoter:
         )
         if valid_count == 0:
             return
+
+        surface_size = int(surface.size)
+        if surface_size == 0:
+            return
+        support_fraction = float(valid_count) / float(surface_size)
+        if support_fraction < self.surface_support_min_fraction:
+            return
+        if self.surface_support_exponent > 0.0:
+            fa = np.float32(
+                fa * np.float32(support_fraction**self.surface_support_exponent),
+            )
 
         strike_angle, dip_angle = _surface_strike_and_dip(
             normal,
@@ -1141,6 +1170,18 @@ def _validate_nonnegative_float(value: float, name: str) -> float:
 
     if not math.isfinite(value_float) or value_float < 0.0:
         raise ValueError(f"{name} must be a finite nonnegative number")
+
+    return value_float
+
+
+def _validate_fraction_float(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a finite number between 0 and 1")
+
+    value_float = float(value)
+
+    if not math.isfinite(value_float) or value_float < 0.0 or value_float > 1.0:
+        raise ValueError(f"{name} must be a finite number between 0 and 1")
 
     return value_float
 

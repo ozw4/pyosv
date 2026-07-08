@@ -102,6 +102,7 @@ VARIANT_NAMES = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "surface_support_weighted",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -110,6 +111,7 @@ QUALITY_MATRIX_VARIANTS = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "surface_support_weighted",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -117,6 +119,8 @@ VARIANT_PRESETS = {
 }
 DEFAULT_VARIANT_PRESET = "default"
 BASELINE_VARIANT = "current_default"
+SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
+SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
 VARIANT_COMPARISON_METRICS = (
@@ -263,6 +267,8 @@ class SyntheticVotingConfig:
     attribute_smoothing: int = 0
     voter_thin_mode: str = "reference"
     reference_thin_sigma: float = 1.0
+    surface_support_min_fraction: float = 0.0
+    surface_support_exponent: float = 0.0
 
     def as_report_dict(self) -> dict[str, int | float | str]:
         return {
@@ -274,6 +280,8 @@ class SyntheticVotingConfig:
             "attribute_smoothing": int(self.attribute_smoothing),
             "voter_thin_mode": self.voter_thin_mode,
             "reference_thin_sigma": float(self.reference_thin_sigma),
+            "surface_support_min_fraction": float(self.surface_support_min_fraction),
+            "surface_support_exponent": float(self.surface_support_exponent),
         }
 
 
@@ -495,7 +503,8 @@ def build_parser() -> argparse.ArgumentParser:
             "    --case-set extended \\\n"
             "    --shape 33,33,33 \\\n"
             "    --variants current_default,no_surface_orientation_smoothing,"
-            "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid \\\n"
+            "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
+            "surface_support_weighted \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -656,6 +665,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Smoothing sigma used by reference-like thinning.",
+    )
+    parser.add_argument(
+        "--surface-support-min-fraction",
+        type=float,
+        default=0.0,
+        help="Minimum valid surface-vote support fraction required for accumulation.",
+    )
+    parser.add_argument(
+        "--surface-support-exponent",
+        type=float,
+        default=0.0,
+        help="Exponent for support-fraction surface-vote down-weighting.",
     )
     parser.add_argument(
         "--thinning-diagnostics",
@@ -1410,6 +1431,15 @@ def _run_voting_from_attributes(
         rw=voting_config.rw,
     )
     voter.set_attribute_smoothing(voting_config.attribute_smoothing)
+    surface_support_min_fraction = voting_config.surface_support_min_fraction
+    surface_support_exponent = voting_config.surface_support_exponent
+    if variant == "surface_support_weighted":
+        surface_support_min_fraction = SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION
+        surface_support_exponent = SURFACE_SUPPORT_WEIGHTED_EXPONENT
+    voter.set_surface_support_policy(
+        min_fraction=surface_support_min_fraction,
+        exponent=surface_support_exponent,
+    )
     if variant == "no_surface_orientation_smoothing":
         voter.set_surface_orientation_smoothing(0.0)
     if variant == "final_norm_smoothing_1":
@@ -1465,6 +1495,10 @@ def _run_voting_from_attributes(
         "pyosv": {
             "fv": _array_summary(fv),
             "fvt": _array_summary(fvt),
+            "voting": {
+                "surface_support_min_fraction": float(surface_support_min_fraction),
+                "surface_support_exponent": float(surface_support_exponent),
+            },
         },
         "quality": {
             "fv_top_truth_count": {
@@ -3034,6 +3068,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 attribute_smoothing=args.attribute_smoothing,
                 voter_thin_mode=voter_thin_mode,
                 reference_thin_sigma=args.reference_thin_sigma,
+                surface_support_min_fraction=args.surface_support_min_fraction,
+                surface_support_exponent=args.surface_support_exponent,
             ),
             scanner_config=SyntheticScannerConfig(
                 backend=args.scanner_backend,

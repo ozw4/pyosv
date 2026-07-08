@@ -29,6 +29,7 @@ DIAGNOSTIC_VARIANTS = (
     "final_norm_smoothing_1",
     "voter_thin_normal",
     "voter_thin_hybrid",
+    "surface_support_weighted",
 )
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
@@ -269,6 +270,8 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--save-figures" in result.stdout
     assert "--write-markdown-index" in result.stdout
     assert "--voter-thin-mode" in result.stdout
+    assert "--surface-support-min-fraction" in result.stdout
+    assert "--surface-support-exponent" in result.stdout
     assert "--thinning-diagnostics" in result.stdout
     assert "--include-thinning-diagnostic" in result.stdout
     assert "--thinning-diagnostic-cases" in result.stdout
@@ -301,6 +304,12 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_voter_thin_hybrid() 
     module = _load_report_module()
 
     assert module.parse_variants("voter_thin_hybrid") == ("voter_thin_hybrid",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("surface_support_weighted") == ("surface_support_weighted",)
 
 
 def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
@@ -528,7 +537,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
         "--variants",
         (
             "current_default,no_surface_orientation_smoothing,"
-            "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid"
+            "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
+            "surface_support_weighted"
         ),
     )
 
@@ -589,7 +599,7 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
             assert math.isfinite(float(row[field]))
 
 
-def test_report_3d_synthetic_quality_quality_matrix_preset_runs_four_variants(
+def test_report_3d_synthetic_quality_quality_matrix_preset_runs_diagnostic_variants(
     tmp_path: Path,
 ) -> None:
     output_dir = tmp_path / "synthetic_quality"
@@ -1121,6 +1131,34 @@ def test_report_3d_synthetic_quality_voter_thin_hybrid_variant_passes(
     assert hybrid["pyosv"]["fvt"]["max"] > 0.0
 
 
+def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--output-dir",
+        str(output_dir),
+        "--variants",
+        "surface_support_weighted",
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["surface_support_weighted"]
+    variant = metrics["cases"][0]["variants"]["surface_support_weighted"]
+    assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
+    assert variant["pyosv"]["voting"] == {
+        "surface_support_min_fraction": 0.5,
+        "surface_support_exponent": 1.0,
+    }
+
+
 @pytest.mark.parametrize(
     ("workflow_mode", "override", "expected_voter_thin_mode"),
     [
@@ -1368,6 +1406,10 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
         "1",
         "--reference-thin-sigma",
         "1.5",
+        "--surface-support-min-fraction",
+        "0.25",
+        "--surface-support-exponent",
+        "2.0",
     )
 
     assert result.returncode == 0, result.stderr
@@ -1381,6 +1423,8 @@ def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> N
         "attribute_smoothing": 1,
         "voter_thin_mode": "reference",
         "reference_thin_sigma": 1.5,
+        "surface_support_min_fraction": 0.25,
+        "surface_support_exponent": 2.0,
     }
 
 
