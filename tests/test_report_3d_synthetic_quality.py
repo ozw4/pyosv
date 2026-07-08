@@ -246,6 +246,10 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--shape" in result.stdout
     assert "--variants" in result.stdout
     assert "--input-mode" in result.stdout
+    assert "--workflow-mode" in result.stdout
+    assert "reference" in result.stdout
+    assert "quality" in result.stdout
+    assert "diagnostic" in result.stdout
     assert "--scanner-backend" in result.stdout
     assert "--scanner-thin-mode" in result.stdout
     assert "--save-volumes" in result.stdout
@@ -288,6 +292,7 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     assert metrics["format_version"] == 1
     assert metrics["config"]["case_set"] == "minimal"
+    assert metrics["config"]["workflow_mode"] == "reference"
     assert metrics["config"]["shape"] == [17, 17, 17]
     case = metrics["cases"][0]
     assert case["case_id"] == "single_vertical_plane"
@@ -322,6 +327,7 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
         rows = list(csv.DictReader(file))
     assert rows[0]["case_id"] == "single_vertical_plane"
     assert rows[0]["variant"] == "current_default"
+    assert rows[0]["workflow_mode"] == "reference"
     assert rows[0]["shape_n3"] == "17"
     assert rows[0]["shape_n2"] == "17"
     assert rows[0]["shape_n1"] == "17"
@@ -992,6 +998,228 @@ def test_report_3d_synthetic_quality_normal_thin_mode_passes(tmp_path: Path) -> 
     assert metrics["cases"][0]["pyosv"]["fvt"]["max"] > 0.0
 
 
+@pytest.mark.parametrize(
+    ("workflow_mode", "override", "expected_voter_thin_mode"),
+    [
+        ("reference", None, "reference"),
+        ("quality", None, "normal"),
+        ("quality", "reference", "reference"),
+        ("reference", "normal", "normal"),
+        ("diagnostic", None, "reference"),
+        ("diagnostic", "normal", "normal"),
+    ],
+)
+def test_report_3d_synthetic_quality_workflow_mode_resolves_voter_thin_mode(
+    tmp_path: Path,
+    workflow_mode: str,
+    override: str | None,
+    expected_voter_thin_mode: str,
+) -> None:
+    output_dir = tmp_path / f"synthetic_quality_{workflow_mode}_{override or 'default'}"
+    args = [
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        workflow_mode,
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    ]
+    if override is not None:
+        args.extend(["--voter-thin-mode", override])
+
+    result = _run_script(*args)
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == workflow_mode
+    assert metrics["config"]["voting"]["voter_thin_mode"] == expected_voter_thin_mode
+
+
+def test_quality_workflow_current_default_matches_reference_workflow_voter_thin_normal(
+    tmp_path: Path,
+) -> None:
+    reference_dir = tmp_path / "synthetic_quality_reference"
+    quality_dir = tmp_path / "synthetic_quality_quality"
+
+    reference_result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "reference",
+        "--variants",
+        "current_default,voter_thin_normal",
+        "--output-dir",
+        str(reference_dir),
+        "--skip-skinning",
+    )
+    quality_result = _run_script(
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--variants",
+        "current_default",
+        "--output-dir",
+        str(quality_dir),
+        "--skip-skinning",
+    )
+
+    assert reference_result.returncode == 0, reference_result.stderr
+    assert quality_result.returncode == 0, quality_result.stderr
+
+    reference_metrics = json.loads((reference_dir / "metrics.json").read_text(encoding="utf-8"))
+    quality_metrics = json.loads((quality_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert reference_metrics["config"]["workflow_mode"] == "reference"
+    assert reference_metrics["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert quality_metrics["config"]["workflow_mode"] == "quality"
+    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "normal"
+
+    with (reference_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        reference_rows = list(csv.DictReader(file))
+    with (quality_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        quality_rows = list(csv.DictReader(file))
+
+    def curved_oracle_row(rows: list[dict[str, str]], variant: str) -> dict[str, str]:
+        return next(
+            row
+            for row in rows
+            if row["case_id"] == "curved_surface"
+            and row["pipeline"] == "oracle"
+            and row["variant"] == variant
+        )
+
+    reference_current = curved_oracle_row(reference_rows, "current_default")
+    reference_normal = curved_oracle_row(reference_rows, "voter_thin_normal")
+    quality_current = curved_oracle_row(quality_rows, "current_default")
+
+    quality_fields = (
+        "fvt_buffered_f1_r2",
+        "fvt_distance_p95",
+        "fvt_strike_median_error",
+        "fvt_dip_median_error",
+    )
+    for field in quality_fields:
+        assert math.isclose(
+            float(quality_current[field]),
+            float(reference_normal[field]),
+            abs_tol=1.0e-12,
+        )
+
+    assert any(
+        not math.isclose(
+            float(reference_current[field]),
+            float(quality_current[field]),
+            abs_tol=1.0e-12,
+        )
+        for field in quality_fields
+    )
+
+
+@pytest.mark.parametrize("override", [None, "normal"])
+def test_report_3d_synthetic_quality_workflow_mode_diagnostic_enables_thinning_diagnostic(
+    tmp_path: Path,
+    override: str | None,
+) -> None:
+    output_dir = tmp_path / f"synthetic_quality_diagnostic_{override or 'default'}"
+    args = [
+        "--case-set",
+        "geometry",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "diagnostic",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    ]
+    if override is not None:
+        args.extend(["--voter-thin-mode", override])
+
+    result = _run_script(*args)
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "diagnostic"
+    assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
+    assert metrics["config"]["voting"]["voter_thin_mode"] == (override or "reference")
+    curved = next(case for case in metrics["cases"] if case["case_id"] == "curved_surface")
+    assert "thinning_diagnostic" in curved["variants"]["current_default"]
+
+
+def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "normal"
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["workflow_mode"] == "quality"
+
+
+def test_report_3d_synthetic_quality_diagnostic_workflow_records_mode_and_defaults(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "diagnostic",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "diagnostic"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "reference"
+    assert metrics["config"]["thinning_diagnostic"] == {"enabled": True}
+
+
+def test_report_3d_synthetic_quality_invalid_workflow_mode_fails(tmp_path: Path) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "invalid",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode != 0
+    assert "workflow-mode" in result.stderr or "workflow_mode" in result.stderr
+
+
 def test_report_3d_synthetic_quality_records_voting_options(tmp_path: Path) -> None:
     output_dir = tmp_path / "synthetic_quality"
 
@@ -1101,6 +1329,7 @@ def test_report_synthetic_quality_accepts_input_mode_scanner(tmp_path: Path) -> 
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     variant = metrics["cases"][0]["variants"]["current_default"]
     assert metrics["config"]["input_mode"] == "scanner"
+    assert metrics["config"]["workflow_mode"] == "reference"
     assert variant["active_pipeline"] == "scanner"
     assert set(variant["pipelines"]) == {"scanner"}
     assert variant["pyosv"] == variant["pipelines"]["scanner"]["pyosv"]
@@ -1125,6 +1354,7 @@ def test_report_synthetic_quality_accepts_input_mode_both(tmp_path: Path) -> Non
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     variant = metrics["cases"][0]["variants"]["current_default"]
     assert metrics["config"]["input_mode"] == "both"
+    assert metrics["config"]["workflow_mode"] == "reference"
     assert variant["active_pipeline"] == "oracle"
     assert set(variant["pipelines"]) == {"oracle", "scanner"}
     assert variant["pyosv"] == variant["pipelines"]["oracle"]["pyosv"]
