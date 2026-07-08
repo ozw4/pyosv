@@ -281,6 +281,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--scanner-refinement-factor" in result.stdout
     assert "--scanner-backend {reference-like,fast,quality}" in result.stdout
     assert "--skinner-min-likelihood" in result.stdout
+    assert "--skinner-method" in result.stdout
     assert "--skinner-ru" in result.stdout
     assert "--no-skinner-reskin" in result.stdout
     assert "--small-skin-size" in result.stdout
@@ -1247,6 +1248,27 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["voting"]["voter_thin_mode"] == "hybrid"
     assert report["config"]["voting"]["surface_support_min_fraction"] == 0.5
     assert report["config"]["voting"]["surface_support_exponent"] == 1.0
+    assert report["config"]["skinning"]["enabled"] is False
+    assert report["config"]["skinning"]["method"] == "quality"
+    assert report["config"]["skinning"]["min_likelihood"] is None
+    assert report["config"]["skinning"]["adaptive_min_likelihood"] is True
+
+
+def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        workflow_mode="quality",
+        skinner_method_explicit=True,
+        skinning_config=module.SyntheticSkinningConfig(enabled=False, method="reference"),
+    )
+
+    assert report["config"]["workflow_mode"] == "quality"
+    assert report["config"]["skinning"]["method"] == "reference"
+    assert report["config"]["skinning"]["min_likelihood"] == 0.5
+    assert report["config"]["skinning"]["adaptive_min_likelihood"] is False
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() -> None:
@@ -1397,10 +1419,64 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.5
     assert metrics["config"]["voting"]["surface_support_exponent"] == 1.0
+    assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["config"]["skinning"]["min_likelihood"] is None
+    assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is True
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert rows[0]["workflow_mode"] == "quality"
+
+
+def test_report_3d_synthetic_quality_quality_workflow_explicit_skinner_reference_wins(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--skinner-method",
+        "reference",
+        "--output-dir",
+        str(output_dir),
+        "--skip-skinning",
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["workflow_mode"] == "quality"
+    assert metrics["config"]["skinning"]["method"] == "reference"
+    assert metrics["config"]["skinning"]["min_likelihood"] == 0.5
+    assert metrics["config"]["skinning"]["adaptive_min_likelihood"] is False
+
+
+def test_report_3d_synthetic_quality_skinner_method_quality_smoke(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--skinner-method",
+        "quality",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["skinning"]["method"] == "quality"
+    assert metrics["cases"][0]["quality"]["skin"] is not None
 
 
 def test_report_3d_synthetic_quality_quality_workflow_support_cli_override(
@@ -1560,7 +1636,11 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["skinning"] == {
         "enabled": True,
+        "method": "reference",
         "min_likelihood": 0.4,
+        "adaptive_min_likelihood": False,
+        "seed_min_ep": 0.8,
+        "seed_planarity_source": "fvt",
         "min_skin_size": 2,
         "d": 2,
         "ru": 6,

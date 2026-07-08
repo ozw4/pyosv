@@ -24,6 +24,10 @@ __all__ = [
     "find_skins",
 ]
 
+_UNSET = object()
+_REFERENCE_SEED_MIN_EP = 0.8
+_QUALITY_SEED_MIN_EP = 0.5
+
 
 @dataclass(slots=True, eq=False)
 class _SkinCell:
@@ -255,19 +259,23 @@ class FaultSkinner:
     """Default fault skinner facade.
 
     ``method="reference"`` uses reference-like seed selection and local
-    geometry-aware growth. ``method="connected_component"`` explicitly selects
-    the legacy connected-component fallback.
+    geometry-aware growth. ``method="quality"`` reuses that backend with a
+    looser seed gate and adaptive likelihood threshold when no threshold is
+    configured. ``method="connected_component"`` explicitly selects the legacy
+    connected-component fallback.
     """
 
     def __init__(
         self,
-        min_likelihood: float = 0.0,
+        min_likelihood: float | object = _UNSET,
         min_skin_size: int | None = None,
         connectivity: str = "corner",
         method: str = "reference",
     ) -> None:
+        self._min_likelihood_configured = min_likelihood is not _UNSET
+        fallback_min_likelihood = 0.0 if min_likelihood is _UNSET else min_likelihood
         self._fallback = ConnectedComponentSkinner(
-            min_likelihood=min_likelihood,
+            min_likelihood=fallback_min_likelihood,  # type: ignore[arg-type]
             min_skin_size=min_skin_size,
             connectivity=connectivity,
         )
@@ -291,6 +299,7 @@ class FaultSkinner:
             value,
             "min_likelihood",
         )
+        self._min_likelihood_configured = True
 
     @property
     def min_skin_size(self) -> int | None:
@@ -371,21 +380,38 @@ class FaultSkinner:
         if self.method == "connected_component":
             return self._fallback.find_skins(fv, vp, vt, min_likelihood=min_likelihood)
 
-        threshold = (
-            self.min_likelihood
-            if min_likelihood is None
-            else _validate_nonnegative_finite_float(min_likelihood, "min_likelihood")
-        )
+        seed_min_ep = _REFERENCE_SEED_MIN_EP
+        effective_ep = fv if ep is None else ep
+        effective_ft = fv if ft is None else ft
+        effective_pt = vp if pt is None else pt
+        effective_tt = vt if tt is None else tt
+        if self.method == "quality":
+            seed_min_ep = _QUALITY_SEED_MIN_EP
+            if min_likelihood is None and not self._min_likelihood_configured:
+                threshold = _adaptive_skin_likelihood_threshold(effective_ft)
+            else:
+                threshold = (
+                    self.min_likelihood
+                    if min_likelihood is None
+                    else _validate_nonnegative_finite_float(min_likelihood, "min_likelihood")
+                )
+        else:
+            threshold = (
+                self.min_likelihood
+                if min_likelihood is None
+                else _validate_nonnegative_finite_float(min_likelihood, "min_likelihood")
+            )
         return _find_reference_skins(
             fv=fv,
             vp=vp,
             vt=vt,
-            ep=fv if ep is None else ep,
-            ft=fv if ft is None else ft,
-            pt=vp if pt is None else pt,
-            tt=vt if tt is None else tt,
+            ep=effective_ep,
+            ft=effective_ft,
+            pt=effective_pt,
+            tt=effective_tt,
             d=d,
             fm=threshold,
+            seed_min_ep=seed_min_ep,
             min_skin_size=self.min_skin_size,
             ru=ru,
             rv=rv,
@@ -519,6 +545,7 @@ def _find_reference_skins(
     du: float,
     max_delta_strike: float,
     reskin: bool,
+    seed_min_ep: float = _REFERENCE_SEED_MIN_EP,
     accepted_occupancy_radius: int = 5,
 ) -> list[FaultSkin]:
     should_reskin = _validate_bool(reskin, "reskin")
@@ -540,6 +567,7 @@ def _find_reference_skins(
         ft=ft_array,
         pt=pt_array,
         tt=tt_array,
+        min_ep=seed_min_ep,
     )
     skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
     occupied = _SkinCellGrid()
@@ -573,6 +601,20 @@ def _find_reference_skins(
     return skins
 
 
+def _adaptive_skin_likelihood_threshold(values: np.ndarray) -> float:
+    """Choose a quality-mode skin likelihood threshold from positive samples."""
+
+    value_array = np.asarray(values, dtype=np.float32)
+    if not np.isfinite(value_array).all():
+        raise ValueError("values must contain only finite values")
+
+    positive = value_array[value_array > np.float32(0.0)]
+    if positive.size == 0:
+        return 1.0
+
+    return float(np.clip(np.percentile(positive, 70.0), 0.25, 0.75))
+
+
 def _mark_occupied_skin(occupied: _SkinCellGrid, skin: FaultSkin, radius: int = 5) -> None:
     radius_int = _validate_nonnegative_int(radius, "accepted_occupancy_radius")
     for cell in skin:
@@ -591,11 +633,14 @@ def _find_reference_seeds(
     ft: np.ndarray,
     pt: np.ndarray,
     tt: np.ndarray,
+    *,
+    min_ep: float = _REFERENCE_SEED_MIN_EP,
 ) -> list[_SkinCell]:
     """Select reference-like starting cells for future skin growth."""
 
     distance = _validate_nonnegative_int(d, "d")
     threshold = _validate_nonnegative_finite_float(fm, "fm")
+    planarity_threshold = _validate_unit_interval_float(min_ep, "min_ep")
     ep_array, ft_array, pt_array, tt_array = _validate_matching_finite_arrays3_many(
         (ep, ft, pt, tt),
         ("ep", "ft", "pt", "tt"),
@@ -603,7 +648,9 @@ def _find_reference_seeds(
     n3, n2, n1 = ft_array.shape
 
     candidates: list[tuple[float, int, int, int]] = []
-    candidate_mask = (ep_array > np.float32(0.8)) & (ft_array > np.float32(threshold))
+    candidate_mask = (ep_array > np.float32(planarity_threshold)) & (
+        ft_array > np.float32(threshold)
+    )
     for i3, i2, i1 in np.argwhere(candidate_mask):
         candidates.append(
             (
@@ -1551,6 +1598,17 @@ def _validate_nonnegative_finite_float(value: float, name: str) -> float:
     return value_float
 
 
+def _validate_unit_interval_float(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a finite number between 0.0 and 1.0")
+
+    value_float = float(value)
+    if not math.isfinite(value_float) or value_float < 0.0 or value_float > 1.0:
+        raise ValueError(f"{name} must be a finite number between 0.0 and 1.0")
+
+    return value_float
+
+
 def _validate_nonnegative_int(value: int, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a nonnegative integer")
@@ -1649,8 +1707,12 @@ def _validate_connectivity(connectivity: str) -> str:
 
 
 def _validate_skinner_method(method: str) -> str:
-    if not isinstance(method, str) or method not in {"reference", "connected_component"}:
-        raise ValueError("method must be 'reference' or 'connected_component'")
+    if not isinstance(method, str) or method not in {
+        "reference",
+        "quality",
+        "connected_component",
+    }:
+        raise ValueError("method must be 'reference', 'quality', or 'connected_component'")
 
     return method
 

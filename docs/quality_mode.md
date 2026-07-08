@@ -13,7 +13,8 @@ remains close to the current reference-oriented path. It is not the place to
 evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
-use hybrid voter thinning and support-aware vote weighting
+use hybrid voter thinning, support-aware vote weighting, and
+`FaultSkinner(method="quality")`
 (`surface_support_min_fraction=0.5`,
 `surface_support_exponent=1.0`). It is not a universal production profile; use
 it while reviewing the controlled synthetic benchmark matrix and checking that
@@ -72,6 +73,15 @@ policy is `0.0, 0.0`, so reference mode behavior is unchanged unless the report
 CLI flags `--surface-support-min-fraction` or
 `--surface-support-exponent` are set, or the diagnostic variant is selected.
 The quality workflow uses the same `0.5, 1.0` support-aware policy by default.
+
+For skin extraction, `--workflow-mode quality` defaults to
+`--skinner-method quality` unless `--skinner-method` is passed explicitly. The
+quality skinner reuses reference-like skin growth and reskinning, but uses
+adaptive `min_likelihood` when `--skinner-min-likelihood` is omitted and lowers
+the reference seed planarity threshold from `ep > 0.8` to `ep > 0.5`. Synthetic
+reports record the selected `skinning.method`, whether the likelihood threshold
+is adaptive, the seed `ep` threshold, and `seed_planarity_source=fvt` in
+`metrics.json`.
 
 Primary metrics to compare:
 
