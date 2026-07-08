@@ -163,6 +163,65 @@ class FaultOrientScanner3:
         best orientation.
         """
 
+        ft, pt, tt, _ = self._scan_reference_like_with_confidence(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            g,
+            backend=backend,
+            interpolation_order=interpolation_order,
+            smoothing_sigma=smoothing_sigma,
+            normalize=normalize,
+        )
+        return ft, pt, tt
+
+    def scan_with_confidence(
+        self,
+        phi_min: float,
+        phi_max: float,
+        theta_min: float,
+        theta_max: float,
+        g: np.ndarray,
+        *,
+        backend: str = "rotate_shear",
+        interpolation_order: int = 1,
+        smoothing_sigma: float | None = None,
+        normalize: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Scan and return an orientation confidence diagnostic volume.
+
+        The first three arrays have the same semantics as
+        :meth:`scan_reference_like`. ``confidence`` is a normalized
+        ``float32`` map in ``[0, 1]`` based on the response gap between the
+        best and second-best sampled orientations.
+        """
+
+        return self._scan_reference_like_with_confidence(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            g,
+            backend=backend,
+            interpolation_order=interpolation_order,
+            smoothing_sigma=smoothing_sigma,
+            normalize=normalize,
+        )
+
+    def _scan_reference_like_with_confidence(
+        self,
+        phi_min: float,
+        phi_max: float,
+        theta_min: float,
+        theta_max: float,
+        g: np.ndarray,
+        *,
+        backend: str,
+        interpolation_order: int,
+        smoothing_sigma: float | None,
+        normalize: bool,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         phi_sampling = self.reference_like_strike_sampling(phi_min, phi_max)
         theta_sampling = self.reference_like_dip_sampling(theta_min, theta_max)
         image = self.validate_image(g, "g")
@@ -178,7 +237,8 @@ class FaultOrientScanner3:
             ft = np.zeros_like(image, dtype=np.float32)
             pt = np.full_like(image, phi_sampling[0], dtype=np.float32)
             tt = np.full_like(image, theta_sampling[0], dtype=np.float32)
-            return ft, pt, tt
+            confidence = np.zeros_like(image, dtype=np.float32)
+            return ft, pt, tt, confidence
 
         if backend_name == "rotate_shear":
             return self._scan_rotate_shear_reference_like(
@@ -320,8 +380,9 @@ class FaultOrientScanner3:
         interpolation_order: int,
         smoothing_sigma: float,
         normalize: bool,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         best_score = np.zeros_like(image, dtype=np.float32)
+        second_score = np.zeros_like(image, dtype=np.float32)
         best_phi = np.full_like(image, phi_sampling[0], dtype=np.float32)
         best_theta = np.full_like(image, theta_sampling[0], dtype=np.float32)
 
@@ -352,10 +413,15 @@ class FaultOrientScanner3:
                     np.float32,
                     copy=False,
                 )
-                better = score > best_score
-                best_score[better] = score[better]
-                best_phi[better] = phi
-                best_theta[better] = theta
+                _update_best_second_orientation(
+                    score,
+                    phi,
+                    theta,
+                    best_score,
+                    second_score,
+                    best_phi,
+                    best_theta,
+                )
 
         if normalize:
             ft = _normalize_reference_like_likelihood(best_score)
@@ -364,10 +430,12 @@ class FaultOrientScanner3:
 
         theta_min = np.float32(theta_sampling[0])
         theta_max = np.float32(theta_sampling[-1])
+        confidence = _orientation_confidence_from_scores(best_score, second_score)
         return (
             ft,
             best_phi.astype(np.float32, copy=False),
             np.clip(best_theta, theta_min, theta_max).astype(np.float32, copy=False),
+            confidence,
         )
 
     def _scan_theta_shear_reference_like(
@@ -408,8 +476,9 @@ class FaultOrientScanner3:
         interpolation_order: int,
         smoothing_sigma: float,
         normalize: bool,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         best_score = np.zeros_like(image, dtype=np.float32)
+        second_score = np.zeros_like(image, dtype=np.float32)
         best_phi = np.full_like(image, phi_sampling[0], dtype=np.float32)
         best_theta = np.full_like(image, theta_sampling[0], dtype=np.float32)
         grids = _coordinate_grids3(image.shape)
@@ -428,19 +497,26 @@ class FaultOrientScanner3:
                     interpolation_order=interpolation_order,
                     smoothing_sigma=smoothing_sigma,
                 )
-                better = score > best_score
-                best_score[better] = score[better]
-                best_phi[better] = phi
-                best_theta[better] = theta
+                _update_best_second_orientation(
+                    score,
+                    phi,
+                    theta,
+                    best_score,
+                    second_score,
+                    best_phi,
+                    best_theta,
+                )
 
         if normalize:
             ft = _normalize_reference_like_likelihood(best_score)
         else:
             ft = np.maximum(best_score, np.float32(0.0)).astype(np.float32, copy=False)
+        confidence = _orientation_confidence_from_scores(best_score, second_score)
         return (
             ft,
             best_phi.astype(np.float32, copy=False),
             best_theta.astype(np.float32, copy=False),
+            confidence,
         )
 
 
@@ -989,6 +1065,37 @@ def _reference_like_orientation_score(
     return score.astype(np.float32, copy=False)
 
 
+def _update_best_second_orientation(
+    score: np.ndarray,
+    phi: np.float32,
+    theta: np.float32,
+    best_score: np.ndarray,
+    second_score: np.ndarray,
+    best_phi: np.ndarray,
+    best_theta: np.ndarray,
+) -> None:
+    score_float32 = np.maximum(score.astype(np.float32, copy=False), np.float32(0.0))
+    better = score_float32 > best_score
+    second_better = (~better) & (score_float32 > second_score)
+
+    second_score[better] = best_score[better]
+    second_score[second_better] = score_float32[second_better]
+    best_score[better] = score_float32[better]
+    best_phi[better] = phi
+    best_theta[better] = theta
+
+
+def _orientation_confidence_from_scores(
+    best_score: np.ndarray,
+    second_score: np.ndarray,
+) -> np.ndarray:
+    raw = np.maximum(
+        best_score.astype(np.float32, copy=False) - second_score.astype(np.float32, copy=False),
+        np.float32(0.0),
+    )
+    return _normalize_unit_range(raw)
+
+
 def _sample_oriented_volume(
     volume: np.ndarray,
     *,
@@ -1069,6 +1176,17 @@ def _normalize_reference_like_likelihood(score: np.ndarray) -> np.ndarray:
         np.float32,
         copy=False,
     )
+
+
+def _normalize_unit_range(values: np.ndarray) -> np.ndarray:
+    values_float32 = np.maximum(values.astype(np.float32, copy=False), np.float32(0.0))
+    low = float(np.min(values_float32))
+    high = float(np.max(values_float32))
+    if not math.isfinite(low) or not math.isfinite(high) or high <= low:
+        return np.zeros_like(values_float32, dtype=np.float32)
+
+    normalized = (values_float32 - np.float32(low)) / np.float32(high - low)
+    return np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False)
 
 
 def _normalize_likelihood(score: np.ndarray) -> np.ndarray:

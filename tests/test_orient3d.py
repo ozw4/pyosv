@@ -347,6 +347,121 @@ def test_scan_reference_like_backend_selector_keeps_directional_approximation() 
         assert float(outputs[0].max()) <= 1.0
 
 
+def test_scan_with_confidence_returns_float32_finite_unit_confidence() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(40.0, 55.0, shape=(9, 10, 11), width=1.0)
+
+    ft, pt, tt, confidence = scanner.scan_with_confidence(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+
+    for array in (ft, pt, tt, confidence):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert float(ft.min()) >= 0.0
+    assert float(ft.max()) <= 1.0
+    assert float(confidence.min()) >= 0.0
+    assert float(confidence.max()) <= 1.0
+
+
+def test_scan_with_confidence_first_three_arrays_match_reference_like() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(40.0, 55.0, shape=(9, 10, 11), width=1.0)
+
+    reference_like = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    with_confidence = scanner.scan_with_confidence(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+
+    for reference_array, confidence_array in zip(reference_like, with_confidence[:3]):
+        np.testing.assert_array_equal(reference_array, confidence_array)
+
+
+def test_scan_with_confidence_constant_input_returns_zero_confidence() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.full((5, 6, 7), 3.0, dtype=np.float64)
+
+    ft, pt, tt, confidence = scanner.scan_with_confidence(10.0, 40.0, 30.0, 60.0, image)
+
+    for array in (ft, pt, tt, confidence):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    np.testing.assert_array_equal(ft, np.zeros(image.shape, dtype=np.float32))
+    np.testing.assert_array_equal(confidence, np.zeros(image.shape, dtype=np.float32))
+
+
+def test_scan_with_confidence_directional_backend_returns_confidence() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(40.0, 55.0, shape=(8, 9, 10), width=1.0)
+
+    ft, pt, tt, confidence = scanner.scan_with_confidence(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        backend="directional",
+        smoothing_sigma=0.75,
+    )
+
+    for array in (ft, pt, tt, confidence):
+        assert array.shape == image.shape
+        assert array.dtype == np.float32
+        assert np.isfinite(array).all()
+    assert float(confidence.min()) >= 0.0
+    assert float(confidence.max()) <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"backend": "missing"}, "backend"),
+        ({"backend": 1}, "backend"),
+        ({"interpolation_order": -1}, "interpolation_order"),
+        ({"interpolation_order": 6}, "interpolation_order"),
+        ({"interpolation_order": True}, "interpolation_order"),
+        ({"smoothing_sigma": -1.0}, "smoothing_sigma"),
+        ({"smoothing_sigma": np.nan}, "smoothing_sigma"),
+        ({"smoothing_sigma": True}, "smoothing_sigma"),
+    ],
+)
+def test_scan_with_confidence_validates_reference_like_options(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        scanner.scan_with_confidence(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            **kwargs,
+        )
+
+
 def test_rotate3_axis1_unrotate3_axis1_return_finite_float32_shapes() -> None:
     volume = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
 
