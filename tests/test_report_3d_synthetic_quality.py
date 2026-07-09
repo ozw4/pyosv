@@ -1477,7 +1477,7 @@ def test_report_3d_synthetic_quality_quality_skinner_v2_records_effective_config
     ),
     [
         ("reference", None, "reference", 0.0, 0.0),
-        ("quality", None, "hybrid", 0.0, 0.0),
+        ("quality", None, "hybrid_v2", 0.0, 0.0),
         ("quality", "reference", "reference", 0.0, 0.0),
         ("reference", "normal", "normal", 0.0, 0.0),
         ("reference", "hybrid", "hybrid", 0.0, 0.0),
@@ -1547,7 +1547,7 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     )
 
     assert report["config"]["workflow_mode"] == "quality"
-    assert report["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert report["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["enabled"] is False
@@ -1597,7 +1597,7 @@ def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() 
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
 
 
-def test_quality_workflow_current_default_uses_hybrid_without_support(
+def test_quality_workflow_current_default_uses_hybrid_v2_without_support(
     tmp_path: Path,
 ) -> None:
     reference_dir = tmp_path / "synthetic_quality_reference"
@@ -1638,7 +1638,7 @@ def test_quality_workflow_current_default_uses_hybrid_without_support(
     assert reference_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert reference_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert quality_metrics["config"]["workflow_mode"] == "quality"
-    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert quality_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert quality_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
 
@@ -1721,7 +1721,7 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "quality"
-    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["skinning"]["method"] == "quality"
@@ -1876,7 +1876,7 @@ def test_report_3d_synthetic_quality_quality_workflow_support_cli_override(
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "quality"
-    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.25
     assert metrics["config"]["voting"]["surface_support_exponent"] == 2.0
 

@@ -80,7 +80,7 @@ def add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
         default="reference",
         help=(
             "Workflow defaults to apply. reference preserves the reference-first path; "
-            "quality defaults to hybrid voter thinning with support-aware voting inactive."
+            "quality defaults to hybrid_v2 voter thinning with support-aware voting inactive."
         ),
     )
 
@@ -553,7 +553,7 @@ def resolve_workflow_options(
     if workflow_mode not in WORKFLOW_MODES:
         raise ValueError("workflow_mode must be one of: " + ", ".join(WORKFLOW_MODES))
     if voter_thin_mode is None:
-        voter_thin_mode = "hybrid" if workflow_mode == "quality" else "reference"
+        voter_thin_mode = "hybrid_v2" if workflow_mode == "quality" else "reference"
     if voter_thin_mode not in VOTER_THIN_MODES:
         raise ValueError("voter_thin_mode must be one of: " + ", ".join(VOTER_THIN_MODES))
 
@@ -631,6 +631,7 @@ def run_pipeline(
         vt,
         mode=voter_thin_mode,
         reference_sigma=reference_thin_sigma,
+        plateau_tie_breaker=fet if voter_thin_mode == "hybrid_v2" else None,
     )
 
     return {

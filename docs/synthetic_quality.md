@@ -216,7 +216,7 @@ reference
 
 quality
   Truth-quality mode for controlled synthetic evaluation. Effective
-  voter_thin_mode is hybrid unless --voter-thin-mode is passed. Support-aware
+  voter_thin_mode is hybrid_v2 unless --voter-thin-mode is passed. Support-aware
   surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
   is enabled by default.
 
@@ -978,6 +978,8 @@ no_surface_orientation_smoothing
 final_norm_smoothing_1
 voter_thin_normal
 voter_thin_hybrid
+voter_thin_hybrid_v2
+voter_thin_normal_plateau
 surface_support_weighted
 quality_skinner_v2
 ```

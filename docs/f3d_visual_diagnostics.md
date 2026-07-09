@@ -97,7 +97,9 @@ python examples/report_3d_f3d_multicrop.py \
 In compare mode, the JSON contains `workflows.reference`,
 `workflows.quality`, `consensus.workflows`, and
 `workflow_delta.quality_vs_reference`, so the markdown index shows both the
-reference and quality workflow results. The consensus section summarizes
+reference and quality workflow results. The quality workflow uses `hybrid_v2`
+voter thinning unless `--voter-thin-mode` is passed explicitly. The consensus
+section summarizes
 truthless crop-to-crop stability from the saved crop metrics, including fvt/fv
 nonzero density, fvt reference correlation, buffered ridge overlap, sparse
 ridge distance p95, finite-check failures, and an fvt edge-density proxy from

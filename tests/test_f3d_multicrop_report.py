@@ -377,7 +377,7 @@ def test_compare_workflows_runs_same_centers_and_reports_delta(
     assert loaded["workflows"]["reference"]["crops"][0]["crop_center"] == [2, 2, 2]
     assert loaded["workflows"]["quality"]["crops"][0]["crop_center"] == [2, 2, 2]
     assert loaded["workflows"]["reference"]["config"]["voter"]["thin_mode"] == "reference"
-    assert loaded["workflows"]["quality"]["config"]["voter"]["thin_mode"] == "hybrid"
+    assert loaded["workflows"]["quality"]["config"]["voter"]["thin_mode"] == "hybrid_v2"
     assert loaded["workflows"]["quality"]["config"]["voter"]["surface_support_min_fraction"] == 0.0
     assert loaded["workflows"]["quality"]["config"]["voter"]["surface_support_exponent"] == 0.0
     assert loaded["workflow_delta"]["quality_vs_reference"]
@@ -394,7 +394,7 @@ def test_compare_workflows_runs_same_centers_and_reports_delta(
     assert comparison["finite_failure_count_delta"] == 0
     _assert_finite_or_none(loaded["workflow_delta"]["quality_vs_reference"])
     assert received_kwargs[0]["voter_thin_mode"] == "reference"
-    assert received_kwargs[1]["voter_thin_mode"] == "hybrid"
+    assert received_kwargs[1]["voter_thin_mode"] == "hybrid_v2"
     assert (output_json.parent / "volumes" / "reference" / "crop_001").is_dir()
     assert (output_json.parent / "volumes" / "quality" / "crop_001").is_dir()
     assert figure_dirs == [
@@ -574,7 +574,7 @@ def test_visual_report_markdown_compare_report_includes_workflow_figures(
                     "workflow_mode": "quality",
                     "scanner": {"thin_mode": "reference", "remove_edge_effects": True},
                     "voter": {
-                        "thin_mode": "hybrid",
+                        "thin_mode": "hybrid_v2",
                         "surface_support_min_fraction": 0.0,
                         "surface_support_exponent": 0.0,
                     },
@@ -648,7 +648,7 @@ def test_visual_report_markdown_compare_report_includes_workflow_figures(
     assert "figures/reference/crop_001/scanner.png" in markdown
     assert "figures/quality/crop_001/fv.png" in markdown
     assert "voter_thin_mode: `reference`" in markdown
-    assert "voter_thin_mode: `hybrid`" in markdown
+    assert "voter_thin_mode: `hybrid_v2`" in markdown
     assert "surface_support_min_fraction: `0.0`" in markdown
     assert "## Consensus" in markdown
     assert "quality_minus_reference consensus delta" in markdown

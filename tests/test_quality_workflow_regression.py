@@ -33,6 +33,24 @@ FVT_POSITIVE_BUFFERED_F1_R2 = (
     "buffered_overlap_radius2",
     "buffered_f1",
 )
+FVT_POSITIVE_CANDIDATE_COUNT = (
+    "quality",
+    "fvt_positive_top_truth_count",
+    "surface_distance",
+    "candidate_count",
+)
+FVT_POSITIVE_DISTANCE_P95 = (
+    "quality",
+    "fvt_positive_top_truth_count",
+    "surface_distance",
+    "candidate_to_truth_p95",
+)
+FVT_POSITIVE_EDGE_FALSE_POSITIVE_FRACTION = (
+    "quality",
+    "edge_false_positive",
+    "fvt_positive_top_truth_count",
+    "edge_false_positive_fraction_of_candidates",
+)
 SKIN_BUFFERED_F1_R2 = (
     "quality",
     "skin",
@@ -169,7 +187,7 @@ def test_quality_workflow_effective_settings_are_recorded(
 
     quality = workflow_reports["quality"]["config"]
     assert quality["workflow_mode"] == "quality"
-    assert quality["voting"]["voter_thin_mode"] == "hybrid"
+    assert quality["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert quality["voting"]["surface_support_min_fraction"] == 0.0
     assert quality["voting"]["surface_support_exponent"] == 0.0
     assert quality["skinning"]["method"] == "quality"
@@ -339,6 +357,11 @@ def test_quality_workflow_case_specific_guardrails(
         FVT_EDGE_FALSE_POSITIVE_FRACTION,
         0.05,
     )
+    boundary = quality_cases["boundary_plane"]
+    assert _float_metric(boundary, *FVT_POSITIVE_CANDIDATE_COUNT) > 0.0
+    assert _float_metric(boundary, *FVT_POSITIVE_BUFFERED_F1_R2) >= 0.98
+    assert _float_metric(boundary, *FVT_POSITIVE_DISTANCE_P95) <= 1.0
+    assert _float_metric(boundary, *FVT_POSITIVE_EDGE_FALSE_POSITIVE_FRACTION) <= 1.0e-12
     _assert_quality_at_least_reference_delta(
         reference_cases,
         quality_cases,

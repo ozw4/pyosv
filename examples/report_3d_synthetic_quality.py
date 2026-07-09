@@ -218,7 +218,7 @@ def parse_workflow_mode(text: str) -> str:
 
 
 def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
-    return "hybrid" if workflow_mode == "quality" else "reference"
+    return "hybrid_v2" if workflow_mode == "quality" else "reference"
 
 
 def _default_surface_support_policy_for_workflow(
@@ -755,7 +755,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{" + ",".join(WORKFLOW_MODES) + "}",
         help=(
             "Workflow defaults: reference keeps reference-like voter thinning, "
-            "quality uses hybrid voter thinning with support-aware voting inactive, "
+            "quality uses hybrid_v2 voter thinning with support-aware voting inactive, "
             "diagnostic keeps reference thinning and enables reference-vs-normal "
             "diagnostics."
         ),

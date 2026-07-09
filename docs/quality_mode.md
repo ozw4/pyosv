@@ -13,7 +13,7 @@ remains close to the current reference-oriented path. It is not the place to
 evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
-use hybrid voter thinning, disable support-aware surface voting, and the quality
+use hybrid_v2 voter thinning, disable support-aware surface voting, and the quality
 skinner v2 profile
 (`surface_support_min_fraction=0.0`,
 `surface_support_exponent=0.0`, `FaultSkinner(method="quality")`,
@@ -81,7 +81,8 @@ The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
 `voter_thin_normal`, `voter_thin_hybrid`, `voter_thin_hybrid_v2`,
 `voter_thin_normal_plateau`, `surface_support_weighted`, and
-`quality_skinner_v2`. The hybrid voter thinning variant uses reference-like
+`quality_skinner_v2`. The quality workflow default uses the `hybrid_v2` voter
+thinning path. The hybrid voter thinning variant uses reference-like
 thinning in stable-orientation regions and fault-normal thinning where local
 orientation changes rapidly. The `voter_thin_hybrid_v2` diagnostic variant
 keeps that stable-plane preference, only adopts positive fault-normal
@@ -140,9 +141,11 @@ The guardrails are broad. They assert that key overlap, distance, orientation,
 edge false-positive, and skin metrics remain finite, that quality workflow
 effective settings are recorded in `metrics.json`, and that quality mode has not
 clearly regressed relative to reference mode on representative curved,
-vertical, and boundary cases. These thresholds are not benchmark targets. They
-are meant to catch obvious workflow breakage while leaving room for normal
-tuning changes.
+vertical, and boundary cases. Boundary-plane guardrails also require the
+quality current default to produce positive fvt candidates with buffered F1 at
+least `0.98`, distance p95 at most `1.0`, and no edge false positives. These
+thresholds are not benchmark targets. They are meant to catch obvious workflow
+breakage while leaving room for normal tuning changes.
 
 ## F3 Real-Data Workflow Comparison
 
