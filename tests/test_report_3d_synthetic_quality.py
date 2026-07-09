@@ -3746,7 +3746,44 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fa
 
 def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    # Manual 49^3 benchmark:
+    # PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+    #   --case-set extended \
+    #   --shape 49,49,49 \
+    #   --workflow-mode quality \
+    #   --variants current_default,quality_boundary_skinner_fallback_v2,quality_boundary_skinner_fallback_v3 \
+    #   --input-mode scanner \
+    #   --scanner-backend quality \
+    #   --scanner-refinement-factor 2 \
+    #   --output-dir outputs/3d/synthetic_quality/scanner_boundary_v3_49 \
+    #   --pretty
+    #
+    # Lightweight boundary summary:
+    # python - <<'PY'
+    # import csv
+    # from pathlib import Path
+    # summary = Path("outputs/3d/synthetic_quality/scanner_boundary_v3_49/summary.csv")
+    # rows = list(csv.DictReader(summary.open(encoding="utf-8")))
+    # cols = [
+    #     "case_id", "variant",
+    #     "fvt_positive_buffered_f1_r2",
+    #     "skin_buffered_f1_r2",
+    #     "skin_count",
+    #     "skin_cell_count",
+    #     "skin_primary_cell_coverage_of_fvt_positive",
+    #     "skin_fallback_used",
+    #     "skin_fallback_policy",
+    #     "skin_fallback_component_policy",
+    #     "skin_fallback_accepted_component_count",
+    #     "skin_fallback_accepted_component_cell_count",
+    # ]
+    # print(",".join(cols))
+    # for row in rows:
+    #     if row["case_id"] == "boundary_plane":
+    #         print(",".join(str(row.get(c, "")) for c in cols))
+    # PY
     module = _load_report_module()
     boundary_definition = next(
         definition for definition in module.EXTENDED_CASES if definition.case_id == "boundary_plane"
@@ -3775,15 +3812,105 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
 
     current_f1 = current["quality"]["skin"]["buffered_overlap_radius2"]["buffered_f1"]
     v3_f1 = v3["quality"]["skin"]["buffered_overlap_radius2"]["buffered_f1"]
-    assert v3["skinning"]["diagnostics"]["fallback_used"] is True
-    assert v3["skinning"]["diagnostics"]["fallback_triggered_by_degraded_primary"] is True
-    assert v3["skinning"]["diagnostics"]["skin_fallback_component_policy"] == "filtered"
+    current_diagnostics = current["skinning"]["diagnostics"]
+    v2_diagnostics = v2["skinning"]["diagnostics"]
+    v3_diagnostics = v3["skinning"]["diagnostics"]
+
+    assert current["config"]["skinning"]["boundary_skinner_fallback_policy"] == "empty_primary"
+    assert current_diagnostics["skin_primary_count"] > 0
+    assert current_diagnostics["skin_primary_degraded_candidate"] is True
+    assert "low_fvt_positive_coverage" in current_diagnostics["skin_primary_degraded_reasons"]
+    assert current_diagnostics["skin_primary_cell_coverage_of_fvt_positive"] < 0.50
+    assert current_diagnostics["fallback_used"] is False
+    assert current_diagnostics["fallback_reason"] == "primary_skin_nonempty"
+    assert current_diagnostics["fallback_triggered_by_degraded_primary"] is False
+
+    assert v2_diagnostics["fallback_policy"] == "degraded_primary"
+    assert v2_diagnostics["fallback_used"] is True
+    assert v2_diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert v2_diagnostics["skin_fallback_component_policy"] == "all"
+
+    assert v3_diagnostics["fallback_policy"] == "degraded_primary_filtered"
+    assert v3_diagnostics["fallback_used"] is True
+    assert v3_diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert v3_diagnostics["skin_fallback_component_policy"] == "filtered"
+    assert v3_diagnostics["skin_fallback_component_count"] > 0
+    assert v3_diagnostics["skin_fallback_accepted_component_count"] > 0
+    assert v3_diagnostics["skin_fallback_discarded_component_count"] >= 0
+    assert v3_diagnostics["skin_fallback_accepted_component_cell_count"] > 0
+    assert v3_diagnostics["fallback_coverage_after"] >= v3_diagnostics["fallback_coverage_before"]
     assert v3_f1 >= current_f1 + 0.25
     assert v3_f1 >= 0.85
     assert v3["quality"]["skin"]["topology"]["skin_count"] <= 3
     assert (
         v3["quality"]["skin"]["topology"]["skin_count"]
         <= v2["quality"]["skin"]["topology"]["skin_count"]
+    )
+
+    module.write_summary_csv(report, tmp_path)
+    with (tmp_path / "summary.csv").open(encoding="utf-8", newline="") as file:
+        summary_rows = {
+            row["variant"]: row
+            for row in csv.DictReader(file)
+            if row["case_id"] == "boundary_plane"
+        }
+
+    required_summary_columns = (
+        "skin_primary_count",
+        "skin_primary_cell_count",
+        "skin_primary_largest_fraction",
+        "skin_primary_cell_coverage_of_fvt_positive",
+        "skin_primary_largest_coverage_of_fvt_positive",
+        "skin_primary_degraded_candidate",
+        "skin_primary_degraded_reasons",
+        "skin_fallback_policy",
+        "skin_fallback_component_policy",
+        "skin_fallback_component_count",
+        "skin_fallback_largest_component_size",
+        "skin_fallback_largest_component_fraction",
+        "skin_fallback_accepted_component_count",
+        "skin_fallback_discarded_component_count",
+        "skin_fallback_accepted_component_cell_count",
+        "skin_fallback_filter_min_component_size",
+        "skin_fallback_filter_max_components",
+        "skin_fallback_coverage_before",
+        "skin_fallback_coverage_after",
+    )
+    assert set(summary_rows) == {
+        "current_default",
+        "quality_boundary_skinner_fallback_v2",
+        "quality_boundary_skinner_fallback_v3",
+    }
+    for row in summary_rows.values():
+        for column in required_summary_columns:
+            assert column in row
+
+    assert summary_rows["current_default"]["input_mode"] == "scanner"
+    assert summary_rows["current_default"]["scanner_backend"] == "quality"
+    assert summary_rows["current_default"]["skin_primary_degraded_candidate"] == "True"
+    assert (
+        "low_fvt_positive_coverage"
+        in summary_rows["current_default"]["skin_primary_degraded_reasons"]
+    )
+    assert summary_rows["current_default"]["skin_fallback_policy"] == "empty_primary"
+    assert summary_rows["current_default"]["skin_fallback_used"] == "False"
+    assert (
+        summary_rows["quality_boundary_skinner_fallback_v3"]["skin_fallback_policy"]
+        == "degraded_primary_filtered"
+    )
+    assert (
+        summary_rows["quality_boundary_skinner_fallback_v3"]["skin_fallback_component_policy"]
+        == "filtered"
+    )
+    assert (
+        summary_rows["quality_boundary_skinner_fallback_v3"][
+            "skin_fallback_triggered_by_degraded_primary"
+        ]
+        == "True"
+    )
+    assert (
+        float(summary_rows["quality_boundary_skinner_fallback_v3"]["skin_buffered_f1_r2"])
+        >= float(summary_rows["current_default"]["skin_buffered_f1_r2"]) + 0.25
     )
 
 
