@@ -99,6 +99,10 @@ THINNING_DIAGNOSTIC_VOLUME_NAMES = (
 PIPELINE_OUTPUTS_KEY = "__pipelines__"
 PIPELINE_NAMES = ("oracle", "scanner")
 NONZERO_EPSILON = 1.0e-6
+SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE = 0.50
+SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT = 8
+SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION = 0.75
+SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION = 0.25
 VARIANT_NAMES = (
     "current_default",
     "no_surface_orientation_smoothing",
@@ -2131,6 +2135,13 @@ def _run_voting_from_attributes(
             skinning_config=skinning_config,
             diagnostics=skin_diagnostics,
         )
+        _add_primary_skin_diagnostics(
+            skin_diagnostics,
+            skins,
+            shape=case.shape,
+            fvt_positive_candidate_count=int(np.count_nonzero(fvt_positive_top_truth_count)),
+            small_skin_size=skinning_config.small_skin_size,
+        )
         _apply_boundary_skinner_fallback(
             skins,
             fvt,
@@ -2604,6 +2615,17 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_fallback_input",
                 "skin_fallback_skin_count",
                 "skin_fallback_cell_count",
+                "skin_primary_count",
+                "skin_primary_cell_count",
+                "skin_primary_unique_cell_count",
+                "skin_primary_largest_size",
+                "skin_primary_largest_fraction",
+                "skin_primary_small_count",
+                "skin_primary_small_cell_fraction",
+                "skin_primary_cell_coverage_of_fvt_positive",
+                "skin_primary_largest_coverage_of_fvt_positive",
+                "skin_primary_degraded_candidate",
+                "skin_primary_degraded_reasons",
                 "skin_buffered_f1_r2",
                 "skin_buffered_precision_r2",
                 "skin_buffered_recall_r2",
@@ -2969,6 +2991,17 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_input": None,
             "skin_fallback_skin_count": 0,
             "skin_fallback_cell_count": 0,
+            "skin_primary_count": 0,
+            "skin_primary_cell_count": 0,
+            "skin_primary_unique_cell_count": 0,
+            "skin_primary_largest_size": 0,
+            "skin_primary_largest_fraction": 0.0,
+            "skin_primary_small_count": 0,
+            "skin_primary_small_cell_fraction": 0.0,
+            "skin_primary_cell_coverage_of_fvt_positive": 0.0,
+            "skin_primary_largest_coverage_of_fvt_positive": 0.0,
+            "skin_primary_degraded_candidate": False,
+            "skin_primary_degraded_reasons": "",
         }
     if diagnostics is None:
         return {
@@ -2986,7 +3019,21 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_input": None,
             "skin_fallback_skin_count": None,
             "skin_fallback_cell_count": None,
+            "skin_primary_count": None,
+            "skin_primary_cell_count": None,
+            "skin_primary_unique_cell_count": None,
+            "skin_primary_largest_size": None,
+            "skin_primary_largest_fraction": None,
+            "skin_primary_small_count": None,
+            "skin_primary_small_cell_fraction": None,
+            "skin_primary_cell_coverage_of_fvt_positive": None,
+            "skin_primary_largest_coverage_of_fvt_positive": None,
+            "skin_primary_degraded_candidate": None,
+            "skin_primary_degraded_reasons": None,
         }
+    degraded_reasons = diagnostics.get("skin_primary_degraded_reasons")
+    if isinstance(degraded_reasons, list):
+        degraded_reasons = ",".join(str(reason) for reason in degraded_reasons)
     return {
         "skin_seed_candidate_count_before_spacing": diagnostics.get(
             "seed_candidate_count_before_spacing"
@@ -3004,6 +3051,21 @@ def _summary_csv_skin_diagnostics_row(
         "skin_fallback_input": diagnostics.get("fallback_input"),
         "skin_fallback_skin_count": diagnostics.get("fallback_skin_count"),
         "skin_fallback_cell_count": diagnostics.get("fallback_cell_count"),
+        "skin_primary_count": diagnostics.get("skin_primary_count"),
+        "skin_primary_cell_count": diagnostics.get("skin_primary_cell_count"),
+        "skin_primary_unique_cell_count": diagnostics.get("skin_primary_unique_cell_count"),
+        "skin_primary_largest_size": diagnostics.get("skin_primary_largest_size"),
+        "skin_primary_largest_fraction": diagnostics.get("skin_primary_largest_fraction"),
+        "skin_primary_small_count": diagnostics.get("skin_primary_small_count"),
+        "skin_primary_small_cell_fraction": diagnostics.get("skin_primary_small_cell_fraction"),
+        "skin_primary_cell_coverage_of_fvt_positive": diagnostics.get(
+            "skin_primary_cell_coverage_of_fvt_positive"
+        ),
+        "skin_primary_largest_coverage_of_fvt_positive": diagnostics.get(
+            "skin_primary_largest_coverage_of_fvt_positive"
+        ),
+        "skin_primary_degraded_candidate": diagnostics.get("skin_primary_degraded_candidate"),
+        "skin_primary_degraded_reasons": degraded_reasons,
     }
 
 
@@ -3054,6 +3116,78 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
             else 0.0
         ),
     }
+
+
+def _add_primary_skin_diagnostics(
+    diagnostics: dict[str, Any],
+    skins: Sequence[Any],
+    *,
+    shape: tuple[int, int, int],
+    fvt_positive_candidate_count: int,
+    small_skin_size: int,
+) -> None:
+    topology = skin_topology_metrics(
+        skins,
+        shape,
+        small_skin_size=small_skin_size,
+    )
+    positive_count = int(fvt_positive_candidate_count)
+    if positive_count < 0:
+        raise ValueError("fvt_positive_candidate_count must be non-negative")
+
+    unique_cell_count = int(topology["unique_cell_count"])
+    largest_size = int(topology["largest_skin_size"])
+    cell_coverage = float(unique_cell_count / positive_count) if positive_count else 0.0
+    largest_coverage = float(largest_size / positive_count) if positive_count else 0.0
+    reasons = _primary_skin_degraded_reasons(
+        fvt_positive_candidate_count=positive_count,
+        skin_count=int(topology["skin_count"]),
+        cell_coverage_of_fvt_positive=cell_coverage,
+        largest_fraction=float(topology["largest_skin_fraction"]),
+        small_skin_cell_fraction=float(topology["small_skin_cell_fraction"]),
+    )
+
+    diagnostics.update(
+        {
+            "skin_primary_count": int(topology["skin_count"]),
+            "skin_primary_cell_count": int(topology["cell_count"]),
+            "skin_primary_unique_cell_count": unique_cell_count,
+            "skin_primary_largest_size": largest_size,
+            "skin_primary_largest_fraction": float(topology["largest_skin_fraction"]),
+            "skin_primary_small_count": int(topology["small_skin_count"]),
+            "skin_primary_small_cell_fraction": float(topology["small_skin_cell_fraction"]),
+            "skin_primary_cell_coverage_of_fvt_positive": cell_coverage,
+            "skin_primary_largest_coverage_of_fvt_positive": largest_coverage,
+            "skin_primary_degraded_candidate": bool(reasons),
+            "skin_primary_degraded_reasons": reasons,
+        }
+    )
+
+
+def _primary_skin_degraded_reasons(
+    *,
+    fvt_positive_candidate_count: int,
+    skin_count: int,
+    cell_coverage_of_fvt_positive: float,
+    largest_fraction: float,
+    small_skin_cell_fraction: float,
+) -> list[str]:
+    if int(fvt_positive_candidate_count) <= 0:
+        return []
+
+    reasons: list[str] = []
+    if int(skin_count) == 0:
+        reasons.append("empty_primary_skin")
+    if float(cell_coverage_of_fvt_positive) < SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE:
+        reasons.append("low_fvt_positive_coverage")
+    if (
+        int(skin_count) >= SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT
+        and float(largest_fraction) < SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
+    ):
+        reasons.append("fragmented_primary_skins")
+    if float(small_skin_cell_fraction) > SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION:
+        reasons.append("high_small_skin_cell_fraction")
+    return reasons
 
 
 def _apply_boundary_skinner_fallback(

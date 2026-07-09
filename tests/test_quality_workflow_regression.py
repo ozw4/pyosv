@@ -329,6 +329,13 @@ def test_quality_boundary_skinner_fallback_recovers_boundary_skin() -> None:
     assert diagnostics["fallback_method"] == "connected_component_on_fvt"
     assert diagnostics["fallback_input"] == "fvt"
     assert diagnostics["accepted_skin_count"] == 0
+    assert diagnostics["skin_primary_count"] == 0
+    assert diagnostics["skin_primary_cell_count"] == 0
+    assert diagnostics["skin_primary_degraded_candidate"] is True
+    assert diagnostics["skin_primary_degraded_reasons"] == [
+        "empty_primary_skin",
+        "low_fvt_positive_coverage",
+    ]
     assert diagnostics["fallback_skin_count"] == skin["topology"]["skin_count"]
     assert diagnostics["fallback_cell_count"] == skin["topology"]["cell_count"]
     assert skin["topology"]["skin_count"] > 0
@@ -360,6 +367,8 @@ def test_quality_boundary_skinner_fallback_does_not_run_when_primary_succeeds() 
 
     assert skin["topology"]["skin_count"] > 0
     assert diagnostics["accepted_skin_count"] == skin["topology"]["skin_count"]
+    assert diagnostics["skin_primary_count"] == skin["topology"]["skin_count"]
+    assert diagnostics["skin_primary_cell_count"] == skin["topology"]["cell_count"]
     assert diagnostics["fallback_enabled"] is True
     assert diagnostics["fallback_used"] is False
     assert diagnostics["fallback_reason"] == "primary_skin_nonempty"

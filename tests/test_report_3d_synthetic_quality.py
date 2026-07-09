@@ -98,6 +98,17 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_fallback_input",
     "skin_fallback_skin_count",
     "skin_fallback_cell_count",
+    "skin_primary_count",
+    "skin_primary_cell_count",
+    "skin_primary_unique_cell_count",
+    "skin_primary_largest_size",
+    "skin_primary_largest_fraction",
+    "skin_primary_small_count",
+    "skin_primary_small_cell_fraction",
+    "skin_primary_cell_coverage_of_fvt_positive",
+    "skin_primary_largest_coverage_of_fvt_positive",
+    "skin_primary_degraded_candidate",
+    "skin_primary_degraded_reasons",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -130,6 +141,15 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_accepted_count",
     "skin_fallback_skin_count",
     "skin_fallback_cell_count",
+    "skin_primary_count",
+    "skin_primary_cell_count",
+    "skin_primary_unique_cell_count",
+    "skin_primary_largest_size",
+    "skin_primary_largest_fraction",
+    "skin_primary_small_count",
+    "skin_primary_small_cell_fraction",
+    "skin_primary_cell_coverage_of_fvt_positive",
+    "skin_primary_largest_coverage_of_fvt_positive",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -233,6 +253,15 @@ def _assert_enabled_skin_summary_row(row: dict[str, str]) -> None:
     assert row["skin_enabled"] == "True"
     for field in SKIN_NUMERIC_SUMMARY_FIELDS:
         assert math.isfinite(float(row[field]))
+
+
+def _fault_skin(cell_indices: list[tuple[int, int, int]]) -> object:
+    from pyosv.cells import FaultCell
+    from pyosv.skin import FaultSkin
+
+    return FaultSkin.from_cells(
+        FaultCell(i1, i2, i3, 1.0, 0.0, 90.0) for i1, i2, i3 in cell_indices
+    )
 
 
 def _assert_scanner_quality_contract(scanner_quality: dict[str, object]) -> None:
@@ -2966,6 +2995,73 @@ def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
         rows = list(csv.DictReader(file))
     assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
     assert rows[0]["skin_accepted_count"] == str(diagnostics["accepted_skin_count"])
+    for field in (
+        "skin_primary_count",
+        "skin_primary_cell_count",
+        "skin_primary_unique_cell_count",
+        "skin_primary_largest_size",
+        "skin_primary_largest_fraction",
+        "skin_primary_small_count",
+        "skin_primary_small_cell_fraction",
+        "skin_primary_cell_coverage_of_fvt_positive",
+        "skin_primary_largest_coverage_of_fvt_positive",
+    ):
+        assert math.isfinite(float(diagnostics[field]))
+        assert math.isfinite(float(rows[0][field]))
+    assert isinstance(diagnostics["skin_primary_degraded_candidate"], bool)
+    assert isinstance(diagnostics["skin_primary_degraded_reasons"], list)
+    assert rows[0]["skin_primary_degraded_candidate"] in {"True", "False"}
+    assert rows[0]["skin_primary_degraded_reasons"] == ",".join(
+        diagnostics["skin_primary_degraded_reasons"]
+    )
+
+
+def test_report_3d_synthetic_quality_primary_skin_diagnostics_mark_degraded() -> None:
+    module = _load_report_module()
+    diagnostics: dict[str, object] = {}
+    skins = [
+        _fault_skin([(index, 0, 0)])
+        for index in range(module.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT)
+    ]
+
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=(3, 3, 20),
+        fvt_positive_candidate_count=40,
+        small_skin_size=10,
+    )
+
+    assert diagnostics["skin_primary_degraded_candidate"] is True
+    assert diagnostics["skin_primary_count"] == 8
+    assert diagnostics["skin_primary_unique_cell_count"] == 8
+    assert diagnostics["skin_primary_cell_coverage_of_fvt_positive"] == pytest.approx(0.2)
+    assert diagnostics["skin_primary_largest_coverage_of_fvt_positive"] == pytest.approx(0.025)
+    assert diagnostics["skin_primary_degraded_reasons"] == [
+        "low_fvt_positive_coverage",
+        "fragmented_primary_skins",
+        "high_small_skin_cell_fraction",
+    ]
+
+
+def test_report_3d_synthetic_quality_primary_skin_diagnostics_keep_healthy() -> None:
+    module = _load_report_module()
+    diagnostics: dict[str, object] = {}
+    skins = [_fault_skin([(index, 0, 0) for index in range(8)])]
+
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=(3, 3, 20),
+        fvt_positive_candidate_count=8,
+        small_skin_size=5,
+    )
+
+    assert diagnostics["skin_primary_degraded_candidate"] is False
+    assert diagnostics["skin_primary_degraded_reasons"] == []
+    assert diagnostics["skin_primary_count"] == 1
+    assert diagnostics["skin_primary_cell_coverage_of_fvt_positive"] == pytest.approx(1.0)
+    assert diagnostics["skin_primary_largest_fraction"] == pytest.approx(1.0)
 
 
 def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_contract(
