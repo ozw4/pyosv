@@ -13,14 +13,16 @@ remains close to the current reference-oriented path. It is not the place to
 evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
-use hybrid voter thinning, disable support-aware surface voting, and the quality
-skinner v2 profile
+use `hybrid_v2` voter thinning, disable support-aware surface voting, use the
+quality skinner v2 profile, and enable boundary skinner fallback
 (`surface_support_min_fraction=0.0`,
 `surface_support_exponent=0.0`, `FaultSkinner(method="quality")`,
-`growth_source=pre_thin`, `accepted_occupancy_radius=1`). It is not a universal
-production profile; use it while reviewing the controlled synthetic benchmark
-matrix and checking that the candidate set is not over-filtered for the cases
-under study.
+`growth_source=pre_thin`, `accepted_occupancy_radius=1`,
+`boundary_skinner_fallback=true`). The fallback only runs when primary skinning
+returns no skins and the thinned vote volume has positive samples. It is not a
+universal production profile; use it while reviewing the controlled synthetic
+benchmark matrix and checking that the candidate set is not over-filtered for
+the cases under study.
 
 `diagnostic` workflow keeps the reference workflow defaults and enables
 thinning diagnostics. Use it when comparing current behavior, diagnostic
@@ -81,7 +83,9 @@ The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
 `voter_thin_normal`, `voter_thin_hybrid`, `voter_thin_hybrid_v2`,
 `voter_thin_normal_plateau`, `surface_support_weighted`, and
-`quality_skinner_v2`. The hybrid voter thinning variant uses reference-like
+`quality_skinner_v2`, and `quality_boundary_skinner_fallback`. The quality
+workflow default uses the `hybrid_v2` voter thinning path. The hybrid voter
+thinning variant uses reference-like
 thinning in stable-orientation regions and fault-normal thinning where local
 orientation changes rapidly. The `voter_thin_hybrid_v2` diagnostic variant
 keeps that stable-plane preference, only adopts positive fault-normal
@@ -103,10 +107,16 @@ unless the report CLI flags `--surface-support-min-fraction` or
 `--surface-support-exponent` are set, or this diagnostic variant is selected.
 
 The `quality_skinner_v2` diagnostic variant keeps the voter path selected by
-the workflow, but uses the quality skinner with adaptive seed/grow thresholds,
+the workflow, but uses the quality skinner with an adaptive seed threshold and
+fixed quality grow threshold,
 `growth_source=pre_thin`, and `accepted_occupancy_radius=1`. In
 `--workflow-mode quality`, it matches `current_default`; in `reference` and
 `diagnostic` workflows, it remains an explicit diagnostic skinning override.
+
+The `quality_boundary_skinner_fallback` diagnostic variant forces
+`boundary_skinner_fallback=true`. Under `--workflow-mode quality`, this matches
+`current_default`; in `reference` and `diagnostic` workflows, it remains an
+explicit diagnostic fallback override.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The
@@ -116,8 +126,8 @@ the seed planarity gate from `ep > 0.8` to `ep > 0.5`. The quality workflow
 grows from the pre-thin vote volume and records
 `effective_accepted_occupancy_radius=1`. Synthetic reports record the selected
 `skinning.method`, whether the likelihood threshold is adaptive, the seed `ep`
-threshold, `growth_source`, `effective_accepted_occupancy_radius`, and
-`seed_planarity_source=fvt` in `metrics.json`.
+threshold, `growth_source`, `effective_accepted_occupancy_radius`,
+`boundary_skinner_fallback`, and `seed_planarity_source=fvt` in `metrics.json`.
 
 Primary metrics to compare:
 
@@ -139,10 +149,14 @@ downloads. It builds the `extended` synthetic case set at a small shape for both
 The guardrails are broad. They assert that key overlap, distance, orientation,
 edge false-positive, and skin metrics remain finite, that quality workflow
 effective settings are recorded in `metrics.json`, and that quality mode has not
-clearly regressed relative to reference mode on representative curved,
-vertical, and boundary cases. These thresholds are not benchmark targets. They
-are meant to catch obvious workflow breakage while leaving room for normal
-tuning changes.
+clearly regressed relative to reference mode on the extended synthetic cases:
+single vertical, single dipping, curved, parallel, crossing, boundary, and
+weak/noisy. Boundary-plane guardrails require the quality current default to
+produce positive fvt candidates with buffered F1 at least `0.98`, distance p95
+at most `1.0`, no edge false positives, and a recovered skin via the reported
+fallback path with skin buffered F1 at least `0.5`. These thresholds are not
+benchmark targets. They are meant to catch obvious workflow breakage while
+leaving room for normal tuning changes.
 
 ## F3 Real-Data Workflow Comparison
 

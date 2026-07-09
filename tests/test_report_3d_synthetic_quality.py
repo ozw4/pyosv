@@ -33,6 +33,7 @@ DIAGNOSTIC_VARIANTS = (
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
+    "quality_boundary_skinner_fallback",
 )
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
@@ -83,6 +84,20 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_largest_fraction",
     "skin_small_count",
     "skin_small_cell_fraction",
+    "skin_seed_candidate_count_before_spacing",
+    "skin_seed_count_after_spacing",
+    "skin_seed_rejected_by_occupied",
+    "skin_grow_attempt_count",
+    "skin_discarded_empty_count",
+    "skin_discarded_small_count",
+    "skin_accepted_count",
+    "skin_fallback_enabled",
+    "skin_fallback_used",
+    "skin_fallback_reason",
+    "skin_fallback_method",
+    "skin_fallback_input",
+    "skin_fallback_skin_count",
+    "skin_fallback_cell_count",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -106,6 +121,15 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_largest_fraction",
     "skin_small_count",
     "skin_small_cell_fraction",
+    "skin_seed_candidate_count_before_spacing",
+    "skin_seed_count_after_spacing",
+    "skin_seed_rejected_by_occupied",
+    "skin_grow_attempt_count",
+    "skin_discarded_empty_count",
+    "skin_discarded_small_count",
+    "skin_accepted_count",
+    "skin_fallback_skin_count",
+    "skin_fallback_cell_count",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -393,6 +417,14 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_quality_skinner_v2()
     module = _load_report_module()
 
     assert module.parse_variants("quality_skinner_v2") == ("quality_skinner_v2",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_skinner_fallback() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("quality_boundary_skinner_fallback") == (
+        "quality_boundary_skinner_fallback",
+    )
 
 
 def test_find_synthetic_skins_thinned_uses_fvt_for_growth_and_seed(
@@ -741,7 +773,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
             "current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
-            "surface_support_weighted,quality_skinner_v2"
+            "surface_support_weighted,quality_skinner_v2,"
+            "quality_boundary_skinner_fallback"
         ),
     )
 
@@ -752,7 +785,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
     for variant in DIAGNOSTIC_VARIANTS:
         variant_report = case["variants"][variant]
         assert variant_report["pyosv"]["fvt"]["max"] > 0.0
-        assert variant_report["skinning"] == {"enabled": True}
+        assert variant_report["skinning"]["enabled"] is True
+        assert "diagnostics" in variant_report["skinning"]
         assert variant_report["quality"]["skin"] is not None
         assert variant_report["pyosv"]["skins"] == variant_report["quality"]["skin"]["topology"]
 
@@ -1467,6 +1501,49 @@ def test_report_3d_synthetic_quality_quality_skinner_v2_records_effective_config
     assert math.isfinite(float(rows[1]["skin_count_delta_vs_baseline"]))
 
 
+def test_report_3d_synthetic_quality_boundary_fallback_variant_cli_contract(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--variants",
+        "quality_boundary_skinner_fallback",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["quality_boundary_skinner_fallback"]
+    variant = metrics["cases"][0]["variants"]["quality_boundary_skinner_fallback"]
+    diagnostics = variant["skinning"]["diagnostics"]
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_skin_nonempty"
+    assert diagnostics["fallback_method"] == "connected_component_on_fvt"
+    assert diagnostics["fallback_input"] == "fvt"
+    assert diagnostics["fallback_skin_count"] == 0
+    assert diagnostics["fallback_cell_count"] == 0
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["variant"] == "quality_boundary_skinner_fallback"
+    assert rows[0]["skin_fallback_enabled"] == "True"
+    assert rows[0]["skin_fallback_used"] == "False"
+    assert rows[0]["skin_fallback_reason"] == "primary_skin_nonempty"
+    assert rows[0]["skin_fallback_method"] == "connected_component_on_fvt"
+    assert rows[0]["skin_fallback_input"] == "fvt"
+    assert rows[0]["skin_fallback_skin_count"] == "0"
+    assert rows[0]["skin_fallback_cell_count"] == "0"
+
+
 @pytest.mark.parametrize(
     (
         "workflow_mode",
@@ -1477,7 +1554,7 @@ def test_report_3d_synthetic_quality_quality_skinner_v2_records_effective_config
     ),
     [
         ("reference", None, "reference", 0.0, 0.0),
-        ("quality", None, "hybrid", 0.0, 0.0),
+        ("quality", None, "hybrid_v2", 0.0, 0.0),
         ("quality", "reference", "reference", 0.0, 0.0),
         ("reference", "normal", "normal", 0.0, 0.0),
         ("reference", "hybrid", "hybrid", 0.0, 0.0),
@@ -1534,6 +1611,7 @@ def test_report_3d_synthetic_quality_build_report_reference_workflow_defaults() 
     assert report["config"]["voting"]["voter_thin_mode"] == "reference"
     assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
+    assert report["config"]["skinning"]["boundary_skinner_fallback"] is False
 
 
 def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() -> None:
@@ -1547,7 +1625,7 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     )
 
     assert report["config"]["workflow_mode"] == "quality"
-    assert report["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert report["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["enabled"] is False
@@ -1557,6 +1635,7 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is True
     assert report["config"]["skinning"]["accepted_occupancy_radius"] == 1
     assert report["config"]["skinning"]["effective_accepted_occupancy_radius"] == 1
+    assert report["config"]["skinning"]["boundary_skinner_fallback"] is True
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins() -> None:
@@ -1574,6 +1653,7 @@ def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins()
     assert report["config"]["skinning"]["method"] == "reference"
     assert report["config"]["skinning"]["min_likelihood"] == 0.5
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is False
+    assert report["config"]["skinning"]["boundary_skinner_fallback"] is False
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() -> None:
@@ -1597,7 +1677,7 @@ def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() 
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
 
 
-def test_quality_workflow_current_default_uses_hybrid_without_support(
+def test_quality_workflow_current_default_uses_hybrid_v2_without_support(
     tmp_path: Path,
 ) -> None:
     reference_dir = tmp_path / "synthetic_quality_reference"
@@ -1638,9 +1718,10 @@ def test_quality_workflow_current_default_uses_hybrid_without_support(
     assert reference_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert reference_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert quality_metrics["config"]["workflow_mode"] == "quality"
-    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert quality_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert quality_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
+    assert quality_metrics["config"]["skinning"]["boundary_skinner_fallback"] is True
 
     with (reference_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         reference_rows = list(csv.DictReader(file))
@@ -1721,7 +1802,7 @@ def test_report_3d_synthetic_quality_quality_workflow_records_mode_and_defaults(
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "quality"
-    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert metrics["config"]["voting"]["surface_support_exponent"] == 0.0
     assert metrics["config"]["skinning"]["method"] == "quality"
@@ -1876,7 +1957,7 @@ def test_report_3d_synthetic_quality_quality_workflow_support_cli_override(
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["config"]["workflow_mode"] == "quality"
-    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid"
+    assert metrics["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert metrics["config"]["voting"]["surface_support_min_fraction"] == 0.25
     assert metrics["config"]["voting"]["surface_support_exponent"] == 2.0
 
@@ -2031,6 +2112,7 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "accepted_occupancy_radius": 1,
         "effective_accepted_occupancy_radius": 1,
         "small_skin_size": 5,
+        "boundary_skinner_fallback": False,
     }
 
 
@@ -2858,12 +2940,32 @@ def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
 
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
-    skin_quality = metrics["cases"][0]["quality"]["skin"]
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    skin_quality = variant["quality"]["skin"]
+    diagnostics = variant["skinning"]["diagnostics"]
     assert "buffered_overlap_radius2" in skin_quality
+    assert diagnostics["accepted_skin_count"] == skin_quality["topology"]["skin_count"]
+    for field in (
+        "seed_candidate_count_before_spacing",
+        "seed_count_after_spacing",
+        "seed_count_rejected_by_occupied",
+        "grow_attempt_count",
+        "grown_skin_count_before_min_size",
+        "discarded_empty_skin_count",
+        "discarded_small_skin_count",
+        "accepted_skin_count",
+        "accepted_cell_count",
+        "accepted_occupancy_radius",
+        "seed_min_ep",
+        "seed_threshold",
+        "grow_threshold",
+    ):
+        assert math.isfinite(float(diagnostics[field]))
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
+    assert rows[0]["skin_accepted_count"] == str(diagnostics["accepted_skin_count"])
 
 
 def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_contract(

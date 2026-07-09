@@ -359,11 +359,11 @@ def test_quality_workflow_defaults_and_explicit_voter_override(
     )
 
     assert quality_report["config"]["workflow_mode"] == "quality"
-    assert quality_report["config"]["voter"]["thin_mode"] == "hybrid"
+    assert quality_report["config"]["voter"]["thin_mode"] == "hybrid_v2"
     assert quality_report["config"]["voter"]["surface_support_min_fraction"] == 0.0
     assert quality_report["config"]["voter"]["surface_support_exponent"] == 0.0
     assert override_report["config"]["voter"]["thin_mode"] == "reference"
-    assert received_kwargs[0]["voter_thin_mode"] == "hybrid"
+    assert received_kwargs[0]["voter_thin_mode"] == "hybrid_v2"
     assert received_kwargs[0]["surface_support_min_fraction"] == 0.0
     assert received_kwargs[0]["surface_support_exponent"] == 0.0
     assert received_kwargs[1]["voter_thin_mode"] == "reference"
@@ -417,6 +417,69 @@ def test_small_pipeline_accepts_reference_thinning_and_final_normalization_smoot
     assert outputs["vp_py.dat"].shape == (4, 4, 4)
     assert outputs["vt_py.dat"].shape == (4, 4, 4)
     assert outputs["fvt_py.dat"].shape == (4, 4, 4)
+
+
+def test_small_pipeline_uses_hybrid_v2_plateau_tie_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+    from pyosv.voting3d import OptimalSurfaceVoter
+
+    received: list[tuple[str, np.ndarray | None]] = []
+
+    def recording_thin(
+        self: object,
+        fv: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        *,
+        mode: str = "reference",
+        reference_sigma: float = 1.0,
+        plateau_tie_breaker: np.ndarray | None = None,
+    ) -> np.ndarray:
+        del self, vp, vt, reference_sigma
+        received.append((mode, plateau_tie_breaker))
+        return np.asarray(fv, dtype=np.float32)
+
+    monkeypatch.setattr(OptimalSurfaceVoter, "thin", recording_thin)
+
+    common_kwargs = {
+        "sigma1": 1.0,
+        "sigma2": 1.0,
+        "phi_min": 0.0,
+        "phi_max": 0.0,
+        "theta_min": 70.0,
+        "theta_max": 70.0,
+        "ru": 1,
+        "rv": 1,
+        "rw": 1,
+        "strain_max1": 0.25,
+        "strain_max2": 0.25,
+        "surface_smoothing1": 1.0,
+        "surface_smoothing2": 1.0,
+        "d": 1,
+        "fm": 0.3,
+        "scanner_thin_mode": "reference",
+        "reference_thin_sigma": 1.0,
+    }
+
+    hybrid_outputs = module.run_pipeline(
+        np.zeros((4, 4, 4), dtype=np.float32),
+        voter_thin_mode="hybrid_v2",
+        **common_kwargs,
+    )
+    module.run_pipeline(
+        np.zeros((4, 4, 4), dtype=np.float32),
+        voter_thin_mode="reference",
+        **common_kwargs,
+    )
+
+    hybrid_mode, hybrid_tie_breaker = received[0]
+    reference_mode, reference_tie_breaker = received[1]
+    assert hybrid_mode == "hybrid_v2"
+    assert hybrid_tie_breaker is hybrid_outputs["fet_py.dat"]
+    assert reference_mode == "reference"
+    assert reference_tie_breaker is None
 
 
 def test_save_volumes_writes_crop_outputs(

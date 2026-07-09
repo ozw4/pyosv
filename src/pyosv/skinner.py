@@ -9,6 +9,7 @@ import heapq
 import math
 import numbers
 import operator
+from typing import Any
 
 import numpy as np
 
@@ -375,6 +376,7 @@ class FaultSkinner:
         max_delta_strike: float = 30.0,
         reskin: bool = True,
         accepted_occupancy_radius: int | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> list[FaultSkin]:
         """Find skins with the configured backend."""
 
@@ -434,6 +436,7 @@ class FaultSkinner:
             max_delta_strike=max_delta_strike,
             reskin=should_reskin,
             accepted_occupancy_radius=occupancy_radius,
+            diagnostics=diagnostics,
         )
 
     def find_skin(
@@ -490,6 +493,7 @@ def find_skins(
     max_delta_strike: float = 30.0,
     reskin: bool = True,
     accepted_occupancy_radius: int | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[FaultSkin]:
     """Find reference-like skins from 3D voting outputs.
 
@@ -517,6 +521,7 @@ def find_skins(
         max_delta_strike=max_delta_strike,
         reskin=reskin,
         accepted_occupancy_radius=accepted_occupancy_radius,
+        diagnostics=diagnostics,
     )
 
 
@@ -564,9 +569,11 @@ def _find_reference_skins(
     grow_fmin: float | None = None,
     seed_min_ep: float = _REFERENCE_SEED_MIN_EP,
     accepted_occupancy_radius: int = 5,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[FaultSkin]:
     should_reskin = _validate_bool(reskin, "reskin")
     seed_threshold = _validate_nonnegative_finite_float(fm, "fm")
+    planarity_threshold = _validate_unit_interval_float(seed_min_ep, "seed_min_ep")
     grow_threshold = (
         seed_threshold
         if grow_fmin is None
@@ -582,6 +589,11 @@ def _find_reference_skins(
             ("fv", "vp", "vt", "ep", "ft", "pt", "tt"),
         )
     )
+    seed_candidate_count_before_spacing = int(
+        np.count_nonzero(
+            (ep_array > np.float32(planarity_threshold)) & (ft_array > np.float32(seed_threshold))
+        )
+    )
     seeds = _find_reference_seeds(
         d=d,
         fm=seed_threshold,
@@ -589,16 +601,23 @@ def _find_reference_skins(
         ft=ft_array,
         pt=pt_array,
         tt=tt_array,
-        min_ep=seed_min_ep,
+        min_ep=planarity_threshold,
     )
     skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
     occupied = _SkinCellGrid()
     skins: list[FaultSkin] = []
+    seed_count_rejected_by_occupied = 0
+    grow_attempt_count = 0
+    grown_skin_count_before_min_size = 0
+    discarded_empty_skin_count = 0
+    discarded_small_skin_count = 0
 
     for seed in seeds:
         if occupied.find_cells_in_box(seed.i1, seed.i2, seed.i3, 2, 2, 2):
+            seed_count_rejected_by_occupied += 1
             continue
 
+        grow_attempt_count += 1
         skin = _grow_reference_skin(
             seed,
             fv_array,
@@ -614,11 +633,39 @@ def _find_reference_skins(
             collision_grid=occupied,
             reskin=should_reskin,
         )
-        if skin_size is not None and len(skin) < skin_size:
+        skin_cell_count = len(skin)
+        if skin_cell_count == 0:
+            if skin_size is not None:
+                discarded_empty_skin_count += 1
+                continue
+        else:
+            grown_skin_count_before_min_size += 1
+        if skin_size is not None and skin_cell_count < skin_size:
+            discarded_small_skin_count += 1
             continue
 
         skins.append(skin)
         _mark_occupied_skin(occupied, skin, radius=occupancy_radius)
+
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(
+            {
+                "seed_candidate_count_before_spacing": seed_candidate_count_before_spacing,
+                "seed_count_after_spacing": int(len(seeds)),
+                "seed_count_rejected_by_occupied": int(seed_count_rejected_by_occupied),
+                "grow_attempt_count": int(grow_attempt_count),
+                "grown_skin_count_before_min_size": int(grown_skin_count_before_min_size),
+                "discarded_empty_skin_count": int(discarded_empty_skin_count),
+                "discarded_small_skin_count": int(discarded_small_skin_count),
+                "accepted_skin_count": int(len(skins)),
+                "accepted_cell_count": int(sum(len(skin) for skin in skins)),
+                "accepted_occupancy_radius": int(occupancy_radius),
+                "seed_min_ep": float(planarity_threshold),
+                "seed_threshold": float(seed_threshold),
+                "grow_threshold": float(grow_threshold),
+            }
+        )
 
     return skins
 

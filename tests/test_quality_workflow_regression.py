@@ -33,6 +33,24 @@ FVT_POSITIVE_BUFFERED_F1_R2 = (
     "buffered_overlap_radius2",
     "buffered_f1",
 )
+FVT_POSITIVE_CANDIDATE_COUNT = (
+    "quality",
+    "fvt_positive_top_truth_count",
+    "surface_distance",
+    "candidate_count",
+)
+FVT_POSITIVE_DISTANCE_P95 = (
+    "quality",
+    "fvt_positive_top_truth_count",
+    "surface_distance",
+    "candidate_to_truth_p95",
+)
+FVT_POSITIVE_EDGE_FALSE_POSITIVE_FRACTION = (
+    "quality",
+    "edge_false_positive",
+    "fvt_positive_top_truth_count",
+    "edge_false_positive_fraction_of_candidates",
+)
 SKIN_BUFFERED_F1_R2 = (
     "quality",
     "skin",
@@ -169,7 +187,7 @@ def test_quality_workflow_effective_settings_are_recorded(
 
     quality = workflow_reports["quality"]["config"]
     assert quality["workflow_mode"] == "quality"
-    assert quality["voting"]["voter_thin_mode"] == "hybrid"
+    assert quality["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert quality["voting"]["surface_support_min_fraction"] == 0.0
     assert quality["voting"]["surface_support_exponent"] == 0.0
     assert quality["skinning"]["method"] == "quality"
@@ -179,6 +197,7 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert quality["skinning"]["seed_min_ep"] == 0.5
     assert quality["skinning"]["accepted_occupancy_radius"] == 1
     assert quality["skinning"]["effective_accepted_occupancy_radius"] == 1
+    assert quality["skinning"]["boundary_skinner_fallback"] is True
 
 
 def test_quality_workflow_key_metrics_are_finite(
@@ -189,7 +208,9 @@ def test_quality_workflow_key_metrics_are_finite(
         assert report["config"]["variants"] == ["current_default"]
         for case in _cases_by_id(report).values():
             assert case["variants"]["current_default"]["quality"] == case["quality"]
-            assert case["variants"]["current_default"]["skinning"] == {"enabled": True}
+            skinning_report = case["variants"]["current_default"]["skinning"]
+            assert skinning_report["enabled"] is True
+            assert "diagnostics" in skinning_report
 
             quality = case["quality"]
             for field in (
@@ -210,6 +231,12 @@ def test_quality_workflow_key_metrics_are_finite(
 
             skin = quality["skin"]
             assert skin is not None
+            diagnostics = skinning_report["diagnostics"]
+            skin_count = skin["topology"]["skin_count"]
+            if diagnostics["fallback_used"]:
+                assert diagnostics["fallback_skin_count"] == skin_count
+            else:
+                assert diagnostics["accepted_skin_count"] == skin_count
             for field in (
                 "topology",
                 "buffered_overlap_radius2",
@@ -277,6 +304,69 @@ def test_quality_skinner_v2_skin_f1_guardrail(
     )
 
 
+def test_quality_boundary_skinner_fallback_recovers_boundary_skin() -> None:
+    module = _load_report_module()
+    report = module.build_report(
+        case_set="extended",
+        shape=(33, 33, 33),
+        variants=("current_default", "quality_boundary_skinner_fallback"),
+        workflow_mode="quality",
+    )
+    cases = _cases_by_id(report)
+
+    assert report["config"]["variants"] == [
+        "current_default",
+        "quality_boundary_skinner_fallback",
+    ]
+    boundary = cases["boundary_plane"]["variants"]["quality_boundary_skinner_fallback"]
+    diagnostics = boundary["skinning"]["diagnostics"]
+    skin = boundary["quality"]["skin"]
+
+    assert _float_metric(boundary, *FVT_POSITIVE_CANDIDATE_COUNT) > 0.0
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["fallback_reason"] == "empty_primary_skin_with_positive_fvt"
+    assert diagnostics["fallback_method"] == "connected_component_on_fvt"
+    assert diagnostics["fallback_input"] == "fvt"
+    assert diagnostics["accepted_skin_count"] == 0
+    assert diagnostics["fallback_skin_count"] == skin["topology"]["skin_count"]
+    assert diagnostics["fallback_cell_count"] == skin["topology"]["cell_count"]
+    assert skin["topology"]["skin_count"] > 0
+    assert skin["buffered_overlap_radius2"]["buffered_f1"] > 0.5
+
+    current_default = cases["boundary_plane"]["variants"]["current_default"]
+    current_diagnostics = current_default["skinning"]["diagnostics"]
+    current_skin = current_default["quality"]["skin"]
+    assert current_default["config"]["skinning"]["boundary_skinner_fallback"] is True
+    assert current_diagnostics["fallback_enabled"] is True
+    assert current_diagnostics["fallback_used"] is True
+    assert current_diagnostics["fallback_skin_count"] == current_skin["topology"]["skin_count"]
+    assert current_skin["topology"]["skin_count"] > 0
+    assert current_skin["buffered_overlap_radius2"]["buffered_f1"] >= 0.5
+
+
+def test_quality_boundary_skinner_fallback_does_not_run_when_primary_succeeds() -> None:
+    module = _load_report_module()
+    report = module.build_report(
+        case_set="minimal",
+        shape=SHAPE,
+        variants=("quality_boundary_skinner_fallback",),
+        workflow_mode="quality",
+    )
+    case = report["cases"][0]
+    variant = case["variants"]["quality_boundary_skinner_fallback"]
+    diagnostics = variant["skinning"]["diagnostics"]
+    skin = variant["quality"]["skin"]
+
+    assert skin["topology"]["skin_count"] > 0
+    assert diagnostics["accepted_skin_count"] == skin["topology"]["skin_count"]
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_skin_nonempty"
+    assert diagnostics["fallback_skin_count"] == 0
+    assert diagnostics["fallback_cell_count"] == 0
+
+
 def test_quality_workflow_case_specific_guardrails(
     workflow_reports: dict[str, dict[str, Any]],
 ) -> None:
@@ -339,6 +429,23 @@ def test_quality_workflow_case_specific_guardrails(
         FVT_EDGE_FALSE_POSITIVE_FRACTION,
         0.05,
     )
+    boundary = quality_cases["boundary_plane"]
+    assert _float_metric(boundary, *FVT_POSITIVE_CANDIDATE_COUNT) > 0.0
+    assert _float_metric(boundary, *FVT_POSITIVE_BUFFERED_F1_R2) >= 0.98
+    assert _float_metric(boundary, *FVT_POSITIVE_DISTANCE_P95) <= 1.0
+    assert _float_metric(boundary, *FVT_POSITIVE_EDGE_FALSE_POSITIVE_FRACTION) <= 1.0e-12
+    diagnostics = boundary["variants"]["current_default"]["skinning"]["diagnostics"]
+    skin_count = _float_metric(boundary, "quality", "skin", "topology", "skin_count")
+    assert skin_count > 0
+    assert _float_metric(boundary, *SKIN_BUFFERED_F1_R2) >= 0.5
+    assert (
+        _float_metric(boundary, "quality", "skin", "surface_distance", "candidate_to_truth_p95")
+        <= 3.0
+    )
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["fallback_reason"] == "empty_primary_skin_with_positive_fvt"
+    assert diagnostics["fallback_skin_count"] == skin_count
     _assert_quality_at_least_reference_delta(
         reference_cases,
         quality_cases,

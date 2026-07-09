@@ -51,7 +51,7 @@ from pyosv.synthetic_metrics import (
     top_truth_count_mask,
 )
 from pyosv.orient3d import FaultOrientScanner3
-from pyosv.skinner import FaultSkinner
+from pyosv.skinner import FaultSkinner, find_connected_component_skins
 from pyosv.voting3d import OptimalSurfaceVoter
 
 DEFAULT_SHAPE = (33, 33, 33)
@@ -109,6 +109,7 @@ VARIANT_NAMES = (
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
+    "quality_boundary_skinner_fallback",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -121,6 +122,7 @@ QUALITY_MATRIX_VARIANTS = (
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
+    "quality_boundary_skinner_fallback",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -218,7 +220,7 @@ def parse_workflow_mode(text: str) -> str:
 
 
 def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
-    return "hybrid" if workflow_mode == "quality" else "reference"
+    return "hybrid_v2" if workflow_mode == "quality" else "reference"
 
 
 def _default_surface_support_policy_for_workflow(
@@ -300,6 +302,7 @@ def _effective_skinning_config_for_workflow(
         min_likelihood=min_likelihood,
         accepted_occupancy_radius=accepted_occupancy_radius,
         growth_source=growth_source,
+        boundary_skinner_fallback=True,
     )
 
 
@@ -308,15 +311,17 @@ def _effective_skinning_config_for_variant(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
 ) -> SyntheticSkinningConfig:
-    if variant != "quality_skinner_v2":
-        return skinning_config
-    return replace(
-        skinning_config,
-        method="quality",
-        min_likelihood=None,
-        accepted_occupancy_radius=1,
-        growth_source="pre_thin",
-    )
+    if variant == "quality_skinner_v2":
+        return replace(
+            skinning_config,
+            method="quality",
+            min_likelihood=None,
+            accepted_occupancy_radius=1,
+            growth_source="pre_thin",
+        )
+    if variant == "quality_boundary_skinner_fallback":
+        return replace(skinning_config, boundary_skinner_fallback=True)
+    return skinning_config
 
 
 def _effective_voter_thin_mode(
@@ -579,12 +584,15 @@ class SyntheticSkinningConfig:
     reskin: bool = True
     accepted_occupancy_radius: int | None = None
     small_skin_size: int = 10
+    boundary_skinner_fallback: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise ValueError("enabled must be a bool")
         if not isinstance(self.reskin, bool):
             raise ValueError("reskin must be a bool")
+        if not isinstance(self.boundary_skinner_fallback, bool):
+            raise ValueError("boundary_skinner_fallback must be a bool")
         if self.method not in SKINNER_METHODS:
             raise ValueError("skinner_method must be one of: " + ", ".join(SKINNER_METHODS))
         if self.growth_source not in SKINNER_GROWTH_SOURCES:
@@ -637,6 +645,7 @@ class SyntheticSkinningConfig:
                 5 if self.accepted_occupancy_radius is None else int(self.accepted_occupancy_radius)
             ),
             "small_skin_size": int(self.small_skin_size),
+            "boundary_skinner_fallback": self.boundary_skinner_fallback,
         }
 
 
@@ -683,7 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
-            "surface_support_weighted,quality_skinner_v2 \\\n"
+            "surface_support_weighted,quality_skinner_v2,"
+            "quality_boundary_skinner_fallback \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -755,7 +765,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{" + ",".join(WORKFLOW_MODES) + "}",
         help=(
             "Workflow defaults: reference keeps reference-like voter thinning, "
-            "quality uses hybrid voter thinning with support-aware voting inactive, "
+            "quality uses hybrid_v2 voter thinning with support-aware voting inactive, "
             "diagnostic keeps reference thinning and enables reference-vs-normal "
             "diagnostics."
         ),
@@ -2112,13 +2122,25 @@ def _run_voting_from_attributes(
         )
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
+        skin_diagnostics: dict[str, Any] = {}
         skins = _find_synthetic_skins(
             fv,
             fvt,
             vp,
             vt,
             skinning_config=skinning_config,
+            diagnostics=skin_diagnostics,
         )
+        _apply_boundary_skinner_fallback(
+            skins,
+            fvt,
+            vp,
+            vt,
+            skinning_config=skinning_config,
+            variant=variant,
+            diagnostics=skin_diagnostics,
+        )
+        report["skinning"]["diagnostics"] = skin_diagnostics
         skin_metrics = skin_truth_metrics(
             skins,
             shape=case.shape,
@@ -2568,6 +2590,20 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_largest_fraction",
                 "skin_small_count",
                 "skin_small_cell_fraction",
+                "skin_seed_candidate_count_before_spacing",
+                "skin_seed_count_after_spacing",
+                "skin_seed_rejected_by_occupied",
+                "skin_grow_attempt_count",
+                "skin_discarded_empty_count",
+                "skin_discarded_small_count",
+                "skin_accepted_count",
+                "skin_fallback_enabled",
+                "skin_fallback_used",
+                "skin_fallback_reason",
+                "skin_fallback_method",
+                "skin_fallback_input",
+                "skin_fallback_skin_count",
+                "skin_fallback_cell_count",
                 "skin_buffered_f1_r2",
                 "skin_buffered_precision_r2",
                 "skin_buffered_recall_r2",
@@ -2633,6 +2669,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     skin_summary = _summary_csv_skin_row(
                         enabled=bool(skinning["enabled"]),
                         quality=skin_quality,
+                        diagnostics=skinning.get("diagnostics"),
                     )
                     comparison_row = _summary_csv_comparison_row(
                         comparison_variants.get(variant, {}),
@@ -2856,7 +2893,9 @@ def _summary_csv_skin_row(
     *,
     enabled: bool,
     quality: Mapping[str, Any] | None,
+    diagnostics: Mapping[str, Any] | None,
 ) -> dict[str, bool | int | float | None]:
+    diagnostic_row = _summary_csv_skin_diagnostics_row(enabled=enabled, diagnostics=diagnostics)
     if quality is None:
         return {
             "skinning_enabled": enabled,
@@ -2869,6 +2908,7 @@ def _summary_csv_skin_row(
             "skin_largest_fraction": 0.0,
             "skin_small_count": 0,
             "skin_small_cell_fraction": 0.0,
+            **diagnostic_row,
             "skin_buffered_f1_r2": None,
             "skin_buffered_precision_r2": None,
             "skin_buffered_recall_r2": None,
@@ -2895,6 +2935,7 @@ def _summary_csv_skin_row(
         "skin_largest_fraction": topology["largest_skin_fraction"],
         "skin_small_count": topology["small_skin_count"],
         "skin_small_cell_fraction": topology["small_skin_cell_fraction"],
+        **diagnostic_row,
         "skin_buffered_f1_r2": overlap["buffered_f1"],
         "skin_buffered_precision_r2": overlap["buffered_precision"],
         "skin_buffered_recall_r2": overlap["buffered_recall"],
@@ -2904,6 +2945,65 @@ def _summary_csv_skin_row(
         "skin_distance_hausdorff_p95": distance["hausdorff_p95"],
         "skin_strike_median_error": orientation["strike_median"],
         "skin_dip_median_error": orientation["dip_median"],
+    }
+
+
+def _summary_csv_skin_diagnostics_row(
+    *,
+    enabled: bool,
+    diagnostics: Mapping[str, Any] | None,
+) -> dict[str, bool | int | str | None]:
+    if not enabled:
+        return {
+            "skin_seed_candidate_count_before_spacing": 0,
+            "skin_seed_count_after_spacing": 0,
+            "skin_seed_rejected_by_occupied": 0,
+            "skin_grow_attempt_count": 0,
+            "skin_discarded_empty_count": 0,
+            "skin_discarded_small_count": 0,
+            "skin_accepted_count": 0,
+            "skin_fallback_enabled": False,
+            "skin_fallback_used": False,
+            "skin_fallback_reason": None,
+            "skin_fallback_method": None,
+            "skin_fallback_input": None,
+            "skin_fallback_skin_count": 0,
+            "skin_fallback_cell_count": 0,
+        }
+    if diagnostics is None:
+        return {
+            "skin_seed_candidate_count_before_spacing": None,
+            "skin_seed_count_after_spacing": None,
+            "skin_seed_rejected_by_occupied": None,
+            "skin_grow_attempt_count": None,
+            "skin_discarded_empty_count": None,
+            "skin_discarded_small_count": None,
+            "skin_accepted_count": None,
+            "skin_fallback_enabled": None,
+            "skin_fallback_used": None,
+            "skin_fallback_reason": None,
+            "skin_fallback_method": None,
+            "skin_fallback_input": None,
+            "skin_fallback_skin_count": None,
+            "skin_fallback_cell_count": None,
+        }
+    return {
+        "skin_seed_candidate_count_before_spacing": diagnostics.get(
+            "seed_candidate_count_before_spacing"
+        ),
+        "skin_seed_count_after_spacing": diagnostics.get("seed_count_after_spacing"),
+        "skin_seed_rejected_by_occupied": diagnostics.get("seed_count_rejected_by_occupied"),
+        "skin_grow_attempt_count": diagnostics.get("grow_attempt_count"),
+        "skin_discarded_empty_count": diagnostics.get("discarded_empty_skin_count"),
+        "skin_discarded_small_count": diagnostics.get("discarded_small_skin_count"),
+        "skin_accepted_count": diagnostics.get("accepted_skin_count"),
+        "skin_fallback_enabled": diagnostics.get("fallback_enabled"),
+        "skin_fallback_used": diagnostics.get("fallback_used"),
+        "skin_fallback_reason": diagnostics.get("fallback_reason"),
+        "skin_fallback_method": diagnostics.get("fallback_method"),
+        "skin_fallback_input": diagnostics.get("fallback_input"),
+        "skin_fallback_skin_count": diagnostics.get("fallback_skin_count"),
+        "skin_fallback_cell_count": diagnostics.get("fallback_cell_count"),
     }
 
 
@@ -2956,6 +3056,62 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
     }
 
 
+def _apply_boundary_skinner_fallback(
+    skins: list[Any],
+    fvt: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    *,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+    diagnostics: dict[str, Any],
+) -> None:
+    fallback_enabled = skinning_config.boundary_skinner_fallback
+    diagnostics.update(
+        {
+            "fallback_enabled": fallback_enabled,
+            "fallback_used": False,
+            "fallback_reason": None,
+            "fallback_method": ("connected_component_on_fvt" if fallback_enabled else None),
+            "fallback_input": "fvt" if fallback_enabled else None,
+            "fallback_skin_count": 0,
+            "fallback_cell_count": 0,
+        }
+    )
+    if not fallback_enabled:
+        return
+    if skins:
+        diagnostics["fallback_reason"] = "primary_skin_nonempty"
+        return
+
+    fvt_positive_count = int(np.count_nonzero(np.asarray(fvt) > np.float32(NONZERO_EPSILON)))
+    if fvt_positive_count == 0:
+        diagnostics["fallback_reason"] = "empty_primary_skin_without_positive_fvt"
+        return
+
+    fallback_skins = find_connected_component_skins(
+        fvt,
+        vp,
+        vt,
+        min_likelihood=NONZERO_EPSILON,
+        min_skin_size=skinning_config.min_skin_size,
+        connectivity="edge",
+    )
+    if not fallback_skins:
+        diagnostics["fallback_reason"] = "connected_component_fallback_empty"
+        return
+
+    skins.extend(fallback_skins)
+    diagnostics.update(
+        {
+            "fallback_used": True,
+            "fallback_reason": "empty_primary_skin_with_positive_fvt",
+            "fallback_skin_count": int(len(fallback_skins)),
+            "fallback_cell_count": int(sum(len(skin) for skin in fallback_skins)),
+        }
+    )
+
+
 def _find_synthetic_skins(
     fv: np.ndarray,
     fvt: np.ndarray,
@@ -2963,6 +3119,7 @@ def _find_synthetic_skins(
     vt: np.ndarray,
     *,
     skinning_config: SyntheticSkinningConfig,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[Any]:
     skinner_kwargs: dict[str, Any] = {
         "method": skinning_config.method,
@@ -2994,6 +3151,7 @@ def _find_synthetic_skins(
         max_delta_strike=skinning_config.max_delta_strike,
         reskin=skinning_config.reskin,
         accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
+        diagnostics=diagnostics,
     )
 
 
