@@ -259,14 +259,17 @@ remain degraded. Diagnostic fallback variants are compared against these modes,
 but promotion requires the scanner-inclusive boundary target and non-boundary
 regression tolerances to pass.
 
-As of the final scanner-boundary promotion gate, no diagnostic variant has been
-promoted into `quality current_default`. The scanner-inclusive 49^3
-`boundary_plane` case remains an open target: `current_default` and the
-scanner-target recentering variant fail the FVT-positive F1 and distance gates,
-while `quality_boundary_skinner_fallback_v4` improves boundary skin but still
-misses the skin-F1 and skin-count gates and regresses the oracle boundary row.
-See [Quality Mode](quality_mode.md) for the exact benchmark commands, metrics,
-promotion criteria, and diagnostic variant descriptions.
+As of the documented scanner-boundary promotion gate, no diagnostic variant has
+been promoted into `quality current_default`. The scanner-inclusive 49^3
+`boundary_plane` case remains an open target. The current promotion-candidate
+flow compares `boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
+`quality_boundary_skinner_fallback_v5` against `current_default` with
+`scripts/compare_quality_reports.py` or
+`scripts/check_synthetic_quality_promotion_gate.py`. The 49^3
+`promotion_candidates_49` benchmark has not been run in this repository update,
+so these candidates remain unpromoted. See [Quality Mode](quality_mode.md) for
+the exact benchmark commands, metrics, promotion criteria, and diagnostic
+variant descriptions.
 
 ## Curved Surface Thinning Diagnostic
 
@@ -1001,12 +1004,16 @@ final_norm_smoothing_1
 voter_thin_normal
 voter_thin_hybrid
 voter_thin_hybrid_v2
+boundary_edge_thin_v1
+boundary_seed_retention_v1
 voter_thin_normal_plateau
 surface_support_weighted
 quality_skinner_v2
 quality_boundary_skinner_fallback
 quality_boundary_skinner_fallback_v2
 quality_boundary_skinner_fallback_v3
+quality_boundary_skinner_fallback_v4
+quality_boundary_skinner_fallback_v5
 ```
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
@@ -1040,6 +1047,12 @@ quality benchmark with `--scanner-backend quality` and
 regressed non-boundary skin F1 beyond the 0.02 tolerance on multiple cases. It
 therefore remains diagnostic. The next area to improve is better component
 filtering or voting/fvt boundary recovery.
+`boundary_edge_thin_v1` and `boundary_seed_retention_v1` are explicit
+scanner-boundary diagnostics and are not included in the default or
+`quality-matrix` presets. `quality_boundary_skinner_fallback_v5` is a
+topology-guarded degraded-primary fallback candidate, also selected only by
+explicit variant name. It remains unpromoted until a 49^3 scanner-boundary
+promotion report passes the documented gate.
 `summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
 pipeline column, variant column, baseline variant, input mode, workflow mode,
 buffered F1, candidate-to-truth p95 distance, fvt median orientation error

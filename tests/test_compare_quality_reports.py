@@ -10,6 +10,16 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "compare_quality_reports.py"
+CHECK_SCRIPT = REPO_ROOT / "scripts" / "check_synthetic_quality_promotion_gate.py"
+EXTENDED_CASE_IDS = (
+    "single_vertical_plane",
+    "single_dipping_plane",
+    "curved_surface",
+    "parallel_planes",
+    "crossing_planes",
+    "boundary_plane",
+    "weak_noisy_plane",
+)
 
 
 BASE_FIELDS = (
@@ -29,6 +39,9 @@ BASE_FIELDS = (
     "fvt_positive_buffered_f1_r2",
     "fvt_positive_distance_p95",
     "skin_distance_p95",
+    "skin_fallback_replaced_primary",
+    "skin_over_merge_count",
+    "skin_over_split_count",
 )
 
 
@@ -50,6 +63,9 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "fvt_positive_buffered_f1_r2": 0.95,
         "fvt_positive_distance_p95": 1.0,
         "skin_distance_p95": 2.0,
+        "skin_fallback_replaced_primary": False,
+        "skin_over_merge_count": 0,
+        "skin_over_split_count": 0,
     }
     row.update(overrides)
     return row
@@ -63,6 +79,25 @@ def _write_csv(
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fields})
+
+
+def _promotion_gate_rows(candidate_variant: str) -> list[dict[str, Any]]:
+    rows = []
+    for pipeline in ("scanner", "oracle"):
+        for case_id in EXTENDED_CASE_IDS:
+            baseline = _row(case_id=case_id, pipeline=pipeline)
+            candidate = _row(case_id=case_id, pipeline=pipeline, variant=candidate_variant)
+            if pipeline == "oracle":
+                baseline["scanner_backend"] = ""
+                candidate["scanner_backend"] = ""
+            if pipeline == "scanner" and case_id == "boundary_plane":
+                candidate.update(
+                    skin_buffered_f1_r2=0.91,
+                    skin_count=2,
+                    skin_cell_count=100,
+                )
+            rows.extend((baseline, candidate))
+    return rows
 
 
 def _run_compare(
@@ -216,3 +251,157 @@ def test_fail_on_gate_failure_returns_exit_code_2(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert data["promotion_gate"]["passed"] is False
+
+
+def test_scanner_boundary_gate_flags_false_non_boundary_fallback_replacement(
+    tmp_path: Path,
+) -> None:
+    baseline_rows = [
+        _row(),
+        _row(case_id="single_vertical_plane", skin_fallback_replaced_primary=False),
+    ]
+    candidate_rows = [
+        _row(skin_buffered_f1_r2=0.91, skin_count=2, skin_cell_count=100),
+        _row(case_id="single_vertical_plane", skin_fallback_replaced_primary=True),
+    ]
+    result, data, _ = _run_compare(
+        tmp_path,
+        baseline_rows,
+        candidate_rows,
+        "--promotion-gate",
+        "scanner-boundary",
+    )
+
+    assert result.returncode == 0, result.stderr
+    gate = data["promotion_gate"]
+    assert gate["passed"] is False
+    assert gate["false_fallback_replacements"][0]["key"]["case_id"] == "single_vertical_plane"
+    assert "stable non-boundary false fallback replacement" in gate["reasons"][0]
+
+
+def test_scanner_boundary_gate_flags_parallel_crossing_topology_regression(
+    tmp_path: Path,
+) -> None:
+    baseline_rows = [_row(), _row(case_id="parallel_planes", skin_over_merge_count=0)]
+    candidate_rows = [
+        _row(skin_buffered_f1_r2=0.91, skin_count=2, skin_cell_count=100),
+        _row(case_id="parallel_planes", skin_over_merge_count=1),
+    ]
+    result, data, _ = _run_compare(
+        tmp_path,
+        baseline_rows,
+        candidate_rows,
+        "--promotion-gate",
+        "scanner-boundary",
+    )
+
+    assert result.returncode == 0, result.stderr
+    gate = data["promotion_gate"]
+    assert gate["passed"] is False
+    assert gate["topology_regressions"][0]["metric"] == "skin_over_merge_count"
+
+
+def test_check_synthetic_quality_promotion_gate_help() -> None:
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--help"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--candidate-variant" in result.stdout
+
+
+def test_check_synthetic_quality_promotion_gate_writes_json_and_markdown(
+    tmp_path: Path,
+) -> None:
+    summary = tmp_path / "summary.csv"
+    output_json = tmp_path / "promotion_gate.json"
+    output_markdown = tmp_path / "promotion_gate.md"
+    _write_csv(
+        summary,
+        _promotion_gate_rows("quality_boundary_skinner_fallback_v5"),
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CHECK_SCRIPT),
+            "--baseline-summary",
+            str(summary),
+            "--candidate-summary",
+            str(summary),
+            "--candidate-variant",
+            "quality_boundary_skinner_fallback_v5",
+            "--output-json",
+            str(output_json),
+            "--output-markdown",
+            str(output_markdown),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(output_json.read_text(encoding="utf-8"))
+    assert data["promotion_gate"]["passed"] is True
+    assert data["promotion_gate"]["promotable_candidates"] == [
+        "quality_boundary_skinner_fallback_v5"
+    ]
+    candidate_gate = data["promotion_gate"]["candidates"]["quality_boundary_skinner_fallback_v5"]
+    assert candidate_gate["coverage"]["passed"] is True
+    markdown = output_markdown.read_text(encoding="utf-8")
+    assert "quality_boundary_skinner_fallback_v5" in markdown
+    assert "scanner-boundary" in markdown
+    assert "oracle_49" in markdown
+
+
+def test_check_synthetic_quality_promotion_gate_requires_full_gate_coverage(
+    tmp_path: Path,
+) -> None:
+    summary = tmp_path / "summary.csv"
+    output_json = tmp_path / "promotion_gate.json"
+    _write_csv(
+        summary,
+        [
+            _row(variant="current_default"),
+            _row(
+                variant="quality_boundary_skinner_fallback_v5",
+                skin_buffered_f1_r2=0.91,
+                skin_count=2,
+                skin_cell_count=100,
+            ),
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CHECK_SCRIPT),
+            "--baseline-summary",
+            str(summary),
+            "--candidate-summary",
+            str(summary),
+            "--candidate-variant",
+            "quality_boundary_skinner_fallback_v5",
+            "--output-json",
+            str(output_json),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(output_json.read_text(encoding="utf-8"))
+    gate = data["promotion_gate"]
+    candidate_gate = gate["candidates"]["quality_boundary_skinner_fallback_v5"]
+    assert gate["passed"] is False
+    assert gate["promotable_candidates"] == []
+    assert candidate_gate["coverage"]["passed"] is False
+    assert any("missing required gate coverage: oracle_49" in reason for reason in gate["reasons"])

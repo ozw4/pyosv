@@ -151,12 +151,18 @@ metrics. That document also explains controlled report workflow modes:
 thinning to the truth-quality-favored `hybrid_v2` path with support-aware surface
 voting inactive, the quality skinner v2 profile, and the empty-primary boundary
 skinner fallback. Degraded-primary fallback variants remain diagnostic after
-the 49^3 scanner-inclusive boundary benchmark: v2 over-includes fallback
-components, filtered v3 did not reach the boundary skin F1 promotion target or
-the non-boundary regression tolerances, and skeletonized v4 still missed the
-scanner boundary skin target while regressing oracle boundary skin. The
-scanner-inclusive boundary target remains open. `diagnostic` keeps the
-reference path while enabling reference-vs-normal thinning diagnostics.
+the documented 49^3 scanner-inclusive boundary benchmark: v2 over-includes
+fallback components, filtered v3 did not reach the boundary skin F1 promotion
+target or the non-boundary regression tolerances, and skeletonized v4 still
+missed the scanner boundary skin target while regressing oracle boundary skin.
+The current promotion-candidate flow for `boundary_edge_thin_v1`,
+`boundary_seed_retention_v1`, and `quality_boundary_skinner_fallback_v5` is
+reported with `scripts/compare_quality_reports.py` or
+`scripts/check_synthetic_quality_promotion_gate.py`; no new 49^3
+`promotion_candidates_49` result is recorded here, so `quality current_default`
+is unchanged. The scanner-inclusive boundary target remains open.
+`diagnostic` keeps the reference path while enabling reference-vs-normal
+thinning diagnostics.
 The current quality workflow profile and guardrails are summarized in
 `docs/quality_mode.md`. A typical extended report run is:
 

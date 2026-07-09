@@ -77,45 +77,63 @@ This recommendation is for quality reports only. The report default remains
 `--scanner-backend reference-like` so reference-oriented scanner behavior is not
 changed automatically.
 
-For the recommended scanner 49^3 quality benchmark, run the current default and
-diagnostic scanner-boundary candidates with downstream diagnostics enabled:
+For the 49^3 scanner-boundary promotion benchmark, run the current default and
+the opt-in diagnostic candidates with downstream diagnostics enabled:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set extended \
   --shape 49,49,49 \
   --workflow-mode quality \
-  --variants current_default,voter_thin_hybrid_v2_recenter_scanner_target,quality_boundary_skinner_fallback_v4 \
-  --input-mode scanner \
-  --scanner-backend quality \
-  --scanner-refinement-factor 2 \
-  --scanner-downstream-diagnostics \
-  --output-dir outputs/3d/synthetic_quality/scanner_quality_current_49 \
-  --pretty
-```
-
-For the recommended both-mode comparison, run both oracle and scanner pipelines
-with the same variants and scanner diagnostics:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 49,49,49 \
-  --workflow-mode quality \
-  --variants current_default,voter_thin_hybrid_v2_recenter_scanner_target,quality_boundary_skinner_fallback_v4 \
+  --variants current_default,boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
   --input-mode both \
   --scanner-backend quality \
   --scanner-refinement-factor 2 \
   --scanner-downstream-diagnostics \
-  --output-dir outputs/3d/synthetic_quality/scanner_quality_manual_49 \
-  --pretty
+  --output-dir outputs/3d/synthetic_quality/promotion_candidates_49 \
+  --pretty \
+  --save-figures \
+  --write-markdown-index
 ```
+
+Then compare each candidate against `current_default`. `compare_quality_reports.py`
+can compare two variants from the same `summary.csv`; pass the same file for
+the baseline and candidate summaries and select variants explicitly:
+
+```bash
+python scripts/compare_quality_reports.py \
+  outputs/3d/synthetic_quality/promotion_candidates_49/summary.csv \
+  outputs/3d/synthetic_quality/promotion_candidates_49/summary.csv \
+  --baseline-variant current_default \
+  --candidate-variant quality_boundary_skinner_fallback_v5 \
+  --promotion-gate scanner-boundary \
+  --output-json outputs/3d/synthetic_quality/promotion_candidates_49/fallback_v5_delta.json \
+  --output-markdown outputs/3d/synthetic_quality/promotion_candidates_49/fallback_v5_delta.md
+```
+
+Repeat the same command with `--candidate-variant boundary_edge_thin_v1` and
+`--candidate-variant boundary_seed_retention_v1`, or run the aggregate checker:
+
+```bash
+python scripts/check_synthetic_quality_promotion_gate.py \
+  --baseline-summary outputs/3d/synthetic_quality/promotion_candidates_49/summary.csv \
+  --candidate-summary outputs/3d/synthetic_quality/promotion_candidates_49/summary.csv \
+  --candidate-variants boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
+  --output-json outputs/3d/synthetic_quality/promotion_candidates_49/promotion_gate.json \
+  --output-markdown outputs/3d/synthetic_quality/promotion_candidates_49/promotion_gate.md
+```
+
+The aggregate checker requires matched 49^3 extended-case rows for the boundary
+scanner gate, non-boundary scanner regression checks, oracle regression checks,
+stable-case fallback replacement checks, and parallel/crossing topology checks.
+If any required coverage is absent, `promotion_gate.json` records the candidate
+as not promotable even when the available boundary row passes.
 
 Then print the concise oracle-vs-scanner comparison table:
 
 ```bash
 python examples/print_synthetic_quality_comparison.py \
-  outputs/3d/synthetic_quality/scanner_quality_manual_49/summary.csv
+  outputs/3d/synthetic_quality/promotion_candidates_49/summary.csv
 ```
 
 The helper reports `case_id`, `variant`, oracle/scanner fvt-positive F1,
@@ -249,8 +267,10 @@ candidate changes FVT, it must also satisfy
 show no material skin-F1 regression versus `current_default` and no false
 fallback replacement on stable non-boundary cases unless metrics improve.
 Oracle shape-49 behavior must not materially regress.
+`parallel_planes` and `crossing_planes` also must not worsen the
+component-aware over-merge or over-split counts.
 
-The final 33^3 and 49^3 scanner-inclusive gate runs kept
+The previously documented 33^3 and 49^3 scanner-inclusive gate runs kept
 `quality current_default` unchanged. In the 49^3 scanner run with
 `--scanner-backend quality --scanner-refinement-factor 2`,
 `current_default` on `boundary_plane` had
@@ -269,6 +289,14 @@ metrics to `fvt_positive_buffered_f1_r2=0.740855` and
 also remains diagnostic. The known scanner-inclusive boundary issue remains
 open: scanner `ft` can be high quality while downstream FVT and skinning
 degrade near boundaries.
+
+For the #339 promotion-candidate flow above, no new 49^3
+`promotion_candidates_49` benchmark output has been recorded in this repository
+update. The `quality current_default` profile is therefore unchanged, and
+`boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
+`quality_boundary_skinner_fallback_v5` remain unpromoted until their
+`promotion_gate.json` shows the scanner-boundary gate passing without material
+non-boundary, oracle, fallback-replacement, or topology regressions.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The

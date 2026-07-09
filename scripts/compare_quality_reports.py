@@ -267,6 +267,8 @@ def _promotion_gate(
             "boundary_plane": None,
             "non_boundary_regressions": [],
             "oracle_regressions": [],
+            "false_fallback_replacements": [],
+            "topology_regressions": [],
             "reasons": [],
         }
     return _scanner_boundary_gate(candidate_rows, comparison_by_key)
@@ -305,10 +307,21 @@ def _scanner_boundary_gate(
         pipeline="oracle",
         exclude_boundary=False,
     )
+    false_fallback_replacements = _false_fallback_replacements(comparison_by_key.values())
+    topology_regressions = _topology_regressions(comparison_by_key.values())
     for regression in non_boundary_regressions:
         reasons.append(f"non-boundary scanner regression: {regression['metric']}")
     for regression in oracle_regressions:
         reasons.append(f"oracle regression: {regression['metric']}")
+    for replacement in false_fallback_replacements:
+        reasons.append(
+            f"stable non-boundary false fallback replacement: {replacement['key']['case_id']}"
+        )
+    for regression in topology_regressions:
+        reasons.append(
+            "parallel/crossing topology regression: "
+            f"{regression['key']['case_id']} {regression['metric']}"
+        )
 
     return {
         "name": "scanner-boundary",
@@ -316,6 +329,8 @@ def _scanner_boundary_gate(
         "boundary_plane": boundary_result,
         "non_boundary_regressions": non_boundary_regressions,
         "oracle_regressions": oracle_regressions,
+        "false_fallback_replacements": false_fallback_replacements,
+        "topology_regressions": topology_regressions,
         "reasons": reasons,
     }
 
@@ -415,6 +430,72 @@ def _material_regressions(
     return regressions
 
 
+def _false_fallback_replacements(comparisons: Any) -> list[dict[str, Any]]:
+    replacements: list[dict[str, Any]] = []
+    for comparison in comparisons:
+        key = comparison["key"]
+        if (
+            key["pipeline"] != "scanner"
+            or not _shape_is_49(key)
+            or key["case_id"] in {"boundary_plane", "parallel_planes", "crossing_planes"}
+        ):
+            continue
+        metrics = comparison["metrics"]
+        baseline_replaced = metrics["skin_fallback_replaced_primary"]["baseline"]
+        candidate_replaced = metrics["skin_fallback_replaced_primary"]["candidate"]
+        if candidate_replaced is not True or baseline_replaced is True:
+            continue
+        if _has_material_improvement(metrics):
+            continue
+        replacements.append(
+            {
+                "key": key,
+                "baseline": baseline_replaced,
+                "candidate": candidate_replaced,
+            }
+        )
+    return replacements
+
+
+def _has_material_improvement(metrics: dict[str, dict[str, Any]]) -> bool:
+    for metric in ("skin_buffered_f1_r2", "fvt_positive_buffered_f1_r2"):
+        delta = metrics[metric]["delta"]
+        if delta is not None and delta >= 0.02:
+            return True
+    for metric in ("skin_distance_p95", "fvt_positive_distance_p95"):
+        delta = metrics[metric]["delta"]
+        if delta is not None and delta <= -2.0:
+            return True
+    return False
+
+
+def _topology_regressions(comparisons: Any) -> list[dict[str, Any]]:
+    regressions: list[dict[str, Any]] = []
+    for comparison in comparisons:
+        key = comparison["key"]
+        if (
+            key["pipeline"] != "scanner"
+            or not _shape_is_49(key)
+            or key["case_id"] not in {"parallel_planes", "crossing_planes"}
+        ):
+            continue
+        for metric in ("skin_over_merge_count", "skin_over_split_count"):
+            delta = comparison["metrics"][metric]["delta"]
+            if delta is None or delta <= 0:
+                continue
+            regressions.append(
+                {
+                    "key": key,
+                    "metric": metric,
+                    "baseline": comparison["metrics"][metric]["baseline"],
+                    "candidate": comparison["metrics"][metric]["candidate"],
+                    "delta": delta,
+                    "threshold": 0,
+                }
+            )
+    return regressions
+
+
 def _write_markdown(report: dict[str, Any], output_path: Path) -> None:
     gate = report["promotion_gate"]
     lines = [
@@ -432,7 +513,9 @@ def _write_markdown(report: dict[str, Any], output_path: Path) -> None:
     ]
     if gate["boundary_plane"] is not None:
         lines.extend(_boundary_markdown(gate["boundary_plane"]))
-    regressions = gate["non_boundary_regressions"] + gate["oracle_regressions"]
+    regressions = (
+        gate["non_boundary_regressions"] + gate["oracle_regressions"] + gate["topology_regressions"]
+    )
     lines.extend(["## Material Regressions", ""])
     if not regressions:
         lines.append("None.")
@@ -452,6 +535,15 @@ def _write_markdown(report: dict[str, Any], output_path: Path) -> None:
                 f"{_format_value(regression['candidate'])} | "
                 f"{_format_value(regression['delta'])} |"
             )
+    lines.extend(["", "## False Fallback Replacements", ""])
+    replacements = gate["false_fallback_replacements"]
+    if not replacements:
+        lines.append("None.")
+    else:
+        lines.extend(["| case_id | pipeline |", "|---|---|"])
+        for replacement in replacements:
+            key = replacement["key"]
+            lines.append(f"| {key['case_id']} | {key['pipeline']} |")
     lines.append("")
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
