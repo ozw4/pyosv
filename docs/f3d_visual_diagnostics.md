@@ -83,23 +83,28 @@ To compare the reference and quality workflows on the same crop centers, add
 `--compare-workflows`:
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/report_3d_f3d_multicrop.py \
-  --output-json outputs/3d/f3d/multicrop_visual_quality_compare_001/metrics.json \
+PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
+  --data-root "$PYOSV_F3D_DATA_ROOT" \
   --count 3 \
   --crop-shape 64,64,64 \
   --interior-margin 16 \
   --compare-workflows \
   --save-figures \
+  --write-markdown-index \
+  --output-json outputs/3d/f3d/quality_external_smoke_001/metrics.json \
   --pretty
 ```
 
 In compare mode, the JSON contains `workflows.reference`,
 `workflows.quality`, `consensus.workflows`, and
 `workflow_delta.quality_vs_reference`, so the markdown index shows both the
-reference and quality workflow results. The quality workflow uses `hybrid_v2`
-voter thinning unless `--voter-thin-mode` is passed explicitly. The consensus
-section summarizes
+reference and quality workflow results. It also contains top-level
+`quality_validation`, a truthless external smoke summary for quality promotion
+candidates. This smoke can flag obvious density explosion, edge-density
+increase, sparse-distance regression, finite metric failures, and extreme
+crop-to-crop instability, but it is not a substitute for the synthetic
+promotion gate. The quality workflow uses `hybrid_v2` voter thinning unless
+`--voter-thin-mode` is passed explicitly. The consensus section summarizes
 truthless crop-to-crop stability from the saved crop metrics, including fvt/fv
 nonzero density, fvt reference correlation, buffered ridge overlap, sparse
 ridge distance p95, finite-check failures, and an fvt edge-density proxy from
@@ -110,6 +115,14 @@ example `figures/reference/crop_001/` and `figures/quality/crop_001/`, so the
 two runs do not overwrite each other. Support-aware voting is not a quality
 default in this report; pass explicit `--surface-support-*` overrides only for
 a diagnostic comparison.
+
+Default quality smoke thresholds are intentionally loose: fvt density must not
+exceed `2.0x` the reference workflow, fvt edge-density proxy delta must not
+exceed `0.10`, and sparse distance p95 must not worsen by more than `5.0`
+samples. Override them with `--quality-density-max-ratio`,
+`--quality-edge-density-max-delta`, and
+`--quality-sparse-distance-max-delta` when a diagnostic run needs a different
+tolerance.
 
 For reference-like thinning diagnostics, run the same visual reports with
 `--scanner-thin-mode reference` and `--voter-thin-mode reference`, or run the
@@ -156,6 +169,10 @@ no independent truth volume. A higher match to the reference workflow is not, by
 itself, higher processing quality. Use the side-by-side crops to check that the
 quality workflow preserves geological signal, does not add excessive ridges or
 boundary artifacts, and remains consistent across crop locations.
+
+F3 visual diagnostics require the external F3 data root. CI should exercise the
+JSON and markdown structures with mocks/fixtures only; do not make real F3
+volumes mandatory for automated tests.
 
 For reference-like thinning experiments, first look for `fvt` sparsity moving
 closer to the reference, better buffered ridge overlap, smaller sparse-ridge

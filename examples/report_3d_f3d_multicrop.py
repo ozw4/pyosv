@@ -45,6 +45,10 @@ DEFAULT_CROP_SHAPE = (128, 128, 100)
 DEFAULT_INTERIOR_MARGIN = 40
 DEFAULT_PERCENTILE = 99.9
 DEFAULT_MIN_SEPARATION = 48.0
+DEFAULT_QUALITY_DENSITY_MAX_RATIO = 2.0
+DEFAULT_QUALITY_EDGE_DENSITY_MAX_DELTA = 0.10
+DEFAULT_QUALITY_SPARSE_DISTANCE_MAX_DELTA = 5.0
+DEFAULT_QUALITY_CROP_STABILITY_MAX_CV = 2.0
 AGGREGATE_ROOTS = (
     "normalized_correlation",
     "top_percentile_overlap",
@@ -104,6 +108,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-markdown-index",
         action="store_true",
         help="Write visual_report.md next to the metrics JSON.",
+    )
+    parser.add_argument(
+        "--quality-validation",
+        action="store_true",
+        help=(
+            "Add a truthless external-smoke quality_validation summary. "
+            "Compare reports include it automatically."
+        ),
+    )
+    parser.add_argument(
+        "--quality-density-max-ratio",
+        type=float,
+        default=DEFAULT_QUALITY_DENSITY_MAX_RATIO,
+        help="Maximum allowed quality/reference fvt density ratio.",
+    )
+    parser.add_argument(
+        "--quality-edge-density-max-delta",
+        type=float,
+        default=DEFAULT_QUALITY_EDGE_DENSITY_MAX_DELTA,
+        help="Maximum allowed quality-reference fvt edge-density proxy delta.",
+    )
+    parser.add_argument(
+        "--quality-sparse-distance-max-delta",
+        type=float,
+        default=DEFAULT_QUALITY_SPARSE_DISTANCE_MAX_DELTA,
+        help="Maximum allowed quality-reference sparse distance p95 delta in samples.",
     )
     parser.add_argument(
         "--volume-dir",
@@ -231,6 +261,10 @@ def run_example(
     compare_workflows: bool = False,
     surface_support_min_fraction: float | None = None,
     surface_support_exponent: float | None = None,
+    quality_validation: bool = False,
+    quality_density_max_ratio: float = DEFAULT_QUALITY_DENSITY_MAX_RATIO,
+    quality_edge_density_max_delta: float = DEFAULT_QUALITY_EDGE_DENSITY_MAX_DELTA,
+    quality_sparse_distance_max_delta: float = DEFAULT_QUALITY_SPARSE_DISTANCE_MAX_DELTA,
 ) -> dict[str, Any]:
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_json is not None:
@@ -331,6 +365,15 @@ def run_example(
                 consensus_workflows["quality"],
             )
         }
+    quality_validation_summary = build_quality_validation_summary(
+        consensus,
+        workflow_mode=workflow_mode,
+        compare_workflows=compare_workflows,
+        enabled=quality_validation or compare_workflows,
+        density_max_ratio=quality_density_max_ratio,
+        edge_density_max_delta=quality_edge_density_max_delta,
+        sparse_distance_max_delta=quality_sparse_distance_max_delta,
+    )
 
     if compare_workflows:
         config = dict(workflow_reports["reference"]["config"])
@@ -359,6 +402,8 @@ def run_example(
             "aggregate": single["aggregate"],
             "consensus": consensus,
         }
+    if quality_validation_summary is not None:
+        report_content["quality_validation"] = quality_validation_summary
 
     report = _json_compatible(report_content)
 
@@ -486,7 +531,7 @@ def run_workflow_crops(
         figure_percentile=figure_percentile,
         ridge_buffer_radius=ridge_buffer_radius,
         write_markdown_index=write_markdown_index,
-        visual_report_path=output_base_dir / "visual_report.md" if output_base_dir else None,
+        visual_report_path=(output_base_dir / "visual_report.md" if output_base_dir else None),
         sigma1=sigma1,
         sigma2=sigma2,
         phi_min=phi_min,
@@ -709,7 +754,12 @@ def aggregate_crop_metrics(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any]
     for path in metric_paths:
         numeric_values = [value for value in values_by_path[path] if value is not None]
         if not numeric_values:
-            for key in ("per_metric_mean", "per_metric_median", "per_metric_min", "per_metric_max"):
+            for key in (
+                "per_metric_mean",
+                "per_metric_median",
+                "per_metric_min",
+                "per_metric_max",
+            ):
                 summaries[key][path] = None
             continue
 
@@ -759,7 +809,12 @@ def build_consensus_summary(crops: Iterable[Mapping[str, Any]]) -> dict[str, Any
     )
     fvt_sparse_distance_p95 = _crop_metric_values(
         crop_list,
-        ("sparse_ridge_distance_metrics", "interior", "fvt", "candidate_to_reference_p95"),
+        (
+            "sparse_ridge_distance_metrics",
+            "interior",
+            "fvt",
+            "candidate_to_reference_p95",
+        ),
     )
     fvt_edge_density_proxy = []
     for crop in crop_list:
@@ -805,6 +860,175 @@ def build_consensus_delta(
         quality.get("finite_failure_count"),
     )
     return delta
+
+
+def build_quality_validation_summary(
+    consensus: Mapping[str, Any],
+    *,
+    workflow_mode: str = "reference",
+    compare_workflows: bool = False,
+    enabled: bool = True,
+    density_max_ratio: float = DEFAULT_QUALITY_DENSITY_MAX_RATIO,
+    edge_density_max_delta: float = DEFAULT_QUALITY_EDGE_DENSITY_MAX_DELTA,
+    sparse_distance_max_delta: float = DEFAULT_QUALITY_SPARSE_DISTANCE_MAX_DELTA,
+    crop_stability_max_cv: float = DEFAULT_QUALITY_CROP_STABILITY_MAX_CV,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+
+    workflows = _as_mapping(consensus.get("workflows", {}))
+    single_consensus = consensus if not workflows else {}
+    target_workflow = "quality" if compare_workflows and "quality" in workflows else workflow_mode
+    target = _as_mapping(workflows.get(target_workflow, single_consensus))
+    reference = _as_mapping(workflows.get("reference", single_consensus))
+    comparison = _as_mapping(consensus.get("workflow_comparison", {}))
+    quality_minus_reference = _as_mapping(comparison.get("quality_minus_reference", {}))
+    comparison_available = bool(
+        compare_workflows and workflows and reference and target and quality_minus_reference
+    )
+
+    checks: dict[str, dict[str, Any]] = {}
+    checks["finite_metrics"] = _quality_check(
+        value=_finite_float_or_none(target.get("finite_failure_count")),
+        threshold=0,
+        passed=lambda value, threshold: value <= threshold,
+        reason="finite metric checks reported non-finite values",
+        value_key="failure_count",
+    )
+
+    checks["quality_density_not_exploding"] = _density_ratio_check(
+        reference.get("fvt_nonzero_fraction_mean"),
+        target.get("fvt_nonzero_fraction_mean"),
+        threshold=density_max_ratio,
+        comparison_available=comparison_available,
+    )
+    checks["quality_edge_density_not_exploding"] = _quality_check(
+        value=quality_minus_reference.get("fvt_edge_density_proxy_delta_mean"),
+        threshold=edge_density_max_delta,
+        passed=lambda value, threshold: value <= threshold,
+        reason="quality fvt edge-density proxy increased beyond threshold",
+        skipped=not comparison_available,
+        skip_reason="reference/quality consensus comparison is unavailable",
+    )
+    checks["quality_sparse_distance_not_worse"] = _quality_check(
+        value=quality_minus_reference.get("fvt_sparse_distance_p95_delta_mean"),
+        threshold=sparse_distance_max_delta,
+        passed=lambda value, threshold: value <= threshold,
+        reason="quality sparse ridge distance p95 worsened beyond threshold",
+        skipped=not comparison_available,
+        skip_reason="reference/quality consensus comparison is unavailable",
+    )
+
+    stability_values = [
+        _finite_float_or_none(target.get("fvt_nonzero_fraction_cv")),
+        _finite_float_or_none(target.get("fv_nonzero_fraction_cv")),
+    ]
+    finite_stability_values = [value for value in stability_values if value is not None]
+    checks["crop_to_crop_stability"] = _quality_check(
+        value=max(finite_stability_values) if finite_stability_values else None,
+        threshold=crop_stability_max_cv,
+        passed=lambda value, threshold: value <= threshold,
+        reason="crop-to-crop density CV exceeded threshold",
+        skipped=not finite_stability_values,
+        skip_reason="crop-to-crop density CV metrics are unavailable",
+    )
+
+    reasons = [
+        str(check.get("reason"))
+        for check in checks.values()
+        if not check.get("passed", True) and check.get("reason")
+    ]
+    return {
+        "role": "truthless_external_smoke",
+        "crop_count": int(target.get("crop_count", 0) or 0),
+        "workflow": target_workflow,
+        "workflow_comparison_available": comparison_available,
+        "checks": checks,
+        "passed": not reasons,
+        "reasons": reasons,
+    }
+
+
+def _density_ratio_check(
+    reference_density: Any,
+    quality_density: Any,
+    *,
+    threshold: float,
+    comparison_available: bool,
+) -> dict[str, Any]:
+    if not comparison_available:
+        return _skipped_quality_check(
+            threshold, "reference/quality consensus comparison is unavailable"
+        )
+
+    reference_value = _finite_float_or_none(reference_density)
+    quality_value = _finite_float_or_none(quality_density)
+    if reference_value is None or quality_value is None:
+        return _skipped_quality_check(
+            threshold, "reference or quality fvt density mean is unavailable"
+        )
+    if reference_value == 0.0:
+        value = 0.0 if quality_value == 0.0 else None
+        return {
+            "passed": quality_value == 0.0,
+            "value": value,
+            "threshold": threshold,
+            "reason": (
+                "quality fvt density is nonzero while reference fvt density is zero"
+                if quality_value != 0.0
+                else None
+            ),
+        }
+
+    value = quality_value / reference_value
+    passed = value <= threshold
+    return {
+        "passed": passed,
+        "value": value,
+        "threshold": threshold,
+        "reason": ("quality fvt density ratio exceeded threshold" if not passed else None),
+    }
+
+
+def _quality_check(
+    *,
+    value: Any,
+    threshold: float,
+    passed: Any,
+    reason: str,
+    value_key: str = "value",
+    skipped: bool = False,
+    skip_reason: str = "metric is unavailable",
+) -> dict[str, Any]:
+    if skipped:
+        return _skipped_quality_check(threshold, skip_reason, value_key=value_key)
+    numeric_value = _finite_float_or_none(value)
+    if numeric_value is None:
+        return _skipped_quality_check(threshold, skip_reason, value_key=value_key)
+    check_passed = bool(passed(numeric_value, threshold))
+    result: dict[str, Any] = {
+        "passed": check_passed,
+        value_key: numeric_value,
+        "threshold": threshold,
+    }
+    if not check_passed:
+        result["reason"] = reason
+    return result
+
+
+def _skipped_quality_check(
+    threshold: float,
+    reason: str,
+    *,
+    value_key: str = "value",
+) -> dict[str, Any]:
+    return {
+        "passed": True,
+        "skipped": True,
+        value_key: None,
+        "threshold": threshold,
+        "reason": reason,
+    }
 
 
 def _crop_metric_values(crops: list[Mapping[str, Any]], path: tuple[str, ...]) -> list[float]:
@@ -974,6 +1198,7 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
             lines.append("")
 
         _append_consensus_section(lines, consensus)
+        _append_quality_validation_section(lines, _as_mapping(report.get("quality_validation", {})))
 
         for workflow_name, workflow_report in _ordered_workflows(workflows):
             workflow_crops = list(_as_mapping(workflow_report).get("crops", []))
@@ -1004,6 +1229,7 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
         return "\n".join(lines)
 
     _append_consensus_section(lines, consensus)
+    _append_quality_validation_section(lines, _as_mapping(report.get("quality_validation", {})))
 
     lines.extend(
         [
@@ -1175,6 +1401,55 @@ def _append_consensus_section(lines: list[str], consensus: Mapping[str, Any]) ->
         lines.append(f"| {metric} | {_format_metric(quality_minus_reference.get(metric))} |")
 
 
+def _append_quality_validation_section(
+    lines: list[str],
+    quality_validation: Mapping[str, Any],
+) -> None:
+    if not quality_validation:
+        return
+
+    checks = _as_mapping(quality_validation.get("checks", {}))
+    reasons = list(quality_validation.get("reasons", []))
+    lines.extend(
+        [
+            "",
+            "## Quality Validation",
+            "",
+            "truthless external smoke for F3 real-data crops. It helps spot obvious signal loss, edge artifacts, and crop instability, but it is not a replacement for the synthetic promotion gate.",
+            "",
+            f"- role: `{quality_validation.get('role', '')}`",
+            f"- passed: `{quality_validation.get('passed', '')}`",
+            f"- workflow_comparison_available: `{quality_validation.get('workflow_comparison_available', '')}`",
+            f"- crop_count: `{quality_validation.get('crop_count', '')}`",
+        ]
+    )
+    if reasons:
+        lines.append(f"- reasons: `{'; '.join(str(reason) for reason in reasons)}`")
+    else:
+        lines.append("- reasons: `[]`")
+    if quality_validation.get("workflow_comparison_available"):
+        lines.append("- figures: see `reference Figures` and `quality Figures` below.")
+
+    if not checks:
+        return
+
+    lines.extend(
+        [
+            "",
+            "| Check | Passed | Value | Threshold | Note |",
+            "| --- | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for check_name, check in checks.items():
+        check_map = _as_mapping(check)
+        value = check_map.get("failure_count", check_map.get("value"))
+        note = "skipped" if check_map.get("skipped") else check_map.get("reason", "")
+        lines.append(
+            f"| {check_name} | {check_map.get('passed', '')} | "
+            f"{_format_metric(value)} | {_format_metric(check_map.get('threshold'))} | {note} |"
+        )
+
+
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -1329,6 +1604,10 @@ def main(argv: list[str] | None = None) -> int:
             remove_scanner_edge_effects=args.remove_scanner_edge_effects,
             workflow_mode=args.workflow_mode,
             compare_workflows=args.compare_workflows,
+            quality_validation=args.quality_validation,
+            quality_density_max_ratio=args.quality_density_max_ratio,
+            quality_edge_density_max_delta=args.quality_edge_density_max_delta,
+            quality_sparse_distance_max_delta=args.quality_sparse_distance_max_delta,
         )
     except (FileNotFoundError, NotADirectoryError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

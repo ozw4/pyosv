@@ -102,6 +102,10 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.figure_percentile == 99.0
     assert defaults.ridge_buffer_radius == 2.0
     assert defaults.write_markdown_index is False
+    assert defaults.quality_validation is False
+    assert defaults.quality_density_max_ratio == 2.0
+    assert defaults.quality_edge_density_max_delta == 0.10
+    assert defaults.quality_sparse_distance_max_delta == 5.0
     assert defaults.volume_dir is None
     assert defaults.workflow_mode == "reference"
     assert defaults.compare_workflows is False
@@ -118,6 +122,7 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert defaults.surface_support_min_fraction is None
     assert defaults.surface_support_exponent is None
     assert "--final-normalization-smoothing" in module.build_parser().format_help()
+    assert "--quality-validation" in module.build_parser().format_help()
 
     args = module.build_parser().parse_args(
         [
@@ -143,6 +148,12 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
             "--workflow-mode",
             "quality",
             "--compare-workflows",
+            "--quality-density-max-ratio",
+            "1.5",
+            "--quality-edge-density-max-delta",
+            "0.2",
+            "--quality-sparse-distance-max-delta",
+            "4.0",
         ]
     )
     assert args.crop_shape == (16, 14, 12)
@@ -156,11 +167,16 @@ def test_parser_defaults_and_explicit_centers(monkeypatch: pytest.MonkeyPatch) -
     assert args.final_normalization_smoothing == 1.0
     assert args.workflow_mode == "quality"
     assert args.compare_workflows is True
+    assert args.quality_density_max_ratio == 1.5
+    assert args.quality_edge_density_max_delta == 0.2
+    assert args.quality_sparse_distance_max_delta == 4.0
     with pytest.raises(SystemExit):
         module.build_parser().parse_args(["--voter-thin-mode", "bad"])
 
 
-def test_aggregate_reducer_on_synthetic_metric_dicts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_aggregate_reducer_on_synthetic_metric_dicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _import_multicrop_module(monkeypatch)
     crops = [
         {
@@ -392,6 +408,16 @@ def test_compare_workflows_runs_same_centers_and_reports_delta(
     assert "fvt_edge_density_proxy_delta_mean" in comparison
     assert "fvt_sparse_distance_p95_delta_mean" in comparison
     assert comparison["finite_failure_count_delta"] == 0
+    assert loaded["quality_validation"]["role"] == "truthless_external_smoke"
+    assert loaded["quality_validation"]["workflow_comparison_available"] is True
+    assert loaded["quality_validation"]["passed"] is True
+    assert set(loaded["quality_validation"]["checks"]) == {
+        "finite_metrics",
+        "quality_density_not_exploding",
+        "quality_edge_density_not_exploding",
+        "quality_sparse_distance_not_worse",
+        "crop_to_crop_stability",
+    }
     _assert_finite_or_none(loaded["workflow_delta"]["quality_vs_reference"])
     assert received_kwargs[0]["voter_thin_mode"] == "reference"
     assert received_kwargs[1]["voter_thin_mode"] == "hybrid_v2"
@@ -485,6 +511,130 @@ def test_consensus_summary_handles_single_crop_and_finite_failures(
     assert consensus["fvt_sparse_distance_p95_mean"] == 3.0
     assert consensus["fvt_edge_density_proxy_mean"] == 0.0
     assert consensus["finite_failure_count"] == 1
+
+
+def test_quality_validation_summary_passes_within_thresholds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    consensus = {
+        "workflows": {
+            "reference": {
+                "crop_count": 3,
+                "fvt_nonzero_fraction_mean": 0.10,
+                "fvt_nonzero_fraction_cv": 0.20,
+                "fv_nonzero_fraction_cv": 0.10,
+                "fvt_edge_density_proxy_mean": 0.01,
+                "fvt_sparse_distance_p95_mean": 4.0,
+                "finite_failure_count": 0,
+            },
+            "quality": {
+                "crop_count": 3,
+                "fvt_nonzero_fraction_mean": 0.15,
+                "fvt_nonzero_fraction_cv": 0.25,
+                "fv_nonzero_fraction_cv": 0.20,
+                "fvt_edge_density_proxy_mean": 0.05,
+                "fvt_sparse_distance_p95_mean": 6.0,
+                "finite_failure_count": 0,
+            },
+        },
+        "workflow_comparison": {
+            "quality_minus_reference": {
+                "fvt_nonzero_fraction_delta_mean": 0.05,
+                "fvt_edge_density_proxy_delta_mean": 0.04,
+                "fvt_sparse_distance_p95_delta_mean": 2.0,
+                "finite_failure_count_delta": 0,
+            }
+        },
+    }
+
+    validation = module.build_quality_validation_summary(consensus, compare_workflows=True)
+
+    assert validation["role"] == "truthless_external_smoke"
+    assert validation["crop_count"] == 3
+    assert validation["workflow_comparison_available"] is True
+    assert validation["passed"] is True
+    assert validation["reasons"] == []
+    assert validation["checks"]["finite_metrics"]["failure_count"] == 0
+    assert validation["checks"]["quality_density_not_exploding"]["value"] == pytest.approx(1.5)
+    assert validation["checks"]["quality_edge_density_not_exploding"]["value"] == pytest.approx(
+        0.04
+    )
+    assert validation["checks"]["quality_sparse_distance_not_worse"]["value"] == pytest.approx(2.0)
+    assert validation["checks"]["crop_to_crop_stability"]["value"] == pytest.approx(0.25)
+
+
+def test_quality_validation_summary_fails_on_finite_failures_and_thresholds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    consensus = {
+        "workflows": {
+            "reference": {
+                "crop_count": 3,
+                "fvt_nonzero_fraction_mean": 0.10,
+                "fvt_nonzero_fraction_cv": 0.20,
+                "fv_nonzero_fraction_cv": 0.10,
+                "finite_failure_count": 0,
+            },
+            "quality": {
+                "crop_count": 3,
+                "fvt_nonzero_fraction_mean": 0.31,
+                "fvt_nonzero_fraction_cv": 3.0,
+                "fv_nonzero_fraction_cv": 0.20,
+                "finite_failure_count": 1,
+            },
+        },
+        "workflow_comparison": {
+            "quality_minus_reference": {
+                "fvt_edge_density_proxy_delta_mean": 0.11,
+                "fvt_sparse_distance_p95_delta_mean": 5.5,
+            }
+        },
+    }
+
+    validation = module.build_quality_validation_summary(consensus, compare_workflows=True)
+
+    assert validation["passed"] is False
+    assert validation["checks"]["finite_metrics"]["passed"] is False
+    assert validation["checks"]["quality_density_not_exploding"]["passed"] is False
+    assert validation["checks"]["quality_edge_density_not_exploding"]["passed"] is False
+    assert validation["checks"]["quality_sparse_distance_not_worse"]["passed"] is False
+    assert validation["checks"]["crop_to_crop_stability"]["passed"] is False
+    assert any("non-finite" in reason for reason in validation["reasons"])
+    assert any("density ratio" in reason for reason in validation["reasons"])
+    assert any("edge-density" in reason for reason in validation["reasons"])
+    assert any("sparse ridge distance" in reason for reason in validation["reasons"])
+    assert any("CV" in reason for reason in validation["reasons"])
+
+
+def test_quality_validation_summary_single_workflow_skips_comparison_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    consensus = {
+        "crop_count": 2,
+        "fvt_nonzero_fraction_cv": 0.5,
+        "fv_nonzero_fraction_cv": 0.25,
+        "finite_failure_count": 0,
+    }
+
+    validation = module.build_quality_validation_summary(
+        consensus,
+        workflow_mode="quality",
+        enabled=True,
+    )
+
+    assert validation["passed"] is True
+    assert validation["crop_count"] == 2
+    assert validation["workflow_comparison_available"] is False
+    assert validation["checks"]["finite_metrics"]["failure_count"] == 0
+    assert validation["checks"]["finite_metrics"]["passed"] is True
+    assert validation["checks"]["crop_to_crop_stability"]["passed"] is True
+    assert validation["checks"]["crop_to_crop_stability"]["value"] == pytest.approx(0.5)
+    assert validation["checks"]["quality_density_not_exploding"]["skipped"] is True
+    assert validation["checks"]["quality_edge_density_not_exploding"]["skipped"] is True
+    assert validation["checks"]["quality_sparse_distance_not_worse"]["skipped"] is True
 
 
 def test_compare_workflows_honors_explicit_surface_support_override(
@@ -636,6 +786,36 @@ def test_visual_report_markdown_compare_report_includes_workflow_figures(
                 }
             },
         },
+        "quality_validation": {
+            "role": "truthless_external_smoke",
+            "crop_count": 1,
+            "workflow_comparison_available": True,
+            "checks": {
+                "finite_metrics": {"passed": True, "failure_count": 0, "threshold": 0},
+                "quality_density_not_exploding": {
+                    "passed": True,
+                    "value": 1.5,
+                    "threshold": 2.0,
+                },
+                "quality_edge_density_not_exploding": {
+                    "passed": True,
+                    "value": 0.0,
+                    "threshold": 0.10,
+                },
+                "quality_sparse_distance_not_worse": {
+                    "passed": True,
+                    "value": 0.0,
+                    "threshold": 5.0,
+                },
+                "crop_to_crop_stability": {
+                    "passed": True,
+                    "value": 0.0,
+                    "threshold": 2.0,
+                },
+            },
+            "passed": True,
+            "reasons": [],
+        },
     }
 
     markdown = module.visual_report_markdown(report)
@@ -653,6 +833,12 @@ def test_visual_report_markdown_compare_report_includes_workflow_figures(
     assert "## Consensus" in markdown
     assert "quality_minus_reference consensus delta" in markdown
     assert "fvt_edge_density_proxy_delta_mean" in markdown
+    assert "## Quality Validation" in markdown
+    assert "truthless external smoke" in markdown
+    assert "synthetic promotion gate" in markdown
+    assert "quality_density_not_exploding" in markdown
+    assert "reference Figures" in markdown
+    assert "quality Figures" in markdown
     assert "quality_vs_reference per_metric_mean" in markdown
     assert "No PNG figures were written for this run." not in markdown
 
@@ -708,6 +894,8 @@ def test_compare_workflows_writes_markdown_index_with_figures(
     assert "## quality Crop Metrics" in markdown
     assert "## Consensus" in markdown
     assert "quality_minus_reference consensus delta" in markdown
+    assert "## Quality Validation" in markdown
+    assert "quality_density_not_exploding" in markdown
     assert "## reference Figures" in markdown
     assert "## quality Figures" in markdown
     assert "crop_001" in markdown
@@ -889,7 +1077,9 @@ def test_save_volumes_requires_destination(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
 
-def test_json_serialization_converts_nonfinite_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_json_serialization_converts_nonfinite_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _import_multicrop_module(monkeypatch)
 
     loaded = json.loads(
@@ -907,6 +1097,18 @@ def test_import_does_not_run_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     assert callable(module.build_parser)
     assert callable(module.main)
     assert callable(module.run_example)
+
+
+def test_cli_help_succeeds(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.main(["--help"])
+
+    assert excinfo.value.code == 0
+    assert "--quality-validation" in capsys.readouterr().out
 
 
 @pytest.mark.f3d_reference

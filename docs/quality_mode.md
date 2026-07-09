@@ -357,11 +357,13 @@ on the same real-data crop centers:
 ```bash
 PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
   --data-root "$PYOSV_F3D_DATA_ROOT" \
-  --count 2 \
+  --count 3 \
   --crop-shape 64,64,64 \
   --interior-margin 16 \
   --compare-workflows \
-  --output-json outputs/3d/f3d/quality_compare_001/metrics.json \
+  --save-figures \
+  --write-markdown-index \
+  --output-json outputs/3d/f3d/quality_external_smoke_001/metrics.json \
   --pretty
 ```
 
@@ -370,10 +372,17 @@ diagnostic rather than direct evidence of higher quality. Review whether the
 quality workflow preserves reference geological signal, avoids extra ridges and
 boundary artifacts, and keeps crop-to-crop behavior stable. The multi-crop JSON
 and markdown include `consensus.workflows` for each workflow and
-`consensus.workflow_comparison.quality_minus_reference` in compare mode. Use
-the consensus density means/std/cv, fvt edge-density proxy, sparse distance p95,
-and finite failure count as truthless stability checks alongside the existing
+`consensus.workflow_comparison.quality_minus_reference` in compare mode.
+Compare-mode reports also include top-level `quality_validation`, a truthless
+external smoke summary. Its default conservative checks fail on finite metric
+failures, quality fvt density above `2.0x` reference, fvt edge-density proxy
+delta above `0.10`, sparse distance p95 regression above `5.0` samples, or
+extreme crop-to-crop density CV. Use these checks alongside the existing
 reference-overlap metrics.
+
+This F3 smoke requires external F3 volumes and should not be mandatory in CI.
+CI should keep using mock/fixture structure tests for the report and markdown
+schema.
 
 F3 reference agreement is not quality itself. A quality-mode change should be
 promoted only when the controlled synthetic `extended` matrix and F3 multi-crop

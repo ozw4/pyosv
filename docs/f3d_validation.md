@@ -180,18 +180,20 @@ python examples/report_3d_f3d_multicrop.py \
 ```
 
 Run a multi-crop comparison between the reference workflow and the quality
-workflow on the same deterministic centers:
+workflow on the same deterministic centers. This is the standard F3 external
+smoke command for quality promotion candidates:
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/report_3d_f3d_multicrop.py \
-  --output-json outputs/3d/f3d/multicrop_quality_compare_001/metrics.json \
+PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
+  --data-root "$PYOSV_F3D_DATA_ROOT" \
   --count 3 \
   --crop-shape 64,64,64 \
   --interior-margin 16 \
   --compare-workflows \
-  --pretty \
-  --save-figures
+  --save-figures \
+  --write-markdown-index \
+  --output-json outputs/3d/f3d/quality_external_smoke_001/metrics.json \
+  --pretty
 ```
 
 `--compare-workflows` runs both configured workflows, `reference` and
@@ -206,6 +208,22 @@ inactive in both workflow defaults; enable it only with explicit
 mode, metrics and figures are written under workflow-specific directories such
 as `volumes/reference/`, `volumes/quality/`, `figures/reference/`, and
 `figures/quality/`.
+
+Compare-mode reports also include top-level `quality_validation`. This is a
+truthless external smoke summary, not a replacement for the controlled
+synthetic promotion gate. The default thresholds are conservative:
+`quality_density_not_exploding` fails when quality fvt density exceeds `2.0x`
+the reference workflow, `quality_edge_density_not_exploding` fails when the fvt
+edge-density proxy delta exceeds `0.10`, and
+`quality_sparse_distance_not_worse` fails when sparse distance p95 worsens by
+more than `5.0` samples. Finite metric failures always fail the smoke. The
+thresholds can be overridden with `--quality-density-max-ratio`,
+`--quality-edge-density-max-delta`, and
+`--quality-sparse-distance-max-delta`.
+
+F3 data is external. Environments without `PYOSV_F3D_DATA_ROOT` cannot run this
+smoke; CI should keep using mock/fixture structure tests instead of requiring
+the real F3 volumes.
 
 Run the thinning ablation report to compare normal/normal, mixed, and
 reference/reference thinning cases:
