@@ -51,7 +51,7 @@ from pyosv.synthetic_metrics import (
     top_truth_count_mask,
 )
 from pyosv.orient3d import FaultOrientScanner3
-from pyosv.skinner import FaultSkinner
+from pyosv.skinner import FaultSkinner, find_connected_component_skins
 from pyosv.voting3d import OptimalSurfaceVoter
 
 DEFAULT_SHAPE = (33, 33, 33)
@@ -109,6 +109,7 @@ VARIANT_NAMES = (
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
+    "quality_boundary_skinner_fallback",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -2121,6 +2122,15 @@ def _run_voting_from_attributes(
             skinning_config=skinning_config,
             diagnostics=skin_diagnostics,
         )
+        _apply_boundary_skinner_fallback(
+            skins,
+            fvt,
+            vp,
+            vt,
+            skinning_config=skinning_config,
+            variant=variant,
+            diagnostics=skin_diagnostics,
+        )
         report["skinning"]["diagnostics"] = skin_diagnostics
         skin_metrics = skin_truth_metrics(
             skins,
@@ -2578,6 +2588,13 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_discarded_empty_count",
                 "skin_discarded_small_count",
                 "skin_accepted_count",
+                "skin_fallback_enabled",
+                "skin_fallback_used",
+                "skin_fallback_reason",
+                "skin_fallback_method",
+                "skin_fallback_input",
+                "skin_fallback_skin_count",
+                "skin_fallback_cell_count",
                 "skin_buffered_f1_r2",
                 "skin_buffered_precision_r2",
                 "skin_buffered_recall_r2",
@@ -2926,7 +2943,7 @@ def _summary_csv_skin_diagnostics_row(
     *,
     enabled: bool,
     diagnostics: Mapping[str, Any] | None,
-) -> dict[str, int | None]:
+) -> dict[str, bool | int | str | None]:
     if not enabled:
         return {
             "skin_seed_candidate_count_before_spacing": 0,
@@ -2936,6 +2953,13 @@ def _summary_csv_skin_diagnostics_row(
             "skin_discarded_empty_count": 0,
             "skin_discarded_small_count": 0,
             "skin_accepted_count": 0,
+            "skin_fallback_enabled": False,
+            "skin_fallback_used": False,
+            "skin_fallback_reason": None,
+            "skin_fallback_method": None,
+            "skin_fallback_input": None,
+            "skin_fallback_skin_count": 0,
+            "skin_fallback_cell_count": 0,
         }
     if diagnostics is None:
         return {
@@ -2946,6 +2970,13 @@ def _summary_csv_skin_diagnostics_row(
             "skin_discarded_empty_count": None,
             "skin_discarded_small_count": None,
             "skin_accepted_count": None,
+            "skin_fallback_enabled": None,
+            "skin_fallback_used": None,
+            "skin_fallback_reason": None,
+            "skin_fallback_method": None,
+            "skin_fallback_input": None,
+            "skin_fallback_skin_count": None,
+            "skin_fallback_cell_count": None,
         }
     return {
         "skin_seed_candidate_count_before_spacing": diagnostics.get(
@@ -2957,6 +2988,13 @@ def _summary_csv_skin_diagnostics_row(
         "skin_discarded_empty_count": diagnostics.get("discarded_empty_skin_count"),
         "skin_discarded_small_count": diagnostics.get("discarded_small_skin_count"),
         "skin_accepted_count": diagnostics.get("accepted_skin_count"),
+        "skin_fallback_enabled": diagnostics.get("fallback_enabled"),
+        "skin_fallback_used": diagnostics.get("fallback_used"),
+        "skin_fallback_reason": diagnostics.get("fallback_reason"),
+        "skin_fallback_method": diagnostics.get("fallback_method"),
+        "skin_fallback_input": diagnostics.get("fallback_input"),
+        "skin_fallback_skin_count": diagnostics.get("fallback_skin_count"),
+        "skin_fallback_cell_count": diagnostics.get("fallback_cell_count"),
     }
 
 
@@ -3007,6 +3045,62 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
             else 0.0
         ),
     }
+
+
+def _apply_boundary_skinner_fallback(
+    skins: list[Any],
+    fvt: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    *,
+    skinning_config: SyntheticSkinningConfig,
+    variant: str,
+    diagnostics: dict[str, Any],
+) -> None:
+    fallback_enabled = variant == "quality_boundary_skinner_fallback"
+    diagnostics.update(
+        {
+            "fallback_enabled": fallback_enabled,
+            "fallback_used": False,
+            "fallback_reason": None,
+            "fallback_method": ("connected_component_on_fvt" if fallback_enabled else None),
+            "fallback_input": "fvt" if fallback_enabled else None,
+            "fallback_skin_count": 0,
+            "fallback_cell_count": 0,
+        }
+    )
+    if not fallback_enabled:
+        return
+    if skins:
+        diagnostics["fallback_reason"] = "primary_skin_nonempty"
+        return
+
+    fvt_positive_count = int(np.count_nonzero(np.asarray(fvt) > np.float32(NONZERO_EPSILON)))
+    if fvt_positive_count == 0:
+        diagnostics["fallback_reason"] = "empty_primary_skin_without_positive_fvt"
+        return
+
+    fallback_skins = find_connected_component_skins(
+        fvt,
+        vp,
+        vt,
+        min_likelihood=NONZERO_EPSILON,
+        min_skin_size=skinning_config.min_skin_size,
+        connectivity="edge",
+    )
+    if not fallback_skins:
+        diagnostics["fallback_reason"] = "connected_component_fallback_empty"
+        return
+
+    skins.extend(fallback_skins)
+    diagnostics.update(
+        {
+            "fallback_used": True,
+            "fallback_reason": "empty_primary_skin_with_positive_fvt",
+            "fallback_skin_count": int(len(fallback_skins)),
+            "fallback_cell_count": int(sum(len(skin) for skin in fallback_skins)),
+        }
+    )
 
 
 def _find_synthetic_skins(

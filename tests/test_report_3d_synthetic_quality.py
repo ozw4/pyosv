@@ -90,6 +90,13 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_discarded_empty_count",
     "skin_discarded_small_count",
     "skin_accepted_count",
+    "skin_fallback_enabled",
+    "skin_fallback_used",
+    "skin_fallback_reason",
+    "skin_fallback_method",
+    "skin_fallback_input",
+    "skin_fallback_skin_count",
+    "skin_fallback_cell_count",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -120,6 +127,8 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_discarded_empty_count",
     "skin_discarded_small_count",
     "skin_accepted_count",
+    "skin_fallback_skin_count",
+    "skin_fallback_cell_count",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -407,6 +416,14 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_quality_skinner_v2()
     module = _load_report_module()
 
     assert module.parse_variants("quality_skinner_v2") == ("quality_skinner_v2",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_skinner_fallback() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("quality_boundary_skinner_fallback") == (
+        "quality_boundary_skinner_fallback",
+    )
 
 
 def test_find_synthetic_skins_thinned_uses_fvt_for_growth_and_seed(
@@ -1480,6 +1497,49 @@ def test_report_3d_synthetic_quality_quality_skinner_v2_records_effective_config
     assert rows[1]["baseline_variant"] == "current_default"
     assert math.isfinite(float(rows[1]["skin_buffered_f1_delta_vs_baseline"]))
     assert math.isfinite(float(rows[1]["skin_count_delta_vs_baseline"]))
+
+
+def test_report_3d_synthetic_quality_boundary_fallback_variant_cli_contract(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--variants",
+        "quality_boundary_skinner_fallback",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["quality_boundary_skinner_fallback"]
+    variant = metrics["cases"][0]["variants"]["quality_boundary_skinner_fallback"]
+    diagnostics = variant["skinning"]["diagnostics"]
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_skin_nonempty"
+    assert diagnostics["fallback_method"] == "connected_component_on_fvt"
+    assert diagnostics["fallback_input"] == "fvt"
+    assert diagnostics["fallback_skin_count"] == 0
+    assert diagnostics["fallback_cell_count"] == 0
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["variant"] == "quality_boundary_skinner_fallback"
+    assert rows[0]["skin_fallback_enabled"] == "True"
+    assert rows[0]["skin_fallback_used"] == "False"
+    assert rows[0]["skin_fallback_reason"] == "primary_skin_nonempty"
+    assert rows[0]["skin_fallback_method"] == "connected_component_on_fvt"
+    assert rows[0]["skin_fallback_input"] == "fvt"
+    assert rows[0]["skin_fallback_skin_count"] == "0"
+    assert rows[0]["skin_fallback_cell_count"] == "0"
 
 
 @pytest.mark.parametrize(

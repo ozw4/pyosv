@@ -301,6 +301,59 @@ def test_quality_skinner_v2_skin_f1_guardrail(
     )
 
 
+def test_quality_boundary_skinner_fallback_recovers_boundary_skin() -> None:
+    module = _load_report_module()
+    report = module.build_report(
+        case_set="extended",
+        shape=(33, 33, 33),
+        variants=("current_default", "quality_boundary_skinner_fallback"),
+        workflow_mode="quality",
+    )
+    cases = _cases_by_id(report)
+
+    assert report["config"]["variants"] == [
+        "current_default",
+        "quality_boundary_skinner_fallback",
+    ]
+    boundary = cases["boundary_plane"]["variants"]["quality_boundary_skinner_fallback"]
+    diagnostics = boundary["skinning"]["diagnostics"]
+    skin = boundary["quality"]["skin"]
+
+    assert _float_metric(boundary, *FVT_POSITIVE_CANDIDATE_COUNT) > 0.0
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["fallback_reason"] == "empty_primary_skin_with_positive_fvt"
+    assert diagnostics["fallback_method"] == "connected_component_on_fvt"
+    assert diagnostics["fallback_input"] == "fvt"
+    assert diagnostics["accepted_skin_count"] == 0
+    assert diagnostics["fallback_skin_count"] == skin["topology"]["skin_count"]
+    assert diagnostics["fallback_cell_count"] == skin["topology"]["cell_count"]
+    assert skin["topology"]["skin_count"] > 0
+    assert skin["buffered_overlap_radius2"]["buffered_f1"] > 0.5
+
+
+def test_quality_boundary_skinner_fallback_does_not_run_when_primary_succeeds() -> None:
+    module = _load_report_module()
+    report = module.build_report(
+        case_set="minimal",
+        shape=SHAPE,
+        variants=("quality_boundary_skinner_fallback",),
+        workflow_mode="quality",
+    )
+    case = report["cases"][0]
+    variant = case["variants"]["quality_boundary_skinner_fallback"]
+    diagnostics = variant["skinning"]["diagnostics"]
+    skin = variant["quality"]["skin"]
+
+    assert skin["topology"]["skin_count"] > 0
+    assert diagnostics["accepted_skin_count"] == skin["topology"]["skin_count"]
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_skin_nonempty"
+    assert diagnostics["fallback_skin_count"] == 0
+    assert diagnostics["fallback_cell_count"] == 0
+
+
 def test_quality_workflow_case_specific_guardrails(
     workflow_reports: dict[str, dict[str, Any]],
 ) -> None:
