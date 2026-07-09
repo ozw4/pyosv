@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import numbers
 import sys
 from collections import deque
@@ -104,6 +105,10 @@ SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE = 0.50
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT = 8
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION = 0.75
 SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION = 0.25
+SKIN_FALLBACK_FILTER_MAX_COMPONENTS = 3
+SKIN_FALLBACK_FILTER_MIN_COMPONENT_SIZE_FLOOR = 8
+SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION = 0.05
+SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION_OF_LARGEST = 0.10
 VARIANT_NAMES = (
     "current_default",
     "no_surface_orientation_smoothing",
@@ -116,6 +121,7 @@ VARIANT_NAMES = (
     "quality_skinner_v2",
     "quality_boundary_skinner_fallback",
     "quality_boundary_skinner_fallback_v2",
+    "quality_boundary_skinner_fallback_v3",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -130,6 +136,7 @@ QUALITY_MATRIX_VARIANTS = (
     "quality_skinner_v2",
     "quality_boundary_skinner_fallback",
     "quality_boundary_skinner_fallback_v2",
+    "quality_boundary_skinner_fallback_v3",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -153,7 +160,11 @@ SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE = 0.75
 SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE = 0.25
 SKINNER_METHODS = ("reference", "quality", "connected_component")
 SKINNER_GROWTH_SOURCES = ("thinned", "pre_thin")
-BOUNDARY_SKINNER_FALLBACK_POLICIES = ("empty_primary", "degraded_primary")
+BOUNDARY_SKINNER_FALLBACK_POLICIES = (
+    "empty_primary",
+    "degraded_primary",
+    "degraded_primary_filtered",
+)
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
 QUALITY_SKINNER_SEED_MIN_EP = 0.5
 VARIANT_COMPARISON_METRICS = (
@@ -334,6 +345,12 @@ def _effective_skinning_config_for_variant(
             skinning_config,
             boundary_skinner_fallback=True,
             boundary_skinner_fallback_policy="degraded_primary",
+        )
+    if variant == "quality_boundary_skinner_fallback_v3":
+        return replace(
+            skinning_config,
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_filtered",
         )
     return skinning_config
 
@@ -715,7 +732,8 @@ def build_parser() -> argparse.ArgumentParser:
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
             "surface_support_weighted,quality_skinner_v2,"
             "quality_boundary_skinner_fallback,"
-            "quality_boundary_skinner_fallback_v2 \\\n"
+            "quality_boundary_skinner_fallback_v2,"
+            "quality_boundary_skinner_fallback_v3 \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -2882,6 +2900,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_fallback_accepted_component_count",
                 "skin_fallback_discarded_component_count",
                 "skin_fallback_accepted_component_cell_count",
+                "skin_fallback_filter_min_component_size",
+                "skin_fallback_filter_min_component_fraction_of_largest",
+                "skin_fallback_filter_max_components",
                 "skin_fallback_coverage_before",
                 "skin_fallback_coverage_after",
                 "skin_primary_count",
@@ -3371,6 +3392,9 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_accepted_component_count": 0,
             "skin_fallback_discarded_component_count": 0,
             "skin_fallback_accepted_component_cell_count": 0,
+            "skin_fallback_filter_min_component_size": 0,
+            "skin_fallback_filter_min_component_fraction_of_largest": 0.0,
+            "skin_fallback_filter_max_components": 0,
             "skin_fallback_coverage_before": 0.0,
             "skin_fallback_coverage_after": 0.0,
             "skin_primary_count": 0,
@@ -3419,6 +3443,9 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_accepted_component_count": None,
             "skin_fallback_discarded_component_count": None,
             "skin_fallback_accepted_component_cell_count": None,
+            "skin_fallback_filter_min_component_size": None,
+            "skin_fallback_filter_min_component_fraction_of_largest": None,
+            "skin_fallback_filter_max_components": None,
             "skin_fallback_coverage_before": None,
             "skin_fallback_coverage_after": None,
             "skin_primary_count": None,
@@ -3491,6 +3518,15 @@ def _summary_csv_skin_diagnostics_row(
         ),
         "skin_fallback_accepted_component_cell_count": diagnostics.get(
             "skin_fallback_accepted_component_cell_count"
+        ),
+        "skin_fallback_filter_min_component_size": diagnostics.get(
+            "skin_fallback_filter_min_component_size"
+        ),
+        "skin_fallback_filter_min_component_fraction_of_largest": diagnostics.get(
+            "skin_fallback_filter_min_component_fraction_of_largest"
+        ),
+        "skin_fallback_filter_max_components": diagnostics.get(
+            "skin_fallback_filter_max_components"
         ),
         "skin_fallback_coverage_before": diagnostics.get("fallback_coverage_before"),
         "skin_fallback_coverage_after": diagnostics.get("fallback_coverage_after"),
@@ -3639,12 +3675,33 @@ def _fallback_component_diagnostics(
     min_skin_size: int | None,
     small_component_size: int,
     connectivity: str,
+    component_policy: str = "all",
 ) -> dict[str, int | float | str]:
     mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
     candidate_cell_count = int(np.count_nonzero(mask))
     components = _positive_mask_components(mask, connectivity=connectivity)
     sizes = [len(component) for component in components]
-    accepted_sizes = [size for size in sizes if min_skin_size is None or size >= int(min_skin_size)]
+    if component_policy == "all":
+        accepted_components = [
+            component
+            for component in components
+            if min_skin_size is None or len(component) >= int(min_skin_size)
+        ]
+        filter_min_component_size = 0
+        filter_min_fraction_of_largest = 0.0
+        filter_max_components = 0
+    elif component_policy == "filtered":
+        accepted_components = _filtered_fallback_components(
+            components,
+            candidate_cell_count=candidate_cell_count,
+        )
+        filter_min_component_size = _filtered_fallback_min_component_size(candidate_cell_count)
+        filter_min_fraction_of_largest = SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION_OF_LARGEST
+        filter_max_components = SKIN_FALLBACK_FILTER_MAX_COMPONENTS
+    else:
+        raise ValueError(f"unknown fallback component policy: {component_policy}")
+
+    accepted_sizes = [len(component) for component in accepted_components]
     discarded_component_count = len(sizes) - len(accepted_sizes)
     small_component_count = sum(1 for size in sizes if size < int(small_component_size))
     largest_component_size = sizes[0] if sizes else 0
@@ -3661,11 +3718,57 @@ def _fallback_component_diagnostics(
             float(top3_component_cell_count / candidate_cell_count) if candidate_cell_count else 0.0
         ),
         "skin_fallback_small_component_count": int(small_component_count),
-        "skin_fallback_component_policy": "all",
+        "skin_fallback_component_policy": component_policy,
         "skin_fallback_accepted_component_count": int(len(accepted_sizes)),
         "skin_fallback_discarded_component_count": int(discarded_component_count),
         "skin_fallback_accepted_component_cell_count": int(sum(accepted_sizes)),
+        "skin_fallback_filter_min_component_size": int(filter_min_component_size),
+        "skin_fallback_filter_min_component_fraction_of_largest": float(
+            filter_min_fraction_of_largest
+        ),
+        "skin_fallback_filter_max_components": int(filter_max_components),
     }
+
+
+def _filtered_fallback_min_component_size(candidate_cell_count: int) -> int:
+    return max(
+        SKIN_FALLBACK_FILTER_MIN_COMPONENT_SIZE_FLOOR,
+        int(math.ceil(SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION * int(candidate_cell_count))),
+    )
+
+
+def _filtered_fallback_components(
+    components: Sequence[Sequence[tuple[int, int, int]]],
+    *,
+    candidate_cell_count: int,
+) -> list[list[tuple[int, int, int]]]:
+    if not components or int(candidate_cell_count) <= 0:
+        return []
+
+    largest_component_size = len(components[0])
+    min_component_size = _filtered_fallback_min_component_size(candidate_cell_count)
+    min_largest_fraction_size = (
+        SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION_OF_LARGEST * largest_component_size
+    )
+    accepted = [
+        list(component)
+        for component in components
+        if len(component) >= min_component_size and len(component) >= min_largest_fraction_size
+    ]
+    if not accepted:
+        accepted = [list(components[0])]
+    return accepted[:SKIN_FALLBACK_FILTER_MAX_COMPONENTS]
+
+
+def _mask_from_components(
+    shape: tuple[int, ...],
+    components: Sequence[Sequence[tuple[int, int, int]]],
+) -> np.ndarray:
+    mask = np.zeros(shape, dtype=bool)
+    for component in components:
+        for i3, i2, i1 in component:
+            mask[i3, i2, i1] = True
+    return mask
 
 
 def _positive_mask_components(
@@ -3734,11 +3837,13 @@ def _apply_boundary_skinner_fallback(
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
     fallback_connectivity = "edge"
+    component_policy = "filtered" if fallback_policy == "degraded_primary_filtered" else "all"
     component_diagnostics = _fallback_component_diagnostics(
         fvt,
         min_skin_size=skinning_config.min_skin_size,
         small_component_size=skinning_config.small_skin_size,
         connectivity=fallback_connectivity,
+        component_policy=component_policy,
     )
     fvt_positive_count = int(component_diagnostics["skin_fallback_candidate_cell_count"])
     primary_skin_count = int(diagnostics.get("skin_primary_count", len(skins)))
@@ -3800,12 +3905,24 @@ def _apply_boundary_skinner_fallback(
             _fallback_degraded_reason_labels(degraded_reasons)
         )
 
+    fallback_fvt = fvt
+    fallback_min_skin_size = skinning_config.min_skin_size
+    if component_policy == "filtered":
+        positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
+        accepted_components = _filtered_fallback_components(
+            _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
+            candidate_cell_count=fvt_positive_count,
+        )
+        accepted_mask = _mask_from_components(fvt.shape, accepted_components)
+        fallback_fvt = np.where(accepted_mask, fvt, np.float32(0.0)).astype(np.float32)
+        fallback_min_skin_size = None
+
     fallback_skins = find_connected_component_skins(
-        fvt,
+        fallback_fvt,
         vp,
         vt,
         min_likelihood=NONZERO_EPSILON,
-        min_skin_size=skinning_config.min_skin_size,
+        min_skin_size=fallback_min_skin_size,
         connectivity=fallback_connectivity,
     )
     if not fallback_skins:
