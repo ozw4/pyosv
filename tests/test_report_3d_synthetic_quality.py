@@ -659,6 +659,13 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2_recenter()
     )
 
 
+def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_edge_thin() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("boundary_edge_thin_v1") == ("boundary_edge_thin_v1",)
+    assert "boundary_edge_thin_v1" not in module.QUALITY_MATRIX_VARIANTS
+
+
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
     module = _load_report_module()
 
@@ -1778,6 +1785,74 @@ def test_fvt_recenter_collision_keeps_higher_original_fvt_deterministically() ->
     assert second_diagnostic["fvt_recenter_collision_count"] == 1
 
 
+def test_boundary_edge_thin_v1_preserves_non_edge_hybrid_v2_mask() -> None:
+    module = _load_report_module()
+    voter = module.OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 7, 5), dtype=np.float32)
+    fv[2, 0:3, 2] = 1.0
+    fv[2, 3, 2] = 0.8
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    target = np.zeros_like(fv)
+    target[2, 1, 2] = 1.0
+
+    base = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="hybrid_v2",
+        reference_sigma=0.0,
+        plateau_tie_breaker=fv,
+    )
+    result, diagnostic = module._apply_boundary_edge_thin_v1(
+        base,
+        fv,
+        vp,
+        vt,
+        voter=voter,
+        target=target,
+        target_source="scanner_fet",
+        edge_margin=2,
+    )
+
+    non_edge = ~module._edge_mask(fv.shape, 2)
+    np.testing.assert_array_equal(result[non_edge] > 0.0, base[non_edge] > 0.0)
+    assert diagnostic["enabled"] is True
+    assert diagnostic["target_source"] == "scanner_fet"
+
+
+def test_boundary_edge_thin_v1_adopts_high_target_plateau_candidate() -> None:
+    module = _load_report_module()
+    voter = module.OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fvt = np.zeros((5, 5, 5), dtype=np.float32)
+    fv = np.zeros_like(fvt)
+    fv[2, 2:4, 2] = 1.0
+    fvt[2, 4, 2] = 1.0
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    target = np.zeros_like(fvt)
+    target[2, 4, 2] = 0.1
+    target[2, 3, 2] = 0.9
+
+    result, diagnostic = module._apply_boundary_edge_thin_v1(
+        fvt,
+        fv,
+        vp,
+        vt,
+        voter=voter,
+        target=target,
+        target_source="scanner_fet",
+        edge_margin=2,
+    )
+
+    assert result[2, 4, 2] == 0.0
+    assert result[2, 3, 2] == pytest.approx(1.0)
+    assert diagnostic["adopted_candidate_count"] == 1
+    assert diagnostic["replaced_candidate_count"] == 1
+    assert diagnostic["edge_positive_count_before"] == 1
+    assert diagnostic["edge_positive_count_after"] == 1
+
+
 def test_report_3d_synthetic_quality_recenter_oracle_records_target_source() -> None:
     module = _load_report_module()
 
@@ -1839,6 +1914,48 @@ def test_report_3d_synthetic_quality_recenter_scanner_records_diagnostics_and_cs
     assert row["fvt_recenter_target_source"] == "scanner_fet"
     assert row["fvt_recenter_candidate_count"] != ""
     assert row["fvt_recenter_to_target_distance_p95_after"] != ""
+
+
+def test_report_3d_synthetic_quality_boundary_edge_thin_scanner_diagnostics_and_csv(
+    tmp_path: Path,
+) -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        variants=("boundary_edge_thin_v1",),
+        workflow_mode="quality",
+        input_mode="scanner",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    variant = report["cases"][0]["variants"]["boundary_edge_thin_v1"]
+    diagnostic = variant["boundary_edge_thin"]
+    assert diagnostic["enabled"] is True
+    assert diagnostic["target_source"] == "scanner_fet"
+    assert diagnostic["edge_margin"] == module.EDGE_FALSE_POSITIVE_MARGIN
+    for key in (
+        "positive_count_before",
+        "positive_count_after",
+        "edge_positive_count_before",
+        "edge_positive_count_after",
+        "adopted_candidate_count",
+        "replaced_candidate_count",
+        "collision_count",
+    ):
+        assert int(diagnostic[key]) >= 0
+    assert math.isfinite(float(diagnostic["to_target_distance_p95_before"]))
+    assert math.isfinite(float(diagnostic["to_target_distance_p95_after"]))
+
+    module.write_summary_csv(report, tmp_path)
+    with (tmp_path / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    assert row["boundary_edge_thin_enabled"] == "True"
+    assert row["boundary_edge_thin_target_source"] == "scanner_fet"
+    assert row["boundary_edge_thin_adopted_candidate_count"] != ""
+    assert row["boundary_edge_thin_to_target_distance_p95_after"] != ""
 
 
 def test_report_3d_synthetic_quality_hybrid_v2_output_unchanged_without_recenter() -> None:
