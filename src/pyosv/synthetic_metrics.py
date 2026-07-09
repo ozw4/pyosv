@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "buffered_surface_overlap",
+    "component_aware_skin_topology_metrics",
     "edge_false_positive_ratio",
     "masked_orientation_error",
     "skin_mask_from_skins",
@@ -339,6 +340,147 @@ def skin_topology_metrics(
     }
 
 
+def component_aware_skin_topology_metrics(
+    skins: Sequence[FaultSkin],
+    shape: tuple[int, int, int],
+    truth_fault_id: np.ndarray,
+    *,
+    min_fraction: float = 0.05,
+) -> dict[str, Any]:
+    """Return skin topology metrics grouped by integer truth fault component ID."""
+
+    volume_shape = _validate_3d_shape(shape)
+    truth_ids = _validate_truth_fault_id(truth_fault_id, volume_shape)
+    threshold = _validate_fraction_threshold(min_fraction, "min_fraction")
+    skin_list = list(skins)
+
+    positive_ids, positive_counts = np.unique(truth_ids[truth_ids > 0], return_counts=True)
+    truth_cell_counts = {
+        int(truth_id): int(count) for truth_id, count in zip(positive_ids, positive_counts)
+    }
+    covered_truth_indices: dict[int, set[tuple[int, int, int]]] = {
+        truth_id: set() for truth_id in truth_cell_counts
+    }
+    truth_skin_counts: dict[int, dict[int, int]] = {truth_id: {} for truth_id in truth_cell_counts}
+    skin_summaries: list[dict[str, int | float | None]] = []
+    skin_truth_counts: list[dict[int, int]] = []
+
+    for skin_index, skin in enumerate(skin_list):
+        cell_count = len(skin)
+        background_cell_count = 0
+        truth_counts: dict[int, int] = {}
+        unique_indices: set[tuple[int, int, int]] = set()
+
+        for cell in skin:
+            i1, i2, i3 = _cell_index_i123(cell)
+            _validate_cell_bounds((i1, i2, i3), volume_shape)
+            truth_id = int(truth_ids[i3, i2, i1])
+            if truth_id == 0:
+                background_cell_count += 1
+            else:
+                truth_counts[truth_id] = truth_counts.get(truth_id, 0) + 1
+            unique_indices.add((i1, i2, i3))
+
+        for i1, i2, i3 in unique_indices:
+            truth_id = int(truth_ids[i3, i2, i1])
+            if truth_id == 0:
+                continue
+            covered_truth_indices.setdefault(truth_id, set()).add((i1, i2, i3))
+            skin_counts = truth_skin_counts.setdefault(truth_id, {})
+            skin_counts[skin_index] = skin_counts.get(skin_index, 0) + 1
+
+        truth_cell_count = int(sum(truth_counts.values()))
+        dominant_truth_id, dominant_truth_cell_count = _dominant_count_item(truth_counts)
+        purity = float(dominant_truth_cell_count / cell_count) if cell_count else 0.0
+        skin_truth_counts.append(truth_counts)
+        skin_summaries.append(
+            {
+                "skin_index": skin_index,
+                "cell_count": cell_count,
+                "truth_cell_count": truth_cell_count,
+                "background_cell_count": background_cell_count,
+                "truth_component_count_touching": len(truth_counts),
+                "dominant_truth_id": dominant_truth_id,
+                "dominant_truth_cell_count": dominant_truth_cell_count,
+                "purity": purity,
+            }
+        )
+
+    truth_summaries: list[dict[str, int | float | None]] = []
+    truth_recalls: list[float] = []
+    for truth_id in sorted(truth_cell_counts):
+        truth_cell_count = truth_cell_counts[truth_id]
+        covered_cell_count = len(covered_truth_indices.get(truth_id, set()))
+        recall = float(covered_cell_count / truth_cell_count) if truth_cell_count else 0.0
+        skin_counts = truth_skin_counts.get(truth_id, {})
+        dominant_skin_index, dominant_skin_cell_count = _dominant_count_item(skin_counts)
+        truth_recalls.append(recall)
+        truth_summaries.append(
+            {
+                "truth_id": truth_id,
+                "truth_cell_count": truth_cell_count,
+                "covered_cell_count": covered_cell_count,
+                "recall": recall,
+                "skin_count_touching": len(skin_counts),
+                "dominant_skin_index": dominant_skin_index,
+                "dominant_skin_cell_count": dominant_skin_cell_count,
+                "dominant_skin_fraction_of_truth": (
+                    float(dominant_skin_cell_count / truth_cell_count) if truth_cell_count else 0.0
+                ),
+            }
+        )
+
+    over_merge_skin_count = sum(
+        1
+        for summary, counts in zip(skin_summaries, skin_truth_counts)
+        if _qualifying_component_count(counts, int(summary["cell_count"]), threshold) >= 2
+    )
+    over_split_truth_component_count = sum(
+        1
+        for truth_id, truth_cell_count in truth_cell_counts.items()
+        if _qualifying_component_count(
+            truth_skin_counts.get(truth_id, {}),
+            truth_cell_count,
+            threshold,
+        )
+        >= 2
+    )
+    skin_purities = [float(summary["purity"]) for summary in skin_summaries]
+
+    return {
+        "truth_component_count": len(truth_cell_counts),
+        "covered_truth_component_count": sum(
+            1 for summary in truth_summaries if int(summary["covered_cell_count"]) > 0
+        ),
+        "uncovered_truth_component_count": sum(
+            1 for summary in truth_summaries if int(summary["covered_cell_count"]) == 0
+        ),
+        "skin_count": len(skin_list),
+        "skin_with_truth_count": sum(
+            1 for summary in skin_summaries if int(summary["truth_cell_count"]) > 0
+        ),
+        "skin_without_truth_count": sum(
+            1 for summary in skin_summaries if int(summary["truth_cell_count"]) == 0
+        ),
+        "over_merge_skin_count": int(over_merge_skin_count),
+        "over_split_truth_component_count": int(over_split_truth_component_count),
+        "max_truth_components_per_skin": max(
+            (int(summary["truth_component_count_touching"]) for summary in skin_summaries),
+            default=0,
+        ),
+        "max_skins_per_truth_component": max(
+            (int(summary["skin_count_touching"]) for summary in truth_summaries),
+            default=0,
+        ),
+        "mean_skin_purity": _mean_or_zero(skin_purities),
+        "min_skin_purity": float(min(skin_purities)) if skin_purities else 0.0,
+        "mean_truth_component_recall": _mean_or_zero(truth_recalls),
+        "min_truth_component_recall": float(min(truth_recalls)) if truth_recalls else 0.0,
+        "truth_components": truth_summaries,
+        "skins": skin_summaries,
+    }
+
+
 def skin_orientation_error(
     skins: Sequence[FaultSkin],
     truth_strike: np.ndarray,
@@ -388,6 +530,7 @@ def skin_truth_metrics(
     truth_dip: np.ndarray,
     buffer_radius: float,
     small_skin_size: int = 10,
+    truth_fault_id: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Return topology, overlap, distance, and orientation metrics for skins."""
 
@@ -400,7 +543,7 @@ def skin_truth_metrics(
     _validate_same_shape(candidate_mask, true_strike, true_dip)
     buffer_key = _buffered_overlap_key(buffer_radius)
 
-    return {
+    metrics = {
         "topology": skin_topology_metrics(
             skin_list,
             volume_shape,
@@ -414,6 +557,13 @@ def skin_truth_metrics(
         "surface_distance": surface_distance_metrics(candidate_mask, surface_mask),
         "orientation_error": skin_orientation_error(skin_list, true_strike, true_dip),
     }
+    if truth_fault_id is not None:
+        metrics["component_topology"] = component_aware_skin_topology_metrics(
+            skin_list,
+            volume_shape,
+            truth_fault_id,
+        )
+    return metrics
 
 
 def _validate_finite_array(values: np.ndarray, name: str) -> np.ndarray:
@@ -547,6 +697,50 @@ def _validate_mask_shape(
     if result.shape != shape:
         raise ValueError(f"{name} shape must match {shape}, got {result.shape}")
     return result
+
+
+def _validate_truth_fault_id(
+    truth_fault_id: np.ndarray,
+    shape: tuple[int, int, int],
+) -> np.ndarray:
+    result = np.asarray(truth_fault_id)
+    if result.shape != shape:
+        raise ValueError(f"truth_fault_id shape must match {shape}, got {result.shape}")
+    if result.dtype == np.bool_ or not np.issubdtype(result.dtype, np.integer):
+        raise ValueError("truth_fault_id must be an integer array")
+    if np.any(result < 0):
+        raise ValueError("truth_fault_id must contain only non-negative IDs")
+    return result
+
+
+def _validate_fraction_threshold(value: float, name: str) -> float:
+    result = _validate_nonnegative_finite_scalar(value, name)
+    if result > 1.0:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return result
+
+
+def _dominant_count_item(counts: Mapping[int, int]) -> tuple[int | None, int]:
+    if not counts:
+        return None, 0
+    key, count = min(counts.items(), key=lambda item: (-item[1], item[0]))
+    return int(key), int(count)
+
+
+def _qualifying_component_count(
+    counts: Mapping[int, int],
+    denominator: int,
+    min_fraction: float,
+) -> int:
+    if denominator <= 0:
+        return 0
+    return sum(1 for count in counts.values() if float(count / denominator) >= min_fraction)
+
+
+def _mean_or_zero(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    return float(np.mean(np.asarray(values, dtype=np.float64)))
 
 
 def _finite_cell_orientation(value: float, name: str) -> float:

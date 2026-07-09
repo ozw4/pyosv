@@ -5,6 +5,7 @@ from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
 from pyosv.synthetic_metrics import (
     buffered_surface_overlap,
+    component_aware_skin_topology_metrics,
     edge_false_positive_ratio,
     masked_orientation_error,
     skin_mask_from_skins,
@@ -16,6 +17,12 @@ from pyosv.synthetic_metrics import (
     top_positive_truth_count_mask,
     top_truth_count_mask,
 )
+
+
+def _skin_from_indices(indices: list[tuple[int, int, int]]) -> FaultSkin:
+    return FaultSkin.from_cells(
+        FaultCell(float(i1), float(i2), float(i3), 0.8, 0.0, 90.0) for i1, i2, i3 in indices
+    )
 
 
 def test_top_k_mask_is_deterministic_and_selects_k_values() -> None:
@@ -375,6 +382,129 @@ def test_skin_topology_metrics_counts_duplicate_cells() -> None:
     assert topology["small_skin_cell_fraction"] == pytest.approx(1 / 3)
 
 
+def test_component_aware_skin_topology_metrics_counts_clean_components() -> None:
+    truth_fault_id = np.zeros((1, 2, 3), dtype=np.int32)
+    truth_fault_id[0, 0, 0:2] = 1
+    truth_fault_id[0, 1, 0:2] = 2
+    skins = [
+        _skin_from_indices([(0, 0, 0), (1, 0, 0)]),
+        _skin_from_indices([(0, 1, 0), (1, 1, 0)]),
+    ]
+
+    metrics = component_aware_skin_topology_metrics(
+        skins,
+        truth_fault_id.shape,
+        truth_fault_id,
+    )
+
+    assert metrics["truth_component_count"] == 2
+    assert metrics["covered_truth_component_count"] == 2
+    assert metrics["uncovered_truth_component_count"] == 0
+    assert metrics["skin_count"] == 2
+    assert metrics["skin_with_truth_count"] == 2
+    assert metrics["skin_without_truth_count"] == 0
+    assert metrics["over_merge_skin_count"] == 0
+    assert metrics["over_split_truth_component_count"] == 0
+    assert metrics["max_truth_components_per_skin"] == 1
+    assert metrics["max_skins_per_truth_component"] == 1
+    assert metrics["mean_skin_purity"] == pytest.approx(1.0)
+    assert metrics["min_skin_purity"] == pytest.approx(1.0)
+    assert metrics["mean_truth_component_recall"] == pytest.approx(1.0)
+    assert metrics["min_truth_component_recall"] == pytest.approx(1.0)
+    assert metrics["truth_components"][0]["dominant_skin_index"] == 0
+    assert metrics["truth_components"][1]["dominant_skin_index"] == 1
+    assert metrics["skins"][0]["dominant_truth_id"] == 1
+    assert metrics["skins"][1]["dominant_truth_id"] == 2
+
+
+def test_component_aware_skin_topology_metrics_counts_over_merge() -> None:
+    truth_fault_id = np.zeros((1, 2, 2), dtype=np.int32)
+    truth_fault_id[0, 0, 0] = 1
+    truth_fault_id[0, 1, 0] = 2
+    skin = _skin_from_indices([(0, 0, 0), (0, 1, 0)])
+
+    metrics = component_aware_skin_topology_metrics(
+        [skin],
+        truth_fault_id.shape,
+        truth_fault_id,
+        min_fraction=0.25,
+    )
+
+    assert metrics["over_merge_skin_count"] == 1
+    assert metrics["over_split_truth_component_count"] == 0
+    assert metrics["max_truth_components_per_skin"] == 2
+    assert metrics["skins"][0]["truth_component_count_touching"] == 2
+
+
+def test_component_aware_skin_topology_metrics_counts_over_split() -> None:
+    truth_fault_id = np.ones((1, 1, 4), dtype=np.int32)
+    skins = [
+        _skin_from_indices([(0, 0, 0), (1, 0, 0)]),
+        _skin_from_indices([(2, 0, 0), (3, 0, 0)]),
+    ]
+
+    metrics = component_aware_skin_topology_metrics(
+        skins,
+        truth_fault_id.shape,
+        truth_fault_id,
+        min_fraction=0.25,
+    )
+
+    assert metrics["over_merge_skin_count"] == 0
+    assert metrics["over_split_truth_component_count"] == 1
+    assert metrics["max_skins_per_truth_component"] == 2
+    assert metrics["truth_components"][0]["skin_count_touching"] == 2
+    assert metrics["truth_components"][0]["recall"] == pytest.approx(1.0)
+
+
+def test_component_aware_skin_topology_metrics_counts_background_and_purity() -> None:
+    truth_fault_id = np.array([[[1, 1, 0]]], dtype=np.int32)
+    skin = _skin_from_indices([(0, 0, 0), (1, 0, 0), (2, 0, 0)])
+
+    metrics = component_aware_skin_topology_metrics(
+        [skin],
+        truth_fault_id.shape,
+        truth_fault_id,
+    )
+
+    skin_metrics = metrics["skins"][0]
+    assert skin_metrics["cell_count"] == 3
+    assert skin_metrics["truth_cell_count"] == 2
+    assert skin_metrics["background_cell_count"] == 1
+    assert skin_metrics["dominant_truth_id"] == 1
+    assert skin_metrics["dominant_truth_cell_count"] == 2
+    assert skin_metrics["purity"] == pytest.approx(2 / 3)
+    assert metrics["mean_skin_purity"] == pytest.approx(2 / 3)
+    assert metrics["min_skin_purity"] == pytest.approx(2 / 3)
+
+
+def test_component_aware_skin_topology_metrics_empty_skins_are_finite() -> None:
+    truth_fault_id = np.ones((1, 1, 2), dtype=np.int32)
+
+    metrics = component_aware_skin_topology_metrics([], truth_fault_id.shape, truth_fault_id)
+
+    assert metrics["truth_component_count"] == 1
+    assert metrics["covered_truth_component_count"] == 0
+    assert metrics["uncovered_truth_component_count"] == 1
+    assert metrics["skin_count"] == 0
+    assert metrics["skin_with_truth_count"] == 0
+    assert metrics["skin_without_truth_count"] == 0
+    assert metrics["over_merge_skin_count"] == 0
+    assert metrics["over_split_truth_component_count"] == 0
+    assert metrics["max_truth_components_per_skin"] == 0
+    assert metrics["max_skins_per_truth_component"] == 0
+    for key in (
+        "mean_skin_purity",
+        "min_skin_purity",
+        "mean_truth_component_recall",
+        "min_truth_component_recall",
+    ):
+        assert np.isfinite(metrics[key])
+    assert metrics["truth_components"][0]["covered_cell_count"] == 0
+    assert metrics["truth_components"][0]["recall"] == pytest.approx(0.0)
+    assert metrics["skins"] == []
+
+
 def test_skin_mask_from_skins_rejects_out_of_bounds_cell() -> None:
     skin = FaultSkin.from_cells([FaultCell(4.0, 0.0, 0.0, 0.8, 10.0, 60.0)])
 
@@ -434,6 +564,20 @@ def test_skin_truth_metrics_returns_expected_metric_families() -> None:
     assert "buffered_f1" in metrics["buffered_overlap_radius2"]
     assert "candidate_to_truth_p95" in metrics["surface_distance"]
     assert "strike_median" in metrics["orientation_error"]
+
+    truth_fault_id = truth_fault_mask.astype(np.int32)
+    metrics_with_components = skin_truth_metrics(
+        [skin],
+        shape=shape,
+        truth_fault_mask=truth_fault_mask,
+        truth_surface_mask=truth_surface_mask,
+        truth_strike=truth_strike,
+        truth_dip=truth_dip,
+        buffer_radius=2.0,
+        truth_fault_id=truth_fault_id,
+    )
+    assert "component_topology" in metrics_with_components
+    assert metrics_with_components["component_topology"]["truth_component_count"] == 1
 
 
 def test_skin_metrics_reject_invalid_shape_truth_arrays_and_orientation() -> None:

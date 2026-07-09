@@ -161,7 +161,11 @@ with the input fault likelihood as the retained-layer tie-breaker. The
 scanner-thinned `fet` target. It is available by explicit `--variants`
 selection for scanner-boundary diagnostics and is not part of the
 `quality-matrix` preset. It is not a default candidate unless it also meets the
-FVT-positive F1 and distance gates. The
+FVT-positive F1 and distance gates. The `boundary_edge_thin_v1` diagnostic
+variant also starts from `hybrid_v2`, but uses the scanner-boundary target
+during edge-shell thinning candidate selection instead of moving samples after
+thinning. It is available only by explicit `--variants boundary_edge_thin_v1`
+selection and is not part of the default or `quality-matrix` preset. The
 `voter_thin_normal_plateau` diagnostic variant keeps fault-normal thinning
 explicit, but collapses normal-direction plateau runs with the input fault
 likelihood as the retained-layer tie-breaker.

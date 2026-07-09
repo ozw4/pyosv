@@ -125,6 +125,7 @@ VARIANT_NAMES = (
     "voter_thin_hybrid",
     "voter_thin_hybrid_v2",
     "voter_thin_hybrid_v2_recenter_scanner_target",
+    "boundary_edge_thin_v1",
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
@@ -306,7 +307,10 @@ def _effective_skinning_config_for_workflow(
     skinner_growth_source_explicit: bool = False,
     skinner_accepted_occupancy_radius_explicit: bool = False,
 ) -> SyntheticSkinningConfig:
-    if workflow_mode != "quality" or skinning_config.method not in {"reference", "quality"}:
+    if workflow_mode != "quality" or skinning_config.method not in {
+        "reference",
+        "quality",
+    }:
         return skinning_config
     if skinner_method_explicit and skinning_config.method != "quality":
         return skinning_config
@@ -1394,6 +1398,15 @@ def _run_scanner_pipeline(
             fvt=volumes["fvt_py"],
             truth_metric_config=truth_metric_config,
         )
+        report["scanner_stage_loss"] = _scanner_stage_loss_diagnostics(
+            case=case,
+            voting_config=voting_config,
+            scanner_volumes=scanner_volumes,
+            fv=volumes["fv_py"],
+            fvt=volumes["fvt_py"],
+            skin_mask=volumes["skin_mask_py"],
+            truth_metric_config=truth_metric_config,
+        )
     if scanner_backend_matrix:
         report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
             case,
@@ -1983,6 +1996,161 @@ def _scanner_downstream_diagnostics(
     return diagnostic
 
 
+def _scanner_stage_loss_diagnostics(
+    *,
+    case: Synthetic3DCase,
+    voting_config: SyntheticVotingConfig,
+    scanner_volumes: Mapping[str, np.ndarray],
+    fv: np.ndarray,
+    fvt: np.ndarray,
+    skin_mask: np.ndarray,
+    truth_metric_config: SyntheticTruthMetricConfig,
+) -> dict[str, Any]:
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width,
+        "truth_surface_half_width",
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+
+    stage_masks = {
+        "scanner_ft_positive": _positive_candidate_mask(scanner_volumes["scanner_ft"]),
+        "scanner_fet_positive": _positive_candidate_mask(scanner_volumes["scanner_fet"]),
+        "seed_candidate": np.asarray(scanner_volumes["scanner_fet"])
+        > np.float32(voting_config.seed_threshold),
+        "seed_selected": _seed_selection_diagnostic(
+            shape=case.shape,
+            voting_config=voting_config,
+            ft=scanner_volumes["scanner_fet"],
+            pt=scanner_volumes["scanner_fpt"],
+            tt=scanner_volumes["scanner_ftt"],
+        ),
+        "fv_positive": _positive_candidate_mask(fv),
+        "fvt_positive": _positive_candidate_mask(fvt),
+        "skin": np.asarray(skin_mask, dtype=bool),
+    }
+    stages = {
+        name: _scanner_stage_metric(
+            mask,
+            truth_fault_mask=truth_fault_mask,
+            truth_surface_mask=truth_surface_mask,
+            buffer_radius=buffer_radius,
+        )
+        for name, mask in stage_masks.items()
+    }
+
+    transition_pairs = (
+        ("scanner_ft_positive", "scanner_fet_positive"),
+        ("scanner_fet_positive", "seed_candidate"),
+        ("seed_candidate", "seed_selected"),
+        ("seed_selected", "fv_positive"),
+        ("fv_positive", "fvt_positive"),
+        ("fvt_positive", "skin"),
+        ("scanner_fet_positive", "seed_selected"),
+    )
+    transitions = {
+        f"{source}_to_{target}": _scanner_stage_transition_metric(
+            source_mask=stage_masks[source],
+            target_mask=stage_masks[target],
+            buffer_radius=buffer_radius,
+        )
+        for source, target in transition_pairs
+    }
+    return {"stages": stages, "transitions": transitions}
+
+
+def _seed_selection_diagnostic(
+    *,
+    shape: tuple[int, int, int],
+    voting_config: SyntheticVotingConfig,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+) -> np.ndarray:
+    voter = OptimalSurfaceVoter(
+        ru=voting_config.ru,
+        rv=voting_config.rv,
+        rw=voting_config.rw,
+    )
+    seeds = voter.pick_seeds(
+        d=voting_config.seed_distance,
+        fm=voting_config.seed_threshold,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+    )
+    mask = np.zeros(shape, dtype=bool)
+    n3, n2, n1 = shape
+    for seed in seeds:
+        if 0 <= seed.i3 < n3 and 0 <= seed.i2 < n2 and 0 <= seed.i1 < n1:
+            mask[seed.i3, seed.i2, seed.i1] = True
+    return mask
+
+
+def _scanner_stage_metric(
+    candidate_mask: np.ndarray,
+    *,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, int | float]:
+    candidate = np.asarray(candidate_mask, dtype=bool)
+    overlap = buffered_surface_overlap(
+        candidate,
+        truth_fault_mask,
+        radius=buffer_radius,
+    )
+    distance = surface_distance_metrics(candidate, truth_surface_mask)
+    edge_false_positive = edge_false_positive_ratio(
+        candidate,
+        truth_surface_mask,
+        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        truth_buffer_radius=buffer_radius,
+    )
+    return {
+        "candidate_count": int(overlap["candidate_count"]),
+        "edge_shell_fraction": _edge_candidate_fraction(
+            candidate,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "truth_buffered_f1_r2": float(overlap["buffered_f1"]),
+        "candidate_to_truth_p95": float(distance["candidate_to_truth_p95"]),
+        "truth_to_candidate_p95": float(distance["truth_to_candidate_p95"]),
+        "edge_false_positive_fraction_of_candidates": float(
+            edge_false_positive["edge_false_positive_fraction_of_candidates"]
+        ),
+    }
+
+
+def _scanner_stage_transition_metric(
+    *,
+    source_mask: np.ndarray,
+    target_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, int | float]:
+    source = np.asarray(source_mask, dtype=bool)
+    target = np.asarray(target_mask, dtype=bool)
+    source_count = _candidate_count(source)
+    target_count = _candidate_count(target)
+    overlap = buffered_surface_overlap(
+        target,
+        source,
+        radius=buffer_radius,
+    )
+    distance = surface_distance_metrics(target, source)
+    return {
+        "source_count": source_count,
+        "target_count": target_count,
+        "target_to_source_count_ratio": _fraction_or_zero(target_count, source_count),
+        "buffered_f1_r2": float(overlap["buffered_f1"]),
+        "target_to_source_distance_p95": float(distance["candidate_to_truth_p95"]),
+    }
+
+
 def _scanner_downstream_thinning_report(
     *,
     case: Synthetic3DCase,
@@ -2043,6 +2211,7 @@ def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -
         "voter_thin_hybrid": "hybrid",
         "voter_thin_hybrid_v2": "hybrid_v2",
         "voter_thin_hybrid_v2_recenter_scanner_target": "hybrid_v2",
+        "boundary_edge_thin_v1": "hybrid_v2",
         "voter_thin_normal_plateau": "normal_plateau",
     }
     return variant_thin_modes.get(variant, voting_config.voter_thin_mode)
@@ -2191,11 +2360,11 @@ def _recenter_edge_fvt_to_target(
         "fvt_recenter_candidate_count": candidate_count,
         "fvt_recenter_moved_count": int(moved_count),
         "fvt_recenter_collision_count": int(collision_count),
-        "fvt_recenter_mean_shift": float(np.mean(shift_values)) if shift_values.size else 0.0,
-        "fvt_recenter_p95_shift": float(np.percentile(shift_values, 95))
-        if shift_values.size
-        else 0.0,
-        "fvt_recenter_max_shift": float(np.max(shift_values)) if shift_values.size else 0.0,
+        "fvt_recenter_mean_shift": (float(np.mean(shift_values)) if shift_values.size else 0.0),
+        "fvt_recenter_p95_shift": (
+            float(np.percentile(shift_values, 95)) if shift_values.size else 0.0
+        ),
+        "fvt_recenter_max_shift": (float(np.max(shift_values)) if shift_values.size else 0.0),
         "fvt_recenter_edge_shell_only": True,
         "fvt_recenter_positive_count_before": int(np.count_nonzero(before_positive)),
         "fvt_recenter_positive_count_after": int(
@@ -2255,7 +2424,11 @@ def _fvt_recenter_destination(
         destination[axis] += offset
         if not _inside_shape(tuple(destination), target.shape):
             continue
-        destination_tuple = (int(destination[0]), int(destination[1]), int(destination[2]))
+        destination_tuple = (
+            int(destination[0]),
+            int(destination[1]),
+            int(destination[2]),
+        )
         target_value = float(target[destination_tuple])
         abs_shift = abs(offset)
         if target_value > best_target or (
@@ -2308,6 +2481,169 @@ def _fvt_recenter_target_distance_diagnostics(
         "fvt_recenter_to_target_distance_p95_before": before_p95,
         "fvt_recenter_to_target_distance_p95_after": after_p95,
     }
+
+
+def _apply_boundary_edge_thin_v1(
+    fvt: np.ndarray,
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    *,
+    voter: OptimalSurfaceVoter,
+    target: np.ndarray,
+    target_source: str,
+    edge_margin: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    fvt_array = np.asarray(fvt, dtype=np.float32)
+    fv_array = np.asarray(fv, dtype=np.float32)
+    vp_array = np.asarray(vp, dtype=np.float32)
+    vt_array = np.asarray(vt, dtype=np.float32)
+    target_array = np.asarray(target, dtype=np.float32)
+    if fvt_array.ndim != 3:
+        raise ValueError("fvt must be a 3D array")
+    if (
+        fv_array.shape != fvt_array.shape
+        or vp_array.shape != fvt_array.shape
+        or vt_array.shape != fvt_array.shape
+        or target_array.shape != fvt_array.shape
+    ):
+        raise ValueError("boundary_edge_thin_v1 input shapes must match")
+    if not (
+        np.all(np.isfinite(fvt_array))
+        and np.all(np.isfinite(fv_array))
+        and np.all(np.isfinite(vp_array))
+        and np.all(np.isfinite(vt_array))
+        and np.all(np.isfinite(target_array))
+    ):
+        raise ValueError("boundary_edge_thin_v1 inputs must contain only finite values")
+
+    edge_mask = _edge_mask(fvt_array.shape, edge_margin)
+    before_positive = _positive_candidate_mask(fvt_array)
+    edge_positive_before = before_positive & edge_mask
+    target_positive = _positive_candidate_mask(target_array)
+    target_plateau = voter.thin(
+        fv_array,
+        vp_array,
+        vt_array,
+        mode="normal_plateau",
+        plateau_tie_breaker=target_array,
+    )
+    candidate_mask = _positive_candidate_mask(target_plateau) & edge_mask & target_positive
+    result = fvt_array.copy()
+    collision_count = 0
+    adopted_count = 0
+    replaced_count = 0
+
+    line_candidates: dict[tuple[int, int, int], tuple[float, float, int, tuple[int, int, int]]] = {}
+    for index in np.argwhere(candidate_mask):
+        i3, i2, i1 = (int(index[0]), int(index[1]), int(index[2]))
+        axis = _dominant_fault_normal_array_axis(
+            float(vp_array[i3, i2, i1]), float(vt_array[i3, i2, i1])
+        )
+        key = _boundary_edge_line_key(axis, i3, i2, i1)
+        record = (
+            float(target_array[i3, i2, i1]),
+            float(fv_array[i3, i2, i1]),
+            int(np.ravel_multi_index((i3, i2, i1), fvt_array.shape)),
+            (i3, i2, i1),
+        )
+        existing = line_candidates.get(key)
+        if existing is None or _boundary_edge_candidate_precedes(record, existing):
+            line_candidates[key] = record
+
+    for key, (_, _, _, destination) in line_candidates.items():
+        selector = _boundary_edge_line_selector(key)
+        base_line = np.zeros(fvt_array.shape, dtype=bool)
+        base_line[selector] = edge_positive_before[selector]
+        base_count = int(np.count_nonzero(base_line))
+        if base_count > 0:
+            collision_count += base_count
+        destination_was_positive = bool(before_positive[destination])
+        if base_count > 0:
+            base_records: list[tuple[float, float, int, tuple[int, int, int]]] = []
+            for base_index in np.argwhere(base_line):
+                b3, b2, b1 = (
+                    int(base_index[0]),
+                    int(base_index[1]),
+                    int(base_index[2]),
+                )
+                base_records.append(
+                    (
+                        float(target_array[b3, b2, b1]),
+                        float(fv_array[b3, b2, b1]),
+                        int(np.ravel_multi_index((b3, b2, b1), fvt_array.shape)),
+                        (b3, b2, b1),
+                    )
+                )
+            best_base = min(base_records, key=lambda item: (-item[0], -item[1], item[2]))
+            candidate_record = (
+                float(target_array[destination]),
+                float(fv_array[destination]),
+                int(np.ravel_multi_index(destination, fvt_array.shape)),
+                destination,
+            )
+            if not _boundary_edge_candidate_precedes(candidate_record, best_base):
+                continue
+            result[base_line] = np.float32(0.0)
+            replaced_count += int(
+                np.count_nonzero(base_line & ~_single_index_mask(fvt_array.shape, destination))
+            )
+        if not destination_was_positive:
+            adopted_count += 1
+        result[destination] = np.float32(fv_array[destination])
+
+    after_positive = _positive_candidate_mask(result)
+    distance_before = surface_distance_metrics(before_positive, target_positive)
+    distance_after = surface_distance_metrics(after_positive, target_positive)
+    diagnostic = {
+        "enabled": True,
+        "target_source": target_source,
+        "edge_margin": int(edge_margin),
+        "positive_count_before": int(np.count_nonzero(before_positive)),
+        "positive_count_after": int(np.count_nonzero(after_positive)),
+        "edge_positive_count_before": int(np.count_nonzero(edge_positive_before)),
+        "edge_positive_count_after": int(np.count_nonzero(after_positive & edge_mask)),
+        "adopted_candidate_count": int(adopted_count),
+        "replaced_candidate_count": int(replaced_count),
+        "collision_count": int(collision_count),
+        "to_target_distance_p95_before": float(distance_before["candidate_to_truth_p95"]),
+        "to_target_distance_p95_after": float(distance_after["candidate_to_truth_p95"]),
+    }
+    return result.astype(np.float32, copy=False), diagnostic
+
+
+def _boundary_edge_line_key(axis: int, i3: int, i2: int, i1: int) -> tuple[int, int, int]:
+    if axis == 0:
+        return (axis, i2, i1)
+    if axis == 1:
+        return (axis, i3, i1)
+    return (axis, i3, i2)
+
+
+def _boundary_edge_line_selector(key: tuple[int, int, int]) -> tuple[Any, Any, Any]:
+    axis, first, second = key
+    if axis == 0:
+        return (slice(None), first, second)
+    if axis == 1:
+        return (first, slice(None), second)
+    return (first, second, slice(None))
+
+
+def _boundary_edge_candidate_precedes(
+    candidate: tuple[float, float, int, tuple[int, int, int]],
+    existing: tuple[float, float, int, tuple[int, int, int]],
+) -> bool:
+    if candidate[0] != existing[0]:
+        return candidate[0] > existing[0]
+    if candidate[1] != existing[1]:
+        return candidate[1] > existing[1]
+    return candidate[2] < existing[2]
+
+
+def _single_index_mask(shape: tuple[int, int, int], index: tuple[int, int, int]) -> np.ndarray:
+    mask = np.zeros(shape, dtype=bool)
+    mask[index] = True
+    return mask
 
 
 def _run_voter_thinning_diagnostic(
@@ -2573,6 +2909,7 @@ def _run_voting_from_attributes(
         plateau_tie_breaker=plateau_tie_breaker,
     )
     fvt_recenter_diagnostic: dict[str, Any] | None = None
+    boundary_edge_thin_diagnostic: dict[str, Any] | None = None
     if variant == "voter_thin_hybrid_v2_recenter_scanner_target":
         recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
         recenter_target_source = (
@@ -2585,6 +2922,21 @@ def _run_voting_from_attributes(
             target=recenter_target,
             target_source=recenter_target_source,
             max_shift=FVT_RECENTER_MAX_SHIFT,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        )
+    if variant == "boundary_edge_thin_v1":
+        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
+        boundary_target_source = (
+            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
+        )
+        fvt, boundary_edge_thin_diagnostic = _apply_boundary_edge_thin_v1(
+            fvt,
+            fv,
+            vp,
+            vt,
+            voter=voter,
+            target=boundary_target,
+            target_source=boundary_target_source,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
 
@@ -2727,6 +3079,8 @@ def _run_voting_from_attributes(
             )
         )
         report["fvt_recenter"] = fvt_recenter_diagnostic
+    if boundary_edge_thin_diagnostic is not None:
+        report["boundary_edge_thin"] = boundary_edge_thin_diagnostic
     diagnostic_volumes: dict[str, np.ndarray] = {}
     if include_thinning_diagnostic:
         thinning_diagnostic, diagnostic_volumes = _run_voter_thinning_diagnostic(
@@ -2777,6 +3131,7 @@ def _run_voting_from_attributes(
             truth_dip=case.truth_dip,
             buffer_radius=buffer_radius,
             small_skin_size=skinning_config.small_skin_size,
+            truth_fault_id=case.truth_fault_id,
         )
         skin_metrics = _normalize_report_skin_metric_keys(skin_metrics)
         report["pyosv"]["skins"] = skin_metrics["topology"]
@@ -3296,6 +3651,17 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_distance_hausdorff_p95",
                 "skin_strike_median_error",
                 "skin_dip_median_error",
+                "skin_truth_component_count",
+                "skin_covered_truth_component_count",
+                "skin_uncovered_truth_component_count",
+                "skin_over_merge_count",
+                "skin_over_split_count",
+                "skin_max_truth_components_per_skin",
+                "skin_max_skins_per_truth_component",
+                "skin_mean_purity",
+                "skin_min_purity",
+                "skin_mean_truth_component_recall",
+                "skin_min_truth_component_recall",
                 "scanner_ft_buffered_f1_r2",
                 "scanner_ft_distance_p95",
                 "scanner_strike_median_error",
@@ -3327,6 +3693,25 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2",
+                "scanner_stage_ft_positive_count",
+                "scanner_stage_fet_positive_count",
+                "scanner_stage_seed_candidate_count",
+                "scanner_stage_seed_selected_count",
+                "scanner_stage_fv_positive_count",
+                "scanner_stage_fvt_positive_count",
+                "scanner_stage_skin_count",
+                "scanner_stage_ft_truth_f1_r2",
+                "scanner_stage_fet_truth_f1_r2",
+                "scanner_stage_seed_selected_truth_f1_r2",
+                "scanner_stage_fv_truth_f1_r2",
+                "scanner_stage_fvt_truth_f1_r2",
+                "scanner_stage_skin_truth_f1_r2",
+                "scanner_stage_ft_to_fet_ratio",
+                "scanner_stage_fet_to_seed_selected_f1_r2",
+                "scanner_stage_seed_selected_to_fv_f1_r2",
+                "scanner_stage_fv_to_fvt_ratio",
+                "scanner_stage_fvt_to_skin_f1_r2",
+                "scanner_stage_fvt_to_skin_distance_p95",
                 "fvt_recenter_enabled",
                 "fvt_recenter_target_source",
                 "fvt_recenter_candidate_count",
@@ -3340,6 +3725,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "fvt_recenter_positive_count_after",
                 "fvt_recenter_to_target_distance_p95_before",
                 "fvt_recenter_to_target_distance_p95_after",
+                "boundary_edge_thin_enabled",
+                "boundary_edge_thin_target_source",
+                "boundary_edge_thin_adopted_candidate_count",
+                "boundary_edge_thin_replaced_candidate_count",
+                "boundary_edge_thin_positive_count_before",
+                "boundary_edge_thin_positive_count_after",
+                "boundary_edge_thin_to_target_distance_p95_before",
+                "boundary_edge_thin_to_target_distance_p95_after",
                 "thinning_diag_reference_fvt_buffered_f1_r2",
                 "thinning_diag_normal_fvt_buffered_f1_r2",
                 "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
@@ -3403,7 +3796,13 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     scanner_downstream_row = _summary_csv_scanner_downstream_row(
                         variant_report=variant_report,
                     )
+                    scanner_stage_loss_row = _summary_csv_scanner_stage_loss_row(
+                        variant_report=variant_report,
+                    )
                     fvt_recenter_row = _summary_csv_fvt_recenter_row(
+                        variant_report=variant_report,
+                    )
+                    boundary_edge_thin_row = _summary_csv_boundary_edge_thin_row(
                         variant_report=variant_report,
                     )
                     thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
@@ -3471,7 +3870,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             **scanner_row,
                             **scanner_matrix_row,
                             **scanner_downstream_row,
+                            **scanner_stage_loss_row,
                             **fvt_recenter_row,
+                            **boundary_edge_thin_row,
                             **thinning_diagnostic_row,
                             **comparison_row,
                         }
@@ -3658,6 +4059,98 @@ def _summary_csv_scanner_downstream_row(
     }
 
 
+def _summary_csv_scanner_stage_loss_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, int | float | None]:
+    empty_row: dict[str, int | float | None] = {
+        "scanner_stage_ft_positive_count": None,
+        "scanner_stage_fet_positive_count": None,
+        "scanner_stage_seed_candidate_count": None,
+        "scanner_stage_seed_selected_count": None,
+        "scanner_stage_fv_positive_count": None,
+        "scanner_stage_fvt_positive_count": None,
+        "scanner_stage_skin_count": None,
+        "scanner_stage_ft_truth_f1_r2": None,
+        "scanner_stage_fet_truth_f1_r2": None,
+        "scanner_stage_seed_selected_truth_f1_r2": None,
+        "scanner_stage_fv_truth_f1_r2": None,
+        "scanner_stage_fvt_truth_f1_r2": None,
+        "scanner_stage_skin_truth_f1_r2": None,
+        "scanner_stage_ft_to_fet_ratio": None,
+        "scanner_stage_fet_to_seed_selected_f1_r2": None,
+        "scanner_stage_seed_selected_to_fv_f1_r2": None,
+        "scanner_stage_fv_to_fvt_ratio": None,
+        "scanner_stage_fvt_to_skin_f1_r2": None,
+        "scanner_stage_fvt_to_skin_distance_p95": None,
+    }
+    diagnostic = variant_report.get("scanner_stage_loss")
+    if not isinstance(diagnostic, Mapping):
+        return empty_row
+    stages = diagnostic.get("stages")
+    transitions = diagnostic.get("transitions")
+    if not isinstance(stages, Mapping) or not isinstance(transitions, Mapping):
+        return empty_row
+
+    def stage_value(stage: str, key: str) -> int | float | None:
+        stage_report = stages.get(stage)
+        if not isinstance(stage_report, Mapping):
+            return None
+        value = stage_report.get(key)
+        return None if value is None else value
+
+    def transition_value(transition: str, key: str) -> int | float | None:
+        transition_report = transitions.get(transition)
+        if not isinstance(transition_report, Mapping):
+            return None
+        value = transition_report.get(key)
+        return None if value is None else value
+
+    return {
+        "scanner_stage_ft_positive_count": stage_value("scanner_ft_positive", "candidate_count"),
+        "scanner_stage_fet_positive_count": stage_value("scanner_fet_positive", "candidate_count"),
+        "scanner_stage_seed_candidate_count": stage_value("seed_candidate", "candidate_count"),
+        "scanner_stage_seed_selected_count": stage_value("seed_selected", "candidate_count"),
+        "scanner_stage_fv_positive_count": stage_value("fv_positive", "candidate_count"),
+        "scanner_stage_fvt_positive_count": stage_value("fvt_positive", "candidate_count"),
+        "scanner_stage_skin_count": stage_value("skin", "candidate_count"),
+        "scanner_stage_ft_truth_f1_r2": stage_value("scanner_ft_positive", "truth_buffered_f1_r2"),
+        "scanner_stage_fet_truth_f1_r2": stage_value(
+            "scanner_fet_positive", "truth_buffered_f1_r2"
+        ),
+        "scanner_stage_seed_selected_truth_f1_r2": stage_value(
+            "seed_selected", "truth_buffered_f1_r2"
+        ),
+        "scanner_stage_fv_truth_f1_r2": stage_value("fv_positive", "truth_buffered_f1_r2"),
+        "scanner_stage_fvt_truth_f1_r2": stage_value("fvt_positive", "truth_buffered_f1_r2"),
+        "scanner_stage_skin_truth_f1_r2": stage_value("skin", "truth_buffered_f1_r2"),
+        "scanner_stage_ft_to_fet_ratio": transition_value(
+            "scanner_ft_positive_to_scanner_fet_positive",
+            "target_to_source_count_ratio",
+        ),
+        "scanner_stage_fet_to_seed_selected_f1_r2": transition_value(
+            "scanner_fet_positive_to_seed_selected",
+            "buffered_f1_r2",
+        ),
+        "scanner_stage_seed_selected_to_fv_f1_r2": transition_value(
+            "seed_selected_to_fv_positive",
+            "buffered_f1_r2",
+        ),
+        "scanner_stage_fv_to_fvt_ratio": transition_value(
+            "fv_positive_to_fvt_positive",
+            "target_to_source_count_ratio",
+        ),
+        "scanner_stage_fvt_to_skin_f1_r2": transition_value(
+            "fvt_positive_to_skin",
+            "buffered_f1_r2",
+        ),
+        "scanner_stage_fvt_to_skin_distance_p95": transition_value(
+            "fvt_positive_to_skin",
+            "target_to_source_distance_p95",
+        ),
+    }
+
+
 def _summary_csv_fvt_recenter_row(
     *,
     variant_report: Mapping[str, Any],
@@ -3681,6 +4174,26 @@ def _summary_csv_fvt_recenter_row(
     if not isinstance(diagnostic, Mapping):
         return {key: None for key in keys}
     return {key: diagnostic.get(key) for key in keys}
+
+
+def _summary_csv_boundary_edge_thin_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, str | bool | int | float | None]:
+    keys = {
+        "boundary_edge_thin_enabled": "enabled",
+        "boundary_edge_thin_target_source": "target_source",
+        "boundary_edge_thin_adopted_candidate_count": "adopted_candidate_count",
+        "boundary_edge_thin_replaced_candidate_count": "replaced_candidate_count",
+        "boundary_edge_thin_positive_count_before": "positive_count_before",
+        "boundary_edge_thin_positive_count_after": "positive_count_after",
+        "boundary_edge_thin_to_target_distance_p95_before": "to_target_distance_p95_before",
+        "boundary_edge_thin_to_target_distance_p95_after": "to_target_distance_p95_after",
+    }
+    diagnostic = variant_report.get("boundary_edge_thin")
+    if not isinstance(diagnostic, Mapping):
+        return {key: False if key == "boundary_edge_thin_enabled" else None for key in keys}
+    return {key: diagnostic.get(source_key) for key, source_key in keys.items()}
 
 
 def _iter_pipeline_reports(
@@ -3751,6 +4264,7 @@ def _summary_csv_skin_row(
     diagnostics: Mapping[str, Any] | None,
 ) -> dict[str, bool | int | float | None]:
     diagnostic_row = _summary_csv_skin_diagnostics_row(enabled=enabled, diagnostics=diagnostics)
+    component_topology_row = _summary_csv_skin_component_topology_row(None)
     if quality is None:
         return {
             "skinning_enabled": enabled,
@@ -3773,12 +4287,16 @@ def _summary_csv_skin_row(
             "skin_distance_hausdorff_p95": None,
             "skin_strike_median_error": None,
             "skin_dip_median_error": None,
+            **component_topology_row,
         }
 
     topology = quality["topology"]
     overlap = quality["buffered_overlap_radius2"]
     distance = quality["surface_distance"]
     orientation = quality["orientation_error"]
+    component_topology_row = _summary_csv_skin_component_topology_row(
+        quality.get("component_topology")
+    )
     return {
         "skinning_enabled": enabled,
         "skin_enabled": enabled,
@@ -3800,6 +4318,41 @@ def _summary_csv_skin_row(
         "skin_distance_hausdorff_p95": distance["hausdorff_p95"],
         "skin_strike_median_error": orientation["strike_median"],
         "skin_dip_median_error": orientation["dip_median"],
+        **component_topology_row,
+    }
+
+
+def _summary_csv_skin_component_topology_row(
+    component_topology: Mapping[str, Any] | None,
+) -> dict[str, int | float | None]:
+    if component_topology is None:
+        return {
+            "skin_truth_component_count": None,
+            "skin_covered_truth_component_count": None,
+            "skin_uncovered_truth_component_count": None,
+            "skin_over_merge_count": None,
+            "skin_over_split_count": None,
+            "skin_max_truth_components_per_skin": None,
+            "skin_max_skins_per_truth_component": None,
+            "skin_mean_purity": None,
+            "skin_min_purity": None,
+            "skin_mean_truth_component_recall": None,
+            "skin_min_truth_component_recall": None,
+        }
+    return {
+        "skin_truth_component_count": component_topology["truth_component_count"],
+        "skin_covered_truth_component_count": component_topology["covered_truth_component_count"],
+        "skin_uncovered_truth_component_count": component_topology[
+            "uncovered_truth_component_count"
+        ],
+        "skin_over_merge_count": component_topology["over_merge_skin_count"],
+        "skin_over_split_count": component_topology["over_split_truth_component_count"],
+        "skin_max_truth_components_per_skin": component_topology["max_truth_components_per_skin"],
+        "skin_max_skins_per_truth_component": component_topology["max_skins_per_truth_component"],
+        "skin_mean_purity": component_topology["mean_skin_purity"],
+        "skin_min_purity": component_topology["min_skin_purity"],
+        "skin_mean_truth_component_recall": component_topology["mean_truth_component_recall"],
+        "skin_min_truth_component_recall": component_topology["min_truth_component_recall"],
     }
 
 
@@ -4264,7 +4817,10 @@ def _fallback_component_diagnostics(
         filter_min_component_size = 0
         filter_min_fraction_of_largest = 0.0
         filter_max_components = 0
-    elif component_policy in {"degraded_primary_filtered", "degraded_primary_skeletonized"}:
+    elif component_policy in {
+        "degraded_primary_filtered",
+        "degraded_primary_skeletonized",
+    }:
         accepted_components = _filtered_fallback_components(
             components,
             candidate_cell_count=candidate_cell_count,
@@ -4538,7 +5094,10 @@ def _apply_boundary_skinner_fallback(
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
     fallback_connectivity = "edge"
-    if fallback_policy in {"degraded_primary_filtered", "degraded_primary_skeletonized"}:
+    if fallback_policy in {
+        "degraded_primary_filtered",
+        "degraded_primary_skeletonized",
+    }:
         component_policy = fallback_policy
     else:
         component_policy = "all"
@@ -4670,7 +5229,10 @@ def _apply_boundary_skinner_fallback(
 
     fallback_fvt = fvt
     fallback_min_skin_size = skinning_config.min_skin_size
-    if component_policy in {"degraded_primary_filtered", "degraded_primary_skeletonized"}:
+    if component_policy in {
+        "degraded_primary_filtered",
+        "degraded_primary_skeletonized",
+    }:
         accepted_components = _filtered_fallback_components(
             _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
             candidate_cell_count=fvt_positive_count,

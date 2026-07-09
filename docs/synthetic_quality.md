@@ -151,9 +151,11 @@ The public factory cases are:
 - `curved_surface`: an analytic surface whose `x1` position varies with `x2`
   and `x3`; truth strike and dip vary spatially with the local normal.
 - `parallel_planes`: close but distinct faults; tests separation and skin
-  fragmentation.
+  fragmentation with component-aware skin topology metrics against truth fault
+  IDs.
 - `crossing_planes`: intersecting faults; tests crossing robustness and
-  orientation ambiguity.
+  orientation ambiguity, including component-aware over-merge and over-split
+  skin diagnostics.
 - `boundary_plane`: a fault near the `i2` boundary; tests edge artifact
   behavior and boundary handling.
 - `weak_noisy_plane`: degraded likelihood with deterministic noise; tests
@@ -352,8 +354,9 @@ edge/boundary stress diagnostic.
 For `parallel_planes` and `crossing_planes`, FVT overlap alone is not enough.
 These cases are intended to expose skin topology behavior: separation of nearby
 truth faults for `parallel_planes`, and over-merge or over-split behavior near
-intersections for `crossing_planes`. Future metrics should report coverage,
-over-merge, and over-split against truth fault IDs rather than relying only on
+intersections for `crossing_planes`. The skin quality report includes
+`quality.skin.component_topology`, which reports coverage, over-merge, and
+over-split against `truth_fault_id` components rather than relying only on
 global overlap scores or raw skin counts.
 
 The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for

@@ -158,6 +158,17 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_distance_hausdorff_p95",
     "skin_strike_median_error",
     "skin_dip_median_error",
+    "skin_truth_component_count",
+    "skin_covered_truth_component_count",
+    "skin_uncovered_truth_component_count",
+    "skin_over_merge_count",
+    "skin_over_split_count",
+    "skin_max_truth_components_per_skin",
+    "skin_max_skins_per_truth_component",
+    "skin_mean_purity",
+    "skin_min_purity",
+    "skin_mean_truth_component_recall",
+    "skin_min_truth_component_recall",
     "skin_buffered_f1_delta_vs_baseline",
     "skin_distance_p95_delta_vs_baseline",
     "skin_strike_median_error_delta_vs_baseline",
@@ -225,6 +236,17 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_distance_hausdorff_p95",
     "skin_strike_median_error",
     "skin_dip_median_error",
+    "skin_truth_component_count",
+    "skin_covered_truth_component_count",
+    "skin_uncovered_truth_component_count",
+    "skin_over_merge_count",
+    "skin_over_split_count",
+    "skin_max_truth_components_per_skin",
+    "skin_max_skins_per_truth_component",
+    "skin_mean_purity",
+    "skin_min_purity",
+    "skin_mean_truth_component_recall",
+    "skin_min_truth_component_recall",
 )
 SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
     "skin_buffered_f1_r2",
@@ -236,6 +258,17 @@ SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
     "skin_distance_hausdorff_p95",
     "skin_strike_median_error",
     "skin_dip_median_error",
+    "skin_truth_component_count",
+    "skin_covered_truth_component_count",
+    "skin_uncovered_truth_component_count",
+    "skin_over_merge_count",
+    "skin_over_split_count",
+    "skin_max_truth_components_per_skin",
+    "skin_max_skins_per_truth_component",
+    "skin_mean_purity",
+    "skin_min_purity",
+    "skin_mean_truth_component_recall",
+    "skin_min_truth_component_recall",
     "skin_buffered_f1_delta_vs_baseline",
     "skin_distance_p95_delta_vs_baseline",
     "skin_strike_median_error_delta_vs_baseline",
@@ -488,6 +521,58 @@ def _assert_scanner_downstream_contract(diagnostic: dict[str, object]) -> None:
         assert math.isfinite(float(diagnostic[key]["fvt_positive_buffered_f1_r2"]))
 
 
+def _assert_scanner_stage_loss_contract(diagnostic: dict[str, object]) -> None:
+    expected_stages = (
+        "scanner_ft_positive",
+        "scanner_fet_positive",
+        "seed_candidate",
+        "seed_selected",
+        "fv_positive",
+        "fvt_positive",
+        "skin",
+    )
+    expected_transitions = (
+        "scanner_ft_positive_to_scanner_fet_positive",
+        "scanner_fet_positive_to_seed_candidate",
+        "seed_candidate_to_seed_selected",
+        "seed_selected_to_fv_positive",
+        "fv_positive_to_fvt_positive",
+        "fvt_positive_to_skin",
+    )
+
+    stages = diagnostic["stages"]
+    assert isinstance(stages, dict)
+    assert set(expected_stages).issubset(stages)
+    for stage_name in expected_stages:
+        stage = stages[stage_name]
+        assert isinstance(stage["candidate_count"], int)
+        assert stage["candidate_count"] >= 0
+        for key in (
+            "edge_shell_fraction",
+            "truth_buffered_f1_r2",
+            "candidate_to_truth_p95",
+            "truth_to_candidate_p95",
+            "edge_false_positive_fraction_of_candidates",
+        ):
+            assert math.isfinite(float(stage[key]))
+
+    transitions = diagnostic["transitions"]
+    assert isinstance(transitions, dict)
+    assert set(expected_transitions).issubset(transitions)
+    for transition_name in expected_transitions:
+        transition = transitions[transition_name]
+        assert isinstance(transition["source_count"], int)
+        assert isinstance(transition["target_count"], int)
+        assert transition["source_count"] >= 0
+        assert transition["target_count"] >= 0
+        for key in (
+            "target_to_source_count_ratio",
+            "buffered_f1_r2",
+            "target_to_source_distance_p95",
+        ):
+            assert math.isfinite(float(transition[key]))
+
+
 def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     result = _run_script("--help")
 
@@ -572,6 +657,13 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2_recenter()
     assert module.parse_variants("voter_thin_hybrid_v2_recenter_scanner_target") == (
         "voter_thin_hybrid_v2_recenter_scanner_target",
     )
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_edge_thin() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("boundary_edge_thin_v1") == ("boundary_edge_thin_v1",)
+    assert "boundary_edge_thin_v1" not in module.QUALITY_MATRIX_VARIANTS
 
 
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
@@ -891,6 +983,17 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
         assert "buffered_overlap_radius2" in quality["fvt_positive_top_truth_count"]
         assert "fvt_top_truth_count" in quality["edge_false_positive"]
         assert "fvt_positive_top_truth_count" in quality["edge_false_positive"]
+        skin_quality = quality["skin"]
+        assert skin_quality is not None
+        assert "component_topology" in skin_quality
+        component_topology = skin_quality["component_topology"]
+        assert "truth_components" in component_topology
+        assert "skins" in component_topology
+        if case["case_id"] in {"parallel_planes", "crossing_planes"}:
+            assert component_topology["truth_component_count"] == 2
+            assert component_topology["skin_count"] >= 0
+            assert component_topology["over_merge_skin_count"] >= 0
+            assert component_topology["over_split_truth_component_count"] >= 0
         assert math.isfinite(
             float(
                 quality["edge_false_positive"]["fvt_top_truth_count"][
@@ -921,11 +1024,20 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
         assert "fvt_positive_buffered_f1_r2" in row
         assert "fvt_positive_distance_p95" in row
         assert "fvt_positive_edge_false_positive_fraction" in row
+        assert "skin_truth_component_count" in row
+        assert "skin_over_merge_count" in row
+        assert "skin_over_split_count" in row
         assert math.isfinite(float(row["fvt_edge_false_positive_fraction"]))
         assert math.isfinite(float(row["fv_edge_false_positive_fraction"]))
         assert int(row["fv_positive_candidate_count"]) >= 0
         assert int(row["fvt_positive_candidate_count"]) >= 0
         assert math.isfinite(float(row["fvt_positive_buffered_f1_r2"]))
+        assert math.isfinite(float(row["skin_mean_purity"]))
+        assert math.isfinite(float(row["skin_mean_truth_component_recall"]))
+        if row["case_id"] in {"parallel_planes", "crossing_planes"}:
+            assert int(row["skin_truth_component_count"]) == 2
+            assert int(row["skin_over_merge_count"]) >= 0
+            assert int(row["skin_over_split_count"]) >= 0
         assert math.isfinite(float(row["fvt_positive_distance_p95"]))
         assert math.isfinite(float(row["fvt_positive_edge_false_positive_fraction"]))
 
@@ -1673,6 +1785,74 @@ def test_fvt_recenter_collision_keeps_higher_original_fvt_deterministically() ->
     assert second_diagnostic["fvt_recenter_collision_count"] == 1
 
 
+def test_boundary_edge_thin_v1_preserves_non_edge_hybrid_v2_mask() -> None:
+    module = _load_report_module()
+    voter = module.OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fv = np.zeros((5, 7, 5), dtype=np.float32)
+    fv[2, 0:3, 2] = 1.0
+    fv[2, 3, 2] = 0.8
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    target = np.zeros_like(fv)
+    target[2, 1, 2] = 1.0
+
+    base = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode="hybrid_v2",
+        reference_sigma=0.0,
+        plateau_tie_breaker=fv,
+    )
+    result, diagnostic = module._apply_boundary_edge_thin_v1(
+        base,
+        fv,
+        vp,
+        vt,
+        voter=voter,
+        target=target,
+        target_source="scanner_fet",
+        edge_margin=2,
+    )
+
+    non_edge = ~module._edge_mask(fv.shape, 2)
+    np.testing.assert_array_equal(result[non_edge] > 0.0, base[non_edge] > 0.0)
+    assert diagnostic["enabled"] is True
+    assert diagnostic["target_source"] == "scanner_fet"
+
+
+def test_boundary_edge_thin_v1_adopts_high_target_plateau_candidate() -> None:
+    module = _load_report_module()
+    voter = module.OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    fvt = np.zeros((5, 5, 5), dtype=np.float32)
+    fv = np.zeros_like(fvt)
+    fv[2, 2:4, 2] = 1.0
+    fvt[2, 4, 2] = 1.0
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    target = np.zeros_like(fvt)
+    target[2, 4, 2] = 0.1
+    target[2, 3, 2] = 0.9
+
+    result, diagnostic = module._apply_boundary_edge_thin_v1(
+        fvt,
+        fv,
+        vp,
+        vt,
+        voter=voter,
+        target=target,
+        target_source="scanner_fet",
+        edge_margin=2,
+    )
+
+    assert result[2, 4, 2] == 0.0
+    assert result[2, 3, 2] == pytest.approx(1.0)
+    assert diagnostic["adopted_candidate_count"] == 1
+    assert diagnostic["replaced_candidate_count"] == 1
+    assert diagnostic["edge_positive_count_before"] == 1
+    assert diagnostic["edge_positive_count_after"] == 1
+
+
 def test_report_3d_synthetic_quality_recenter_oracle_records_target_source() -> None:
     module = _load_report_module()
 
@@ -1734,6 +1914,48 @@ def test_report_3d_synthetic_quality_recenter_scanner_records_diagnostics_and_cs
     assert row["fvt_recenter_target_source"] == "scanner_fet"
     assert row["fvt_recenter_candidate_count"] != ""
     assert row["fvt_recenter_to_target_distance_p95_after"] != ""
+
+
+def test_report_3d_synthetic_quality_boundary_edge_thin_scanner_diagnostics_and_csv(
+    tmp_path: Path,
+) -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        variants=("boundary_edge_thin_v1",),
+        workflow_mode="quality",
+        input_mode="scanner",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    variant = report["cases"][0]["variants"]["boundary_edge_thin_v1"]
+    diagnostic = variant["boundary_edge_thin"]
+    assert diagnostic["enabled"] is True
+    assert diagnostic["target_source"] == "scanner_fet"
+    assert diagnostic["edge_margin"] == module.EDGE_FALSE_POSITIVE_MARGIN
+    for key in (
+        "positive_count_before",
+        "positive_count_after",
+        "edge_positive_count_before",
+        "edge_positive_count_after",
+        "adopted_candidate_count",
+        "replaced_candidate_count",
+        "collision_count",
+    ):
+        assert int(diagnostic[key]) >= 0
+    assert math.isfinite(float(diagnostic["to_target_distance_p95_before"]))
+    assert math.isfinite(float(diagnostic["to_target_distance_p95_after"]))
+
+    module.write_summary_csv(report, tmp_path)
+    with (tmp_path / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    assert row["boundary_edge_thin_enabled"] == "True"
+    assert row["boundary_edge_thin_target_source"] == "scanner_fet"
+    assert row["boundary_edge_thin_adopted_candidate_count"] != ""
+    assert row["boundary_edge_thin_to_target_distance_p95_after"] != ""
 
 
 def test_report_3d_synthetic_quality_hybrid_v2_output_unchanged_without_recenter() -> None:
@@ -3558,8 +3780,11 @@ def test_scanner_downstream_diagnostics_are_opt_in_and_do_not_change_outputs(
     assert plain_metrics["config"]["scanner_downstream_diagnostics"] is False
     assert diagnostic_metrics["config"]["scanner_downstream_diagnostics"] is True
     assert "scanner_downstream" not in plain_variant
+    assert "scanner_stage_loss" not in plain_variant
     assert "scanner_downstream" in diagnostic_variant
+    assert "scanner_stage_loss" in diagnostic_variant
     _assert_scanner_downstream_contract(diagnostic_variant["scanner_downstream"])
+    _assert_scanner_stage_loss_contract(diagnostic_variant["scanner_stage_loss"])
     assert diagnostic_variant["scanner_downstream"]["voter_thin_mode"] == "hybrid_v2"
     assert diagnostic_variant["scanner_downstream"]["plateau_tie_breaker_source"] == "scanner_fet"
 
@@ -3617,6 +3842,88 @@ def test_scanner_downstream_diagnostics_are_opt_in_and_do_not_change_outputs(
     assert row["scanner_downstream_scanner_thin_mode"] == "reference"
 
 
+def test_scanner_stage_loss_diagnostics_json_and_summary_contract(tmp_path: Path) -> None:
+    module = _load_report_module()
+    scanner_config = module.SyntheticScannerConfig(backend="quality", refinement_factor=2)
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        input_mode="scanner",
+        workflow_mode="quality",
+        variants=("current_default",),
+        include_scanner_downstream_diagnostics=True,
+        scanner_config=scanner_config,
+    )
+    variant = report["cases"][0]["variants"]["current_default"]
+
+    assert "scanner_stage_loss" in variant
+    _assert_scanner_stage_loss_contract(variant["scanner_stage_loss"])
+
+    summary_path = module.write_summary_csv(report, tmp_path)
+    with summary_path.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    scanner_stage_fields = (
+        "scanner_stage_ft_positive_count",
+        "scanner_stage_fet_positive_count",
+        "scanner_stage_seed_candidate_count",
+        "scanner_stage_seed_selected_count",
+        "scanner_stage_fv_positive_count",
+        "scanner_stage_fvt_positive_count",
+        "scanner_stage_skin_count",
+        "scanner_stage_ft_truth_f1_r2",
+        "scanner_stage_fet_truth_f1_r2",
+        "scanner_stage_seed_selected_truth_f1_r2",
+        "scanner_stage_fv_truth_f1_r2",
+        "scanner_stage_fvt_truth_f1_r2",
+        "scanner_stage_skin_truth_f1_r2",
+        "scanner_stage_ft_to_fet_ratio",
+        "scanner_stage_fet_to_seed_selected_f1_r2",
+        "scanner_stage_seed_selected_to_fv_f1_r2",
+        "scanner_stage_fv_to_fvt_ratio",
+        "scanner_stage_fvt_to_skin_f1_r2",
+        "scanner_stage_fvt_to_skin_distance_p95",
+    )
+    for field in scanner_stage_fields:
+        assert field in row
+        assert row[field] != ""
+        assert math.isfinite(float(row[field]))
+
+    plain_report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        input_mode="scanner",
+        workflow_mode="quality",
+        variants=("current_default",),
+        include_scanner_downstream_diagnostics=False,
+        scanner_config=scanner_config,
+    )
+    plain_variant = plain_report["cases"][0]["variants"]["current_default"]
+    assert "scanner_stage_loss" not in plain_variant
+    plain_summary_path = module.write_summary_csv(plain_report, tmp_path / "plain")
+    with plain_summary_path.open(encoding="utf-8", newline="") as file:
+        plain_row = next(csv.DictReader(file))
+    for field in scanner_stage_fields:
+        assert plain_row[field] == ""
+
+    oracle_report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        input_mode="oracle",
+        workflow_mode="quality",
+        variants=("current_default",),
+        include_scanner_downstream_diagnostics=True,
+        scanner_config=scanner_config,
+    )
+    oracle_variant = oracle_report["cases"][0]["variants"]["current_default"]
+    assert "scanner_stage_loss" not in oracle_variant
+    oracle_summary_path = module.write_summary_csv(oracle_report, tmp_path / "oracle")
+    with oracle_summary_path.open(encoding="utf-8", newline="") as file:
+        oracle_row = next(csv.DictReader(file))
+    for field in scanner_stage_fields:
+        assert oracle_row[field] == ""
+
+
 def test_scanner_downstream_diagnostics_both_mode_lives_on_scanner_pipeline(
     tmp_path: Path,
 ) -> None:
@@ -3639,17 +3946,24 @@ def test_scanner_downstream_diagnostics_both_mode_lives_on_scanner_pipeline(
     variant = metrics["cases"][0]["variants"]["current_default"]
     assert metrics["config"]["scanner_downstream_diagnostics"] is True
     assert "scanner_downstream" not in variant
+    assert "scanner_stage_loss" not in variant
     assert "scanner_downstream" not in variant["pipelines"]["oracle"]
+    assert "scanner_stage_loss" not in variant["pipelines"]["oracle"]
     scanner_downstream = variant["pipelines"]["scanner"]["scanner_downstream"]
     _assert_scanner_downstream_contract(scanner_downstream)
+    scanner_stage_loss = variant["pipelines"]["scanner"]["scanner_stage_loss"]
+    _assert_scanner_stage_loss_contract(scanner_stage_loss)
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     rows_by_pipeline = {row["pipeline"]: row for row in rows}
     assert rows_by_pipeline["oracle"]["scanner_downstream_scanner_ft_positive_count"] == ""
+    assert rows_by_pipeline["oracle"]["scanner_stage_ft_positive_count"] == ""
     scanner_row = rows_by_pipeline["scanner"]
     assert scanner_row["scanner_downstream_scanner_ft_positive_count"] != ""
     assert math.isfinite(float(scanner_row["scanner_downstream_ft_to_fvt_overlap_f1"]))
+    assert scanner_row["scanner_stage_ft_positive_count"] != ""
+    assert math.isfinite(float(scanner_row["scanner_stage_fvt_to_skin_distance_p95"]))
 
 
 def test_synthetic_quality_comparison_helper_prints_selected_columns(tmp_path: Path) -> None:
