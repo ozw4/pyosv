@@ -4894,6 +4894,54 @@ def test_report_3d_synthetic_quality_v5_guardrail_blocks_fragmented_fallback() -
     assert len(skins[0]) == 1
 
 
+def test_report_3d_synthetic_quality_v5_rejects_empty_primary_fallback() -> None:
+    module = _load_report_module()
+    fvt = np.ones((1, 1, 20), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    scanner_target_positive_mask = np.ones_like(fvt, dtype=bool)
+    skins: list[object] = []
+    diagnostics: dict[str, object] = {}
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=fvt.shape,
+        fvt_positive_candidate_count=20,
+        small_skin_size=1,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
+            small_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback_v5",
+        diagnostics=diagnostics,
+        scanner_target_positive_mask=scanner_target_positive_mask,
+    )
+
+    guardrail = diagnostics["fallback_v5_guardrail"]
+    assert diagnostics["fallback_policy"] == "degraded_primary_topology_guarded"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "empty_primary_not_supported_by_topology_guarded"
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is False
+    assert diagnostics["fallback_replaced_primary"] is False
+    assert diagnostics["fallback_skin_count"] == 0
+    assert diagnostics["fallback_degraded_reasons"] == [
+        "empty_primary_skin",
+        "low_fvt_positive_coverage",
+    ]
+    assert guardrail["enabled"] is True
+    assert guardrail["passed"] is False
+    assert guardrail["reasons"] == ["empty_primary_not_supported"]
+    assert skins == []
+
+
 def test_report_3d_synthetic_quality_v5_guardrail_passes_and_replaces_primary() -> None:
     module = _load_report_module()
     fvt = np.ones((1, 1, 20), dtype=np.float32)

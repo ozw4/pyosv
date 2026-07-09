@@ -5549,6 +5549,11 @@ def _apply_boundary_skinner_fallback(
     if fvt_positive_count == 0:
         diagnostics["fallback_reason"] = "empty_primary_skin_without_positive_fvt"
         return
+    if fallback_policy == "degraded_primary_topology_guarded" and primary_skin_count == 0:
+        diagnostics["fallback_degraded_reasons"] = degraded_reasons
+        diagnostics["fallback_reason"] = "empty_primary_not_supported_by_topology_guarded"
+        diagnostics["fallback_v5_guardrail"]["reasons"] = ["empty_primary_not_supported"]
+        return
     if fallback_policy == "empty_primary":
         if skins:
             diagnostics["fallback_reason"] = "primary_skin_nonempty"
@@ -5556,10 +5561,6 @@ def _apply_boundary_skinner_fallback(
         fallback_reason = "empty_primary_skin_with_positive_fvt"
     else:
         diagnostics["fallback_degraded_reasons"] = degraded_reasons
-        if fallback_policy == "degraded_primary_topology_guarded" and primary_skin_count == 0:
-            diagnostics["fallback_reason"] = "empty_primary_not_supported_by_topology_guarded"
-            diagnostics["fallback_v5_guardrail"]["reasons"] = ["empty_primary_not_supported"]
-            return
         if not degraded_reasons:
             diagnostics["fallback_reason"] = "primary_skin_healthy"
             return
