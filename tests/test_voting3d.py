@@ -1176,6 +1176,23 @@ def test_apply_voting_returns_zero_arrays_when_no_seeds_are_selected() -> None:
         np.testing.assert_array_equal(array, np.zeros_like(ft))
 
 
+def test_apply_voting_from_seeds_matches_apply_voting_for_same_seed_set() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    voter.set_attribute_smoothing(0)
+    ft = np.zeros((7, 7, 7), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    ft[2, 3, 2] = 0.9
+    ft[5, 3, 5] = 0.8
+
+    seeds = voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+    default = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+    explicit = voter.apply_voting_from_seeds(seeds, ft=ft, pt=pt, tt=tt)
+
+    for default_array, explicit_array in zip(default, explicit):
+        np.testing.assert_array_equal(default_array, explicit_array)
+
+
 def test_apply_voting_surface_support_default_policy_is_no_op() -> None:
     ft = np.zeros((11, 11, 11), dtype=np.float32)
     ft[3:8, 5, 3:8] = 0.8

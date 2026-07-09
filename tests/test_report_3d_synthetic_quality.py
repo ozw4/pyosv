@@ -666,6 +666,13 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_edge_thin()
     assert "boundary_edge_thin_v1" not in module.QUALITY_MATRIX_VARIANTS
 
 
+def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_seed_retention() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("boundary_seed_retention_v1") == ("boundary_seed_retention_v1",)
+    assert "boundary_seed_retention_v1" not in module.QUALITY_MATRIX_VARIANTS
+
+
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
     module = _load_report_module()
 
@@ -3922,6 +3929,85 @@ def test_scanner_stage_loss_diagnostics_json_and_summary_contract(tmp_path: Path
         oracle_row = next(csv.DictReader(file))
     for field in scanner_stage_fields:
         assert oracle_row[field] == ""
+
+
+def test_boundary_seed_retention_adds_edge_target_seed_not_selected_by_default() -> None:
+    module = _load_report_module()
+    voting_config = module.SyntheticVotingConfig(seed_distance=2, seed_threshold=0.5)
+    ft = np.zeros((5, 5, 5), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    target = np.zeros_like(ft)
+    ft[2, 2, 2] = 0.9
+    ft[0, 2, 2] = 0.4
+    target[0, 2, 2] = 1.0
+
+    default_seeds, retained_seeds, diagnostic = module._boundary_seed_retention_v1_seeds(
+        voting_config=voting_config,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+        target=target,
+        target_source="scanner_fet",
+        edge_margin=2,
+    )
+
+    assert [(seed.i1, seed.i2, seed.i3) for seed in default_seeds] == [(2, 2, 2)]
+    assert [(seed.i1, seed.i2, seed.i3) for seed in retained_seeds] == [
+        (2, 2, 2),
+        (2, 2, 0),
+    ]
+    assert diagnostic["default_seed_count"] == 1
+    assert diagnostic["boundary_candidate_count"] == 1
+    assert diagnostic["added_seed_count"] == 1
+    assert diagnostic["total_seed_count"] == 2
+    assert diagnostic["added_seed_edge_shell_fraction"] == pytest.approx(1.0)
+    assert diagnostic["added_seed_target_mean"] == pytest.approx(1.0)
+
+
+def test_boundary_seed_retention_report_diagnostic_and_summary_columns(
+    tmp_path: Path,
+) -> None:
+    module = _load_report_module()
+    scanner_config = module.SyntheticScannerConfig(backend="quality", refinement_factor=2)
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        input_mode="scanner",
+        workflow_mode="quality",
+        variants=("boundary_seed_retention_v1",),
+        include_scanner_downstream_diagnostics=True,
+        scanner_config=scanner_config,
+    )
+    variant = report["cases"][0]["variants"]["boundary_seed_retention_v1"]
+    diagnostic = variant["boundary_seed_retention"]
+
+    assert diagnostic["enabled"] is True
+    assert diagnostic["target_source"] == "scanner_fet"
+    assert diagnostic["edge_margin"] == 2
+    assert diagnostic["total_seed_count"] == (
+        diagnostic["default_seed_count"] + diagnostic["added_seed_count"]
+    )
+    seed_stage = variant["scanner_stage_loss"]["stages"]["seed_selected"]
+    assert seed_stage["candidate_count"] == diagnostic["total_seed_count"]
+    assert seed_stage["default_candidate_count"] == diagnostic["default_seed_count"]
+    assert seed_stage["added_candidate_count"] == diagnostic["added_seed_count"]
+
+    summary_path = module.write_summary_csv(report, tmp_path)
+    with summary_path.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    assert row["boundary_seed_retention_enabled"] == "True"
+    assert row["boundary_seed_retention_target_source"] == "scanner_fet"
+    assert (
+        int(row["boundary_seed_retention_default_seed_count"]) == diagnostic["default_seed_count"]
+    )
+    assert (
+        int(row["boundary_seed_retention_boundary_candidate_count"])
+        == diagnostic["boundary_candidate_count"]
+    )
+    assert int(row["boundary_seed_retention_added_seed_count"]) == diagnostic["added_seed_count"]
+    assert int(row["boundary_seed_retention_total_seed_count"]) == diagnostic["total_seed_count"]
 
 
 def test_scanner_downstream_diagnostics_both_mode_lives_on_scanner_pipeline(

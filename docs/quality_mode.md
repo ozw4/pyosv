@@ -166,6 +166,13 @@ variant also starts from `hybrid_v2`, but uses the scanner-boundary target
 during edge-shell thinning candidate selection instead of moving samples after
 thinning. It is available only by explicit `--variants boundary_edge_thin_v1`
 selection and is not part of the default or `quality-matrix` preset. The
+`boundary_seed_retention_v1` diagnostic variant keeps the normal voter and
+thinning path, but adds boundary-shell seeds whose input/scanner target remains
+positive before surface voting. Scanner runs use `scanner_fet` as the target;
+oracle runs use oracle `ft`. This is a target-aware seed diagnostic, does not
+use truth arrays for seed selection, and is available only by explicit
+`--variants boundary_seed_retention_v1` selection, not by default or
+`quality-matrix`. The
 `voter_thin_normal_plateau` diagnostic variant keeps fault-normal thinning
 explicit, but collapses normal-direction plateau runs with the input fault
 likelihood as the retained-layer tie-breaker.

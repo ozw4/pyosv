@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import numbers
 import operator
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -224,6 +225,27 @@ class OptimalSurfaceVoter:
             ("ft", "pt", "tt"),
         )
         seeds = self.pick_seeds(d, fm, ft_array, pt_array, tt_array)
+        return self.apply_voting_from_seeds(seeds, ft_array, pt_array, tt_array)
+
+    def apply_voting_from_seeds(
+        self,
+        seeds: Sequence[FaultCell],
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run 3D surface voting for an explicit deterministic seed sequence."""
+
+        ft_array, pt_array, tt_array = _validate_matching_finite_arrays3_many(
+            (ft, pt, tt),
+            ("ft", "pt", "tt"),
+        )
+        n3, n2, n1 = ft_array.shape
+        for seed in seeds:
+            if not isinstance(seed, FaultCell):
+                raise TypeError("seeds must contain FaultCell instances")
+            if not (0 <= seed.i1 < n1 and 0 <= seed.i2 < n2 and 0 <= seed.i3 < n3):
+                raise ValueError("seed coordinates must be inside the image bounds")
         fs = _smooth_fault_likelihood_3d(ft_array)
 
         fe = np.zeros_like(ft_array, dtype=np.float32)

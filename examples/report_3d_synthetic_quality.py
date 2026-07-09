@@ -52,6 +52,7 @@ from pyosv.synthetic_metrics import (
     top_positive_truth_count_mask,
     top_truth_count_mask,
 )
+from pyosv.cells import FaultCell
 from pyosv.orient3d import FaultOrientScanner3
 from pyosv.skinner import FaultSkinner, find_connected_component_skins
 from pyosv.voting3d import OptimalSurfaceVoter
@@ -126,6 +127,7 @@ VARIANT_NAMES = (
     "voter_thin_hybrid_v2",
     "voter_thin_hybrid_v2_recenter_scanner_target",
     "boundary_edge_thin_v1",
+    "boundary_seed_retention_v1",
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
@@ -1401,6 +1403,7 @@ def _run_scanner_pipeline(
         report["scanner_stage_loss"] = _scanner_stage_loss_diagnostics(
             case=case,
             voting_config=voting_config,
+            variant=variant,
             scanner_volumes=scanner_volumes,
             fv=volumes["fv_py"],
             fvt=volumes["fvt_py"],
@@ -2000,6 +2003,7 @@ def _scanner_stage_loss_diagnostics(
     *,
     case: Synthetic3DCase,
     voting_config: SyntheticVotingConfig,
+    variant: str,
     scanner_volumes: Mapping[str, np.ndarray],
     fv: np.ndarray,
     fvt: np.ndarray,
@@ -2016,19 +2020,32 @@ def _scanner_stage_loss_diagnostics(
     )
     truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
     truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+    seed_selected_mask = _seed_selection_diagnostic(
+        shape=case.shape,
+        voting_config=voting_config,
+        ft=scanner_volumes["scanner_fet"],
+        pt=scanner_volumes["scanner_fpt"],
+        tt=scanner_volumes["scanner_ftt"],
+    )
+    boundary_seed_retention: dict[str, Any] | None = None
+    if variant == "boundary_seed_retention_v1":
+        _, seeds, boundary_seed_retention = _boundary_seed_retention_v1_seeds(
+            voting_config=voting_config,
+            ft=scanner_volumes["scanner_fet"],
+            pt=scanner_volumes["scanner_fpt"],
+            tt=scanner_volumes["scanner_ftt"],
+            target=scanner_volumes["scanner_fet"],
+            target_source="scanner_fet",
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        )
+        seed_selected_mask = _seed_mask_from_seeds(case.shape, seeds)
 
     stage_masks = {
         "scanner_ft_positive": _positive_candidate_mask(scanner_volumes["scanner_ft"]),
         "scanner_fet_positive": _positive_candidate_mask(scanner_volumes["scanner_fet"]),
         "seed_candidate": np.asarray(scanner_volumes["scanner_fet"])
         > np.float32(voting_config.seed_threshold),
-        "seed_selected": _seed_selection_diagnostic(
-            shape=case.shape,
-            voting_config=voting_config,
-            ft=scanner_volumes["scanner_fet"],
-            pt=scanner_volumes["scanner_fpt"],
-            tt=scanner_volumes["scanner_ftt"],
-        ),
+        "seed_selected": seed_selected_mask,
         "fv_positive": _positive_candidate_mask(fv),
         "fvt_positive": _positive_candidate_mask(fvt),
         "skin": np.asarray(skin_mask, dtype=bool),
@@ -2042,6 +2059,13 @@ def _scanner_stage_loss_diagnostics(
         )
         for name, mask in stage_masks.items()
     }
+    if boundary_seed_retention is not None:
+        stages["seed_selected"]["default_candidate_count"] = int(
+            boundary_seed_retention["default_seed_count"]
+        )
+        stages["seed_selected"]["added_candidate_count"] = int(
+            boundary_seed_retention["added_seed_count"]
+        )
 
     transition_pairs = (
         ("scanner_ft_positive", "scanner_fet_positive"),
@@ -2083,12 +2107,134 @@ def _seed_selection_diagnostic(
         pt=pt,
         tt=tt,
     )
+    return _seed_mask_from_seeds(shape, seeds)
+
+
+def _seed_mask_from_seeds(
+    shape: tuple[int, int, int],
+    seeds: Sequence[FaultCell],
+) -> np.ndarray:
     mask = np.zeros(shape, dtype=bool)
     n3, n2, n1 = shape
     for seed in seeds:
         if 0 <= seed.i3 < n3 and 0 <= seed.i2 < n2 and 0 <= seed.i1 < n1:
             mask[seed.i3, seed.i2, seed.i1] = True
     return mask
+
+
+def _boundary_seed_retention_v1_seeds(
+    *,
+    voting_config: SyntheticVotingConfig,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+    target: np.ndarray,
+    target_source: str,
+    edge_margin: int,
+) -> tuple[list[FaultCell], list[FaultCell], dict[str, Any]]:
+    ft_array = np.asarray(ft, dtype=np.float32)
+    pt_array = np.asarray(pt, dtype=np.float32)
+    tt_array = np.asarray(tt, dtype=np.float32)
+    target_array = np.asarray(target, dtype=np.float32)
+    if ft_array.ndim != 3:
+        raise ValueError("ft must be a 3D array")
+    if (
+        pt_array.shape != ft_array.shape
+        or tt_array.shape != ft_array.shape
+        or target_array.shape != ft_array.shape
+    ):
+        raise ValueError("boundary_seed_retention_v1 input shapes must match")
+    if not (
+        np.all(np.isfinite(ft_array))
+        and np.all(np.isfinite(pt_array))
+        and np.all(np.isfinite(tt_array))
+        and np.all(np.isfinite(target_array))
+    ):
+        raise ValueError("boundary_seed_retention_v1 inputs must contain only finite values")
+
+    voter = OptimalSurfaceVoter(
+        ru=voting_config.ru,
+        rv=voting_config.rv,
+        rw=voting_config.rw,
+    )
+    default_seeds = voter.pick_seeds(
+        d=voting_config.seed_distance,
+        fm=voting_config.seed_threshold,
+        ft=ft_array,
+        pt=pt_array,
+        tt=tt_array,
+    )
+    edge_shell = _edge_mask(ft_array.shape, edge_margin)
+    edge_ft = ft_array[edge_shell]
+    edge_ft_max = float(np.max(edge_ft)) if edge_ft.size else 0.0
+    ft_threshold = min(float(voting_config.seed_threshold), 0.5 * edge_ft_max)
+    boundary_candidate = (
+        edge_shell & _positive_candidate_mask(target_array) & (ft_array > np.float32(ft_threshold))
+    )
+    boundary_candidate_count = int(np.count_nonzero(boundary_candidate))
+    existing_coordinates = {(seed.i1, seed.i2, seed.i3) for seed in default_seeds}
+    added_coordinates: set[tuple[int, int, int]] = set()
+    added_seeds = []
+    distance = max(0, int(voting_config.seed_distance))
+    candidate_records = []
+    for index in np.argwhere(boundary_candidate):
+        i3, i2, i1 = (int(index[0]), int(index[1]), int(index[2]))
+        candidate_records.append(
+            (
+                -float(target_array[i3, i2, i1]),
+                -float(ft_array[i3, i2, i1]),
+                int(np.ravel_multi_index((i3, i2, i1), ft_array.shape)),
+                i1,
+                i2,
+                i3,
+            )
+        )
+    for _, _, _, i1, i2, i3 in sorted(candidate_records):
+        coordinate = (i1, i2, i3)
+        if coordinate in existing_coordinates:
+            continue
+        if any(
+            abs(i1 - a1) <= distance and abs(i2 - a2) <= distance and abs(i3 - a3) <= distance
+            for a1, a2, a3 in added_coordinates
+        ):
+            continue
+        added_coordinates.add(coordinate)
+        added_seeds.append(
+            FaultCell(
+                i1,
+                i2,
+                i3,
+                ft_array[i3, i2, i1],
+                pt_array[i3, i2, i1],
+                tt_array[i3, i2, i1],
+            )
+        )
+
+    retained_seeds = [*default_seeds, *added_seeds]
+    added_target_values = np.asarray(
+        [target_array[seed.i3, seed.i2, seed.i1] for seed in added_seeds],
+        dtype=np.float32,
+    )
+    diagnostic = {
+        "enabled": True,
+        "target_source": target_source,
+        "edge_margin": int(edge_margin),
+        "default_seed_count": int(len(default_seeds)),
+        "boundary_candidate_count": boundary_candidate_count,
+        "added_seed_count": int(len(added_seeds)),
+        "total_seed_count": int(len(retained_seeds)),
+        "added_seed_edge_shell_fraction": _edge_candidate_fraction(
+            _seed_mask_from_seeds(ft_array.shape, added_seeds),
+            edge_margin=edge_margin,
+        ),
+        "added_seed_target_mean": float(np.mean(added_target_values))
+        if added_target_values.size
+        else 0.0,
+        "added_seed_target_p95": float(np.percentile(added_target_values, 95))
+        if added_target_values.size
+        else 0.0,
+    }
+    return default_seeds, retained_seeds, diagnostic
 
 
 def _scanner_stage_metric(
@@ -2891,9 +3037,31 @@ def _run_voting_from_attributes(
         voter.set_surface_orientation_smoothing(0.0)
     if variant == "final_norm_smoothing_1":
         voter.set_final_normalization_smoothing(1.0)
-    fv, vp, vt = voter.apply_voting(
-        d=voting_config.seed_distance,
-        fm=voting_config.seed_threshold,
+    boundary_seed_retention_diagnostic: dict[str, Any] | None = None
+    if variant == "boundary_seed_retention_v1":
+        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
+        boundary_target_source = (
+            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
+        )
+        _, seeds, boundary_seed_retention_diagnostic = _boundary_seed_retention_v1_seeds(
+            voting_config=voting_config,
+            ft=ft,
+            pt=pt,
+            tt=tt,
+            target=boundary_target,
+            target_source=boundary_target_source,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        )
+    else:
+        seeds = voter.pick_seeds(
+            d=voting_config.seed_distance,
+            fm=voting_config.seed_threshold,
+            ft=ft,
+            pt=pt,
+            tt=tt,
+        )
+    fv, vp, vt = voter.apply_voting_from_seeds(
+        seeds,
         ft=ft,
         pt=pt,
         tt=tt,
@@ -3081,6 +3249,8 @@ def _run_voting_from_attributes(
         report["fvt_recenter"] = fvt_recenter_diagnostic
     if boundary_edge_thin_diagnostic is not None:
         report["boundary_edge_thin"] = boundary_edge_thin_diagnostic
+    if boundary_seed_retention_diagnostic is not None:
+        report["boundary_seed_retention"] = boundary_seed_retention_diagnostic
     diagnostic_volumes: dict[str, np.ndarray] = {}
     if include_thinning_diagnostic:
         thinning_diagnostic, diagnostic_volumes = _run_voter_thinning_diagnostic(
@@ -3733,6 +3903,12 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "boundary_edge_thin_positive_count_after",
                 "boundary_edge_thin_to_target_distance_p95_before",
                 "boundary_edge_thin_to_target_distance_p95_after",
+                "boundary_seed_retention_enabled",
+                "boundary_seed_retention_target_source",
+                "boundary_seed_retention_default_seed_count",
+                "boundary_seed_retention_boundary_candidate_count",
+                "boundary_seed_retention_added_seed_count",
+                "boundary_seed_retention_total_seed_count",
                 "thinning_diag_reference_fvt_buffered_f1_r2",
                 "thinning_diag_normal_fvt_buffered_f1_r2",
                 "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
@@ -3805,6 +3981,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     boundary_edge_thin_row = _summary_csv_boundary_edge_thin_row(
                         variant_report=variant_report,
                     )
+                    boundary_seed_retention_row = _summary_csv_boundary_seed_retention_row(
+                        variant_report=variant_report,
+                    )
                     thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
                         variant_report.get("thinning_diagnostic"),
                     )
@@ -3873,6 +4052,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             **scanner_stage_loss_row,
                             **fvt_recenter_row,
                             **boundary_edge_thin_row,
+                            **boundary_seed_retention_row,
                             **thinning_diagnostic_row,
                             **comparison_row,
                         }
@@ -4193,6 +4373,24 @@ def _summary_csv_boundary_edge_thin_row(
     diagnostic = variant_report.get("boundary_edge_thin")
     if not isinstance(diagnostic, Mapping):
         return {key: False if key == "boundary_edge_thin_enabled" else None for key in keys}
+    return {key: diagnostic.get(source_key) for key, source_key in keys.items()}
+
+
+def _summary_csv_boundary_seed_retention_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, str | bool | int | None]:
+    keys = {
+        "boundary_seed_retention_enabled": "enabled",
+        "boundary_seed_retention_target_source": "target_source",
+        "boundary_seed_retention_default_seed_count": "default_seed_count",
+        "boundary_seed_retention_boundary_candidate_count": "boundary_candidate_count",
+        "boundary_seed_retention_added_seed_count": "added_seed_count",
+        "boundary_seed_retention_total_seed_count": "total_seed_count",
+    }
+    diagnostic = variant_report.get("boundary_seed_retention")
+    if not isinstance(diagnostic, Mapping):
+        return {key: False if key == "boundary_seed_retention_enabled" else None for key in keys}
     return {key: diagnostic.get(source_key) for key, source_key in keys.items()}
 
 
