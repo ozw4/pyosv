@@ -374,6 +374,45 @@ def _assert_finite_thinning_diagnostic_quality(diagnostic: dict[str, object]) ->
         assert math.isfinite(float(delta[key]))
 
 
+def _assert_scanner_downstream_contract(diagnostic: dict[str, object]) -> None:
+    for key in (
+        "scanner_ft_positive_candidate_count",
+        "scanner_fet_positive_candidate_count",
+        "fv_positive_candidate_count",
+        "fvt_positive_candidate_count",
+    ):
+        assert int(diagnostic[key]) >= 0
+    for key in (
+        "scanner_ft_to_fet_retention_fraction",
+        "fvt_to_fv_positive_fraction",
+        "fvt_positive_edge_candidate_fraction",
+        "fvt_positive_edge_false_positive_fraction",
+    ):
+        assert math.isfinite(float(diagnostic[key]))
+    assert diagnostic["voter_thin_mode"] in {
+        "reference",
+        "normal",
+        "hybrid",
+        "hybrid_v2",
+        "normal_plateau",
+    }
+    assert diagnostic["scanner_thin_mode"] in {"none", "reference", "normal"}
+
+    thinning_modes = diagnostic["thinning_modes"]
+    assert set(thinning_modes) == {"reference", "hybrid", "hybrid_v2", "normal_plateau"}
+    for mode in ("reference", "hybrid", "hybrid_v2", "normal_plateau"):
+        mode_report = thinning_modes[mode]
+        assert math.isfinite(float(mode_report["fvt_positive_buffered_f1_r2"]))
+        assert math.isfinite(float(mode_report["fvt_positive_distance_p95"]))
+
+    for key in (
+        "hybrid_v2_tiebreaker_fet",
+        "hybrid_v2_tiebreaker_fv",
+        "hybrid_v2_tiebreaker_scanner_ft",
+    ):
+        assert math.isfinite(float(diagnostic[key]["fvt_positive_buffered_f1_r2"]))
+
+
 def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     result = _run_script("--help")
 
@@ -393,6 +432,7 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "diagnostic" in result.stdout
     assert "--scanner-backend" in result.stdout
     assert "--scanner-backend-matrix" in result.stdout
+    assert "--scanner-downstream-diagnostics" in result.stdout
     assert "--scanner-thin-mode" in result.stdout
     assert "--save-volumes" in result.stdout
     assert "--save-figures" in result.stdout
@@ -2755,6 +2795,126 @@ def test_scanner_backend_matrix_default_off_keeps_report_without_matrix(
     assert rows[0]["scanner_matrix_best_fvt_positive_buffered_f1_backend"] == ""
     assert rows[0]["scanner_matrix_best_skin_buffered_f1_backend"] == ""
     assert rows[0]["scanner_matrix_best_boundary_edge_fp_backend"] == ""
+
+
+def test_scanner_downstream_diagnostics_are_opt_in_and_do_not_change_outputs(
+    tmp_path: Path,
+) -> None:
+    plain_output_dir = tmp_path / "scanner_plain"
+    diagnostic_output_dir = tmp_path / "scanner_downstream"
+    common_args = (
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "scanner",
+        "--workflow-mode",
+        "quality",
+        "--variants",
+        "current_default",
+    )
+
+    plain_result = _run_script(
+        *common_args,
+        "--output-dir",
+        str(plain_output_dir),
+    )
+    diagnostic_result = _run_script(
+        *common_args,
+        "--scanner-downstream-diagnostics",
+        "--output-dir",
+        str(diagnostic_output_dir),
+    )
+
+    assert plain_result.returncode == 0, plain_result.stderr
+    assert diagnostic_result.returncode == 0, diagnostic_result.stderr
+    plain_metrics = json.loads((plain_output_dir / "metrics.json").read_text(encoding="utf-8"))
+    diagnostic_metrics = json.loads(
+        (diagnostic_output_dir / "metrics.json").read_text(encoding="utf-8")
+    )
+    plain_variant = plain_metrics["cases"][0]["variants"]["current_default"]
+    diagnostic_variant = diagnostic_metrics["cases"][0]["variants"]["current_default"]
+
+    assert plain_metrics["config"]["scanner_downstream_diagnostics"] is False
+    assert diagnostic_metrics["config"]["scanner_downstream_diagnostics"] is True
+    assert "scanner_downstream" not in plain_variant
+    assert "scanner_downstream" in diagnostic_variant
+    _assert_scanner_downstream_contract(diagnostic_variant["scanner_downstream"])
+    assert diagnostic_variant["scanner_downstream"]["voter_thin_mode"] == "hybrid_v2"
+    assert diagnostic_variant["scanner_downstream"]["plateau_tie_breaker_source"] == "scanner_fet"
+
+    assert math.isclose(
+        float(plain_variant["pyosv"]["fvt"]["max"]),
+        float(diagnostic_variant["pyosv"]["fvt"]["max"]),
+        rel_tol=0.0,
+        abs_tol=1.0e-12,
+    )
+    assert plain_variant["pyosv"]["skins"] == diagnostic_variant["pyosv"]["skins"]
+    assert math.isclose(
+        float(
+            plain_variant["quality"]["fvt_positive_top_truth_count"]["buffered_overlap_radius2"][
+                "buffered_f1"
+            ]
+        ),
+        float(
+            diagnostic_variant["quality"]["fvt_positive_top_truth_count"][
+                "buffered_overlap_radius2"
+            ]["buffered_f1"]
+        ),
+        rel_tol=0.0,
+        abs_tol=1.0e-12,
+    )
+
+    with (diagnostic_output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    for field in (
+        "scanner_downstream_ft_positive_candidate_count",
+        "scanner_downstream_fet_positive_candidate_count",
+        "scanner_downstream_ft_to_fet_retention_fraction",
+        "scanner_downstream_fv_positive_candidate_count",
+        "scanner_downstream_fvt_positive_candidate_count",
+        "scanner_downstream_fvt_to_fv_positive_fraction",
+        "scanner_downstream_fvt_positive_edge_candidate_fraction",
+        "scanner_downstream_fvt_positive_edge_false_positive_fraction",
+        "scanner_downstream_reference_fvt_positive_buffered_f1_r2",
+        "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
+        "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
+        "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2",
+    ):
+        assert row[field] != ""
+        assert math.isfinite(float(row[field]))
+    assert row["scanner_downstream_voter_thin_mode"] == "hybrid_v2"
+    assert row["scanner_downstream_plateau_tie_breaker_source"] == "scanner_fet"
+    assert row["scanner_downstream_scanner_thin_mode"] == "reference"
+
+
+def test_scanner_downstream_diagnostics_both_mode_lives_on_scanner_pipeline(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "both_scanner_downstream"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--input-mode",
+        "both",
+        "--scanner-downstream-diagnostics",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    assert metrics["config"]["scanner_downstream_diagnostics"] is True
+    assert "scanner_downstream" not in variant
+    assert "scanner_downstream" not in variant["pipelines"]["oracle"]
+    scanner_downstream = variant["pipelines"]["scanner"]["scanner_downstream"]
+    _assert_scanner_downstream_contract(scanner_downstream)
 
 
 def test_report_synthetic_quality_scanner_thin_mode_none_runs(tmp_path: Path) -> None:

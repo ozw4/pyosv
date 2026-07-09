@@ -809,6 +809,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--scanner-downstream-diagnostics",
+        action="store_true",
+        help=(
+            "Add scanner downstream fv/fvt retention and thinning-mode diagnostics "
+            "for scanner/both input mode."
+        ),
+    )
+    parser.add_argument(
         "--scanner-phi-min",
         type=float,
         default=0.0,
@@ -1098,6 +1106,7 @@ def run_case(
     input_mode: str = "oracle",
     scanner_backend_matrix: bool = False,
     include_thinning_diagnostic: bool = False,
+    include_scanner_downstream_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     case = case_definition.factory(shape)
@@ -1118,6 +1127,7 @@ def run_case(
         include_thinning_diagnostic=(
             include_thinning_diagnostic and case.case_id in diagnostic_case_ids
         ),
+        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
     )
     report = {
         "case_id": case.case_id,
@@ -1146,6 +1156,7 @@ def _run_case_variant(
     input_mode: str,
     scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
+    include_scanner_downstream_diagnostics: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     if variant not in VARIANT_NAMES:
         raise ValueError(f"unknown variant: {variant}")
@@ -1188,6 +1199,7 @@ def _run_case_variant(
         variant=variant,
         scanner_backend_matrix=scanner_backend_matrix,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
     )
     pipelines["scanner"] = scanner_report
     pipeline_outputs["scanner"] = (scanner_report, scanner_volumes, scanner_skins)
@@ -1305,6 +1317,7 @@ def _run_scanner_pipeline(
     variant: str,
     scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
+    include_scanner_downstream_diagnostics: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     scanner_report, scanner_volumes = _scanner_attributes_from_case(case, scanner_config)
     report, volumes, skins_output = _run_voting_from_attributes(
@@ -1324,6 +1337,20 @@ def _run_scanner_pipeline(
         scanner_volumes=scanner_volumes,
         truth_metric_config=truth_metric_config,
     )
+    if include_scanner_downstream_diagnostics:
+        report["scanner_downstream"] = _scanner_downstream_diagnostics(
+            case=case,
+            scanner_config=scanner_config,
+            voting_config=voting_config,
+            variant=variant,
+            report=report,
+            scanner_volumes=scanner_volumes,
+            fv=volumes["fv_py"],
+            vp=volumes["vp_py"],
+            vt=volumes["vt_py"],
+            fvt=volumes["fvt_py"],
+            truth_metric_config=truth_metric_config,
+        )
     if scanner_backend_matrix:
         report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
             case,
@@ -1367,6 +1394,7 @@ def _scanner_backend_matrix_report(
                 variant=variant,
                 scanner_backend_matrix=False,
                 include_thinning_diagnostic=include_thinning_diagnostic,
+                include_scanner_downstream_diagnostics=False,
             )
             backend_reports[backend] = backend_report
     return {
@@ -1734,6 +1762,207 @@ def _top_truth_count_quality(
     }
 
 
+def _scanner_downstream_diagnostics(
+    *,
+    case: Synthetic3DCase,
+    scanner_config: SyntheticScannerConfig,
+    voting_config: SyntheticVotingConfig,
+    variant: str,
+    report: Mapping[str, Any],
+    scanner_volumes: Mapping[str, np.ndarray],
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    fvt: np.ndarray,
+    truth_metric_config: SyntheticTruthMetricConfig,
+) -> dict[str, Any]:
+    scanner_ft_positive_count = _positive_candidate_count(scanner_volumes["scanner_ft"])
+    scanner_fet_positive_count = _positive_candidate_count(scanner_volumes["scanner_fet"])
+    fv_positive_count = _positive_candidate_count(fv)
+    fvt_positive_count = _positive_candidate_count(fvt)
+    voter_thin_mode = _thin_mode_for_variant(variant, voting_config)
+    plateau_source = "scanner_fet" if voter_thin_mode in {"hybrid_v2", "normal_plateau"} else None
+
+    diagnostic = {
+        "scanner_ft_positive_candidate_count": scanner_ft_positive_count,
+        "scanner_fet_positive_candidate_count": scanner_fet_positive_count,
+        "scanner_ft_to_fet_retention_fraction": _fraction_or_zero(
+            scanner_fet_positive_count,
+            scanner_ft_positive_count,
+        ),
+        "fv_positive_candidate_count": fv_positive_count,
+        "fvt_positive_candidate_count": fvt_positive_count,
+        "fvt_to_fv_positive_fraction": _fraction_or_zero(
+            fvt_positive_count,
+            fv_positive_count,
+        ),
+        "fvt_positive_edge_candidate_fraction": _edge_candidate_fraction(
+            fvt > np.float32(NONZERO_EPSILON),
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "fvt_positive_edge_false_positive_fraction": report["quality"]["edge_false_positive"][
+            "fvt_positive_top_truth_count"
+        ]["edge_false_positive_fraction_of_candidates"],
+        "voter_thin_mode": voter_thin_mode,
+        "plateau_tie_breaker_source": plateau_source,
+        "scanner_thin_mode": scanner_config.scanner_thin_mode,
+    }
+
+    voter = OptimalSurfaceVoter(
+        ru=voting_config.ru,
+        rv=voting_config.rv,
+        rw=voting_config.rw,
+    )
+    thinning_modes = {}
+    for mode in ("reference", "hybrid", "hybrid_v2", "normal_plateau"):
+        tie_breaker = (
+            scanner_volumes["scanner_fet"] if mode in {"hybrid_v2", "normal_plateau"} else None
+        )
+        thinning_modes[mode] = _scanner_downstream_thinning_report(
+            case=case,
+            voter=voter,
+            fv=fv,
+            vp=vp,
+            vt=vt,
+            mode=mode,
+            plateau_tie_breaker=tie_breaker,
+            truth_metric_config=truth_metric_config,
+            reference_sigma=voting_config.reference_thin_sigma,
+        )
+    diagnostic["thinning_modes"] = thinning_modes
+
+    diagnostic["hybrid_v2_tiebreaker_fet"] = _scanner_downstream_thinning_report(
+        case=case,
+        voter=voter,
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        mode="hybrid_v2",
+        plateau_tie_breaker=scanner_volumes["scanner_fet"],
+        truth_metric_config=truth_metric_config,
+        reference_sigma=voting_config.reference_thin_sigma,
+    )
+    diagnostic["hybrid_v2_tiebreaker_fv"] = _scanner_downstream_thinning_report(
+        case=case,
+        voter=voter,
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        mode="hybrid_v2",
+        plateau_tie_breaker=fv,
+        truth_metric_config=truth_metric_config,
+        reference_sigma=voting_config.reference_thin_sigma,
+    )
+    diagnostic["hybrid_v2_tiebreaker_scanner_ft"] = _scanner_downstream_thinning_report(
+        case=case,
+        voter=voter,
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        mode="hybrid_v2",
+        plateau_tie_breaker=scanner_volumes["scanner_ft"],
+        truth_metric_config=truth_metric_config,
+        reference_sigma=voting_config.reference_thin_sigma,
+    )
+    return diagnostic
+
+
+def _scanner_downstream_thinning_report(
+    *,
+    case: Synthetic3DCase,
+    voter: OptimalSurfaceVoter,
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    mode: str,
+    plateau_tie_breaker: np.ndarray | None,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    reference_sigma: float,
+) -> dict[str, Any]:
+    fvt = voter.thin(
+        fv,
+        vp,
+        vt,
+        mode=mode,
+        reference_sigma=reference_sigma,
+        plateau_tie_breaker=plateau_tie_breaker,
+    )
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width,
+        "truth_surface_half_width",
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+    fvt_positive = top_positive_truth_count_mask(fvt, truth_surface_mask)
+    quality = _top_truth_count_quality(
+        fvt_positive,
+        truth_fault_mask=truth_fault_mask,
+        truth_surface_mask=truth_surface_mask,
+        buffer_radius=buffer_radius,
+    )
+    return {
+        "fvt_positive_candidate_count": int(quality["buffered_overlap_radius2"]["candidate_count"]),
+        "fvt_positive_buffered_f1_r2": quality["buffered_overlap_radius2"]["buffered_f1"],
+        "fvt_positive_distance_p95": quality["surface_distance"]["candidate_to_truth_p95"],
+        "fvt_positive_edge_candidate_fraction": _edge_candidate_fraction(
+            fvt > np.float32(NONZERO_EPSILON),
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "fvt_positive_edge_false_positive_fraction": edge_false_positive_ratio(
+            fvt_positive,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        )["edge_false_positive_fraction_of_candidates"],
+    }
+
+
+def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -> str:
+    variant_thin_modes = {
+        "voter_thin_normal": "normal",
+        "voter_thin_hybrid": "hybrid",
+        "voter_thin_hybrid_v2": "hybrid_v2",
+        "voter_thin_normal_plateau": "normal_plateau",
+    }
+    return variant_thin_modes.get(variant, voting_config.voter_thin_mode)
+
+
+def _positive_candidate_count(array: np.ndarray) -> int:
+    return int(np.count_nonzero(np.asarray(array) > np.float32(NONZERO_EPSILON)))
+
+
+def _fraction_or_zero(numerator: int, denominator: int) -> float:
+    return float(numerator / denominator) if denominator else 0.0
+
+
+def _edge_candidate_fraction(candidate_mask: np.ndarray, *, edge_margin: int) -> float:
+    candidates = np.asarray(candidate_mask, dtype=bool)
+    candidate_count = int(np.count_nonzero(candidates))
+    if candidate_count == 0:
+        return 0.0
+    edge_mask = _edge_mask(candidates.shape, edge_margin)
+    return float(np.count_nonzero(candidates & edge_mask) / candidate_count)
+
+
+def _edge_mask(shape: tuple[int, ...], margin: int) -> np.ndarray:
+    mask = np.zeros(shape, dtype=bool)
+    if margin <= 0 or mask.size == 0:
+        return mask
+    for axis, size in enumerate(shape):
+        width = min(int(margin), int(size))
+        lower = [slice(None)] * len(shape)
+        upper = [slice(None)] * len(shape)
+        lower[axis] = slice(0, width)
+        upper[axis] = slice(size - width, size)
+        mask[tuple(lower)] = True
+        mask[tuple(upper)] = True
+    return mask
+
+
 def _run_voter_thinning_diagnostic(
     *,
     case: Synthetic3DCase,
@@ -1983,13 +2212,7 @@ def _run_voting_from_attributes(
         pt=pt,
         tt=tt,
     )
-    variant_thin_modes = {
-        "voter_thin_normal": "normal",
-        "voter_thin_hybrid": "hybrid",
-        "voter_thin_hybrid_v2": "hybrid_v2",
-        "voter_thin_normal_plateau": "normal_plateau",
-    }
-    thin_mode = variant_thin_modes.get(variant, voting_config.voter_thin_mode)
+    thin_mode = _thin_mode_for_variant(variant, voting_config)
     plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
     fvt = voter.thin(
         fv,
@@ -2299,6 +2522,7 @@ def build_report(
     skinner_growth_source_explicit: bool = False,
     skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
+    include_scanner_downstream_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     report, _, _ = _build_report_and_volumes(
@@ -2318,6 +2542,7 @@ def build_report(
         skinner_growth_source_explicit=skinner_growth_source_explicit,
         skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     return report
@@ -2341,6 +2566,7 @@ def _build_report_and_volumes(
     skinner_growth_source_explicit: bool = False,
     skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
+    include_scanner_downstream_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> tuple[
     dict[str, Any],
@@ -2352,6 +2578,9 @@ def _build_report_and_volumes(
     valid_variant_preset = _validate_variant_preset(variant_preset)
     valid_input_mode = _validate_input_mode(input_mode)
     effective_scanner_backend_matrix = bool(scanner_backend_matrix and valid_input_mode != "oracle")
+    effective_scanner_downstream_diagnostics = bool(
+        include_scanner_downstream_diagnostics and valid_input_mode != "oracle"
+    )
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
     skinning_config = _effective_skinning_config_for_workflow(
         workflow_mode=valid_workflow_mode,
@@ -2405,6 +2634,7 @@ def _build_report_and_volumes(
                 include_thinning_diagnostic=(
                     include_thinning_diagnostic and case.case_id in diagnostic_case_ids
                 ),
+                include_scanner_downstream_diagnostics=(effective_scanner_downstream_diagnostics),
             )
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
@@ -2445,6 +2675,7 @@ def _build_report_and_volumes(
         "truth_metrics": truth_metric_config.as_report_dict(),
         "skinning": skinning_config.as_report_dict(),
         "scanner_backend_matrix": effective_scanner_backend_matrix,
+        "scanner_downstream_diagnostics": effective_scanner_downstream_diagnostics,
     }
     if valid_input_mode != "oracle":
         config["input_mode"] = valid_input_mode
@@ -2669,6 +2900,21 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_matrix_best_fvt_positive_buffered_f1_backend",
                 "scanner_matrix_best_skin_buffered_f1_backend",
                 "scanner_matrix_best_boundary_edge_fp_backend",
+                "scanner_downstream_ft_positive_candidate_count",
+                "scanner_downstream_fet_positive_candidate_count",
+                "scanner_downstream_ft_to_fet_retention_fraction",
+                "scanner_downstream_fv_positive_candidate_count",
+                "scanner_downstream_fvt_positive_candidate_count",
+                "scanner_downstream_fvt_to_fv_positive_fraction",
+                "scanner_downstream_fvt_positive_edge_candidate_fraction",
+                "scanner_downstream_fvt_positive_edge_false_positive_fraction",
+                "scanner_downstream_voter_thin_mode",
+                "scanner_downstream_plateau_tie_breaker_source",
+                "scanner_downstream_scanner_thin_mode",
+                "scanner_downstream_reference_fvt_positive_buffered_f1_r2",
+                "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
+                "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
+                "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2",
                 "thinning_diag_reference_fvt_buffered_f1_r2",
                 "thinning_diag_normal_fvt_buffered_f1_r2",
                 "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
@@ -2727,6 +2973,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         input_mode=input_mode,
                     )
                     scanner_matrix_row = _summary_csv_scanner_backend_matrix_row(
+                        variant_report=variant_report,
+                    )
+                    scanner_downstream_row = _summary_csv_scanner_downstream_row(
                         variant_report=variant_report,
                     )
                     thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
@@ -2793,6 +3042,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             **skin_summary,
                             **scanner_row,
                             **scanner_matrix_row,
+                            **scanner_downstream_row,
                             **thinning_diagnostic_row,
                             **comparison_row,
                         }
@@ -2872,6 +3122,80 @@ def _summary_csv_scanner_backend_matrix_row(
         ),
         "scanner_matrix_best_boundary_edge_fp_backend": comparison.get(
             "best_boundary_edge_fp_backend"
+        ),
+    }
+
+
+def _summary_csv_scanner_downstream_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, str | int | float | None]:
+    empty_row: dict[str, str | int | float | None] = {
+        "scanner_downstream_ft_positive_candidate_count": None,
+        "scanner_downstream_fet_positive_candidate_count": None,
+        "scanner_downstream_ft_to_fet_retention_fraction": None,
+        "scanner_downstream_fv_positive_candidate_count": None,
+        "scanner_downstream_fvt_positive_candidate_count": None,
+        "scanner_downstream_fvt_to_fv_positive_fraction": None,
+        "scanner_downstream_fvt_positive_edge_candidate_fraction": None,
+        "scanner_downstream_fvt_positive_edge_false_positive_fraction": None,
+        "scanner_downstream_voter_thin_mode": None,
+        "scanner_downstream_plateau_tie_breaker_source": None,
+        "scanner_downstream_scanner_thin_mode": None,
+        "scanner_downstream_reference_fvt_positive_buffered_f1_r2": None,
+        "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2": None,
+        "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2": None,
+        "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2": None,
+    }
+    diagnostic = variant_report.get("scanner_downstream")
+    if not isinstance(diagnostic, Mapping):
+        return empty_row
+    thinning_modes = diagnostic.get("thinning_modes")
+    if not isinstance(thinning_modes, Mapping):
+        thinning_modes = {}
+
+    def thinning_f1(mode: str) -> float | None:
+        mode_report = thinning_modes.get(mode)
+        if not isinstance(mode_report, Mapping):
+            return None
+        value = mode_report.get("fvt_positive_buffered_f1_r2")
+        return None if value is None else float(value)
+
+    return {
+        "scanner_downstream_ft_positive_candidate_count": diagnostic.get(
+            "scanner_ft_positive_candidate_count"
+        ),
+        "scanner_downstream_fet_positive_candidate_count": diagnostic.get(
+            "scanner_fet_positive_candidate_count"
+        ),
+        "scanner_downstream_ft_to_fet_retention_fraction": diagnostic.get(
+            "scanner_ft_to_fet_retention_fraction"
+        ),
+        "scanner_downstream_fv_positive_candidate_count": diagnostic.get(
+            "fv_positive_candidate_count"
+        ),
+        "scanner_downstream_fvt_positive_candidate_count": diagnostic.get(
+            "fvt_positive_candidate_count"
+        ),
+        "scanner_downstream_fvt_to_fv_positive_fraction": diagnostic.get(
+            "fvt_to_fv_positive_fraction"
+        ),
+        "scanner_downstream_fvt_positive_edge_candidate_fraction": diagnostic.get(
+            "fvt_positive_edge_candidate_fraction"
+        ),
+        "scanner_downstream_fvt_positive_edge_false_positive_fraction": diagnostic.get(
+            "fvt_positive_edge_false_positive_fraction"
+        ),
+        "scanner_downstream_voter_thin_mode": diagnostic.get("voter_thin_mode"),
+        "scanner_downstream_plateau_tie_breaker_source": diagnostic.get(
+            "plateau_tie_breaker_source"
+        ),
+        "scanner_downstream_scanner_thin_mode": diagnostic.get("scanner_thin_mode"),
+        "scanner_downstream_reference_fvt_positive_buffered_f1_r2": thinning_f1("reference"),
+        "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2": thinning_f1("hybrid"),
+        "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2": thinning_f1("hybrid_v2"),
+        "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2": thinning_f1(
+            "normal_plateau"
         ),
     }
 
@@ -4099,6 +4423,7 @@ def run_example(
     save_figures: bool = False,
     write_markdown_index: bool = False,
     include_thinning_diagnostic: bool = False,
+    include_scanner_downstream_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     report, volume_outputs, skin_outputs = _build_report_and_volumes(
@@ -4118,6 +4443,7 @@ def run_example(
         skinner_growth_source_explicit=skinner_growth_source_explicit,
         skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     write_metrics_json(report, output_dir, pretty=pretty)
@@ -4234,6 +4560,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _argv_has_long_option(raw_argv, "--skinner-accepted-occupancy-radius")
             ),
             include_thinning_diagnostic=include_thinning_diagnostic,
+            include_scanner_downstream_diagnostics=args.scanner_downstream_diagnostics,
             thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,
             save_volumes=args.save_volumes,
