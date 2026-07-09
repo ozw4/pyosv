@@ -207,7 +207,9 @@ def test_quality_workflow_key_metrics_are_finite(
         assert report["config"]["variants"] == ["current_default"]
         for case in _cases_by_id(report).values():
             assert case["variants"]["current_default"]["quality"] == case["quality"]
-            assert case["variants"]["current_default"]["skinning"] == {"enabled": True}
+            skinning_report = case["variants"]["current_default"]["skinning"]
+            assert skinning_report["enabled"] is True
+            assert "diagnostics" in skinning_report
 
             quality = case["quality"]
             for field in (
@@ -228,6 +230,10 @@ def test_quality_workflow_key_metrics_are_finite(
 
             skin = quality["skin"]
             assert skin is not None
+            assert (
+                skinning_report["diagnostics"]["accepted_skin_count"]
+                == skin["topology"]["skin_count"]
+            )
             for field in (
                 "topology",
                 "buffered_overlap_radius2",
@@ -362,6 +368,17 @@ def test_quality_workflow_case_specific_guardrails(
     assert _float_metric(boundary, *FVT_POSITIVE_BUFFERED_F1_R2) >= 0.98
     assert _float_metric(boundary, *FVT_POSITIVE_DISTANCE_P95) <= 1.0
     assert _float_metric(boundary, *FVT_POSITIVE_EDGE_FALSE_POSITIVE_FRACTION) <= 1.0e-12
+    diagnostics = boundary["variants"]["current_default"]["skinning"]["diagnostics"]
+    skin_count = _float_metric(boundary, "quality", "skin", "topology", "skin_count")
+    assert diagnostics["accepted_skin_count"] == skin_count
+    assert diagnostics["seed_count_after_spacing"] > 0
+    if skin_count == 0:
+        assert (
+            diagnostics["seed_count_after_spacing"] == 0
+            or diagnostics["grow_attempt_count"] == 0
+            or diagnostics["discarded_empty_skin_count"] > 0
+            or diagnostics["discarded_small_skin_count"] > 0
+        )
     _assert_quality_at_least_reference_delta(
         reference_cases,
         quality_cases,

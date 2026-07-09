@@ -83,6 +83,13 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_largest_fraction",
     "skin_small_count",
     "skin_small_cell_fraction",
+    "skin_seed_candidate_count_before_spacing",
+    "skin_seed_count_after_spacing",
+    "skin_seed_rejected_by_occupied",
+    "skin_grow_attempt_count",
+    "skin_discarded_empty_count",
+    "skin_discarded_small_count",
+    "skin_accepted_count",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -106,6 +113,13 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_largest_fraction",
     "skin_small_count",
     "skin_small_cell_fraction",
+    "skin_seed_candidate_count_before_spacing",
+    "skin_seed_count_after_spacing",
+    "skin_seed_rejected_by_occupied",
+    "skin_grow_attempt_count",
+    "skin_discarded_empty_count",
+    "skin_discarded_small_count",
+    "skin_accepted_count",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -752,7 +766,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
     for variant in DIAGNOSTIC_VARIANTS:
         variant_report = case["variants"][variant]
         assert variant_report["pyosv"]["fvt"]["max"] > 0.0
-        assert variant_report["skinning"] == {"enabled": True}
+        assert variant_report["skinning"]["enabled"] is True
+        assert "diagnostics" in variant_report["skinning"]
         assert variant_report["quality"]["skin"] is not None
         assert variant_report["pyosv"]["skins"] == variant_report["quality"]["skin"]["topology"]
 
@@ -2858,12 +2873,32 @@ def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
 
     assert result.returncode == 0, result.stderr
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
-    skin_quality = metrics["cases"][0]["quality"]["skin"]
+    variant = metrics["cases"][0]["variants"]["current_default"]
+    skin_quality = variant["quality"]["skin"]
+    diagnostics = variant["skinning"]["diagnostics"]
     assert "buffered_overlap_radius2" in skin_quality
+    assert diagnostics["accepted_skin_count"] == skin_quality["topology"]["skin_count"]
+    for field in (
+        "seed_candidate_count_before_spacing",
+        "seed_count_after_spacing",
+        "seed_count_rejected_by_occupied",
+        "grow_attempt_count",
+        "grown_skin_count_before_min_size",
+        "discarded_empty_skin_count",
+        "discarded_small_skin_count",
+        "accepted_skin_count",
+        "accepted_cell_count",
+        "accepted_occupancy_radius",
+        "seed_min_ep",
+        "seed_threshold",
+        "grow_threshold",
+    ):
+        assert math.isfinite(float(diagnostics[field]))
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert math.isfinite(float(rows[0]["skin_buffered_f1_r2"]))
+    assert rows[0]["skin_accepted_count"] == str(diagnostics["accepted_skin_count"])
 
 
 def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_contract(

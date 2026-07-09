@@ -2112,13 +2112,16 @@ def _run_voting_from_attributes(
         )
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
+        skin_diagnostics: dict[str, Any] = {}
         skins = _find_synthetic_skins(
             fv,
             fvt,
             vp,
             vt,
             skinning_config=skinning_config,
+            diagnostics=skin_diagnostics,
         )
+        report["skinning"]["diagnostics"] = skin_diagnostics
         skin_metrics = skin_truth_metrics(
             skins,
             shape=case.shape,
@@ -2568,6 +2571,13 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_largest_fraction",
                 "skin_small_count",
                 "skin_small_cell_fraction",
+                "skin_seed_candidate_count_before_spacing",
+                "skin_seed_count_after_spacing",
+                "skin_seed_rejected_by_occupied",
+                "skin_grow_attempt_count",
+                "skin_discarded_empty_count",
+                "skin_discarded_small_count",
+                "skin_accepted_count",
                 "skin_buffered_f1_r2",
                 "skin_buffered_precision_r2",
                 "skin_buffered_recall_r2",
@@ -2633,6 +2643,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     skin_summary = _summary_csv_skin_row(
                         enabled=bool(skinning["enabled"]),
                         quality=skin_quality,
+                        diagnostics=skinning.get("diagnostics"),
                     )
                     comparison_row = _summary_csv_comparison_row(
                         comparison_variants.get(variant, {}),
@@ -2856,7 +2867,9 @@ def _summary_csv_skin_row(
     *,
     enabled: bool,
     quality: Mapping[str, Any] | None,
+    diagnostics: Mapping[str, Any] | None,
 ) -> dict[str, bool | int | float | None]:
+    diagnostic_row = _summary_csv_skin_diagnostics_row(enabled=enabled, diagnostics=diagnostics)
     if quality is None:
         return {
             "skinning_enabled": enabled,
@@ -2869,6 +2882,7 @@ def _summary_csv_skin_row(
             "skin_largest_fraction": 0.0,
             "skin_small_count": 0,
             "skin_small_cell_fraction": 0.0,
+            **diagnostic_row,
             "skin_buffered_f1_r2": None,
             "skin_buffered_precision_r2": None,
             "skin_buffered_recall_r2": None,
@@ -2895,6 +2909,7 @@ def _summary_csv_skin_row(
         "skin_largest_fraction": topology["largest_skin_fraction"],
         "skin_small_count": topology["small_skin_count"],
         "skin_small_cell_fraction": topology["small_skin_cell_fraction"],
+        **diagnostic_row,
         "skin_buffered_f1_r2": overlap["buffered_f1"],
         "skin_buffered_precision_r2": overlap["buffered_precision"],
         "skin_buffered_recall_r2": overlap["buffered_recall"],
@@ -2904,6 +2919,44 @@ def _summary_csv_skin_row(
         "skin_distance_hausdorff_p95": distance["hausdorff_p95"],
         "skin_strike_median_error": orientation["strike_median"],
         "skin_dip_median_error": orientation["dip_median"],
+    }
+
+
+def _summary_csv_skin_diagnostics_row(
+    *,
+    enabled: bool,
+    diagnostics: Mapping[str, Any] | None,
+) -> dict[str, int | None]:
+    if not enabled:
+        return {
+            "skin_seed_candidate_count_before_spacing": 0,
+            "skin_seed_count_after_spacing": 0,
+            "skin_seed_rejected_by_occupied": 0,
+            "skin_grow_attempt_count": 0,
+            "skin_discarded_empty_count": 0,
+            "skin_discarded_small_count": 0,
+            "skin_accepted_count": 0,
+        }
+    if diagnostics is None:
+        return {
+            "skin_seed_candidate_count_before_spacing": None,
+            "skin_seed_count_after_spacing": None,
+            "skin_seed_rejected_by_occupied": None,
+            "skin_grow_attempt_count": None,
+            "skin_discarded_empty_count": None,
+            "skin_discarded_small_count": None,
+            "skin_accepted_count": None,
+        }
+    return {
+        "skin_seed_candidate_count_before_spacing": diagnostics.get(
+            "seed_candidate_count_before_spacing"
+        ),
+        "skin_seed_count_after_spacing": diagnostics.get("seed_count_after_spacing"),
+        "skin_seed_rejected_by_occupied": diagnostics.get("seed_count_rejected_by_occupied"),
+        "skin_grow_attempt_count": diagnostics.get("grow_attempt_count"),
+        "skin_discarded_empty_count": diagnostics.get("discarded_empty_skin_count"),
+        "skin_discarded_small_count": diagnostics.get("discarded_small_skin_count"),
+        "skin_accepted_count": diagnostics.get("accepted_skin_count"),
     }
 
 
@@ -2963,6 +3016,7 @@ def _find_synthetic_skins(
     vt: np.ndarray,
     *,
     skinning_config: SyntheticSkinningConfig,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[Any]:
     skinner_kwargs: dict[str, Any] = {
         "method": skinning_config.method,
@@ -2994,6 +3048,7 @@ def _find_synthetic_skins(
         max_delta_strike=skinning_config.max_delta_strike,
         reskin=skinning_config.reskin,
         accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
+        diagnostics=diagnostics,
     )
 
 

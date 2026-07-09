@@ -868,6 +868,68 @@ def test_reference_find_skins_reskin_false_preserves_grow_indices() -> None:
     }
 
 
+def test_reference_find_skins_populates_diagnostics_without_changing_result() -> None:
+    fv = np.zeros((21, 21, 21), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[10, 10, 0] = 0.95
+    fv[10, 10, 10] = 0.90
+    diagnostics: dict[str, object] = {"stale": True}
+
+    skinner = FaultSkinner(min_likelihood=0.5, min_skin_size=1)
+    skins = skinner.find_skins(
+        fv,
+        vp,
+        vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        reskin=False,
+        diagnostics=diagnostics,
+    )
+    without_diagnostics = skinner.find_skins(
+        fv,
+        vp,
+        vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        ru=5,
+        rv=5,
+        rw=5,
+        max_steps=1,
+        reskin=False,
+    )
+
+    assert [[cell.index for cell in skin] for skin in skins] == [
+        [cell.index for cell in skin] for skin in without_diagnostics
+    ]
+    assert "stale" not in diagnostics
+    assert diagnostics == {
+        "seed_candidate_count_before_spacing": 2,
+        "seed_count_after_spacing": 2,
+        "seed_count_rejected_by_occupied": 0,
+        "grow_attempt_count": 2,
+        "grown_skin_count_before_min_size": 1,
+        "discarded_empty_skin_count": 1,
+        "discarded_small_skin_count": 0,
+        "accepted_skin_count": 1,
+        "accepted_cell_count": 1,
+        "accepted_occupancy_radius": 5,
+        "seed_min_ep": pytest.approx(0.8),
+        "seed_threshold": pytest.approx(0.5),
+        "grow_threshold": pytest.approx(0.5),
+    }
+
+
 def test_mark_occupied_skin_registers_accepted_cells_with_box_radius() -> None:
     occupied = _SkinCellGrid()
     skin = FaultSkin.from_cells([FaultCell(10.0, 10.0, 10.0, 0.9, 0.0, 90.0)])
