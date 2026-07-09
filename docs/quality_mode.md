@@ -85,8 +85,9 @@ The `quality-matrix` preset includes `current_default`,
 `voter_thin_normal`, `voter_thin_hybrid`, `voter_thin_hybrid_v2`,
 `voter_thin_normal_plateau`, `surface_support_weighted`, and
 `quality_skinner_v2`, `quality_boundary_skinner_fallback`,
-`quality_boundary_skinner_fallback_v2`, and
-`quality_boundary_skinner_fallback_v3`. The quality workflow default uses the
+`quality_boundary_skinner_fallback_v2`,
+`quality_boundary_skinner_fallback_v3`, and
+`quality_boundary_skinner_fallback_v4`. The quality workflow default uses the
 `hybrid_v2` voter thinning path. The hybrid voter thinning variant uses reference-like
 thinning in stable-orientation regions and fault-normal thinning where local
 orientation changes rapidly. The `voter_thin_hybrid_v2` diagnostic variant
@@ -135,8 +136,15 @@ non-boundary skin F1 by more than 0.02 for `parallel_planes`,
 target was boundary skin F1 at least 0.90, skin count at most 3, skin-cell to
 positive-fvt-candidate ratio at least 0.75, and no non-boundary skin/FVT
 regression beyond the configured tolerances. v3 therefore remains diagnostic.
-The next tuning area is better component filtering or voting/fvt boundary
-recovery.
+The `quality_boundary_skinner_fallback_v4` diagnostic variant uses the
+`degraded_primary_skeletonized` policy. It requires the boundary-specific
+degraded-primary trigger to be supported by scanner-target diagnostics, accepts
+the filtered fvt-positive components, then collapses connected runs along each
+sample's dominant fault-normal array axis before building fallback skins. Its
+diagnostics record the pruning method, raw and pruned component cell counts,
+removed-cell count, pruned fraction, largest component size before and after
+pruning, and dominant skeletonization axis mode. It remains a diagnostic
+variant and is not the default.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The

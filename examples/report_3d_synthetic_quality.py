@@ -131,6 +131,7 @@ VARIANT_NAMES = (
     "quality_boundary_skinner_fallback",
     "quality_boundary_skinner_fallback_v2",
     "quality_boundary_skinner_fallback_v3",
+    "quality_boundary_skinner_fallback_v4",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -146,6 +147,7 @@ QUALITY_MATRIX_VARIANTS = (
     "quality_boundary_skinner_fallback",
     "quality_boundary_skinner_fallback_v2",
     "quality_boundary_skinner_fallback_v3",
+    "quality_boundary_skinner_fallback_v4",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -174,6 +176,7 @@ BOUNDARY_SKINNER_FALLBACK_POLICIES = (
     "empty_primary",
     "degraded_primary",
     "degraded_primary_filtered",
+    "degraded_primary_skeletonized",
 )
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
 QUALITY_SKINNER_SEED_MIN_EP = 0.5
@@ -361,6 +364,12 @@ def _effective_skinning_config_for_variant(
             skinning_config,
             boundary_skinner_fallback=True,
             boundary_skinner_fallback_policy="degraded_primary_filtered",
+        )
+    if variant == "quality_boundary_skinner_fallback_v4":
+        return replace(
+            skinning_config,
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_skeletonized",
         )
     return skinning_config
 
@@ -3251,6 +3260,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_fallback_filter_min_component_size",
                 "skin_fallback_filter_min_component_fraction_of_largest",
                 "skin_fallback_filter_max_components",
+                "skin_fallback_pruning_method",
+                "skin_fallback_raw_component_cell_count",
+                "skin_fallback_pruned_component_cell_count",
+                "skin_fallback_pruned_fraction",
+                "skin_fallback_largest_component_size_before_pruning",
+                "skin_fallback_largest_component_size_after_pruning",
+                "skin_fallback_pruning_removed_cell_count",
+                "skin_fallback_skeletonization_axis_mode",
                 "skin_fallback_coverage_before",
                 "skin_fallback_coverage_after",
                 "skin_primary_count",
@@ -3828,6 +3845,14 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_filter_min_component_size": 0,
             "skin_fallback_filter_min_component_fraction_of_largest": 0.0,
             "skin_fallback_filter_max_components": 0,
+            "skin_fallback_pruning_method": None,
+            "skin_fallback_raw_component_cell_count": 0,
+            "skin_fallback_pruned_component_cell_count": 0,
+            "skin_fallback_pruned_fraction": 0.0,
+            "skin_fallback_largest_component_size_before_pruning": 0,
+            "skin_fallback_largest_component_size_after_pruning": 0,
+            "skin_fallback_pruning_removed_cell_count": 0,
+            "skin_fallback_skeletonization_axis_mode": None,
             "skin_fallback_coverage_before": 0.0,
             "skin_fallback_coverage_after": 0.0,
             "skin_primary_count": 0,
@@ -3885,6 +3910,14 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_filter_min_component_size": None,
             "skin_fallback_filter_min_component_fraction_of_largest": None,
             "skin_fallback_filter_max_components": None,
+            "skin_fallback_pruning_method": None,
+            "skin_fallback_raw_component_cell_count": None,
+            "skin_fallback_pruned_component_cell_count": None,
+            "skin_fallback_pruned_fraction": None,
+            "skin_fallback_largest_component_size_before_pruning": None,
+            "skin_fallback_largest_component_size_after_pruning": None,
+            "skin_fallback_pruning_removed_cell_count": None,
+            "skin_fallback_skeletonization_axis_mode": None,
             "skin_fallback_coverage_before": None,
             "skin_fallback_coverage_after": None,
             "skin_primary_count": None,
@@ -3975,6 +4008,26 @@ def _summary_csv_skin_diagnostics_row(
         ),
         "skin_fallback_filter_max_components": diagnostics.get(
             "skin_fallback_filter_max_components"
+        ),
+        "skin_fallback_pruning_method": diagnostics.get("skin_fallback_pruning_method"),
+        "skin_fallback_raw_component_cell_count": diagnostics.get(
+            "skin_fallback_raw_component_cell_count"
+        ),
+        "skin_fallback_pruned_component_cell_count": diagnostics.get(
+            "skin_fallback_pruned_component_cell_count"
+        ),
+        "skin_fallback_pruned_fraction": diagnostics.get("skin_fallback_pruned_fraction"),
+        "skin_fallback_largest_component_size_before_pruning": diagnostics.get(
+            "skin_fallback_largest_component_size_before_pruning"
+        ),
+        "skin_fallback_largest_component_size_after_pruning": diagnostics.get(
+            "skin_fallback_largest_component_size_after_pruning"
+        ),
+        "skin_fallback_pruning_removed_cell_count": diagnostics.get(
+            "skin_fallback_pruning_removed_cell_count"
+        ),
+        "skin_fallback_skeletonization_axis_mode": diagnostics.get(
+            "skin_fallback_skeletonization_axis_mode"
         ),
         "skin_fallback_coverage_before": diagnostics.get("fallback_coverage_before"),
         "skin_fallback_coverage_after": diagnostics.get("fallback_coverage_after"),
@@ -4172,6 +4225,24 @@ def _primary_boundary_degraded_reasons(
     return reasons
 
 
+def _skeletonized_fallback_boundary_trigger_sufficient(
+    *,
+    boundary_degraded_reasons: Sequence[str],
+    scanner_target_positive_mask: np.ndarray | None,
+) -> bool:
+    if not boundary_degraded_reasons:
+        return False
+    if scanner_target_positive_mask is None:
+        return False
+    return any(
+        reason in boundary_degraded_reasons
+        for reason in (
+            "fvt_far_from_scanner_target",
+            "low_primary_coverage_with_edge_local_candidates",
+        )
+    )
+
+
 def _fallback_component_diagnostics(
     fvt: np.ndarray,
     *,
@@ -4193,7 +4264,7 @@ def _fallback_component_diagnostics(
         filter_min_component_size = 0
         filter_min_fraction_of_largest = 0.0
         filter_max_components = 0
-    elif component_policy == "degraded_primary_filtered":
+    elif component_policy in {"degraded_primary_filtered", "degraded_primary_skeletonized"}:
         accepted_components = _filtered_fallback_components(
             components,
             candidate_cell_count=candidate_cell_count,
@@ -4274,6 +4345,130 @@ def _mask_from_components(
     return mask
 
 
+def _skeletonize_fallback_components(
+    fvt: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    components: Sequence[Sequence[tuple[int, int, int]]],
+    *,
+    scanner_target_positive_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict[str, int | float | str]]:
+    fvt_array = np.asarray(fvt, dtype=np.float32)
+    vp_array = np.asarray(vp, dtype=np.float32)
+    vt_array = np.asarray(vt, dtype=np.float32)
+    if fvt_array.shape != vp_array.shape or fvt_array.shape != vt_array.shape:
+        raise ValueError("fvt, vp, and vt shapes must match")
+    target_mask = None
+    if scanner_target_positive_mask is not None:
+        target_mask = np.asarray(scanner_target_positive_mask, dtype=bool)
+        if target_mask.shape != fvt_array.shape:
+            raise ValueError("scanner_target_positive_mask shape must match fvt")
+
+    retained: set[tuple[int, int, int]] = set()
+    axis_counts = [0, 0, 0]
+    pruned_component_sizes: list[int] = []
+    raw_component_sizes: list[int] = []
+    for component in components:
+        raw_component_sizes.append(len(component))
+        groups: dict[tuple[int, int, int], list[tuple[int, int, int]]] = {}
+        for index in component:
+            i3, i2, i1 = index
+            axis = _dominant_fault_normal_array_axis(vp_array[i3, i2, i1], vt_array[i3, i2, i1])
+            axis_counts[axis] += 1
+            groups.setdefault(_skeletonization_line_key(index, axis), []).append(index)
+
+        component_retained: set[tuple[int, int, int]] = set()
+        for key, line_indices in groups.items():
+            axis = key[0]
+            sorted_line = sorted(line_indices, key=lambda item: item[axis])
+            run: list[tuple[int, int, int]] = []
+            previous_position: int | None = None
+            for index in sorted_line:
+                position = index[axis]
+                if previous_position is None or position == previous_position + 1:
+                    run.append(index)
+                else:
+                    component_retained.add(
+                        _select_skeleton_run_sample(
+                            run,
+                            axis=axis,
+                            fvt=fvt_array,
+                            scanner_target_positive_mask=target_mask,
+                        )
+                    )
+                    run = [index]
+                previous_position = position
+            if run:
+                component_retained.add(
+                    _select_skeleton_run_sample(
+                        run,
+                        axis=axis,
+                        fvt=fvt_array,
+                        scanner_target_positive_mask=target_mask,
+                    )
+                )
+        retained.update(component_retained)
+        pruned_component_sizes.append(len(component_retained))
+
+    mask = np.zeros(fvt_array.shape, dtype=bool)
+    for i3, i2, i1 in retained:
+        mask[i3, i2, i1] = True
+    raw_count = int(sum(raw_component_sizes))
+    pruned_count = int(len(retained))
+    return mask, {
+        "skin_fallback_pruning_method": "fault_normal_line_collapse",
+        "skin_fallback_raw_component_cell_count": raw_count,
+        "skin_fallback_pruned_component_cell_count": pruned_count,
+        "skin_fallback_pruned_fraction": (float(pruned_count / raw_count) if raw_count else 0.0),
+        "skin_fallback_largest_component_size_before_pruning": (
+            int(max(raw_component_sizes)) if raw_component_sizes else 0
+        ),
+        "skin_fallback_largest_component_size_after_pruning": (
+            int(max(pruned_component_sizes)) if pruned_component_sizes else 0
+        ),
+        "skin_fallback_pruning_removed_cell_count": int(raw_count - pruned_count),
+        "skin_fallback_skeletonization_axis_mode": _skeletonization_axis_mode(axis_counts),
+    }
+
+
+def _skeletonization_line_key(
+    index: tuple[int, int, int],
+    axis: int,
+) -> tuple[int, int, int]:
+    if axis == 0:
+        return (axis, index[1], index[2])
+    if axis == 1:
+        return (axis, index[0], index[2])
+    return (axis, index[0], index[1])
+
+
+def _select_skeleton_run_sample(
+    run: Sequence[tuple[int, int, int]],
+    *,
+    axis: int,
+    fvt: np.ndarray,
+    scanner_target_positive_mask: np.ndarray | None,
+) -> tuple[int, int, int]:
+    if not run:
+        raise ValueError("run must include at least one sample")
+    max_fvt = max(float(fvt[index]) for index in run)
+    tied = [index for index in run if float(fvt[index]) == max_fvt]
+    if scanner_target_positive_mask is not None:
+        max_target = max(int(scanner_target_positive_mask[index]) for index in tied)
+        tied = [index for index in tied if int(scanner_target_positive_mask[index]) == max_target]
+    center = 0.5 * (run[0][axis] + run[-1][axis])
+    return min(tied, key=lambda index: (abs(index[axis] - center), index))
+
+
+def _skeletonization_axis_mode(axis_counts: Sequence[int]) -> str:
+    labels = ("i3", "i2", "i1")
+    if not axis_counts or max(axis_counts) == 0:
+        return "none"
+    max_count = max(axis_counts)
+    winners = [labels[index] for index, count in enumerate(axis_counts) if count == max_count]
+    return winners[0] if len(winners) == 1 else "mixed"
+
+
 def _positive_mask_components(
     mask: np.ndarray,
     *,
@@ -4343,9 +4538,10 @@ def _apply_boundary_skinner_fallback(
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
     fallback_connectivity = "edge"
-    component_policy = (
-        "degraded_primary_filtered" if fallback_policy == "degraded_primary_filtered" else "all"
-    )
+    if fallback_policy in {"degraded_primary_filtered", "degraded_primary_skeletonized"}:
+        component_policy = fallback_policy
+    else:
+        component_policy = "all"
     component_diagnostics = _fallback_component_diagnostics(
         fvt,
         min_skin_size=skinning_config.min_skin_size,
@@ -4428,6 +4624,14 @@ def _apply_boundary_skinner_fallback(
             "skin_fvt_to_scanner_target_distance_p95": fvt_to_scanner_target_distance_p95,
             "skin_primary_boundary_degraded_candidate": bool(boundary_degraded_reasons),
             "skin_primary_boundary_degraded_reasons": boundary_degraded_reasons,
+            "skin_fallback_pruning_method": None,
+            "skin_fallback_raw_component_cell_count": 0,
+            "skin_fallback_pruned_component_cell_count": 0,
+            "skin_fallback_pruned_fraction": 0.0,
+            "skin_fallback_largest_component_size_before_pruning": 0,
+            "skin_fallback_largest_component_size_after_pruning": 0,
+            "skin_fallback_pruning_removed_cell_count": 0,
+            "skin_fallback_skeletonization_axis_mode": None,
             **component_diagnostics,
         }
     )
@@ -4450,6 +4654,15 @@ def _apply_boundary_skinner_fallback(
         if not boundary_degraded_reasons:
             diagnostics["fallback_reason"] = "primary_boundary_degraded_not_detected"
             return
+        if (
+            fallback_policy == "degraded_primary_skeletonized"
+            and not _skeletonized_fallback_boundary_trigger_sufficient(
+                boundary_degraded_reasons=boundary_degraded_reasons,
+                scanner_target_positive_mask=scanner_target_positive_mask,
+            )
+        ):
+            diagnostics["fallback_reason"] = "primary_boundary_degraded_not_sufficient"
+            return
         diagnostics["fallback_triggered_by_degraded_primary"] = True
         fallback_reason = "degraded_primary:" + ",".join(
             _fallback_degraded_reason_labels(degraded_reasons)
@@ -4457,12 +4670,21 @@ def _apply_boundary_skinner_fallback(
 
     fallback_fvt = fvt
     fallback_min_skin_size = skinning_config.min_skin_size
-    if component_policy == "degraded_primary_filtered":
+    if component_policy in {"degraded_primary_filtered", "degraded_primary_skeletonized"}:
         accepted_components = _filtered_fallback_components(
             _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
             candidate_cell_count=fvt_positive_count,
         )
         accepted_mask = _mask_from_components(fvt.shape, accepted_components)
+        if component_policy == "degraded_primary_skeletonized":
+            accepted_mask, pruning_diagnostics = _skeletonize_fallback_components(
+                fvt,
+                vp,
+                vt,
+                accepted_components,
+                scanner_target_positive_mask=scanner_target_positive_mask,
+            )
+            diagnostics.update(pruning_diagnostics)
         fallback_fvt = np.where(accepted_mask, fvt, np.float32(0.0)).astype(np.float32)
         fallback_min_skin_size = None
 
