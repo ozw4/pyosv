@@ -57,6 +57,16 @@ SKIN_BUFFERED_F1_R2 = (
     "buffered_overlap_radius2",
     "buffered_f1",
 )
+SCANNER_FT_BUFFERED_F1_R2 = (
+    "scanner_quality",
+    "ft_top_truth_count",
+    "buffered_overlap_radius2",
+    "buffered_f1",
+)
+SCANNER_FVT_TO_FT_DISTANCE_P95 = (
+    "scanner_downstream",
+    "fvt_candidate_to_scanner_ft_distance_p95",
+)
 FVT_EDGE_FALSE_POSITIVE_FRACTION = (
     "quality",
     "edge_false_positive",
@@ -97,6 +107,23 @@ def quality_skinner_v2_report() -> dict[str, Any]:
         shape=SHAPE,
         variants=("current_default", "quality_skinner_v2"),
         workflow_mode="quality",
+    )
+
+
+@pytest.fixture(scope="module")
+def scanner_quality_report() -> dict[str, Any]:
+    module = _load_report_module()
+    return module.build_report(
+        case_set="extended",
+        shape=SHAPE,
+        variants=("current_default",),
+        workflow_mode="quality",
+        input_mode="scanner",
+        scanner_config=module.SyntheticScannerConfig(
+            backend="quality",
+            refinement_factor=2,
+        ),
+        include_scanner_downstream_diagnostics=True,
     )
 
 
@@ -245,6 +272,85 @@ def test_quality_workflow_key_metrics_are_finite(
             ):
                 assert field in skin
                 _assert_finite_metric_tree(skin[field])
+
+
+def test_scanner_quality_extended_report_builds_successfully(
+    scanner_quality_report: dict[str, Any],
+) -> None:
+    config = scanner_quality_report["config"]
+    assert config["case_set"] == "extended"
+    assert config["shape"] == list(SHAPE)
+    assert config["workflow_mode"] == "quality"
+    assert config["variants"] == ["current_default"]
+    assert config["input_mode"] == "scanner"
+    assert config["scanner"]["backend"] == "quality"
+    assert config["scanner"]["refinement_factor"] == 2
+    assert config["scanner_downstream_diagnostics"] is True
+    assert tuple(case["case_id"] for case in scanner_quality_report["cases"]) == CASE_IDS
+
+
+def test_scanner_quality_extended_guardrail_metrics_are_finite(
+    scanner_quality_report: dict[str, Any],
+) -> None:
+    for case in _cases_by_id(scanner_quality_report).values():
+        variant = case["variants"]["current_default"]
+        assert case["quality"] == variant["quality"]
+        assert "scanner_quality" in variant
+        assert "scanner_downstream" in variant
+        _assert_finite_metric_tree(variant["scanner_quality"])
+        for field in (
+            "scanner_ft_positive_candidate_count",
+            "scanner_fet_positive_candidate_count",
+            "fv_positive_candidate_count",
+            "fvt_positive_candidate_count",
+            "fvt_candidate_to_scanner_ft_distance_p95",
+            "fvt_positive_edge_candidate_fraction",
+            "fvt_positive_edge_false_positive_fraction",
+        ):
+            assert math.isfinite(float(variant["scanner_downstream"][field]))
+        assert _float_metric(case, *FVT_POSITIVE_CANDIDATE_COUNT) >= 0.0
+        assert math.isfinite(_float_metric(case, *FVT_POSITIVE_BUFFERED_F1_R2))
+
+        skinning_report = variant["skinning"]
+        assert skinning_report["enabled"] is True
+        skin = variant["quality"]["skin"]
+        assert skin is not None
+        for field in (
+            "topology",
+            "buffered_overlap_radius2",
+            "surface_distance",
+            "orientation_error",
+        ):
+            _assert_finite_metric_tree(skin[field])
+
+
+def test_scanner_quality_boundary_guardrails(
+    scanner_quality_report: dict[str, Any],
+) -> None:
+    boundary = _cases_by_id(scanner_quality_report)["boundary_plane"]
+    variant = boundary["variants"]["current_default"]
+    diagnostics = variant["skinning"]["diagnostics"]
+
+    assert _float_metric(boundary, *SCANNER_FT_BUFFERED_F1_R2) >= 0.50
+    assert _float_metric(boundary, *FVT_POSITIVE_CANDIDATE_COUNT) > 0.0
+    assert math.isfinite(_float_metric(boundary, *SCANNER_FVT_TO_FT_DISTANCE_P95))
+    assert variant["scanner"]["config"]["backend"] == "quality"
+    assert "fvt_candidate_to_scanner_ft_distance_p95" in variant["scanner_downstream"]
+    assert "skin_fvt_to_scanner_target_distance_p95" in diagnostics
+    assert math.isfinite(float(diagnostics["skin_fvt_to_scanner_target_distance_p95"]))
+
+
+def test_scanner_quality_non_boundary_skins_do_not_collapse(
+    scanner_quality_report: dict[str, Any],
+) -> None:
+    cases = _cases_by_id(scanner_quality_report)
+    for case_id, case in cases.items():
+        if case_id == "boundary_plane":
+            continue
+        skin = case["variants"]["current_default"]["quality"]["skin"]
+        assert skin is not None
+        assert _float_metric(case, "quality", "skin", "topology", "skin_count") > 0.0
+        assert _float_metric(case, *SKIN_BUFFERED_F1_R2) >= 0.40
 
 
 def test_quality_skinner_v2_extended_skin_metrics_are_finite(

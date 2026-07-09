@@ -257,6 +257,15 @@ remain degraded. Diagnostic fallback variants are compared against these modes,
 but promotion requires the scanner-inclusive boundary target and non-boundary
 regression tolerances to pass.
 
+As of the final scanner-boundary promotion gate, no diagnostic variant has been
+promoted into `quality current_default`. The scanner-inclusive 49^3
+`boundary_plane` case remains an open target: `current_default` and the
+scanner-target recentering variant fail the FVT-positive F1 and distance gates,
+while `quality_boundary_skinner_fallback_v4` improves boundary skin but still
+misses the skin-F1 and skin-count gates and regresses the oracle boundary row.
+See [Quality Mode](quality_mode.md) for the exact benchmark commands, metrics,
+promotion criteria, and diagnostic variant descriptions.
+
 ## Curved Surface Thinning Diagnostic
 
 `curved_surface` is not a basic pass/fail case for reference-first OSV. It is a

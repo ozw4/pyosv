@@ -50,6 +50,20 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
 Review `summary.csv` first, then use `metrics.json` and visual overlays for
 drill-down.
 
+For the recommended oracle 49^3 quality benchmark, run the quality workflow on
+the extended case set with the current default only:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode oracle \
+  --output-dir outputs/3d/synthetic_quality/oracle_quality_current_49 \
+  --pretty
+```
+
 For scanner-inclusive quality evaluation, prefer the refined opt-in scanner
 path:
 
@@ -63,6 +77,51 @@ This recommendation is for quality reports only. The report default remains
 `--scanner-backend reference-like` so reference-oriented scanner behavior is not
 changed automatically.
 
+For the recommended scanner 49^3 quality benchmark, run the current default and
+diagnostic scanner-boundary candidates with downstream diagnostics enabled:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default,voter_thin_hybrid_v2_recenter_scanner_target,quality_boundary_skinner_fallback_v4 \
+  --input-mode scanner \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-downstream-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_quality_current_49 \
+  --pretty
+```
+
+For the recommended both-mode comparison, run both oracle and scanner pipelines
+with the same variants and scanner diagnostics:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default,voter_thin_hybrid_v2_recenter_scanner_target,quality_boundary_skinner_fallback_v4 \
+  --input-mode both \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-downstream-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_quality_manual_49 \
+  --pretty
+```
+
+Then print the concise oracle-vs-scanner comparison table:
+
+```bash
+python examples/print_synthetic_quality_comparison.py \
+  outputs/3d/synthetic_quality/scanner_quality_manual_49/summary.csv
+```
+
+The helper reports `case_id`, `variant`, oracle/scanner fvt-positive F1,
+oracle/scanner skin F1, scanner-minus-oracle deltas, scanner `ft` F1,
+scanner downstream fvt-to-ft distance p95, and whether fallback was used.
+
 For diagnostic scanner-inclusive experiments, `--scanner-backend ensemble`
 combines the `reference-like`, `quality`, and `fast` scanner outputs. The rule
 is deterministic: normalize each backend `ft` to unit range, multiply by fixed
@@ -73,7 +132,10 @@ records `scanner.selection_fraction_by_backend`,
 `scanner_ensemble_reference_like_fraction`,
 `scanner_ensemble_quality_fraction`, and `scanner_ensemble_fast_fraction`
 summary CSV columns. This is a diagnostic backend and is not the F3 or
-synthetic report default.
+synthetic report default. Current scanner-inclusive evidence still shows
+boundary collapse for the ensemble backend, including an empty
+`boundary_plane` FVT/skin result in the 33^3 quality scanner ensemble run, so
+it is not a default-promotion candidate.
 
 To compare scanner backend tradeoffs in one run, add
 `--scanner-backend-matrix` with `--input-mode scanner` or `--input-mode both`.
@@ -83,16 +145,23 @@ reports plus best-backend summary columns in `summary.csv`.
 The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
 `voter_thin_normal`, `voter_thin_hybrid`, `voter_thin_hybrid_v2`,
-`voter_thin_normal_plateau`, `surface_support_weighted`, and
+`voter_thin_normal_plateau`, `surface_support_weighted`,
 `quality_skinner_v2`, `quality_boundary_skinner_fallback`,
-`quality_boundary_skinner_fallback_v2`, and
-`quality_boundary_skinner_fallback_v3`. The quality workflow default uses the
+`quality_boundary_skinner_fallback_v2`,
+`quality_boundary_skinner_fallback_v3`, and
+`quality_boundary_skinner_fallback_v4`. The quality workflow default uses the
 `hybrid_v2` voter thinning path. The hybrid voter thinning variant uses reference-like
 thinning in stable-orientation regions and fault-normal thinning where local
 orientation changes rapidly. The `voter_thin_hybrid_v2` diagnostic variant
 keeps that stable-plane preference, only adopts positive fault-normal
 candidates in rough-orientation regions, and uses plateau-aware edge fallback
 with the input fault likelihood as the retained-layer tie-breaker. The
+`voter_thin_hybrid_v2_recenter_scanner_target` diagnostic variant keeps
+`hybrid_v2` thinning but recenters edge-shell positive FVT samples toward the
+scanner-thinned `fet` target. It is available by explicit `--variants`
+selection for scanner-boundary diagnostics and is not part of the
+`quality-matrix` preset. It is not a default candidate unless it also meets the
+FVT-positive F1 and distance gates. The
 `voter_thin_normal_plateau` diagnostic variant keeps fault-normal thinning
 explicit, but collapses normal-direction plateau runs with the input fault
 likelihood as the retained-layer tie-breaker.
@@ -135,8 +204,46 @@ non-boundary skin F1 by more than 0.02 for `parallel_planes`,
 target was boundary skin F1 at least 0.90, skin count at most 3, skin-cell to
 positive-fvt-candidate ratio at least 0.75, and no non-boundary skin/FVT
 regression beyond the configured tolerances. v3 therefore remains diagnostic.
-The next tuning area is better component filtering or voting/fvt boundary
-recovery.
+The `quality_boundary_skinner_fallback_v4` diagnostic variant uses the
+`degraded_primary_skeletonized` policy. It requires the boundary-specific
+degraded-primary trigger to be supported by scanner-target diagnostics, accepts
+the filtered fvt-positive components, then collapses connected runs along each
+sample's dominant fault-normal array axis before building fallback skins. Its
+diagnostics record the pruning method, raw and pruned component cell counts,
+removed-cell count, pruned fraction, largest component size before and after
+pruning, and dominant skeletonization axis mode. It remains a diagnostic
+variant and is not the default.
+
+The scanner-boundary default-promotion gate is intentionally stricter than the
+CI guardrails. On `boundary_plane`, scanner, shape 49, a candidate must satisfy
+`skin_buffered_f1_r2 >= 0.90`, `skin_count <= 3`, and
+`0.75 <= skin_cell_count / fvt_positive_candidate_count <= 1.25`. If the
+candidate changes FVT, it must also satisfy
+`fvt_positive_buffered_f1_r2 >= 0.90` and
+`fvt_positive_distance_p95 <= 2.0`. Non-boundary scanner shape-49 cases must
+show no material skin-F1 regression versus `current_default` and no false
+fallback replacement on stable non-boundary cases unless metrics improve.
+Oracle shape-49 behavior must not materially regress.
+
+The final 33^3 and 49^3 scanner-inclusive gate runs kept
+`quality current_default` unchanged. In the 49^3 scanner run with
+`--scanner-backend quality --scanner-refinement-factor 2`,
+`current_default` on `boundary_plane` had
+`fvt_positive_buffered_f1_r2=0.739494`,
+`fvt_positive_distance_p95=4.0`, `skin_buffered_f1_r2=0.453890`,
+`skin_count=17`, and
+`skin_cell_count/fvt_positive_candidate_count=0.311120`.
+`voter_thin_hybrid_v2_recenter_scanner_target` only changed the boundary FVT
+metrics to `fvt_positive_buffered_f1_r2=0.740855` and
+`fvt_positive_distance_p95=4.0`, so it failed the FVT promotion gate.
+`quality_boundary_skinner_fallback_v4` improved scanner boundary skin to
+`skin_buffered_f1_r2=0.796428` with
+`skin_cell_count/fvt_positive_candidate_count=0.857976`, but it produced
+`skin_count=42`, still missed the 0.90 skin-F1 target, and the oracle
+`boundary_plane` row collapsed to `skin_buffered_f1_r2=0.0`. v4 therefore
+also remains diagnostic. The known scanner-inclusive boundary issue remains
+open: scanner `ft` can be high quality while downstream FVT and skinning
+degrade near boundaries.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The
