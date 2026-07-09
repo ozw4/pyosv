@@ -150,11 +150,13 @@ metrics. That document also explains controlled report workflow modes:
 `reference` is the default reference-alignment mode, `quality` defaults voter
 thinning to the truth-quality-favored `hybrid_v2` path with support-aware surface
 voting inactive, the quality skinner v2 profile, and the empty-primary boundary
-skinner fallback. Degraded-primary fallback v2/v3 variants remain diagnostic
-after the 49^3 scanner-inclusive boundary benchmark: v2 over-includes fallback
-components, and filtered v3 did not reach the boundary skin F1 promotion target
-or the non-boundary regression tolerances. `diagnostic` keeps the reference path
-while enabling reference-vs-normal thinning diagnostics.
+skinner fallback. Degraded-primary fallback variants remain diagnostic after
+the 49^3 scanner-inclusive boundary benchmark: v2 over-includes fallback
+components, filtered v3 did not reach the boundary skin F1 promotion target or
+the non-boundary regression tolerances, and skeletonized v4 still missed the
+scanner boundary skin target while regressing oracle boundary skin. The
+scanner-inclusive boundary target remains open. `diagnostic` keeps the
+reference path while enabling reference-vs-normal thinning diagnostics.
 The current quality workflow profile and guardrails are summarized in
 `docs/quality_mode.md`. A typical extended report run is:
 
