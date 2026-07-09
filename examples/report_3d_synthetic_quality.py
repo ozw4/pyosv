@@ -105,6 +105,14 @@ SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE = 0.50
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT = 8
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION = 0.75
 SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION = 0.25
+# Boundary degraded-primary fallback is intentionally stricter than the generic
+# degraded-primary diagnostics. These thresholds require boundary-local evidence
+# before diagnostic degraded-primary variants replace a non-empty primary skin.
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_FVT_EDGE_SHELL_FRACTION = 0.25
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_SCANNER_TARGET_DISTANCE_P95 = 2.0
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MAX_CELL_COVERAGE = 0.50
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_FVT_FRACTION = 0.15
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_PRIMARY_FRACTION = 0.05
 SKIN_FALLBACK_FILTER_MAX_COMPONENTS = 3
 SKIN_FALLBACK_FILTER_MIN_COMPONENT_SIZE_FLOOR = 8
 SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION = 0.05
@@ -1349,6 +1357,7 @@ def _run_scanner_pipeline(
         skinning_config=skinning_config,
         variant=variant,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        scanner_target_positive_mask=_positive_candidate_mask(scanner_volumes["scanner_ft"]),
     )
     report["scanner"] = scanner_report
     report["scanner_quality"] = _scanner_truth_quality(
@@ -2304,6 +2313,7 @@ def _run_voting_from_attributes(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
     include_thinning_diagnostic: bool = False,
+    scanner_target_positive_mask: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
@@ -2509,6 +2519,7 @@ def _run_voting_from_attributes(
             skinning_config=skinning_config,
             variant=variant,
             diagnostics=skin_diagnostics,
+            scanner_target_positive_mask=scanner_target_positive_mask,
         )
         report["skinning"]["diagnostics"] = skin_diagnostics
         skin_metrics = skin_truth_metrics(
@@ -3014,8 +3025,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_primary_small_cell_fraction",
                 "skin_primary_cell_coverage_of_fvt_positive",
                 "skin_primary_largest_coverage_of_fvt_positive",
+                "skin_primary_edge_shell_fraction",
+                "skin_fvt_positive_edge_shell_fraction",
+                "skin_scanner_target_positive_edge_shell_fraction",
+                "skin_fvt_to_scanner_target_distance_p95",
                 "skin_primary_degraded_candidate",
                 "skin_primary_degraded_reasons",
+                "skin_primary_boundary_degraded_candidate",
+                "skin_primary_boundary_degraded_reasons",
                 "skin_buffered_f1_r2",
                 "skin_buffered_precision_r2",
                 "skin_buffered_recall_r2",
@@ -3543,8 +3560,14 @@ def _summary_csv_skin_diagnostics_row(
             "skin_primary_small_cell_fraction": 0.0,
             "skin_primary_cell_coverage_of_fvt_positive": 0.0,
             "skin_primary_largest_coverage_of_fvt_positive": 0.0,
+            "skin_primary_edge_shell_fraction": 0.0,
+            "skin_fvt_positive_edge_shell_fraction": 0.0,
+            "skin_scanner_target_positive_edge_shell_fraction": None,
+            "skin_fvt_to_scanner_target_distance_p95": None,
             "skin_primary_degraded_candidate": False,
             "skin_primary_degraded_reasons": "",
+            "skin_primary_boundary_degraded_candidate": False,
+            "skin_primary_boundary_degraded_reasons": "",
         }
     if diagnostics is None:
         return {
@@ -3594,12 +3617,21 @@ def _summary_csv_skin_diagnostics_row(
             "skin_primary_small_cell_fraction": None,
             "skin_primary_cell_coverage_of_fvt_positive": None,
             "skin_primary_largest_coverage_of_fvt_positive": None,
+            "skin_primary_edge_shell_fraction": None,
+            "skin_fvt_positive_edge_shell_fraction": None,
+            "skin_scanner_target_positive_edge_shell_fraction": None,
+            "skin_fvt_to_scanner_target_distance_p95": None,
             "skin_primary_degraded_candidate": None,
             "skin_primary_degraded_reasons": None,
+            "skin_primary_boundary_degraded_candidate": None,
+            "skin_primary_boundary_degraded_reasons": None,
         }
     degraded_reasons = diagnostics.get("skin_primary_degraded_reasons")
     if isinstance(degraded_reasons, list):
         degraded_reasons = ",".join(str(reason) for reason in degraded_reasons)
+    boundary_degraded_reasons = diagnostics.get("skin_primary_boundary_degraded_reasons")
+    if isinstance(boundary_degraded_reasons, list):
+        boundary_degraded_reasons = ",".join(str(reason) for reason in boundary_degraded_reasons)
     fallback_degraded_reasons = diagnostics.get("fallback_degraded_reasons")
     if isinstance(fallback_degraded_reasons, list):
         fallback_degraded_reasons = ",".join(str(reason) for reason in fallback_degraded_reasons)
@@ -3680,8 +3712,22 @@ def _summary_csv_skin_diagnostics_row(
         "skin_primary_largest_coverage_of_fvt_positive": diagnostics.get(
             "skin_primary_largest_coverage_of_fvt_positive"
         ),
+        "skin_primary_edge_shell_fraction": diagnostics.get("skin_primary_edge_shell_fraction"),
+        "skin_fvt_positive_edge_shell_fraction": diagnostics.get(
+            "skin_fvt_positive_edge_shell_fraction"
+        ),
+        "skin_scanner_target_positive_edge_shell_fraction": diagnostics.get(
+            "skin_scanner_target_positive_edge_shell_fraction"
+        ),
+        "skin_fvt_to_scanner_target_distance_p95": diagnostics.get(
+            "skin_fvt_to_scanner_target_distance_p95"
+        ),
         "skin_primary_degraded_candidate": diagnostics.get("skin_primary_degraded_candidate"),
         "skin_primary_degraded_reasons": degraded_reasons,
+        "skin_primary_boundary_degraded_candidate": diagnostics.get(
+            "skin_primary_boundary_degraded_candidate"
+        ),
+        "skin_primary_boundary_degraded_reasons": boundary_degraded_reasons,
     }
 
 
@@ -3755,6 +3801,11 @@ def _add_primary_skin_diagnostics(
     largest_size = int(topology["largest_skin_size"])
     cell_coverage = float(unique_cell_count / positive_count) if positive_count else 0.0
     largest_coverage = float(largest_size / positive_count) if positive_count else 0.0
+    primary_mask = skin_mask_from_skins(skins, shape)
+    primary_edge_shell_fraction = _edge_candidate_fraction(
+        primary_mask,
+        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+    )
     reasons = _primary_skin_degraded_reasons(
         fvt_positive_candidate_count=positive_count,
         skin_count=int(topology["skin_count"]),
@@ -3774,6 +3825,7 @@ def _add_primary_skin_diagnostics(
             "skin_primary_small_cell_fraction": float(topology["small_skin_cell_fraction"]),
             "skin_primary_cell_coverage_of_fvt_positive": cell_coverage,
             "skin_primary_largest_coverage_of_fvt_positive": largest_coverage,
+            "skin_primary_edge_shell_fraction": primary_edge_shell_fraction,
             "skin_primary_degraded_candidate": bool(reasons),
             "skin_primary_degraded_reasons": reasons,
         }
@@ -3803,6 +3855,41 @@ def _primary_skin_degraded_reasons(
         reasons.append("fragmented_primary_skins")
     if float(small_skin_cell_fraction) > SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION:
         reasons.append("high_small_skin_cell_fraction")
+    return reasons
+
+
+def _primary_boundary_degraded_reasons(
+    *,
+    generic_degraded: bool,
+    fvt_positive_candidate_count: int,
+    cell_coverage_of_fvt_positive: float,
+    fvt_positive_edge_shell_fraction: float,
+    primary_edge_shell_fraction: float,
+    fvt_to_scanner_target_distance_p95: float | None,
+) -> list[str]:
+    if not generic_degraded or int(fvt_positive_candidate_count) <= 0:
+        return []
+
+    reasons: list[str] = []
+    if (
+        float(fvt_positive_edge_shell_fraction)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_FVT_EDGE_SHELL_FRACTION
+    ):
+        reasons.append("fvt_positive_edge_shell")
+    if (
+        fvt_to_scanner_target_distance_p95 is not None
+        and float(fvt_to_scanner_target_distance_p95)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_SCANNER_TARGET_DISTANCE_P95
+    ):
+        reasons.append("fvt_far_from_scanner_target")
+    if (
+        float(cell_coverage_of_fvt_positive) < SKIN_PRIMARY_BOUNDARY_DEGRADED_MAX_CELL_COVERAGE
+        and float(fvt_positive_edge_shell_fraction)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_FVT_FRACTION
+        and float(primary_edge_shell_fraction)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_PRIMARY_FRACTION
+    ):
+        reasons.append("low_primary_coverage_with_edge_local_candidates")
     return reasons
 
 
@@ -3970,7 +4057,10 @@ def _apply_boundary_skinner_fallback(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
     diagnostics: dict[str, Any],
+    scanner_target_positive_mask: np.ndarray | None = None,
 ) -> None:
+    del variant
+
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
     fallback_connectivity = "edge"
@@ -4002,6 +4092,37 @@ def _apply_boundary_skinner_fallback(
         largest_fraction=float(diagnostics.get("skin_primary_largest_fraction", 0.0)),
         small_skin_cell_fraction=float(diagnostics.get("skin_primary_small_cell_fraction", 0.0)),
     )
+    positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
+    fvt_positive_edge_shell_fraction = _edge_candidate_fraction(
+        positive_mask,
+        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+    )
+    primary_edge_shell_fraction = float(diagnostics.get("skin_primary_edge_shell_fraction", 0.0))
+    scanner_target_positive_edge_shell_fraction: float | None = None
+    fvt_to_scanner_target_distance_p95: float | None = None
+    if scanner_target_positive_mask is not None:
+        scanner_target_mask = np.asarray(scanner_target_positive_mask, dtype=bool)
+        if scanner_target_mask.shape != positive_mask.shape:
+            raise ValueError("scanner_target_positive_mask shape must match fvt")
+        scanner_target_positive_edge_shell_fraction = _edge_candidate_fraction(
+            scanner_target_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        )
+        fvt_to_scanner_target_distance = surface_distance_metrics(
+            positive_mask,
+            scanner_target_mask,
+        )
+        fvt_to_scanner_target_distance_p95 = fvt_to_scanner_target_distance[
+            "candidate_to_truth_p95"
+        ]
+    boundary_degraded_reasons = _primary_boundary_degraded_reasons(
+        generic_degraded=bool(degraded_reasons),
+        fvt_positive_candidate_count=fvt_positive_count,
+        cell_coverage_of_fvt_positive=coverage_before,
+        fvt_positive_edge_shell_fraction=fvt_positive_edge_shell_fraction,
+        primary_edge_shell_fraction=primary_edge_shell_fraction,
+        fvt_to_scanner_target_distance_p95=fvt_to_scanner_target_distance_p95,
+    )
     diagnostics.update(
         {
             "fallback_enabled": fallback_enabled,
@@ -4020,6 +4141,14 @@ def _apply_boundary_skinner_fallback(
             "fallback_candidate_count": fvt_positive_count,
             "fallback_coverage_before": coverage_before,
             "fallback_coverage_after": coverage_before,
+            "skin_fvt_positive_edge_shell_fraction": fvt_positive_edge_shell_fraction,
+            "skin_primary_edge_shell_fraction": primary_edge_shell_fraction,
+            "skin_scanner_target_positive_edge_shell_fraction": (
+                scanner_target_positive_edge_shell_fraction
+            ),
+            "skin_fvt_to_scanner_target_distance_p95": fvt_to_scanner_target_distance_p95,
+            "skin_primary_boundary_degraded_candidate": bool(boundary_degraded_reasons),
+            "skin_primary_boundary_degraded_reasons": boundary_degraded_reasons,
             **component_diagnostics,
         }
     )
@@ -4039,6 +4168,9 @@ def _apply_boundary_skinner_fallback(
         if not degraded_reasons:
             diagnostics["fallback_reason"] = "primary_skin_healthy"
             return
+        if not boundary_degraded_reasons:
+            diagnostics["fallback_reason"] = "primary_boundary_degraded_not_detected"
+            return
         diagnostics["fallback_triggered_by_degraded_primary"] = True
         fallback_reason = "degraded_primary:" + ",".join(
             _fallback_degraded_reason_labels(degraded_reasons)
@@ -4047,7 +4179,6 @@ def _apply_boundary_skinner_fallback(
     fallback_fvt = fvt
     fallback_min_skin_size = skinning_config.min_skin_size
     if component_policy == "degraded_primary_filtered":
-        positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
         accepted_components = _filtered_fallback_components(
             _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
             candidate_cell_count=fvt_positive_count,

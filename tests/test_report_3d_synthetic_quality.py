@@ -132,8 +132,14 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_primary_small_cell_fraction",
     "skin_primary_cell_coverage_of_fvt_positive",
     "skin_primary_largest_coverage_of_fvt_positive",
+    "skin_primary_edge_shell_fraction",
+    "skin_fvt_positive_edge_shell_fraction",
+    "skin_scanner_target_positive_edge_shell_fraction",
+    "skin_fvt_to_scanner_target_distance_p95",
     "skin_primary_degraded_candidate",
     "skin_primary_degraded_reasons",
+    "skin_primary_boundary_degraded_candidate",
+    "skin_primary_boundary_degraded_reasons",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -193,6 +199,8 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_primary_small_cell_fraction",
     "skin_primary_cell_coverage_of_fvt_positive",
     "skin_primary_largest_coverage_of_fvt_positive",
+    "skin_primary_edge_shell_fraction",
+    "skin_fvt_positive_edge_shell_fraction",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -3624,14 +3632,22 @@ def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
         "skin_primary_small_cell_fraction",
         "skin_primary_cell_coverage_of_fvt_positive",
         "skin_primary_largest_coverage_of_fvt_positive",
+        "skin_primary_edge_shell_fraction",
+        "skin_fvt_positive_edge_shell_fraction",
     ):
         assert math.isfinite(float(diagnostics[field]))
         assert math.isfinite(float(rows[0][field]))
     assert isinstance(diagnostics["skin_primary_degraded_candidate"], bool)
     assert isinstance(diagnostics["skin_primary_degraded_reasons"], list)
+    assert isinstance(diagnostics["skin_primary_boundary_degraded_candidate"], bool)
+    assert isinstance(diagnostics["skin_primary_boundary_degraded_reasons"], list)
     assert rows[0]["skin_primary_degraded_candidate"] in {"True", "False"}
     assert rows[0]["skin_primary_degraded_reasons"] == ",".join(
         diagnostics["skin_primary_degraded_reasons"]
+    )
+    assert rows[0]["skin_primary_boundary_degraded_candidate"] in {"True", "False"}
+    assert rows[0]["skin_primary_boundary_degraded_reasons"] == ",".join(
+        diagnostics["skin_primary_boundary_degraded_reasons"]
     )
 
 
@@ -3715,6 +3731,8 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback()
     assert diagnostics["fallback_policy"] == "degraded_primary"
     assert diagnostics["fallback_used"] is True
     assert diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is True
+    assert "fvt_positive_edge_shell" in diagnostics["skin_primary_boundary_degraded_reasons"]
     assert diagnostics["fallback_replaced_primary"] is True
     assert diagnostics["fallback_primary_skin_count"] == 1
     assert diagnostics["fallback_primary_cell_count"] == 1
@@ -3725,6 +3743,51 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback()
     assert diagnostics["fallback_reason"] == "degraded_primary:undercovered"
     assert len(skins) == 1
     assert len(skins[0]) == 5
+
+
+def test_report_3d_synthetic_quality_degraded_primary_policy_blocks_non_boundary() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((7, 7, 7), dtype=np.float32)
+    fvt[3, 3, 2:5] = 1.0
+    vp = np.zeros_like(fvt)
+    vt = np.zeros_like(fvt)
+    skins = [_fault_skin([(3, 3, 3)])]
+    diagnostics: dict[str, object] = {}
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=fvt.shape,
+        fvt_positive_candidate_count=3,
+        small_skin_size=1,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary",
+            small_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback_v2",
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["skin_primary_degraded_candidate"] is True
+    assert diagnostics["skin_primary_degraded_reasons"] == ["low_fvt_positive_coverage"]
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is False
+    assert diagnostics["skin_primary_boundary_degraded_reasons"] == []
+    assert diagnostics["skin_fvt_positive_edge_shell_fraction"] == pytest.approx(0.0)
+    assert diagnostics["skin_primary_edge_shell_fraction"] == pytest.approx(0.0)
+    assert diagnostics["fallback_policy"] == "degraded_primary"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_boundary_degraded_not_detected"
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is False
+    assert diagnostics["fallback_degraded_reasons"] == ["low_fvt_positive_coverage"]
+    assert len(skins) == 1
+    assert len(skins[0]) == 1
 
 
 def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fallback() -> None:
@@ -3762,6 +3825,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fa
     assert diagnostics["fallback_policy"] == "degraded_primary_filtered"
     assert diagnostics["fallback_used"] is True
     assert diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is True
     assert diagnostics["fallback_replaced_primary"] is True
     assert diagnostics["fallback_candidate_count"] == 13
     assert diagnostics["fallback_coverage_before"] == pytest.approx(1 / 13)
@@ -3960,6 +4024,17 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
     assert current_diagnostics["skin_primary_degraded_candidate"] is True
     assert "low_fvt_positive_coverage" in current_diagnostics["skin_primary_degraded_reasons"]
     assert current_diagnostics["skin_primary_cell_coverage_of_fvt_positive"] < 0.50
+    assert current_diagnostics["skin_primary_boundary_degraded_candidate"] is True
+    assert (
+        "low_primary_coverage_with_edge_local_candidates"
+        in current_diagnostics["skin_primary_boundary_degraded_reasons"]
+    )
+    assert current_diagnostics["skin_fvt_positive_edge_shell_fraction"] > 0.0
+    assert current_diagnostics["skin_primary_edge_shell_fraction"] > 0.0
+    assert math.isfinite(
+        float(current_diagnostics["skin_scanner_target_positive_edge_shell_fraction"])
+    )
+    assert math.isfinite(float(current_diagnostics["skin_fvt_to_scanner_target_distance_p95"]))
     assert current_diagnostics["fallback_used"] is False
     assert current_diagnostics["fallback_reason"] == "primary_skin_nonempty"
     assert current_diagnostics["fallback_triggered_by_degraded_primary"] is False
@@ -3967,11 +4042,13 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
     assert v2_diagnostics["fallback_policy"] == "degraded_primary"
     assert v2_diagnostics["fallback_used"] is True
     assert v2_diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert v2_diagnostics["skin_primary_boundary_degraded_candidate"] is True
     assert v2_diagnostics["skin_fallback_component_policy"] == "all"
 
     assert v3_diagnostics["fallback_policy"] == "degraded_primary_filtered"
     assert v3_diagnostics["fallback_used"] is True
     assert v3_diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert v3_diagnostics["skin_primary_boundary_degraded_candidate"] is True
     assert v3_diagnostics["skin_fallback_component_policy"] == "degraded_primary_filtered"
     assert v3_diagnostics["skin_fallback_component_count"] > 0
     assert v3_diagnostics["skin_fallback_accepted_component_count"] > 0
@@ -4000,8 +4077,14 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
         "skin_primary_largest_fraction",
         "skin_primary_cell_coverage_of_fvt_positive",
         "skin_primary_largest_coverage_of_fvt_positive",
+        "skin_primary_edge_shell_fraction",
+        "skin_fvt_positive_edge_shell_fraction",
+        "skin_scanner_target_positive_edge_shell_fraction",
+        "skin_fvt_to_scanner_target_distance_p95",
         "skin_primary_degraded_candidate",
         "skin_primary_degraded_reasons",
+        "skin_primary_boundary_degraded_candidate",
+        "skin_primary_boundary_degraded_reasons",
         "skin_fallback_policy",
         "skin_fallback_component_policy",
         "skin_fallback_component_count",
@@ -4031,6 +4114,18 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
         "low_fvt_positive_coverage"
         in summary_rows["current_default"]["skin_primary_degraded_reasons"]
     )
+    assert summary_rows["current_default"]["skin_primary_boundary_degraded_candidate"] == "True"
+    assert (
+        "low_primary_coverage_with_edge_local_candidates"
+        in summary_rows["current_default"]["skin_primary_boundary_degraded_reasons"]
+    )
+    for column in (
+        "skin_primary_edge_shell_fraction",
+        "skin_fvt_positive_edge_shell_fraction",
+        "skin_scanner_target_positive_edge_shell_fraction",
+        "skin_fvt_to_scanner_target_distance_p95",
+    ):
+        assert math.isfinite(float(summary_rows["current_default"][column]))
     assert summary_rows["current_default"]["skin_fallback_policy"] == "empty_primary"
     assert summary_rows["current_default"]["skin_fallback_used"] == "False"
     assert (
@@ -4051,6 +4146,47 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
         float(summary_rows["quality_boundary_skinner_fallback_v3"]["skin_buffered_f1_r2"])
         >= float(summary_rows["current_default"]["skin_buffered_f1_r2"]) + 0.25
     )
+
+
+def test_report_3d_synthetic_quality_scanner_vertical_v3_blocks_boundary_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    vertical_definition = next(
+        definition
+        for definition in module.EXTENDED_CASES
+        if definition.case_id == "single_vertical_plane"
+    )
+    monkeypatch.setitem(module.CASE_SETS, "vertical_only", (vertical_definition,))
+
+    report = module.build_report(
+        case_set="vertical_only",
+        shape=(49, 49, 49),
+        workflow_mode="quality",
+        input_mode="scanner",
+        scanner_config=module.SyntheticScannerConfig(
+            backend="quality",
+            refinement_factor=2,
+        ),
+        variants=("quality_boundary_skinner_fallback_v3",),
+    )
+    variant = report["cases"][0]["variants"]["quality_boundary_skinner_fallback_v3"]
+    diagnostics = variant["skinning"]["diagnostics"]
+
+    assert diagnostics["skin_primary_degraded_candidate"] is True
+    assert diagnostics["skin_primary_degraded_reasons"] == [
+        "low_fvt_positive_coverage",
+        "fragmented_primary_skins",
+    ]
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is False
+    assert diagnostics["skin_primary_boundary_degraded_reasons"] == []
+    assert diagnostics["skin_primary_edge_shell_fraction"] == pytest.approx(0.0)
+    assert diagnostics["skin_fvt_positive_edge_shell_fraction"] < 0.20
+    assert diagnostics["fallback_policy"] == "degraded_primary_filtered"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_boundary_degraded_not_detected"
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is False
+    assert diagnostics["fallback_replaced_primary"] is False
 
 
 def test_report_3d_synthetic_quality_degraded_primary_policy_keeps_healthy_primary() -> None:
