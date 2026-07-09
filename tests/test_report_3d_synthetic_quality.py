@@ -106,6 +106,17 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_fallback_primary_skin_count",
     "skin_fallback_primary_cell_count",
     "skin_fallback_candidate_count",
+    "skin_fallback_component_count",
+    "skin_fallback_candidate_cell_count",
+    "skin_fallback_largest_component_size",
+    "skin_fallback_largest_component_fraction",
+    "skin_fallback_top3_component_cell_count",
+    "skin_fallback_top3_component_fraction",
+    "skin_fallback_small_component_count",
+    "skin_fallback_component_policy",
+    "skin_fallback_accepted_component_count",
+    "skin_fallback_discarded_component_count",
+    "skin_fallback_accepted_component_cell_count",
     "skin_fallback_coverage_before",
     "skin_fallback_coverage_after",
     "skin_primary_count",
@@ -154,6 +165,16 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_fallback_primary_skin_count",
     "skin_fallback_primary_cell_count",
     "skin_fallback_candidate_count",
+    "skin_fallback_component_count",
+    "skin_fallback_candidate_cell_count",
+    "skin_fallback_largest_component_size",
+    "skin_fallback_largest_component_fraction",
+    "skin_fallback_top3_component_cell_count",
+    "skin_fallback_top3_component_fraction",
+    "skin_fallback_small_component_count",
+    "skin_fallback_accepted_component_count",
+    "skin_fallback_discarded_component_count",
+    "skin_fallback_accepted_component_cell_count",
     "skin_fallback_coverage_before",
     "skin_fallback_coverage_after",
     "skin_primary_count",
@@ -1625,6 +1646,30 @@ def test_report_3d_synthetic_quality_boundary_fallback_variant_cli_contract(
     assert diagnostics["fallback_input"] == "fvt"
     assert diagnostics["fallback_skin_count"] == 0
     assert diagnostics["fallback_cell_count"] == 0
+    for field in (
+        "skin_fallback_component_count",
+        "skin_fallback_candidate_cell_count",
+        "skin_fallback_largest_component_size",
+        "skin_fallback_largest_component_fraction",
+        "skin_fallback_top3_component_cell_count",
+        "skin_fallback_top3_component_fraction",
+        "skin_fallback_small_component_count",
+        "skin_fallback_component_policy",
+        "skin_fallback_accepted_component_count",
+        "skin_fallback_discarded_component_count",
+        "skin_fallback_accepted_component_cell_count",
+    ):
+        assert field in diagnostics
+    assert (
+        diagnostics["skin_fallback_candidate_cell_count"] == diagnostics["fallback_candidate_count"]
+    )
+    assert diagnostics["skin_fallback_component_count"] > 0
+    assert diagnostics["skin_fallback_largest_component_size"] > 0
+    assert diagnostics["skin_fallback_largest_component_fraction"] > 0.0
+    assert diagnostics["skin_fallback_component_policy"] == "all"
+    for field, value in diagnostics.items():
+        if field.startswith("skin_fallback_") and field != "skin_fallback_component_policy":
+            assert math.isfinite(float(value))
 
     with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
@@ -1637,6 +1682,185 @@ def test_report_3d_synthetic_quality_boundary_fallback_variant_cli_contract(
     assert rows[0]["skin_fallback_input"] == "fvt"
     assert rows[0]["skin_fallback_skin_count"] == "0"
     assert rows[0]["skin_fallback_cell_count"] == "0"
+    assert rows[0]["skin_fallback_component_policy"] == "all"
+    for field in (
+        "skin_fallback_component_count",
+        "skin_fallback_candidate_cell_count",
+        "skin_fallback_largest_component_size",
+        "skin_fallback_largest_component_fraction",
+        "skin_fallback_top3_component_cell_count",
+        "skin_fallback_top3_component_fraction",
+        "skin_fallback_small_component_count",
+        "skin_fallback_accepted_component_count",
+        "skin_fallback_discarded_component_count",
+        "skin_fallback_accepted_component_cell_count",
+    ):
+        assert math.isfinite(float(rows[0][field]))
+
+
+def test_report_3d_synthetic_quality_fallback_component_diagnostics_zero_without_fvt() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((2, 3, 4), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.zeros_like(fvt)
+    diagnostics: dict[str, object] = {}
+
+    module._apply_boundary_skinner_fallback(
+        [],
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(boundary_skinner_fallback=False),
+        variant="current_default",
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["fallback_enabled"] is False
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["skin_fallback_component_policy"] == "all"
+    for field in (
+        "skin_fallback_component_count",
+        "skin_fallback_candidate_cell_count",
+        "skin_fallback_largest_component_size",
+        "skin_fallback_largest_component_fraction",
+        "skin_fallback_top3_component_cell_count",
+        "skin_fallback_top3_component_fraction",
+        "skin_fallback_small_component_count",
+        "skin_fallback_accepted_component_count",
+        "skin_fallback_discarded_component_count",
+        "skin_fallback_accepted_component_cell_count",
+    ):
+        assert diagnostics[field] == 0
+
+
+def test_report_3d_synthetic_quality_fallback_component_ordering_is_deterministic() -> None:
+    module = _load_report_module()
+    mask = np.zeros((3, 3, 3), dtype=bool)
+    mask[0, 2, 0] = True
+    mask[0, 2, 1] = True
+    mask[0, 0, 2] = True
+    mask[1, 0, 2] = True
+
+    components = module._positive_mask_components(mask, connectivity="edge")
+
+    assert components == [
+        [(0, 0, 2), (1, 0, 2)],
+        [(0, 2, 0), (0, 2, 1)],
+    ]
+
+    diagnostics = module._fallback_component_diagnostics(
+        mask.astype(np.float32),
+        min_skin_size=3,
+        small_component_size=3,
+        connectivity="edge",
+    )
+    assert diagnostics["skin_fallback_component_count"] == 2
+    assert diagnostics["skin_fallback_candidate_cell_count"] == 4
+    assert diagnostics["skin_fallback_largest_component_size"] == 2
+    assert diagnostics["skin_fallback_largest_component_fraction"] == pytest.approx(0.5)
+    assert diagnostics["skin_fallback_top3_component_cell_count"] == 4
+    assert diagnostics["skin_fallback_top3_component_fraction"] == pytest.approx(1.0)
+    assert diagnostics["skin_fallback_small_component_count"] == 2
+    assert diagnostics["skin_fallback_accepted_component_count"] == 0
+    assert diagnostics["skin_fallback_discarded_component_count"] == 2
+    assert diagnostics["skin_fallback_accepted_component_cell_count"] == 0
+
+
+def test_report_3d_synthetic_quality_fallback_uses_fvt_candidate_mask_not_vt() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((2, 2, 3), dtype=np.float32)
+    fvt[0, 0, 0] = 1.0
+    fvt[0, 0, 1] = 1.0
+    vp = np.zeros_like(fvt)
+    vt = np.ones_like(fvt)
+    skins: list[object] = []
+    diagnostics: dict[str, object] = {}
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            min_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback",
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["skin_fallback_candidate_cell_count"] == 2
+    assert diagnostics["skin_fallback_component_count"] == 1
+    assert diagnostics["fallback_cell_count"] == 2
+    assert len(skins) == 1
+    assert len(skins[0]) == 2
+    assert {(cell.i1, cell.i2, cell.i3) for cell in skins[0]} == {
+        (0, 0, 0),
+        (1, 0, 0),
+    }
+
+
+def test_report_3d_synthetic_quality_fallback_invokes_original_threshold_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    fvt = np.zeros((2, 2, 3), dtype=np.float32)
+    fvt[0, 0, 0] = 1.0
+    fvt[0, 0, 1] = np.float32(module.NONZERO_EPSILON / 2.0)
+    vp = np.zeros_like(fvt)
+    vt = np.zeros_like(fvt)
+    diagnostics: dict[str, object] = {}
+    calls: list[dict[str, object]] = []
+
+    def fake_find_connected_component_skins(
+        fv: np.ndarray,
+        vp_arg: np.ndarray,
+        vt_arg: np.ndarray,
+        *,
+        min_likelihood: float | None = None,
+        min_skin_size: int | None = None,
+        connectivity: str = "corner",
+    ) -> list[object]:
+        calls.append(
+            {
+                "fv": fv,
+                "vp": vp_arg,
+                "vt": vt_arg,
+                "min_likelihood": min_likelihood,
+                "min_skin_size": min_skin_size,
+                "connectivity": connectivity,
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        module,
+        "find_connected_component_skins",
+        fake_find_connected_component_skins,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        [],
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            min_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback",
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["fallback_reason"] == "connected_component_fallback_empty"
+    assert len(calls) == 1
+    assert calls[0]["fv"] is fvt
+    assert calls[0]["vp"] is vp
+    assert calls[0]["vt"] is vt
+    assert calls[0]["min_likelihood"] == pytest.approx(module.NONZERO_EPSILON)
+    assert calls[0]["min_skin_size"] == 1
+    assert calls[0]["connectivity"] == "edge"
 
 
 def test_report_3d_synthetic_quality_boundary_fallback_v2_cli_records_policy(
