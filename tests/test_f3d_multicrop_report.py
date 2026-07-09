@@ -608,6 +608,45 @@ def test_quality_validation_summary_fails_on_finite_failures_and_thresholds(
     assert any("CV" in reason for reason in validation["reasons"])
 
 
+def test_quality_validation_summary_fails_on_reference_finite_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_multicrop_module(monkeypatch)
+    consensus = {
+        "workflows": {
+            "reference": {
+                "crop_count": 2,
+                "fvt_nonzero_fraction_mean": 0.10,
+                "fvt_nonzero_fraction_cv": 0.10,
+                "fv_nonzero_fraction_cv": 0.10,
+                "finite_failure_count": 1,
+            },
+            "quality": {
+                "crop_count": 2,
+                "fvt_nonzero_fraction_mean": 0.12,
+                "fvt_nonzero_fraction_cv": 0.10,
+                "fv_nonzero_fraction_cv": 0.10,
+                "finite_failure_count": 0,
+            },
+        },
+        "workflow_comparison": {
+            "quality_minus_reference": {
+                "fvt_edge_density_proxy_delta_mean": 0.01,
+                "fvt_sparse_distance_p95_delta_mean": 1.0,
+            }
+        },
+    }
+
+    validation = module.build_quality_validation_summary(consensus, compare_workflows=True)
+
+    finite_metrics = validation["checks"]["finite_metrics"]
+    assert validation["passed"] is False
+    assert finite_metrics["passed"] is False
+    assert finite_metrics["failure_count"] == 1
+    assert finite_metrics["reference_failure_count"] == 1
+    assert finite_metrics["quality_failure_count"] == 0
+
+
 def test_quality_validation_summary_single_workflow_skips_comparison_checks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

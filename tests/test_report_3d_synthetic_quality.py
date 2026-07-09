@@ -291,6 +291,7 @@ SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
 EXPECTED_SCANNER_SUMMARY_FIELDS = (
     "input_mode",
     "scanner_backend",
+    "scanner_refinement_factor",
     "scanner_ensemble_reference_like_fraction",
     "scanner_ensemble_quality_fraction",
     "scanner_ensemble_fast_fraction",
@@ -4404,6 +4405,7 @@ def test_scanner_mode_summary_csv_contains_scanner_columns(tmp_path: Path) -> No
         assert field in row
     assert row["input_mode"] == "scanner"
     assert row["scanner_backend"] == "reference-like"
+    assert row["scanner_refinement_factor"] == "2"
     assert row["scanner_thin_mode"] == "reference"
     for field in (
         "scanner_ft_buffered_f1_r2",

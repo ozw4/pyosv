@@ -31,6 +31,8 @@ FALSE_FALLBACK_CASES = (
     "curved_surface",
     "weak_noisy_plane",
 )
+REQUIRED_SCANNER_BACKEND = "quality"
+REQUIRED_SCANNER_REFINEMENT_FACTOR = "2"
 
 
 def _parse_csv_list(text: str | None) -> tuple[str, ...]:
@@ -125,13 +127,13 @@ def _required_gate_coverage(report: dict[str, Any]) -> dict[str, Any]:
     comparisons = report["comparisons"]
     checks = [
         _coverage_check(
-            "boundary_plane_scanner_49",
+            "boundary_plane_scanner_quality_ref2_49",
             comparisons,
             pipeline="scanner",
             case_ids=("boundary_plane",),
         ),
         _coverage_check(
-            "non_boundary_scanner_49",
+            "non_boundary_scanner_quality_ref2_49",
             comparisons,
             pipeline="scanner",
             case_ids=tuple(case_id for case_id in EXTENDED_CASES if case_id != "boundary_plane"),
@@ -143,13 +145,13 @@ def _required_gate_coverage(report: dict[str, Any]) -> dict[str, Any]:
             case_ids=EXTENDED_CASES,
         ),
         _coverage_check(
-            "false_fallback_replacement_49",
+            "false_fallback_replacement_scanner_quality_ref2_49",
             comparisons,
             pipeline="scanner",
             case_ids=FALSE_FALLBACK_CASES,
         ),
         _coverage_check(
-            "topology_49",
+            "topology_scanner_quality_ref2_49",
             comparisons,
             pipeline="scanner",
             case_ids=TOPOLOGY_CASES,
@@ -177,22 +179,44 @@ def _coverage_check(
     matched = {
         comparison["key"]["case_id"]
         for comparison in comparisons
-        if comparison["key"]["pipeline"] == pipeline
-        and comparison["key"]["workflow_mode"] == "quality"
-        and comparison["key"]["shape_n3"] == "49"
-        and comparison["key"]["shape_n2"] == "49"
-        and comparison["key"]["shape_n1"] == "49"
+        if _comparison_matches_required_coverage(comparison, pipeline=pipeline)
     }
     matched_case_ids = [case_id for case_id in case_ids if case_id in matched]
     missing_case_ids = [case_id for case_id in case_ids if case_id not in matched]
     return {
         "name": name,
         "pipeline": pipeline,
+        "scanner_backend": REQUIRED_SCANNER_BACKEND if pipeline == "scanner" else None,
+        "scanner_refinement_factor": (
+            REQUIRED_SCANNER_REFINEMENT_FACTOR if pipeline == "scanner" else None
+        ),
         "required_case_ids": list(case_ids),
         "matched_case_ids": matched_case_ids,
         "missing_case_ids": missing_case_ids,
         "passed": not missing_case_ids,
     }
+
+
+def _comparison_matches_required_coverage(
+    comparison: dict[str, Any],
+    *,
+    pipeline: str,
+) -> bool:
+    key = comparison["key"]
+    if (
+        key["pipeline"] != pipeline
+        or key["workflow_mode"] != "quality"
+        or key["shape_n3"] != "49"
+        or key["shape_n2"] != "49"
+        or key["shape_n1"] != "49"
+    ):
+        return False
+    if pipeline != "scanner":
+        return True
+    return (
+        key.get("scanner_backend") == REQUIRED_SCANNER_BACKEND
+        and key.get("scanner_refinement_factor") == REQUIRED_SCANNER_REFINEMENT_FACTOR
+    )
 
 
 def _write_markdown(report: dict[str, Any], output_path: Path) -> None:

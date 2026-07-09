@@ -15,10 +15,14 @@ MATCH_KEY_FIELDS = (
     "input_mode",
     "workflow_mode",
     "scanner_backend",
+    "scanner_refinement_factor",
     "shape_n3",
     "shape_n2",
     "shape_n1",
 )
+
+REQUIRED_SCANNER_BACKEND = "quality"
+REQUIRED_SCANNER_REFINEMENT_FACTOR = "2"
 
 METRIC_COLUMNS = (
     "fv_buffered_f1_r2",
@@ -286,11 +290,14 @@ def _scanner_boundary_gate(
     ]
     boundary_comparison = None
     if not boundary_keys:
-        reasons.append("missing boundary_plane scanner quality 49^3 candidate row")
+        reasons.append("missing boundary_plane scanner quality refinement-2 49^3 candidate row")
     else:
         boundary_comparison = comparison_by_key.get(boundary_keys[0])
         if boundary_comparison is None:
-            reasons.append("missing matching baseline row for boundary_plane scanner quality 49^3")
+            reasons.append(
+                "missing matching baseline row for boundary_plane scanner quality "
+                "refinement-2 49^3"
+            )
 
     boundary_result = None
     if boundary_comparison is not None:
@@ -338,8 +345,16 @@ def _scanner_boundary_gate(
 def _is_boundary_plane_scanner_49_quality(key: dict[str, str]) -> bool:
     return (
         key["case_id"] == "boundary_plane"
-        and key["pipeline"] == "scanner"
+        and _is_scanner_quality_refinement_2_49(key)
+    )
+
+
+def _is_scanner_quality_refinement_2_49(key: dict[str, str]) -> bool:
+    return (
+        key["pipeline"] == "scanner"
         and key["workflow_mode"] == "quality"
+        and key["scanner_backend"] == REQUIRED_SCANNER_BACKEND
+        and key["scanner_refinement_factor"] == REQUIRED_SCANNER_REFINEMENT_FACTOR
         and _shape_is_49(key)
     )
 
@@ -405,7 +420,10 @@ def _material_regressions(
     regressions: list[dict[str, Any]] = []
     for comparison in comparisons:
         key = comparison["key"]
-        if key["pipeline"] != pipeline or not _shape_is_49(key):
+        if pipeline == "scanner":
+            if not _is_scanner_quality_refinement_2_49(key):
+                continue
+        elif key["pipeline"] != pipeline or not _shape_is_49(key):
             continue
         if exclude_boundary and key["case_id"] == "boundary_plane":
             continue
@@ -435,8 +453,7 @@ def _false_fallback_replacements(comparisons: Any) -> list[dict[str, Any]]:
     for comparison in comparisons:
         key = comparison["key"]
         if (
-            key["pipeline"] != "scanner"
-            or not _shape_is_49(key)
+            not _is_scanner_quality_refinement_2_49(key)
             or key["case_id"] in {"boundary_plane", "parallel_planes", "crossing_planes"}
         ):
             continue
@@ -474,8 +491,7 @@ def _topology_regressions(comparisons: Any) -> list[dict[str, Any]]:
     for comparison in comparisons:
         key = comparison["key"]
         if (
-            key["pipeline"] != "scanner"
-            or not _shape_is_49(key)
+            not _is_scanner_quality_refinement_2_49(key)
             or key["case_id"] not in {"parallel_planes", "crossing_planes"}
         ):
             continue

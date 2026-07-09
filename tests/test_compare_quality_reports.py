@@ -29,6 +29,7 @@ BASE_FIELDS = (
     "input_mode",
     "workflow_mode",
     "scanner_backend",
+    "scanner_refinement_factor",
     "shape_n3",
     "shape_n2",
     "shape_n1",
@@ -52,7 +53,8 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "variant": "current_default",
         "input_mode": "synthetic",
         "workflow_mode": "quality",
-        "scanner_backend": "semblance",
+        "scanner_backend": "quality",
+        "scanner_refinement_factor": 2,
         "shape_n3": 49,
         "shape_n2": 49,
         "shape_n1": 49,
@@ -90,6 +92,8 @@ def _promotion_gate_rows(candidate_variant: str) -> list[dict[str, Any]]:
             if pipeline == "oracle":
                 baseline["scanner_backend"] = ""
                 candidate["scanner_backend"] = ""
+                baseline["scanner_refinement_factor"] = ""
+                candidate["scanner_refinement_factor"] = ""
             if pipeline == "scanner" and case_id == "boundary_plane":
                 candidate.update(
                     skin_buffered_f1_r2=0.91,
@@ -405,3 +409,48 @@ def test_check_synthetic_quality_promotion_gate_requires_full_gate_coverage(
     assert gate["promotable_candidates"] == []
     assert candidate_gate["coverage"]["passed"] is False
     assert any("missing required gate coverage: oracle_49" in reason for reason in gate["reasons"])
+
+
+def test_check_synthetic_quality_promotion_gate_requires_quality_backend_and_refinement(
+    tmp_path: Path,
+) -> None:
+    summary = tmp_path / "summary.csv"
+    output_json = tmp_path / "promotion_gate.json"
+    rows = _promotion_gate_rows("quality_boundary_skinner_fallback_v5")
+    for row in rows:
+        if row["pipeline"] == "scanner":
+            row["scanner_backend"] = "fast"
+            row["scanner_refinement_factor"] = 1
+    _write_csv(summary, rows)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CHECK_SCRIPT),
+            "--baseline-summary",
+            str(summary),
+            "--candidate-summary",
+            str(summary),
+            "--candidate-variant",
+            "quality_boundary_skinner_fallback_v5",
+            "--output-json",
+            str(output_json),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(output_json.read_text(encoding="utf-8"))
+    gate = data["promotion_gate"]
+    candidate_gate = gate["candidates"]["quality_boundary_skinner_fallback_v5"]
+    scanner_checks = [
+        check for check in candidate_gate["coverage"]["checks"] if check["pipeline"] == "scanner"
+    ]
+    assert gate["passed"] is False
+    assert scanner_checks
+    assert all(check["passed"] is False for check in scanner_checks)
+    assert all(check["scanner_backend"] == "quality" for check in scanner_checks)
+    assert all(check["scanner_refinement_factor"] == "2" for check in scanner_checks)

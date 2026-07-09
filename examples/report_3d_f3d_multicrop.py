@@ -888,13 +888,25 @@ def build_quality_validation_summary(
     )
 
     checks: dict[str, dict[str, Any]] = {}
+    finite_failure_count = _quality_validation_finite_failure_count(
+        reference=reference,
+        target=target,
+        comparison_available=comparison_available,
+    )
     checks["finite_metrics"] = _quality_check(
-        value=_finite_float_or_none(target.get("finite_failure_count")),
+        value=finite_failure_count,
         threshold=0,
         passed=lambda value, threshold: value <= threshold,
         reason="finite metric checks reported non-finite values",
         value_key="failure_count",
     )
+    if comparison_available:
+        checks["finite_metrics"]["reference_failure_count"] = _finite_float_or_none(
+            reference.get("finite_failure_count")
+        )
+        checks["finite_metrics"]["quality_failure_count"] = _finite_float_or_none(
+            target.get("finite_failure_count")
+        )
 
     checks["quality_density_not_exploding"] = _density_ratio_check(
         reference.get("fvt_nonzero_fraction_mean"),
@@ -947,6 +959,29 @@ def build_quality_validation_summary(
         "passed": not reasons,
         "reasons": reasons,
     }
+
+
+def _quality_validation_finite_failure_count(
+    *,
+    reference: Mapping[str, Any],
+    target: Mapping[str, Any],
+    comparison_available: bool,
+) -> float | None:
+    target_count = _finite_float_or_none(target.get("finite_failure_count"))
+    if not comparison_available:
+        return target_count
+
+    counts = [
+        value
+        for value in (
+            _finite_float_or_none(reference.get("finite_failure_count")),
+            target_count,
+        )
+        if value is not None
+    ]
+    if not counts:
+        return None
+    return sum(counts)
 
 
 def _density_ratio_check(

@@ -1079,6 +1079,7 @@ pipeline
 input_mode
 workflow_mode
 scanner_backend
+scanner_refinement_factor
 scanner_thin_mode
 scanner_ft_buffered_f1_r2
 scanner_ft_distance_p95

@@ -3732,6 +3732,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "input_mode",
                 "workflow_mode",
                 "scanner_backend",
+                "scanner_refinement_factor",
                 "scanner_ensemble_reference_like_fraction",
                 "scanner_ensemble_quality_fraction",
                 "scanner_ensemble_fast_fraction",
@@ -4095,6 +4096,7 @@ def _summary_csv_scanner_row(
 ) -> dict[str, str | float | None]:
     empty_row: dict[str, str | float | None] = {
         "scanner_backend": None,
+        "scanner_refinement_factor": None,
         "scanner_ensemble_reference_like_fraction": None,
         "scanner_ensemble_quality_fraction": None,
         "scanner_ensemble_fast_fraction": None,
@@ -4124,6 +4126,7 @@ def _summary_csv_scanner_row(
         selection_fraction = {}
     return {
         "scanner_backend": scanner["config"]["backend"],
+        "scanner_refinement_factor": scanner["config"]["refinement_factor"],
         "scanner_ensemble_reference_like_fraction": selection_fraction.get("reference-like"),
         "scanner_ensemble_quality_fraction": selection_fraction.get("quality"),
         "scanner_ensemble_fast_fraction": selection_fraction.get("fast"),

@@ -123,9 +123,11 @@ python scripts/check_synthetic_quality_promotion_gate.py \
   --output-markdown outputs/3d/synthetic_quality/promotion_candidates_49/promotion_gate.md
 ```
 
-The aggregate checker requires matched 49^3 extended-case rows for the boundary
-scanner gate, non-boundary scanner regression checks, oracle regression checks,
-stable-case fallback replacement checks, and parallel/crossing topology checks.
+The aggregate checker requires matched 49^3 extended-case rows using
+`scanner_backend=quality` and `scanner_refinement_factor=2` for the boundary
+scanner gate, non-boundary scanner regression checks, stable-case fallback
+replacement checks, and parallel/crossing topology checks; oracle regression
+checks require matched 49^3 oracle rows.
 If any required coverage is absent, `promotion_gate.json` records the candidate
 as not promotable even when the available boundary row passes.
 
