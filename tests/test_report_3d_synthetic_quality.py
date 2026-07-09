@@ -550,6 +550,14 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2() -> None:
     assert module.parse_variants("voter_thin_hybrid_v2") == ("voter_thin_hybrid_v2",)
 
 
+def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2_recenter() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("voter_thin_hybrid_v2_recenter_scanner_target") == (
+        "voter_thin_hybrid_v2_recenter_scanner_target",
+    )
+
+
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
     module = _load_report_module()
 
@@ -1575,6 +1583,162 @@ def test_report_3d_synthetic_quality_voter_thin_hybrid_v2_variant_passes(
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     variant = metrics["cases"][0]["variants"]["voter_thin_hybrid_v2"]
     assert variant["pyosv"]["fvt"]["max"] > 0.0
+
+
+def test_fvt_recenter_moves_edge_candidate_toward_stronger_target() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((5, 5, 5), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    target = np.zeros_like(fvt)
+    fvt[2, 1, 2] = 4.0
+    target[2, 1, 2] = 0.2
+    target[2, 3, 2] = 0.9
+
+    recentered, diagnostic = module._recenter_edge_fvt_to_target(
+        fvt,
+        vp,
+        vt,
+        target=target,
+        target_source="scanner_fet",
+        max_shift=3,
+        edge_margin=2,
+    )
+
+    assert recentered[2, 1, 2] == 0.0
+    assert recentered[2, 3, 2] == pytest.approx(4.0)
+    assert diagnostic["fvt_recenter_candidate_count"] == 1
+    assert diagnostic["fvt_recenter_moved_count"] == 1
+    assert diagnostic["fvt_recenter_value_source"] == "original_fvt"
+
+
+def test_fvt_recenter_collision_keeps_higher_original_fvt_deterministically() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((5, 7, 5), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    target = np.zeros_like(fvt)
+    fvt[2, 0, 2] = 2.0
+    fvt[2, 2, 2] = 5.0
+    target[2, 1, 2] = 1.0
+
+    first, first_diagnostic = module._recenter_edge_fvt_to_target(
+        fvt,
+        vp,
+        vt,
+        target=target,
+        target_source="scanner_fet",
+        max_shift=1,
+        edge_margin=3,
+    )
+    second, second_diagnostic = module._recenter_edge_fvt_to_target(
+        fvt,
+        vp,
+        vt,
+        target=target,
+        target_source="scanner_fet",
+        max_shift=1,
+        edge_margin=3,
+    )
+
+    np.testing.assert_array_equal(first, second)
+    assert first[2, 1, 2] == pytest.approx(5.0)
+    assert np.count_nonzero(first) == 1
+    assert first_diagnostic["fvt_recenter_collision_count"] == 1
+    assert second_diagnostic["fvt_recenter_collision_count"] == 1
+
+
+def test_report_3d_synthetic_quality_recenter_oracle_records_target_source() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        variants=("voter_thin_hybrid_v2_recenter_scanner_target",),
+        workflow_mode="quality",
+        input_mode="oracle",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    variant = report["cases"][0]["variants"]["voter_thin_hybrid_v2_recenter_scanner_target"]
+    diagnostic = variant["fvt_recenter"]
+    assert diagnostic["fvt_recenter_enabled"] is True
+    assert diagnostic["fvt_recenter_target_source"] == "oracle_ft"
+    assert diagnostic["fvt_recenter_edge_shell_only"] is True
+
+
+def test_report_3d_synthetic_quality_recenter_scanner_records_diagnostics_and_csv(
+    tmp_path: Path,
+) -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        variants=("voter_thin_hybrid_v2_recenter_scanner_target",),
+        workflow_mode="quality",
+        input_mode="scanner",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    variant = report["cases"][0]["variants"]["voter_thin_hybrid_v2_recenter_scanner_target"]
+    diagnostic = variant["fvt_recenter"]
+    assert diagnostic["fvt_recenter_target_source"] == "scanner_fet"
+    for key in (
+        "fvt_recenter_candidate_count",
+        "fvt_recenter_moved_count",
+        "fvt_recenter_collision_count",
+        "fvt_recenter_positive_count_before",
+        "fvt_recenter_positive_count_after",
+    ):
+        assert int(diagnostic[key]) >= 0
+    for key in (
+        "fvt_recenter_mean_shift",
+        "fvt_recenter_p95_shift",
+        "fvt_recenter_max_shift",
+        "fvt_recenter_to_target_distance_p95_before",
+        "fvt_recenter_to_target_distance_p95_after",
+    ):
+        assert math.isfinite(float(diagnostic[key]))
+
+    module.write_summary_csv(report, tmp_path)
+    with (tmp_path / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    assert row["fvt_recenter_enabled"] == "True"
+    assert row["fvt_recenter_target_source"] == "scanner_fet"
+    assert row["fvt_recenter_candidate_count"] != ""
+    assert row["fvt_recenter_to_target_distance_p95_after"] != ""
+
+
+def test_report_3d_synthetic_quality_hybrid_v2_output_unchanged_without_recenter() -> None:
+    module = _load_report_module()
+    kwargs = {
+        "case_set": "minimal",
+        "shape": (17, 17, 17),
+        "workflow_mode": "quality",
+        "input_mode": "oracle",
+        "skinning_config": module.SyntheticSkinningConfig(enabled=False),
+    }
+
+    plain = module.build_report(variants=("voter_thin_hybrid_v2",), **kwargs)
+    with_recenter_variant = module.build_report(
+        variants=(
+            "voter_thin_hybrid_v2",
+            "voter_thin_hybrid_v2_recenter_scanner_target",
+        ),
+        **kwargs,
+    )
+
+    plain_variant = plain["cases"][0]["variants"]["voter_thin_hybrid_v2"]
+    repeated_plain_variant = with_recenter_variant["cases"][0]["variants"]["voter_thin_hybrid_v2"]
+    assert "fvt_recenter" not in plain_variant
+    assert "fvt_recenter" not in repeated_plain_variant
+    assert plain_variant["pyosv"]["fvt"] == repeated_plain_variant["pyosv"]["fvt"]
+    assert (
+        plain_variant["quality"]["fvt_positive_top_truth_count"]
+        == repeated_plain_variant["quality"]["fvt_positive_top_truth_count"]
+    )
 
 
 def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(

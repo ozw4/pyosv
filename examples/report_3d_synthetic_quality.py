@@ -124,6 +124,7 @@ VARIANT_NAMES = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "voter_thin_hybrid_v2",
+    "voter_thin_hybrid_v2_recenter_scanner_target",
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
@@ -155,6 +156,7 @@ BASELINE_VARIANT = "current_default"
 SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
 SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
+FVT_RECENTER_MAX_SHIFT = 3
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
 SCANNER_BACKENDS = ("reference-like", "fast", "quality", "ensemble")
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
@@ -1331,6 +1333,8 @@ def _run_oracle_pipeline(
         skinning_config=skinning_config,
         variant=variant,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        fvt_recenter_target=case.ft_oracle,
+        fvt_recenter_target_source="oracle_ft",
     )
 
 
@@ -1358,6 +1362,8 @@ def _run_scanner_pipeline(
         variant=variant,
         include_thinning_diagnostic=include_thinning_diagnostic,
         scanner_target_positive_mask=_positive_candidate_mask(scanner_volumes["scanner_ft"]),
+        fvt_recenter_target=scanner_volumes["scanner_fet"],
+        fvt_recenter_target_source="scanner_fet",
     )
     report["scanner"] = scanner_report
     report["scanner_quality"] = _scanner_truth_quality(
@@ -2027,6 +2033,7 @@ def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -
         "voter_thin_normal": "normal",
         "voter_thin_hybrid": "hybrid",
         "voter_thin_hybrid_v2": "hybrid_v2",
+        "voter_thin_hybrid_v2_recenter_scanner_target": "hybrid_v2",
         "voter_thin_normal_plateau": "normal_plateau",
     }
     return variant_thin_modes.get(variant, voting_config.voter_thin_mode)
@@ -2089,6 +2096,209 @@ def _edge_mask(shape: tuple[int, ...], margin: int) -> np.ndarray:
         mask[tuple(lower)] = True
         mask[tuple(upper)] = True
     return mask
+
+
+def _recenter_edge_fvt_to_target(
+    fvt: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    *,
+    target: np.ndarray,
+    target_source: str,
+    max_shift: int,
+    edge_margin: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    fvt_array = np.asarray(fvt, dtype=np.float32)
+    vp_array = np.asarray(vp, dtype=np.float32)
+    vt_array = np.asarray(vt, dtype=np.float32)
+    target_array = np.asarray(target, dtype=np.float32)
+    if fvt_array.ndim != 3:
+        raise ValueError("fvt must be a 3D array")
+    if vp_array.shape != fvt_array.shape or vt_array.shape != fvt_array.shape:
+        raise ValueError("fvt, vp, and vt shapes must match")
+    if target_array.shape != fvt_array.shape:
+        raise ValueError("fvt and target shapes must match")
+    if not (
+        np.all(np.isfinite(fvt_array))
+        and np.all(np.isfinite(vp_array))
+        and np.all(np.isfinite(vt_array))
+        and np.all(np.isfinite(target_array))
+    ):
+        raise ValueError("fvt recenter inputs must contain only finite values")
+    shift_limit = _validate_nonnegative_int(max_shift, "max_shift")
+    before_positive = _positive_candidate_mask(fvt_array)
+    edge_candidates = before_positive & _edge_mask(fvt_array.shape, edge_margin)
+    edge_candidate_indices = np.argwhere(edge_candidates)
+    candidate_count = int(edge_candidate_indices.shape[0])
+    recentered = np.zeros_like(fvt_array, dtype=np.float32)
+    if candidate_count == 0:
+        recentered[before_positive] = fvt_array[before_positive]
+        return recentered, _empty_fvt_recenter_diagnostic(
+            target_source=target_source,
+            candidate_count=0,
+            positive_count_before=int(np.count_nonzero(before_positive)),
+            positive_count_after=int(np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))),
+            before_positive=before_positive,
+        )
+
+    destination_to_candidate: dict[
+        tuple[int, int, int], tuple[int, float, float, tuple[int, int, int]]
+    ] = {}
+    shifts: list[float] = []
+    moved_count = 0
+    collision_count = 0
+    for stable_index, (i3, i2, i1) in enumerate(np.argwhere(before_positive)):
+        source = (int(i3), int(i2), int(i1))
+        if bool(edge_candidates[source]):
+            destination, shift = _fvt_recenter_destination(
+                source,
+                vp_array,
+                vt_array,
+                target_array,
+                max_shift=shift_limit,
+            )
+            shifts.append(float(shift))
+            if shift > 0:
+                moved_count += 1
+        else:
+            destination, shift = source, 0
+        value = float(fvt_array[source])
+        existing = destination_to_candidate.get(destination)
+        candidate_record = (stable_index, value, float(shift), source)
+        if existing is None:
+            destination_to_candidate[destination] = candidate_record
+            continue
+        collision_count += 1
+        if value > existing[1] or (value == existing[1] and stable_index < existing[0]):
+            destination_to_candidate[destination] = candidate_record
+
+    for destination, (_, value, _, _) in destination_to_candidate.items():
+        recentered[destination] = np.float32(value)
+
+    shift_values = np.asarray(shifts, dtype=np.float64)
+    diagnostic = {
+        "fvt_recenter_enabled": True,
+        "fvt_recenter_target_source": target_source,
+        "fvt_recenter_candidate_count": candidate_count,
+        "fvt_recenter_moved_count": int(moved_count),
+        "fvt_recenter_collision_count": int(collision_count),
+        "fvt_recenter_mean_shift": float(np.mean(shift_values)) if shift_values.size else 0.0,
+        "fvt_recenter_p95_shift": float(np.percentile(shift_values, 95))
+        if shift_values.size
+        else 0.0,
+        "fvt_recenter_max_shift": float(np.max(shift_values)) if shift_values.size else 0.0,
+        "fvt_recenter_edge_shell_only": True,
+        "fvt_recenter_positive_count_before": int(np.count_nonzero(before_positive)),
+        "fvt_recenter_positive_count_after": int(
+            np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))
+        ),
+        "fvt_recenter_value_source": "original_fvt",
+        "_before_positive_mask": before_positive,
+    }
+    return recentered, diagnostic
+
+
+def _empty_fvt_recenter_diagnostic(
+    *,
+    target_source: str,
+    candidate_count: int,
+    positive_count_before: int,
+    positive_count_after: int,
+    before_positive: np.ndarray,
+) -> dict[str, Any]:
+    return {
+        "fvt_recenter_enabled": True,
+        "fvt_recenter_target_source": target_source,
+        "fvt_recenter_candidate_count": int(candidate_count),
+        "fvt_recenter_moved_count": 0,
+        "fvt_recenter_collision_count": 0,
+        "fvt_recenter_mean_shift": 0.0,
+        "fvt_recenter_p95_shift": 0.0,
+        "fvt_recenter_max_shift": 0.0,
+        "fvt_recenter_edge_shell_only": True,
+        "fvt_recenter_positive_count_before": int(positive_count_before),
+        "fvt_recenter_positive_count_after": int(positive_count_after),
+        "fvt_recenter_value_source": "original_fvt",
+        "_before_positive_mask": before_positive,
+    }
+
+
+def _fvt_recenter_destination(
+    source: tuple[int, int, int],
+    vp: np.ndarray,
+    vt: np.ndarray,
+    target: np.ndarray,
+    *,
+    max_shift: int,
+) -> tuple[tuple[int, int, int], int]:
+    if max_shift <= 0:
+        return source, 0
+    i3, i2, i1 = source
+    axis = _dominant_fault_normal_array_axis(float(vp[source]), float(vt[source]))
+    current_target = float(target[source])
+    best_destination = source
+    best_target = current_target
+    best_abs_shift = 0
+    for offset in range(-max_shift, max_shift + 1):
+        if offset == 0:
+            continue
+        destination = [i3, i2, i1]
+        destination[axis] += offset
+        if not _inside_shape(tuple(destination), target.shape):
+            continue
+        destination_tuple = (int(destination[0]), int(destination[1]), int(destination[2]))
+        target_value = float(target[destination_tuple])
+        abs_shift = abs(offset)
+        if target_value > best_target or (
+            target_value == best_target and best_abs_shift > 0 and abs_shift < best_abs_shift
+        ):
+            best_destination = destination_tuple
+            best_target = target_value
+            best_abs_shift = abs_shift
+    if best_target <= current_target:
+        return source, 0
+    return best_destination, best_abs_shift
+
+
+def _dominant_fault_normal_array_axis(strike: float, dip: float) -> int:
+    p = math.radians(strike)
+    t = math.radians(dip)
+    components = (
+        abs(-math.sin(t) * math.sin(p)),  # i3
+        abs(math.sin(t) * math.cos(p)),  # i2
+        abs(-math.cos(t)),  # i1
+    )
+    return int(np.argmax(np.asarray(components, dtype=np.float32)))
+
+
+def _inside_shape(index: tuple[int, int, int], shape: tuple[int, ...]) -> bool:
+    return all(0 <= int(value) < int(size) for value, size in zip(index, shape, strict=True))
+
+
+def _fvt_recenter_target_distance_diagnostics(
+    *,
+    before: np.ndarray | None,
+    after: np.ndarray | None,
+    target: np.ndarray | None,
+) -> dict[str, float | None]:
+    if before is None or after is None or target is None:
+        before_p95 = None
+        after_p95 = None
+    else:
+        before_distance = surface_distance_metrics(
+            np.asarray(before, dtype=bool),
+            np.asarray(target, dtype=bool),
+        )
+        after_distance = surface_distance_metrics(
+            np.asarray(after, dtype=bool),
+            np.asarray(target, dtype=bool),
+        )
+        before_p95 = before_distance["candidate_to_truth_p95"]
+        after_p95 = after_distance["candidate_to_truth_p95"]
+    return {
+        "fvt_recenter_to_target_distance_p95_before": before_p95,
+        "fvt_recenter_to_target_distance_p95_after": after_p95,
+    }
 
 
 def _run_voter_thinning_diagnostic(
@@ -2314,6 +2524,8 @@ def _run_voting_from_attributes(
     variant: str,
     include_thinning_diagnostic: bool = False,
     scanner_target_positive_mask: np.ndarray | None = None,
+    fvt_recenter_target: np.ndarray | None = None,
+    fvt_recenter_target_source: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
@@ -2351,6 +2563,21 @@ def _run_voting_from_attributes(
         reference_sigma=voting_config.reference_thin_sigma,
         plateau_tie_breaker=plateau_tie_breaker,
     )
+    fvt_recenter_diagnostic: dict[str, Any] | None = None
+    if variant == "voter_thin_hybrid_v2_recenter_scanner_target":
+        recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
+        recenter_target_source = (
+            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
+        )
+        fvt, fvt_recenter_diagnostic = _recenter_edge_fvt_to_target(
+            fvt,
+            vp,
+            vt,
+            target=recenter_target,
+            target_source=recenter_target_source,
+            max_shift=FVT_RECENTER_MAX_SHIFT,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        )
 
     truth_surface_half_width = _validate_nonnegative_finite_scalar(
         truth_metric_config.truth_surface_half_width,
@@ -2481,6 +2708,16 @@ def _run_voting_from_attributes(
             "edge_false_positive": edge_false_positive_metrics,
         },
     }
+    if fvt_recenter_diagnostic is not None:
+        target_positive = _positive_candidate_mask(recenter_target)
+        fvt_recenter_diagnostic.update(
+            _fvt_recenter_target_distance_diagnostics(
+                before=fvt_recenter_diagnostic.pop("_before_positive_mask"),
+                after=_positive_candidate_mask(fvt),
+                target=target_positive,
+            )
+        )
+        report["fvt_recenter"] = fvt_recenter_diagnostic
     diagnostic_volumes: dict[str, np.ndarray] = {}
     if include_thinning_diagnostic:
         thinning_diagnostic, diagnostic_volumes = _run_voter_thinning_diagnostic(
@@ -3073,6 +3310,19 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2",
+                "fvt_recenter_enabled",
+                "fvt_recenter_target_source",
+                "fvt_recenter_candidate_count",
+                "fvt_recenter_moved_count",
+                "fvt_recenter_collision_count",
+                "fvt_recenter_mean_shift",
+                "fvt_recenter_p95_shift",
+                "fvt_recenter_max_shift",
+                "fvt_recenter_edge_shell_only",
+                "fvt_recenter_positive_count_before",
+                "fvt_recenter_positive_count_after",
+                "fvt_recenter_to_target_distance_p95_before",
+                "fvt_recenter_to_target_distance_p95_after",
                 "thinning_diag_reference_fvt_buffered_f1_r2",
                 "thinning_diag_normal_fvt_buffered_f1_r2",
                 "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
@@ -3134,6 +3384,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         variant_report=variant_report,
                     )
                     scanner_downstream_row = _summary_csv_scanner_downstream_row(
+                        variant_report=variant_report,
+                    )
+                    fvt_recenter_row = _summary_csv_fvt_recenter_row(
                         variant_report=variant_report,
                     )
                     thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
@@ -3201,6 +3454,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             **scanner_row,
                             **scanner_matrix_row,
                             **scanner_downstream_row,
+                            **fvt_recenter_row,
                             **thinning_diagnostic_row,
                             **comparison_row,
                         }
@@ -3385,6 +3639,31 @@ def _summary_csv_scanner_downstream_row(
             "normal_plateau"
         ),
     }
+
+
+def _summary_csv_fvt_recenter_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, str | bool | int | float | None]:
+    keys = (
+        "fvt_recenter_enabled",
+        "fvt_recenter_target_source",
+        "fvt_recenter_candidate_count",
+        "fvt_recenter_moved_count",
+        "fvt_recenter_collision_count",
+        "fvt_recenter_mean_shift",
+        "fvt_recenter_p95_shift",
+        "fvt_recenter_max_shift",
+        "fvt_recenter_edge_shell_only",
+        "fvt_recenter_positive_count_before",
+        "fvt_recenter_positive_count_after",
+        "fvt_recenter_to_target_distance_p95_before",
+        "fvt_recenter_to_target_distance_p95_after",
+    )
+    diagnostic = variant_report.get("fvt_recenter")
+    if not isinstance(diagnostic, Mapping):
+        return {key: None for key in keys}
+    return {key: diagnostic.get(key) for key in keys}
 
 
 def _iter_pipeline_reports(
