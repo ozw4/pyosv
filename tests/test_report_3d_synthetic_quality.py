@@ -15,6 +15,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "examples" / "report_3d_synthetic_quality.py"
+COMPARISON_SCRIPT = REPO_ROOT / "examples" / "print_synthetic_quality_comparison.py"
 GEOMETRY_CASE_IDS = ("single_vertical_plane", "single_dipping_plane", "curved_surface")
 EXTENDED_CASE_IDS = (
     *GEOMETRY_CASE_IDS,
@@ -3649,6 +3650,83 @@ def test_scanner_downstream_diagnostics_both_mode_lives_on_scanner_pipeline(
     scanner_row = rows_by_pipeline["scanner"]
     assert scanner_row["scanner_downstream_scanner_ft_positive_count"] != ""
     assert math.isfinite(float(scanner_row["scanner_downstream_ft_to_fvt_overlap_f1"]))
+
+
+def test_synthetic_quality_comparison_helper_prints_selected_columns(tmp_path: Path) -> None:
+    summary_csv = tmp_path / "summary.csv"
+    comparison_dir = tmp_path / "comparison"
+    fieldnames = (
+        "case_id",
+        "pipeline",
+        "variant",
+        "fvt_positive_buffered_f1_r2",
+        "skin_buffered_f1_r2",
+        "scanner_ft_buffered_f1_r2",
+        "scanner_downstream_fvt_to_ft_distance_p95",
+        "skin_fallback_used",
+    )
+    rows = (
+        {
+            "case_id": "boundary_plane",
+            "pipeline": "oracle",
+            "variant": "current_default",
+            "fvt_positive_buffered_f1_r2": "0.993",
+            "skin_buffered_f1_r2": "0.993",
+        },
+        {
+            "case_id": "boundary_plane",
+            "pipeline": "scanner",
+            "variant": "current_default",
+            "fvt_positive_buffered_f1_r2": "0.739",
+            "skin_buffered_f1_r2": "0.454",
+            "scanner_ft_buffered_f1_r2": "1.0",
+            "scanner_downstream_fvt_to_ft_distance_p95": "0.0",
+            "skin_fallback_used": "False",
+        },
+    )
+    with summary_csv.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPARISON_SCRIPT.relative_to(REPO_ROOT)),
+            str(summary_csv),
+            "--variant",
+            "current_default",
+            "--output-dir",
+            str(comparison_dir),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output_rows = list(csv.DictReader(result.stdout.splitlines()))
+    assert output_rows == [
+        {
+            "case_id": "boundary_plane",
+            "variant": "current_default",
+            "oracle_fvt_positive_f1": "0.993",
+            "scanner_fvt_positive_f1": "0.739",
+            "delta_fvt": "-0.254",
+            "oracle_skin_f1": "0.993",
+            "scanner_skin_f1": "0.454",
+            "delta_skin": "-0.539",
+            "scanner_ft_f1": "1.0",
+            "scanner_downstream_fvt_to_ft_distance_p95": "0.0",
+            "fallback_used": "False",
+        }
+    ]
+    with (comparison_dir / "synthetic_quality_comparison.csv").open(
+        encoding="utf-8",
+        newline="",
+    ) as file:
+        assert list(csv.DictReader(file)) == output_rows
 
 
 def test_report_synthetic_quality_scanner_thin_mode_none_runs(tmp_path: Path) -> None:

@@ -63,6 +63,34 @@ This recommendation is for quality reports only. The report default remains
 `--scanner-backend reference-like` so reference-oriented scanner behavior is not
 changed automatically.
 
+For a heavier manual scanner-inclusive 49^3 comparison, run both oracle and
+scanner pipelines with downstream diagnostics enabled:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default,voter_thin_hybrid_v2_recenter_scanner_target,quality_boundary_skinner_fallback_v4 \
+  --input-mode both \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-downstream-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_quality_manual_49 \
+  --pretty
+```
+
+Then print the concise oracle-vs-scanner comparison table:
+
+```bash
+python examples/print_synthetic_quality_comparison.py \
+  outputs/3d/synthetic_quality/scanner_quality_manual_49/summary.csv
+```
+
+The helper reports `case_id`, `variant`, oracle/scanner fvt-positive F1,
+oracle/scanner skin F1, scanner-minus-oracle deltas, scanner `ft` F1,
+scanner downstream fvt-to-ft distance p95, and whether fallback was used.
+
 For diagnostic scanner-inclusive experiments, `--scanner-backend ensemble`
 combines the `reference-like`, `quality`, and `fast` scanner outputs. The rule
 is deterministic: normalize each backend `ft` to unit range, multiply by fixed
