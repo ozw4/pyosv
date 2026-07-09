@@ -158,6 +158,17 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_distance_hausdorff_p95",
     "skin_strike_median_error",
     "skin_dip_median_error",
+    "skin_truth_component_count",
+    "skin_covered_truth_component_count",
+    "skin_uncovered_truth_component_count",
+    "skin_over_merge_count",
+    "skin_over_split_count",
+    "skin_max_truth_components_per_skin",
+    "skin_max_skins_per_truth_component",
+    "skin_mean_purity",
+    "skin_min_purity",
+    "skin_mean_truth_component_recall",
+    "skin_min_truth_component_recall",
     "skin_buffered_f1_delta_vs_baseline",
     "skin_distance_p95_delta_vs_baseline",
     "skin_strike_median_error_delta_vs_baseline",
@@ -225,6 +236,17 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_distance_hausdorff_p95",
     "skin_strike_median_error",
     "skin_dip_median_error",
+    "skin_truth_component_count",
+    "skin_covered_truth_component_count",
+    "skin_uncovered_truth_component_count",
+    "skin_over_merge_count",
+    "skin_over_split_count",
+    "skin_max_truth_components_per_skin",
+    "skin_max_skins_per_truth_component",
+    "skin_mean_purity",
+    "skin_min_purity",
+    "skin_mean_truth_component_recall",
+    "skin_min_truth_component_recall",
 )
 SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
     "skin_buffered_f1_r2",
@@ -236,6 +258,17 @@ SKIN_EMPTY_WHEN_DISABLED_FIELDS = (
     "skin_distance_hausdorff_p95",
     "skin_strike_median_error",
     "skin_dip_median_error",
+    "skin_truth_component_count",
+    "skin_covered_truth_component_count",
+    "skin_uncovered_truth_component_count",
+    "skin_over_merge_count",
+    "skin_over_split_count",
+    "skin_max_truth_components_per_skin",
+    "skin_max_skins_per_truth_component",
+    "skin_mean_purity",
+    "skin_min_purity",
+    "skin_mean_truth_component_recall",
+    "skin_min_truth_component_recall",
     "skin_buffered_f1_delta_vs_baseline",
     "skin_distance_p95_delta_vs_baseline",
     "skin_strike_median_error_delta_vs_baseline",
@@ -943,6 +976,17 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
         assert "buffered_overlap_radius2" in quality["fvt_positive_top_truth_count"]
         assert "fvt_top_truth_count" in quality["edge_false_positive"]
         assert "fvt_positive_top_truth_count" in quality["edge_false_positive"]
+        skin_quality = quality["skin"]
+        assert skin_quality is not None
+        assert "component_topology" in skin_quality
+        component_topology = skin_quality["component_topology"]
+        assert "truth_components" in component_topology
+        assert "skins" in component_topology
+        if case["case_id"] in {"parallel_planes", "crossing_planes"}:
+            assert component_topology["truth_component_count"] == 2
+            assert component_topology["skin_count"] >= 0
+            assert component_topology["over_merge_skin_count"] >= 0
+            assert component_topology["over_split_truth_component_count"] >= 0
         assert math.isfinite(
             float(
                 quality["edge_false_positive"]["fvt_top_truth_count"][
@@ -973,11 +1017,20 @@ def test_report_3d_synthetic_quality_extended_case_set_writes_expected_outputs(
         assert "fvt_positive_buffered_f1_r2" in row
         assert "fvt_positive_distance_p95" in row
         assert "fvt_positive_edge_false_positive_fraction" in row
+        assert "skin_truth_component_count" in row
+        assert "skin_over_merge_count" in row
+        assert "skin_over_split_count" in row
         assert math.isfinite(float(row["fvt_edge_false_positive_fraction"]))
         assert math.isfinite(float(row["fv_edge_false_positive_fraction"]))
         assert int(row["fv_positive_candidate_count"]) >= 0
         assert int(row["fvt_positive_candidate_count"]) >= 0
         assert math.isfinite(float(row["fvt_positive_buffered_f1_r2"]))
+        assert math.isfinite(float(row["skin_mean_purity"]))
+        assert math.isfinite(float(row["skin_mean_truth_component_recall"]))
+        if row["case_id"] in {"parallel_planes", "crossing_planes"}:
+            assert int(row["skin_truth_component_count"]) == 2
+            assert int(row["skin_over_merge_count"]) >= 0
+            assert int(row["skin_over_split_count"]) >= 0
         assert math.isfinite(float(row["fvt_positive_distance_p95"]))
         assert math.isfinite(float(row["fvt_positive_edge_false_positive_fraction"]))
 

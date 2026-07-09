@@ -2941,6 +2941,7 @@ def _run_voting_from_attributes(
             truth_dip=case.truth_dip,
             buffer_radius=buffer_radius,
             small_skin_size=skinning_config.small_skin_size,
+            truth_fault_id=case.truth_fault_id,
         )
         skin_metrics = _normalize_report_skin_metric_keys(skin_metrics)
         report["pyosv"]["skins"] = skin_metrics["topology"]
@@ -3460,6 +3461,17 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_distance_hausdorff_p95",
                 "skin_strike_median_error",
                 "skin_dip_median_error",
+                "skin_truth_component_count",
+                "skin_covered_truth_component_count",
+                "skin_uncovered_truth_component_count",
+                "skin_over_merge_count",
+                "skin_over_split_count",
+                "skin_max_truth_components_per_skin",
+                "skin_max_skins_per_truth_component",
+                "skin_mean_purity",
+                "skin_min_purity",
+                "skin_mean_truth_component_recall",
+                "skin_min_truth_component_recall",
                 "scanner_ft_buffered_f1_r2",
                 "scanner_ft_distance_p95",
                 "scanner_strike_median_error",
@@ -4030,6 +4042,7 @@ def _summary_csv_skin_row(
     diagnostics: Mapping[str, Any] | None,
 ) -> dict[str, bool | int | float | None]:
     diagnostic_row = _summary_csv_skin_diagnostics_row(enabled=enabled, diagnostics=diagnostics)
+    component_topology_row = _summary_csv_skin_component_topology_row(None)
     if quality is None:
         return {
             "skinning_enabled": enabled,
@@ -4052,12 +4065,16 @@ def _summary_csv_skin_row(
             "skin_distance_hausdorff_p95": None,
             "skin_strike_median_error": None,
             "skin_dip_median_error": None,
+            **component_topology_row,
         }
 
     topology = quality["topology"]
     overlap = quality["buffered_overlap_radius2"]
     distance = quality["surface_distance"]
     orientation = quality["orientation_error"]
+    component_topology_row = _summary_csv_skin_component_topology_row(
+        quality.get("component_topology")
+    )
     return {
         "skinning_enabled": enabled,
         "skin_enabled": enabled,
@@ -4079,6 +4096,41 @@ def _summary_csv_skin_row(
         "skin_distance_hausdorff_p95": distance["hausdorff_p95"],
         "skin_strike_median_error": orientation["strike_median"],
         "skin_dip_median_error": orientation["dip_median"],
+        **component_topology_row,
+    }
+
+
+def _summary_csv_skin_component_topology_row(
+    component_topology: Mapping[str, Any] | None,
+) -> dict[str, int | float | None]:
+    if component_topology is None:
+        return {
+            "skin_truth_component_count": None,
+            "skin_covered_truth_component_count": None,
+            "skin_uncovered_truth_component_count": None,
+            "skin_over_merge_count": None,
+            "skin_over_split_count": None,
+            "skin_max_truth_components_per_skin": None,
+            "skin_max_skins_per_truth_component": None,
+            "skin_mean_purity": None,
+            "skin_min_purity": None,
+            "skin_mean_truth_component_recall": None,
+            "skin_min_truth_component_recall": None,
+        }
+    return {
+        "skin_truth_component_count": component_topology["truth_component_count"],
+        "skin_covered_truth_component_count": component_topology["covered_truth_component_count"],
+        "skin_uncovered_truth_component_count": component_topology[
+            "uncovered_truth_component_count"
+        ],
+        "skin_over_merge_count": component_topology["over_merge_skin_count"],
+        "skin_over_split_count": component_topology["over_split_truth_component_count"],
+        "skin_max_truth_components_per_skin": component_topology["max_truth_components_per_skin"],
+        "skin_max_skins_per_truth_component": component_topology["max_skins_per_truth_component"],
+        "skin_mean_purity": component_topology["mean_skin_purity"],
+        "skin_min_purity": component_topology["min_skin_purity"],
+        "skin_mean_truth_component_recall": component_topology["mean_truth_component_recall"],
+        "skin_min_truth_component_recall": component_topology["min_truth_component_recall"],
     }
 
 
