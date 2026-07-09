@@ -18,11 +18,12 @@ quality skinner v2 profile, and enable boundary skinner fallback
 (`surface_support_min_fraction=0.0`,
 `surface_support_exponent=0.0`, `FaultSkinner(method="quality")`,
 `growth_source=pre_thin`, `accepted_occupancy_radius=1`,
-`boundary_skinner_fallback=true`). The fallback only runs when primary skinning
-returns no skins and the thinned vote volume has positive samples. It is not a
-universal production profile; use it while reviewing the controlled synthetic
-benchmark matrix and checking that the candidate set is not over-filtered for
-the cases under study.
+`boundary_skinner_fallback=true`,
+`boundary_skinner_fallback_policy=empty_primary`). The default fallback only
+runs when primary skinning returns no skins and the thinned vote volume has
+positive samples. It is not a universal production profile; use it while
+reviewing the controlled synthetic benchmark matrix and checking that the
+candidate set is not over-filtered for the cases under study.
 
 `diagnostic` workflow keeps the reference workflow defaults and enables
 thinning diagnostics. Use it when comparing current behavior, diagnostic
@@ -83,9 +84,10 @@ The `quality-matrix` preset includes `current_default`,
 `no_surface_orientation_smoothing`, `final_norm_smoothing_1`,
 `voter_thin_normal`, `voter_thin_hybrid`, `voter_thin_hybrid_v2`,
 `voter_thin_normal_plateau`, `surface_support_weighted`, and
-`quality_skinner_v2`, and `quality_boundary_skinner_fallback`. The quality
-workflow default uses the `hybrid_v2` voter thinning path. The hybrid voter
-thinning variant uses reference-like
+`quality_skinner_v2`, `quality_boundary_skinner_fallback`,
+`quality_boundary_skinner_fallback_v2`, and
+`quality_boundary_skinner_fallback_v3`. The quality workflow default uses the
+`hybrid_v2` voter thinning path. The hybrid voter thinning variant uses reference-like
 thinning in stable-orientation regions and fault-normal thinning where local
 orientation changes rapidly. The `voter_thin_hybrid_v2` diagnostic variant
 keeps that stable-plane preference, only adopts positive fault-normal
@@ -118,6 +120,24 @@ The `quality_boundary_skinner_fallback` diagnostic variant forces
 `current_default`; in `reference` and `diagnostic` workflows, it remains an
 explicit diagnostic fallback override.
 
+The `quality_boundary_skinner_fallback_v2` and
+`quality_boundary_skinner_fallback_v3` variants are diagnostic degraded-primary
+fallback candidates. v2 uses the `degraded_primary` policy and can improve the
+scanner-inclusive boundary skin, but it over-includes fallback components and
+is not good enough for default promotion. v3 uses the filtered
+`degraded_primary_filtered` policy. In the 49^3 scanner-inclusive extended
+benchmark with the quality scanner backend and refinement factor 2, v3 kept
+`boundary_plane` `fvt_positive_buffered_f1_r2=0.739494` but only reached
+`skin_buffered_f1_r2=0.834231`, with `skin_count=1` and
+`skin_cell_count/fvt_positive_candidate_count=1.646814`. It also regressed
+non-boundary skin F1 by more than 0.02 for `parallel_planes`,
+`single_dipping_plane`, and `single_vertical_plane`. The default-promotion
+target was boundary skin F1 at least 0.90, skin count at most 3, skin-cell to
+positive-fvt-candidate ratio at least 0.75, and no non-boundary skin/FVT
+regression beyond the configured tolerances. v3 therefore remains diagnostic.
+The next tuning area is better component filtering or voting/fvt boundary
+recovery.
+
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The
 quality skinner reuses reference-like skin growth and reskinning, but uses
@@ -138,6 +158,17 @@ Primary metrics to compare:
 - `skin_buffered_f1_r2`
 - `skin_distance_candidate_to_truth_p95`
 - `edge_false_positive_fraction` columns
+
+## Oracle vs Scanner-Inclusive Quality
+
+Oracle quality `current_default` and scanner-inclusive quality
+`current_default` should be reviewed separately. The oracle path at 49^3 is the
+stable controlled-truth baseline for the current quality default, including the
+empty-primary fallback on `boundary_plane`. Scanner-inclusive evaluation also
+exercises scanner `ft` recovery and downstream fvt/skinning behavior; its
+boundary skin can degrade even when scanner `ft` is strong, which is why the
+degraded-primary fallback variants remain explicit diagnostics rather than
+defaults.
 
 ## CI Regression Guardrails
 
