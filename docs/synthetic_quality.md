@@ -218,7 +218,7 @@ quality
   Truth-quality mode for controlled synthetic evaluation. Effective
   voter_thin_mode is hybrid_v2 unless --voter-thin-mode is passed. Support-aware
   surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
-  is enabled by default, including boundary skinner fallback.
+  is enabled by default, including the empty-primary boundary skinner fallback.
 
 diagnostic
   Diagnostic mode. Effective voter_thin_mode is reference unless
@@ -244,8 +244,18 @@ same config/report fields. Skinning diagnostics such as `quality_skinner_v2`
 record effective skinning values under each variant's `config.skinning`; under
 `--workflow-mode quality`, `current_default` records the same quality skinner v2
 profile (`growth_source=pre_thin`, `effective_accepted_occupancy_radius=1`,
-`boundary_skinner_fallback=true`). `summary.csv` includes `workflow_mode` near
-`input_mode` on every row.
+`boundary_skinner_fallback=true`,
+`boundary_skinner_fallback_policy=empty_primary`). `summary.csv` includes
+`workflow_mode` near `input_mode` on every row.
+
+Treat oracle quality `current_default` and scanner-inclusive quality
+`current_default` as separate evaluations. Oracle quality measures the
+downstream voter/skinner behavior with analytic scanner inputs. Scanner-inclusive
+quality also measures scanner `ft` recovery and the downstream fvt/skinning
+response; boundary-plane scanner `ft` can be strong while fvt and skin quality
+remain degraded. Diagnostic fallback variants are compared against these modes,
+but promotion requires the scanner-inclusive boundary target and non-boundary
+regression tolerances to pass.
 
 ## Curved Surface Thinning Diagnostic
 
@@ -983,6 +993,8 @@ voter_thin_normal_plateau
 surface_support_weighted
 quality_skinner_v2
 quality_boundary_skinner_fallback
+quality_boundary_skinner_fallback_v2
+quality_boundary_skinner_fallback_v3
 ```
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
@@ -1003,6 +1015,19 @@ as a diagnostic fallback experiment. It sets
 an explicit fallback override. The fallback is reported when it is enabled and
 only used when primary skinning returns zero skins and `fvt` has positive
 samples.
+`quality_boundary_skinner_fallback_v2` and
+`quality_boundary_skinner_fallback_v3` are diagnostic degraded-primary fallback
+candidates. v2 uses the `degraded_primary` policy and improves the
+scanner-inclusive boundary case but over-includes fallback components, so it is
+not promoted as the quality default. v3 uses the filtered
+`degraded_primary_filtered` policy. In the 49^3 scanner-inclusive extended
+quality benchmark with `--scanner-backend quality` and
+`--scanner-refinement-factor 2`, v3 kept `boundary_plane`
+`fvt_positive_buffered_f1_r2=0.739494` but only reached
+`skin_buffered_f1_r2=0.834231`, below the 0.90 default-promotion target, and
+regressed non-boundary skin F1 beyond the 0.02 tolerance on multiple cases. It
+therefore remains diagnostic. The next area to improve is better component
+filtering or voting/fvt boundary recovery.
 `summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
 pipeline column, variant column, baseline variant, input mode, workflow mode,
 buffered F1, candidate-to-truth p95 distance, fvt median orientation error
