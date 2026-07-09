@@ -1394,6 +1394,15 @@ def _run_scanner_pipeline(
             fvt=volumes["fvt_py"],
             truth_metric_config=truth_metric_config,
         )
+        report["scanner_stage_loss"] = _scanner_stage_loss_diagnostics(
+            case=case,
+            voting_config=voting_config,
+            scanner_volumes=scanner_volumes,
+            fv=volumes["fv_py"],
+            fvt=volumes["fvt_py"],
+            skin_mask=volumes["skin_mask_py"],
+            truth_metric_config=truth_metric_config,
+        )
     if scanner_backend_matrix:
         report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
             case,
@@ -1981,6 +1990,161 @@ def _scanner_downstream_diagnostics(
         reference_sigma=voting_config.reference_thin_sigma,
     )
     return diagnostic
+
+
+def _scanner_stage_loss_diagnostics(
+    *,
+    case: Synthetic3DCase,
+    voting_config: SyntheticVotingConfig,
+    scanner_volumes: Mapping[str, np.ndarray],
+    fv: np.ndarray,
+    fvt: np.ndarray,
+    skin_mask: np.ndarray,
+    truth_metric_config: SyntheticTruthMetricConfig,
+) -> dict[str, Any]:
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width,
+        "truth_surface_half_width",
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+
+    stage_masks = {
+        "scanner_ft_positive": _positive_candidate_mask(scanner_volumes["scanner_ft"]),
+        "scanner_fet_positive": _positive_candidate_mask(scanner_volumes["scanner_fet"]),
+        "seed_candidate": np.asarray(scanner_volumes["scanner_fet"])
+        > np.float32(voting_config.seed_threshold),
+        "seed_selected": _seed_selection_diagnostic(
+            shape=case.shape,
+            voting_config=voting_config,
+            ft=scanner_volumes["scanner_fet"],
+            pt=scanner_volumes["scanner_fpt"],
+            tt=scanner_volumes["scanner_ftt"],
+        ),
+        "fv_positive": _positive_candidate_mask(fv),
+        "fvt_positive": _positive_candidate_mask(fvt),
+        "skin": np.asarray(skin_mask, dtype=bool),
+    }
+    stages = {
+        name: _scanner_stage_metric(
+            mask,
+            truth_fault_mask=truth_fault_mask,
+            truth_surface_mask=truth_surface_mask,
+            buffer_radius=buffer_radius,
+        )
+        for name, mask in stage_masks.items()
+    }
+
+    transition_pairs = (
+        ("scanner_ft_positive", "scanner_fet_positive"),
+        ("scanner_fet_positive", "seed_candidate"),
+        ("seed_candidate", "seed_selected"),
+        ("seed_selected", "fv_positive"),
+        ("fv_positive", "fvt_positive"),
+        ("fvt_positive", "skin"),
+        ("scanner_fet_positive", "seed_selected"),
+    )
+    transitions = {
+        f"{source}_to_{target}": _scanner_stage_transition_metric(
+            source_mask=stage_masks[source],
+            target_mask=stage_masks[target],
+            buffer_radius=buffer_radius,
+        )
+        for source, target in transition_pairs
+    }
+    return {"stages": stages, "transitions": transitions}
+
+
+def _seed_selection_diagnostic(
+    *,
+    shape: tuple[int, int, int],
+    voting_config: SyntheticVotingConfig,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+) -> np.ndarray:
+    voter = OptimalSurfaceVoter(
+        ru=voting_config.ru,
+        rv=voting_config.rv,
+        rw=voting_config.rw,
+    )
+    seeds = voter.pick_seeds(
+        d=voting_config.seed_distance,
+        fm=voting_config.seed_threshold,
+        ft=ft,
+        pt=pt,
+        tt=tt,
+    )
+    mask = np.zeros(shape, dtype=bool)
+    n3, n2, n1 = shape
+    for seed in seeds:
+        if 0 <= seed.i3 < n3 and 0 <= seed.i2 < n2 and 0 <= seed.i1 < n1:
+            mask[seed.i3, seed.i2, seed.i1] = True
+    return mask
+
+
+def _scanner_stage_metric(
+    candidate_mask: np.ndarray,
+    *,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, int | float]:
+    candidate = np.asarray(candidate_mask, dtype=bool)
+    overlap = buffered_surface_overlap(
+        candidate,
+        truth_fault_mask,
+        radius=buffer_radius,
+    )
+    distance = surface_distance_metrics(candidate, truth_surface_mask)
+    edge_false_positive = edge_false_positive_ratio(
+        candidate,
+        truth_surface_mask,
+        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        truth_buffer_radius=buffer_radius,
+    )
+    return {
+        "candidate_count": int(overlap["candidate_count"]),
+        "edge_shell_fraction": _edge_candidate_fraction(
+            candidate,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "truth_buffered_f1_r2": float(overlap["buffered_f1"]),
+        "candidate_to_truth_p95": float(distance["candidate_to_truth_p95"]),
+        "truth_to_candidate_p95": float(distance["truth_to_candidate_p95"]),
+        "edge_false_positive_fraction_of_candidates": float(
+            edge_false_positive["edge_false_positive_fraction_of_candidates"]
+        ),
+    }
+
+
+def _scanner_stage_transition_metric(
+    *,
+    source_mask: np.ndarray,
+    target_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, int | float]:
+    source = np.asarray(source_mask, dtype=bool)
+    target = np.asarray(target_mask, dtype=bool)
+    source_count = _candidate_count(source)
+    target_count = _candidate_count(target)
+    overlap = buffered_surface_overlap(
+        target,
+        source,
+        radius=buffer_radius,
+    )
+    distance = surface_distance_metrics(target, source)
+    return {
+        "source_count": source_count,
+        "target_count": target_count,
+        "target_to_source_count_ratio": _fraction_or_zero(target_count, source_count),
+        "buffered_f1_r2": float(overlap["buffered_f1"]),
+        "target_to_source_distance_p95": float(distance["candidate_to_truth_p95"]),
+    }
 
 
 def _scanner_downstream_thinning_report(
@@ -3327,6 +3491,25 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2",
+                "scanner_stage_ft_positive_count",
+                "scanner_stage_fet_positive_count",
+                "scanner_stage_seed_candidate_count",
+                "scanner_stage_seed_selected_count",
+                "scanner_stage_fv_positive_count",
+                "scanner_stage_fvt_positive_count",
+                "scanner_stage_skin_count",
+                "scanner_stage_ft_truth_f1_r2",
+                "scanner_stage_fet_truth_f1_r2",
+                "scanner_stage_seed_selected_truth_f1_r2",
+                "scanner_stage_fv_truth_f1_r2",
+                "scanner_stage_fvt_truth_f1_r2",
+                "scanner_stage_skin_truth_f1_r2",
+                "scanner_stage_ft_to_fet_ratio",
+                "scanner_stage_fet_to_seed_selected_f1_r2",
+                "scanner_stage_seed_selected_to_fv_f1_r2",
+                "scanner_stage_fv_to_fvt_ratio",
+                "scanner_stage_fvt_to_skin_f1_r2",
+                "scanner_stage_fvt_to_skin_distance_p95",
                 "fvt_recenter_enabled",
                 "fvt_recenter_target_source",
                 "fvt_recenter_candidate_count",
@@ -3403,6 +3586,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     scanner_downstream_row = _summary_csv_scanner_downstream_row(
                         variant_report=variant_report,
                     )
+                    scanner_stage_loss_row = _summary_csv_scanner_stage_loss_row(
+                        variant_report=variant_report,
+                    )
                     fvt_recenter_row = _summary_csv_fvt_recenter_row(
                         variant_report=variant_report,
                     )
@@ -3471,6 +3657,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             **scanner_row,
                             **scanner_matrix_row,
                             **scanner_downstream_row,
+                            **scanner_stage_loss_row,
                             **fvt_recenter_row,
                             **thinning_diagnostic_row,
                             **comparison_row,
@@ -3654,6 +3841,98 @@ def _summary_csv_scanner_downstream_row(
         "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2": thinning_f1("hybrid_v2"),
         "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2": thinning_f1(
             "normal_plateau"
+        ),
+    }
+
+
+def _summary_csv_scanner_stage_loss_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, int | float | None]:
+    empty_row: dict[str, int | float | None] = {
+        "scanner_stage_ft_positive_count": None,
+        "scanner_stage_fet_positive_count": None,
+        "scanner_stage_seed_candidate_count": None,
+        "scanner_stage_seed_selected_count": None,
+        "scanner_stage_fv_positive_count": None,
+        "scanner_stage_fvt_positive_count": None,
+        "scanner_stage_skin_count": None,
+        "scanner_stage_ft_truth_f1_r2": None,
+        "scanner_stage_fet_truth_f1_r2": None,
+        "scanner_stage_seed_selected_truth_f1_r2": None,
+        "scanner_stage_fv_truth_f1_r2": None,
+        "scanner_stage_fvt_truth_f1_r2": None,
+        "scanner_stage_skin_truth_f1_r2": None,
+        "scanner_stage_ft_to_fet_ratio": None,
+        "scanner_stage_fet_to_seed_selected_f1_r2": None,
+        "scanner_stage_seed_selected_to_fv_f1_r2": None,
+        "scanner_stage_fv_to_fvt_ratio": None,
+        "scanner_stage_fvt_to_skin_f1_r2": None,
+        "scanner_stage_fvt_to_skin_distance_p95": None,
+    }
+    diagnostic = variant_report.get("scanner_stage_loss")
+    if not isinstance(diagnostic, Mapping):
+        return empty_row
+    stages = diagnostic.get("stages")
+    transitions = diagnostic.get("transitions")
+    if not isinstance(stages, Mapping) or not isinstance(transitions, Mapping):
+        return empty_row
+
+    def stage_value(stage: str, key: str) -> int | float | None:
+        stage_report = stages.get(stage)
+        if not isinstance(stage_report, Mapping):
+            return None
+        value = stage_report.get(key)
+        return None if value is None else value
+
+    def transition_value(transition: str, key: str) -> int | float | None:
+        transition_report = transitions.get(transition)
+        if not isinstance(transition_report, Mapping):
+            return None
+        value = transition_report.get(key)
+        return None if value is None else value
+
+    return {
+        "scanner_stage_ft_positive_count": stage_value("scanner_ft_positive", "candidate_count"),
+        "scanner_stage_fet_positive_count": stage_value("scanner_fet_positive", "candidate_count"),
+        "scanner_stage_seed_candidate_count": stage_value("seed_candidate", "candidate_count"),
+        "scanner_stage_seed_selected_count": stage_value("seed_selected", "candidate_count"),
+        "scanner_stage_fv_positive_count": stage_value("fv_positive", "candidate_count"),
+        "scanner_stage_fvt_positive_count": stage_value("fvt_positive", "candidate_count"),
+        "scanner_stage_skin_count": stage_value("skin", "candidate_count"),
+        "scanner_stage_ft_truth_f1_r2": stage_value("scanner_ft_positive", "truth_buffered_f1_r2"),
+        "scanner_stage_fet_truth_f1_r2": stage_value(
+            "scanner_fet_positive", "truth_buffered_f1_r2"
+        ),
+        "scanner_stage_seed_selected_truth_f1_r2": stage_value(
+            "seed_selected", "truth_buffered_f1_r2"
+        ),
+        "scanner_stage_fv_truth_f1_r2": stage_value("fv_positive", "truth_buffered_f1_r2"),
+        "scanner_stage_fvt_truth_f1_r2": stage_value("fvt_positive", "truth_buffered_f1_r2"),
+        "scanner_stage_skin_truth_f1_r2": stage_value("skin", "truth_buffered_f1_r2"),
+        "scanner_stage_ft_to_fet_ratio": transition_value(
+            "scanner_ft_positive_to_scanner_fet_positive",
+            "target_to_source_count_ratio",
+        ),
+        "scanner_stage_fet_to_seed_selected_f1_r2": transition_value(
+            "scanner_fet_positive_to_seed_selected",
+            "buffered_f1_r2",
+        ),
+        "scanner_stage_seed_selected_to_fv_f1_r2": transition_value(
+            "seed_selected_to_fv_positive",
+            "buffered_f1_r2",
+        ),
+        "scanner_stage_fv_to_fvt_ratio": transition_value(
+            "fv_positive_to_fvt_positive",
+            "target_to_source_count_ratio",
+        ),
+        "scanner_stage_fvt_to_skin_f1_r2": transition_value(
+            "fvt_positive_to_skin",
+            "buffered_f1_r2",
+        ),
+        "scanner_stage_fvt_to_skin_distance_p95": transition_value(
+            "fvt_positive_to_skin",
+            "target_to_source_distance_p95",
         ),
     }
 
