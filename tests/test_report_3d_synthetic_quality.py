@@ -412,11 +412,34 @@ def _assert_scanner_downstream_contract(diagnostic: dict[str, object]) -> None:
         assert int(diagnostic[key]) >= 0
     for key in (
         "scanner_ft_to_fet_retention_fraction",
+        "scanner_ft_to_fv_positive_candidate_count_ratio",
+        "scanner_ft_to_fvt_positive_candidate_count_ratio",
+        "fv_to_fvt_positive_candidate_count_ratio",
+        "fvt_candidate_to_scanner_ft_distance_p50",
+        "fvt_candidate_to_scanner_ft_distance_p95",
+        "fvt_candidate_to_fv_distance_p50",
+        "fvt_candidate_to_fv_distance_p95",
+        "scanner_ft_positive_edge_shell_fraction",
+        "scanner_fet_positive_edge_shell_fraction",
+        "fv_positive_edge_shell_fraction",
+        "fvt_positive_edge_shell_fraction",
         "fvt_to_fv_positive_fraction",
         "fvt_positive_edge_candidate_fraction",
         "fvt_positive_edge_false_positive_fraction",
     ):
         assert math.isfinite(float(diagnostic[key]))
+    for key, candidate_name, reference_name in (
+        ("scanner_ft_vs_fv_positive_buffered_overlap_radius2", "scanner_ft", "fv"),
+        ("scanner_ft_vs_fvt_positive_buffered_overlap_radius2", "scanner_ft", "fvt"),
+        ("fv_vs_fvt_positive_buffered_overlap_radius2", "fv", "fvt"),
+    ):
+        overlap = diagnostic[key]
+        assert isinstance(overlap, dict)
+        assert overlap["candidate_mask"] == candidate_name
+        assert overlap["reference_mask"] == reference_name
+        assert math.isfinite(float(overlap["buffered_f1"]))
+        assert math.isfinite(float(overlap["buffered_precision"]))
+        assert math.isfinite(float(overlap["buffered_recall"]))
     assert diagnostic["voter_thin_mode"] in {
         "reference",
         "normal",
@@ -3229,6 +3252,14 @@ def test_scanner_downstream_diagnostics_are_opt_in_and_do_not_change_outputs(
         "scanner_downstream_fvt_to_fv_positive_fraction",
         "scanner_downstream_fvt_positive_edge_candidate_fraction",
         "scanner_downstream_fvt_positive_edge_false_positive_fraction",
+        "scanner_downstream_scanner_ft_positive_count",
+        "scanner_downstream_scanner_fet_positive_count",
+        "scanner_downstream_fv_positive_count",
+        "scanner_downstream_fvt_positive_count",
+        "scanner_downstream_ft_to_fvt_overlap_f1",
+        "scanner_downstream_fvt_to_ft_distance_p95",
+        "scanner_downstream_fvt_edge_shell_fraction",
+        "scanner_downstream_fv_to_fvt_positive_ratio",
         "scanner_downstream_reference_fvt_positive_buffered_f1_r2",
         "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
         "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
@@ -3266,6 +3297,14 @@ def test_scanner_downstream_diagnostics_both_mode_lives_on_scanner_pipeline(
     assert "scanner_downstream" not in variant["pipelines"]["oracle"]
     scanner_downstream = variant["pipelines"]["scanner"]["scanner_downstream"]
     _assert_scanner_downstream_contract(scanner_downstream)
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    rows_by_pipeline = {row["pipeline"]: row for row in rows}
+    assert rows_by_pipeline["oracle"]["scanner_downstream_scanner_ft_positive_count"] == ""
+    scanner_row = rows_by_pipeline["scanner"]
+    assert scanner_row["scanner_downstream_scanner_ft_positive_count"] != ""
+    assert math.isfinite(float(scanner_row["scanner_downstream_ft_to_fvt_overlap_f1"]))
 
 
 def test_report_synthetic_quality_scanner_thin_mode_none_runs(tmp_path: Path) -> None:

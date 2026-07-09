@@ -1795,28 +1795,101 @@ def _scanner_downstream_diagnostics(
     fvt: np.ndarray,
     truth_metric_config: SyntheticTruthMetricConfig,
 ) -> dict[str, Any]:
-    scanner_ft_positive_count = _positive_candidate_count(scanner_volumes["scanner_ft"])
-    scanner_fet_positive_count = _positive_candidate_count(scanner_volumes["scanner_fet"])
-    fv_positive_count = _positive_candidate_count(fv)
-    fvt_positive_count = _positive_candidate_count(fvt)
+    scanner_ft_positive = _positive_candidate_mask(scanner_volumes["scanner_ft"])
+    scanner_fet_positive = _positive_candidate_mask(scanner_volumes["scanner_fet"])
+    fv_positive = _positive_candidate_mask(fv)
+    fvt_positive = _positive_candidate_mask(fvt)
+    scanner_ft_positive_count = _candidate_count(scanner_ft_positive)
+    scanner_fet_positive_count = _candidate_count(scanner_fet_positive)
+    fv_positive_count = _candidate_count(fv_positive)
+    fvt_positive_count = _candidate_count(fvt_positive)
+    fvt_to_scanner_ft_distance = surface_distance_metrics(
+        fvt_positive,
+        scanner_ft_positive,
+    )
+    fvt_to_fv_distance = surface_distance_metrics(
+        fvt_positive,
+        fv_positive,
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
     voter_thin_mode = _thin_mode_for_variant(variant, voting_config)
     plateau_source = "scanner_fet" if voter_thin_mode in {"hybrid_v2", "normal_plateau"} else None
 
     diagnostic = {
         "scanner_ft_positive_candidate_count": scanner_ft_positive_count,
         "scanner_fet_positive_candidate_count": scanner_fet_positive_count,
+        "scanner_ft_to_fv_positive_candidate_count_ratio": _fraction_or_zero(
+            fv_positive_count,
+            scanner_ft_positive_count,
+        ),
+        "scanner_ft_to_fvt_positive_candidate_count_ratio": _fraction_or_zero(
+            fvt_positive_count,
+            scanner_ft_positive_count,
+        ),
         "scanner_ft_to_fet_retention_fraction": _fraction_or_zero(
             scanner_fet_positive_count,
             scanner_ft_positive_count,
         ),
         "fv_positive_candidate_count": fv_positive_count,
         "fvt_positive_candidate_count": fvt_positive_count,
+        "fv_to_fvt_positive_candidate_count_ratio": _fraction_or_zero(
+            fvt_positive_count,
+            fv_positive_count,
+        ),
         "fvt_to_fv_positive_fraction": _fraction_or_zero(
             fvt_positive_count,
             fv_positive_count,
         ),
+        "scanner_ft_vs_fv_positive_buffered_overlap_radius2": _positive_pair_overlap(
+            candidate_name="scanner_ft",
+            reference_name="fv",
+            candidate_mask=scanner_ft_positive,
+            reference_mask=fv_positive,
+            buffer_radius=buffer_radius,
+        ),
+        "scanner_ft_vs_fvt_positive_buffered_overlap_radius2": _positive_pair_overlap(
+            candidate_name="scanner_ft",
+            reference_name="fvt",
+            candidate_mask=scanner_ft_positive,
+            reference_mask=fvt_positive,
+            buffer_radius=buffer_radius,
+        ),
+        "fv_vs_fvt_positive_buffered_overlap_radius2": _positive_pair_overlap(
+            candidate_name="fv",
+            reference_name="fvt",
+            candidate_mask=fv_positive,
+            reference_mask=fvt_positive,
+            buffer_radius=buffer_radius,
+        ),
+        "fvt_candidate_to_scanner_ft_distance_p50": fvt_to_scanner_ft_distance[
+            "candidate_to_truth_median"
+        ],
+        "fvt_candidate_to_scanner_ft_distance_p95": fvt_to_scanner_ft_distance[
+            "candidate_to_truth_p95"
+        ],
+        "fvt_candidate_to_fv_distance_p50": fvt_to_fv_distance["candidate_to_truth_median"],
+        "fvt_candidate_to_fv_distance_p95": fvt_to_fv_distance["candidate_to_truth_p95"],
+        "scanner_ft_positive_edge_shell_fraction": _edge_candidate_fraction(
+            scanner_ft_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "scanner_fet_positive_edge_shell_fraction": _edge_candidate_fraction(
+            scanner_fet_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "fv_positive_edge_shell_fraction": _edge_candidate_fraction(
+            fv_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "fvt_positive_edge_shell_fraction": _edge_candidate_fraction(
+            fvt_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
         "fvt_positive_edge_candidate_fraction": _edge_candidate_fraction(
-            fvt > np.float32(NONZERO_EPSILON),
+            fvt_positive,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         ),
         "fvt_positive_edge_false_positive_fraction": report["quality"]["edge_false_positive"][
@@ -1951,7 +2024,34 @@ def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -
 
 
 def _positive_candidate_count(array: np.ndarray) -> int:
-    return int(np.count_nonzero(np.asarray(array) > np.float32(NONZERO_EPSILON)))
+    return _candidate_count(_positive_candidate_mask(array))
+
+
+def _positive_candidate_mask(array: np.ndarray) -> np.ndarray:
+    return np.asarray(array) > np.float32(NONZERO_EPSILON)
+
+
+def _candidate_count(mask: np.ndarray) -> int:
+    return int(np.count_nonzero(np.asarray(mask, dtype=bool)))
+
+
+def _positive_pair_overlap(
+    *,
+    candidate_name: str,
+    reference_name: str,
+    candidate_mask: np.ndarray,
+    reference_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, str | float | int]:
+    return {
+        "candidate_mask": candidate_name,
+        "reference_mask": reference_name,
+        **buffered_surface_overlap(
+            candidate_mask,
+            reference_mask,
+            radius=buffer_radius,
+        ),
+    }
 
 
 def _fraction_or_zero(numerator: int, denominator: int) -> float:
@@ -2941,6 +3041,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_downstream_fvt_to_fv_positive_fraction",
                 "scanner_downstream_fvt_positive_edge_candidate_fraction",
                 "scanner_downstream_fvt_positive_edge_false_positive_fraction",
+                "scanner_downstream_scanner_ft_positive_count",
+                "scanner_downstream_scanner_fet_positive_count",
+                "scanner_downstream_fv_positive_count",
+                "scanner_downstream_fvt_positive_count",
+                "scanner_downstream_ft_to_fvt_overlap_f1",
+                "scanner_downstream_fvt_to_ft_distance_p95",
+                "scanner_downstream_fvt_edge_shell_fraction",
+                "scanner_downstream_fv_to_fvt_positive_ratio",
                 "scanner_downstream_voter_thin_mode",
                 "scanner_downstream_plateau_tie_breaker_source",
                 "scanner_downstream_scanner_thin_mode",
@@ -3172,6 +3280,14 @@ def _summary_csv_scanner_downstream_row(
         "scanner_downstream_fvt_to_fv_positive_fraction": None,
         "scanner_downstream_fvt_positive_edge_candidate_fraction": None,
         "scanner_downstream_fvt_positive_edge_false_positive_fraction": None,
+        "scanner_downstream_scanner_ft_positive_count": None,
+        "scanner_downstream_scanner_fet_positive_count": None,
+        "scanner_downstream_fv_positive_count": None,
+        "scanner_downstream_fvt_positive_count": None,
+        "scanner_downstream_ft_to_fvt_overlap_f1": None,
+        "scanner_downstream_fvt_to_ft_distance_p95": None,
+        "scanner_downstream_fvt_edge_shell_fraction": None,
+        "scanner_downstream_fv_to_fvt_positive_ratio": None,
         "scanner_downstream_voter_thin_mode": None,
         "scanner_downstream_plateau_tie_breaker_source": None,
         "scanner_downstream_scanner_thin_mode": None,
@@ -3186,6 +3302,9 @@ def _summary_csv_scanner_downstream_row(
     thinning_modes = diagnostic.get("thinning_modes")
     if not isinstance(thinning_modes, Mapping):
         thinning_modes = {}
+    ft_to_fvt_overlap = diagnostic.get("scanner_ft_vs_fvt_positive_buffered_overlap_radius2")
+    if not isinstance(ft_to_fvt_overlap, Mapping):
+        ft_to_fvt_overlap = {}
 
     def thinning_f1(mode: str) -> float | None:
         mode_report = thinning_modes.get(mode)
@@ -3218,6 +3337,24 @@ def _summary_csv_scanner_downstream_row(
         ),
         "scanner_downstream_fvt_positive_edge_false_positive_fraction": diagnostic.get(
             "fvt_positive_edge_false_positive_fraction"
+        ),
+        "scanner_downstream_scanner_ft_positive_count": diagnostic.get(
+            "scanner_ft_positive_candidate_count"
+        ),
+        "scanner_downstream_scanner_fet_positive_count": diagnostic.get(
+            "scanner_fet_positive_candidate_count"
+        ),
+        "scanner_downstream_fv_positive_count": diagnostic.get("fv_positive_candidate_count"),
+        "scanner_downstream_fvt_positive_count": diagnostic.get("fvt_positive_candidate_count"),
+        "scanner_downstream_ft_to_fvt_overlap_f1": ft_to_fvt_overlap.get("buffered_f1"),
+        "scanner_downstream_fvt_to_ft_distance_p95": diagnostic.get(
+            "fvt_candidate_to_scanner_ft_distance_p95"
+        ),
+        "scanner_downstream_fvt_edge_shell_fraction": diagnostic.get(
+            "fvt_positive_edge_shell_fraction"
+        ),
+        "scanner_downstream_fv_to_fvt_positive_ratio": diagnostic.get(
+            "fv_to_fvt_positive_candidate_count_ratio"
         ),
         "scanner_downstream_voter_thin_mode": diagnostic.get("voter_thin_mode"),
         "scanner_downstream_plateau_tie_breaker_source": diagnostic.get(
