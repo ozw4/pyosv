@@ -133,6 +133,14 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_fallback_skeletonization_axis_mode",
     "skin_fallback_coverage_before",
     "skin_fallback_coverage_after",
+    "skin_fallback_v5_guardrail_enabled",
+    "skin_fallback_v5_guardrail_passed",
+    "skin_fallback_v5_guardrail_reasons",
+    "skin_fallback_v5_guardrail_fallback_skin_count",
+    "skin_fallback_v5_guardrail_coverage_of_fvt_positive",
+    "skin_fallback_v5_guardrail_largest_skin_fraction",
+    "skin_fallback_v5_guardrail_small_skin_cell_fraction",
+    "skin_fallback_v5_guardrail_pruned_fraction",
     "skin_primary_count",
     "skin_primary_cell_count",
     "skin_primary_unique_cell_count",
@@ -217,6 +225,11 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_fallback_pruning_removed_cell_count",
     "skin_fallback_coverage_before",
     "skin_fallback_coverage_after",
+    "skin_fallback_v5_guardrail_fallback_skin_count",
+    "skin_fallback_v5_guardrail_coverage_of_fvt_positive",
+    "skin_fallback_v5_guardrail_largest_skin_fraction",
+    "skin_fallback_v5_guardrail_small_skin_cell_fraction",
+    "skin_fallback_v5_guardrail_pruned_fraction",
     "skin_primary_count",
     "skin_primary_cell_count",
     "skin_primary_unique_cell_count",
@@ -707,6 +720,15 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_skinner_fal
     assert module.parse_variants("quality_boundary_skinner_fallback_v4") == (
         "quality_boundary_skinner_fallback_v4",
     )
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_skinner_fallback_v5() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("quality_boundary_skinner_fallback_v5") == (
+        "quality_boundary_skinner_fallback_v5",
+    )
+    assert "quality_boundary_skinner_fallback_v5" not in module.QUALITY_MATRIX_VARIANTS
 
 
 def test_find_synthetic_skins_thinned_uses_fvt_for_growth_and_seed(
@@ -2604,6 +2626,74 @@ def test_report_3d_synthetic_quality_boundary_fallback_v4_cli_records_pruning_po
     assert rows[0]["skin_fallback_largest_component_size_after_pruning"] == "0"
     assert rows[0]["skin_fallback_pruning_removed_cell_count"] == "0"
     assert rows[0]["skin_fallback_skeletonization_axis_mode"] == ""
+
+
+def test_report_3d_synthetic_quality_boundary_fallback_v5_cli_records_guardrail_policy(
+    tmp_path: Path,
+) -> None:
+    module = _load_report_module()
+    output_dir = tmp_path / "synthetic_quality"
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        workflow_mode="quality",
+        variants=("quality_boundary_skinner_fallback_v5",),
+    )
+    assert report["config"]["variants"] == ["quality_boundary_skinner_fallback_v5"]
+    build_variant = report["cases"][0]["variants"]["quality_boundary_skinner_fallback_v5"]
+    assert build_variant["config"]["skinning"]["method"] == "quality"
+    assert build_variant["config"]["skinning"]["min_likelihood"] is None
+    assert build_variant["config"]["skinning"]["accepted_occupancy_radius"] == 1
+    assert build_variant["config"]["skinning"]["growth_source"] == "pre_thin"
+    assert (
+        build_variant["config"]["skinning"]["boundary_skinner_fallback_policy"]
+        == "degraded_primary_topology_guarded"
+    )
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--variants",
+        "quality_boundary_skinner_fallback_v5",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["quality_boundary_skinner_fallback_v5"]
+    variant = metrics["cases"][0]["variants"]["quality_boundary_skinner_fallback_v5"]
+    assert variant["config"]["skinning"]["boundary_skinner_fallback"] is True
+    assert (
+        variant["config"]["skinning"]["boundary_skinner_fallback_policy"]
+        == "degraded_primary_topology_guarded"
+    )
+    diagnostics = variant["skinning"]["diagnostics"]
+    assert diagnostics["fallback_policy"] == "degraded_primary_topology_guarded"
+    assert "fallback_v5_guardrail" in diagnostics
+    assert diagnostics["fallback_v5_guardrail"]["enabled"] is True
+    assert diagnostics["fallback_used"] is False
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["variant"] == "quality_boundary_skinner_fallback_v5"
+    assert rows[0]["skin_fallback_policy"] == "degraded_primary_topology_guarded"
+    assert rows[0]["skin_fallback_v5_guardrail_enabled"] == "True"
+    for column in (
+        "skin_fallback_v5_guardrail_passed",
+        "skin_fallback_v5_guardrail_reasons",
+        "skin_fallback_v5_guardrail_fallback_skin_count",
+        "skin_fallback_v5_guardrail_coverage_of_fvt_positive",
+        "skin_fallback_v5_guardrail_largest_skin_fraction",
+        "skin_fallback_v5_guardrail_small_skin_cell_fraction",
+        "skin_fallback_v5_guardrail_pruned_fraction",
+    ):
+        assert column in rows[0]
 
 
 def test_report_3d_synthetic_quality_boundary_fallback_v4_keeps_simple_scanner_primary() -> None:
@@ -4753,6 +4843,103 @@ def test_report_3d_synthetic_quality_skeletonized_policy_requires_scanner_target
     assert diagnostics["fallback_replaced_primary"] is False
     assert len(skins) == 1
     assert len(skins[0]) == 1
+
+
+def test_report_3d_synthetic_quality_v5_guardrail_blocks_fragmented_fallback() -> None:
+    module = _load_report_module()
+    fvt = np.ones((1, 3, 20), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    scanner_target_positive_mask = np.zeros_like(fvt, dtype=bool)
+    scanner_target_positive_mask[:, 1, :] = True
+    skins = [_fault_skin([(0, 1, 0)])]
+    diagnostics: dict[str, object] = {}
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=fvt.shape,
+        fvt_positive_candidate_count=60,
+        small_skin_size=1,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
+            small_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback_v5",
+        diagnostics=diagnostics,
+        scanner_target_positive_mask=scanner_target_positive_mask,
+    )
+
+    guardrail = diagnostics["fallback_v5_guardrail"]
+    assert diagnostics["fallback_policy"] == "degraded_primary_topology_guarded"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "fallback_v5_guardrail_failed"
+    assert diagnostics["fallback_replaced_primary"] is False
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert guardrail["enabled"] is True
+    assert guardrail["passed"] is False
+    assert "coverage_of_fvt_positive_below_min" in guardrail["reasons"]
+    assert "pruned_fraction_exceeds_max" in guardrail["reasons"]
+    assert guardrail["fallback_skin_count"] == 1
+    assert guardrail["coverage_of_fvt_positive"] == pytest.approx(20 / 60)
+    assert guardrail["pruned_fraction"] == pytest.approx(40 / 60)
+    assert len(skins) == 1
+    assert len(skins[0]) == 1
+
+
+def test_report_3d_synthetic_quality_v5_guardrail_passes_and_replaces_primary() -> None:
+    module = _load_report_module()
+    fvt = np.ones((1, 1, 20), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    scanner_target_positive_mask = np.ones_like(fvt, dtype=bool)
+    skins = [_fault_skin([(0, 0, 0)])]
+    diagnostics: dict[str, object] = {}
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=fvt.shape,
+        fvt_positive_candidate_count=20,
+        small_skin_size=1,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
+            small_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback_v5",
+        diagnostics=diagnostics,
+        scanner_target_positive_mask=scanner_target_positive_mask,
+    )
+
+    guardrail = diagnostics["fallback_v5_guardrail"]
+    assert diagnostics["fallback_policy"] == "degraded_primary_topology_guarded"
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["fallback_reason"] == "degraded_primary:undercovered"
+    assert diagnostics["fallback_replaced_primary"] is True
+    assert guardrail["enabled"] is True
+    assert guardrail["passed"] is True
+    assert guardrail["reasons"] == []
+    assert guardrail["fallback_skin_count"] == 1
+    assert guardrail["coverage_of_fvt_positive"] == pytest.approx(1.0)
+    assert guardrail["largest_skin_fraction"] == pytest.approx(1.0)
+    assert guardrail["small_skin_cell_fraction"] == pytest.approx(0.0)
+    assert guardrail["pruned_fraction"] == pytest.approx(0.0)
+    assert len(skins) == 1
+    assert len(skins[0]) == 20
 
 
 def test_report_3d_synthetic_quality_filtered_degraded_primary_triggers_on_skin_count() -> None:

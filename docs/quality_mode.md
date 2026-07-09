@@ -225,6 +225,20 @@ removed-cell count, pruned fraction, largest component size before and after
 pruning, and dominant skeletonization axis mode. It remains a diagnostic
 variant and is not the default.
 
+The `quality_boundary_skinner_fallback_v5` diagnostic variant uses the
+`degraded_primary_topology_guarded` policy on top of the `quality_skinner_v2`
+profile. It keeps the v4 filtered component skeletonization path, but only
+replaces a degraded non-empty primary skin when fallback topology guardrails
+pass: skin count at most 3, fallback coverage of FVT positives between 0.75
+and 1.25, small-skin cell fraction at most 0.20, largest-skin fraction at
+least 0.50, and removed-by-pruning fraction at most 0.60. Its diagnostics
+record `fallback_v5_guardrail` with pass/fail state, reasons, and the measured
+guardrail values; `summary.csv` also exposes flat
+`skin_fallback_v5_guardrail_*` columns. v5 is available by explicit
+`--variants quality_boundary_skinner_fallback_v5` selection only. It is a
+default-promotion candidate for investigation, but this version does not make
+it the default and does not include it in the `quality-matrix` preset.
+
 The scanner-boundary default-promotion gate is intentionally stricter than the
 CI guardrails. On `boundary_plane`, scanner, shape 49, a candidate must satisfy
 `skin_buffered_f1_r2 >= 0.90`, `skin_count <= 3`, and

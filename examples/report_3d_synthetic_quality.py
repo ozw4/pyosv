@@ -118,6 +118,12 @@ SKIN_FALLBACK_FILTER_MAX_COMPONENTS = 3
 SKIN_FALLBACK_FILTER_MIN_COMPONENT_SIZE_FLOOR = 8
 SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION = 0.05
 SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION_OF_LARGEST = 0.10
+SKIN_FALLBACK_V5_MAX_SKIN_COUNT = 3
+SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE = 0.75
+SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE = 1.25
+SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION = 0.20
+SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION = 0.50
+SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION = 0.60
 VARIANT_NAMES = (
     "current_default",
     "no_surface_orientation_smoothing",
@@ -135,6 +141,7 @@ VARIANT_NAMES = (
     "quality_boundary_skinner_fallback_v2",
     "quality_boundary_skinner_fallback_v3",
     "quality_boundary_skinner_fallback_v4",
+    "quality_boundary_skinner_fallback_v5",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -180,6 +187,7 @@ BOUNDARY_SKINNER_FALLBACK_POLICIES = (
     "degraded_primary",
     "degraded_primary_filtered",
     "degraded_primary_skeletonized",
+    "degraded_primary_topology_guarded",
 )
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
 QUALITY_SKINNER_SEED_MIN_EP = 0.5
@@ -376,6 +384,16 @@ def _effective_skinning_config_for_variant(
             skinning_config,
             boundary_skinner_fallback=True,
             boundary_skinner_fallback_policy="degraded_primary_skeletonized",
+        )
+    if variant == "quality_boundary_skinner_fallback_v5":
+        return replace(
+            skinning_config,
+            method="quality",
+            min_likelihood=None,
+            accepted_occupancy_radius=1,
+            growth_source="pre_thin",
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
         )
     return skinning_config
 
@@ -758,7 +776,9 @@ def build_parser() -> argparse.ArgumentParser:
             "surface_support_weighted,quality_skinner_v2,"
             "quality_boundary_skinner_fallback,"
             "quality_boundary_skinner_fallback_v2,"
-            "quality_boundary_skinner_fallback_v3 \\\n"
+            "quality_boundary_skinner_fallback_v3,"
+            "quality_boundary_skinner_fallback_v4,"
+            "quality_boundary_skinner_fallback_v5 \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -3795,6 +3815,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_fallback_skeletonization_axis_mode",
                 "skin_fallback_coverage_before",
                 "skin_fallback_coverage_after",
+                "skin_fallback_v5_guardrail_enabled",
+                "skin_fallback_v5_guardrail_passed",
+                "skin_fallback_v5_guardrail_reasons",
+                "skin_fallback_v5_guardrail_fallback_skin_count",
+                "skin_fallback_v5_guardrail_coverage_of_fvt_positive",
+                "skin_fallback_v5_guardrail_largest_skin_fraction",
+                "skin_fallback_v5_guardrail_small_skin_cell_fraction",
+                "skin_fallback_v5_guardrail_pruned_fraction",
                 "skin_primary_count",
                 "skin_primary_cell_count",
                 "skin_primary_unique_cell_count",
@@ -4554,11 +4582,52 @@ def _summary_csv_skin_component_topology_row(
     }
 
 
+def _empty_summary_csv_skin_fallback_v5_guardrail_row(
+    *,
+    enabled: bool | None,
+) -> dict[str, bool | int | float | str | None]:
+    return {
+        "skin_fallback_v5_guardrail_enabled": enabled,
+        "skin_fallback_v5_guardrail_passed": None,
+        "skin_fallback_v5_guardrail_reasons": None,
+        "skin_fallback_v5_guardrail_fallback_skin_count": None,
+        "skin_fallback_v5_guardrail_coverage_of_fvt_positive": None,
+        "skin_fallback_v5_guardrail_largest_skin_fraction": None,
+        "skin_fallback_v5_guardrail_small_skin_cell_fraction": None,
+        "skin_fallback_v5_guardrail_pruned_fraction": None,
+    }
+
+
+def _summary_csv_skin_fallback_v5_guardrail_row(
+    diagnostics: Mapping[str, Any],
+) -> dict[str, bool | int | float | str | None]:
+    guardrail = diagnostics.get("fallback_v5_guardrail")
+    if not isinstance(guardrail, Mapping):
+        return _empty_summary_csv_skin_fallback_v5_guardrail_row(enabled=False)
+    reasons = guardrail.get("reasons")
+    if isinstance(reasons, list):
+        reasons = ",".join(str(reason) for reason in reasons)
+    return {
+        "skin_fallback_v5_guardrail_enabled": guardrail.get("enabled"),
+        "skin_fallback_v5_guardrail_passed": guardrail.get("passed"),
+        "skin_fallback_v5_guardrail_reasons": reasons,
+        "skin_fallback_v5_guardrail_fallback_skin_count": guardrail.get("fallback_skin_count"),
+        "skin_fallback_v5_guardrail_coverage_of_fvt_positive": guardrail.get(
+            "coverage_of_fvt_positive"
+        ),
+        "skin_fallback_v5_guardrail_largest_skin_fraction": guardrail.get("largest_skin_fraction"),
+        "skin_fallback_v5_guardrail_small_skin_cell_fraction": guardrail.get(
+            "small_skin_cell_fraction"
+        ),
+        "skin_fallback_v5_guardrail_pruned_fraction": guardrail.get("pruned_fraction"),
+    }
+
+
 def _summary_csv_skin_diagnostics_row(
     *,
     enabled: bool,
     diagnostics: Mapping[str, Any] | None,
-) -> dict[str, bool | int | str | None]:
+) -> dict[str, bool | int | float | str | None]:
     if not enabled:
         return {
             "skin_seed_candidate_count_before_spacing": 0,
@@ -4606,6 +4675,7 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_skeletonization_axis_mode": None,
             "skin_fallback_coverage_before": 0.0,
             "skin_fallback_coverage_after": 0.0,
+            **_empty_summary_csv_skin_fallback_v5_guardrail_row(enabled=False),
             "skin_primary_count": 0,
             "skin_primary_cell_count": 0,
             "skin_primary_unique_cell_count": 0,
@@ -4671,6 +4741,7 @@ def _summary_csv_skin_diagnostics_row(
             "skin_fallback_skeletonization_axis_mode": None,
             "skin_fallback_coverage_before": None,
             "skin_fallback_coverage_after": None,
+            **_empty_summary_csv_skin_fallback_v5_guardrail_row(enabled=None),
             "skin_primary_count": None,
             "skin_primary_cell_count": None,
             "skin_primary_unique_cell_count": None,
@@ -4782,6 +4853,7 @@ def _summary_csv_skin_diagnostics_row(
         ),
         "skin_fallback_coverage_before": diagnostics.get("fallback_coverage_before"),
         "skin_fallback_coverage_after": diagnostics.get("fallback_coverage_after"),
+        **_summary_csv_skin_fallback_v5_guardrail_row(diagnostics),
         "skin_primary_count": diagnostics.get("skin_primary_count"),
         "skin_primary_cell_count": diagnostics.get("skin_primary_cell_count"),
         "skin_primary_unique_cell_count": diagnostics.get("skin_primary_unique_cell_count"),
@@ -4994,6 +5066,64 @@ def _skeletonized_fallback_boundary_trigger_sufficient(
     )
 
 
+def _fallback_v5_guardrail_report(
+    *,
+    fallback_topology: Mapping[str, Any],
+    fvt_positive_count: int,
+    pruned_fraction: float,
+) -> dict[str, Any]:
+    fallback_skin_count = int(fallback_topology["skin_count"])
+    fallback_unique_cell_count = int(fallback_topology["unique_cell_count"])
+    coverage_of_fvt_positive = (
+        float(fallback_unique_cell_count / int(fvt_positive_count))
+        if int(fvt_positive_count) > 0
+        else 0.0
+    )
+    small_skin_cell_fraction = float(fallback_topology["small_skin_cell_fraction"])
+    largest_skin_fraction = float(fallback_topology["largest_skin_fraction"])
+    pruned_fraction = float(pruned_fraction)
+
+    reasons: list[str] = []
+    if fallback_skin_count > SKIN_FALLBACK_V5_MAX_SKIN_COUNT:
+        reasons.append("fallback_skin_count_exceeds_max")
+    if not math.isfinite(coverage_of_fvt_positive):
+        reasons.append("coverage_of_fvt_positive_nonfinite")
+    else:
+        if coverage_of_fvt_positive < SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE:
+            reasons.append("coverage_of_fvt_positive_below_min")
+        if coverage_of_fvt_positive > SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE:
+            reasons.append("coverage_of_fvt_positive_above_max")
+    if (
+        not math.isfinite(small_skin_cell_fraction)
+        or small_skin_cell_fraction > SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION
+    ):
+        reasons.append("small_skin_cell_fraction_exceeds_max")
+    if (
+        not math.isfinite(largest_skin_fraction)
+        or largest_skin_fraction < SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION
+    ):
+        reasons.append("largest_skin_fraction_below_min")
+    if not math.isfinite(pruned_fraction) or pruned_fraction > SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION:
+        reasons.append("pruned_fraction_exceeds_max")
+
+    return {
+        "enabled": True,
+        "passed": not reasons,
+        "reasons": reasons,
+        "max_skin_count": SKIN_FALLBACK_V5_MAX_SKIN_COUNT,
+        "fallback_skin_count": fallback_skin_count,
+        "coverage_of_fvt_positive": coverage_of_fvt_positive,
+        "min_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE,
+        "max_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE,
+        "small_skin_cell_fraction": small_skin_cell_fraction,
+        "max_small_skin_cell_fraction": SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION,
+        "largest_skin_fraction": largest_skin_fraction,
+        "min_largest_skin_fraction": SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION,
+        "pruned_fraction": pruned_fraction,
+        "max_pruned_fraction": SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION,
+    }
+
+
 def _fallback_component_diagnostics(
     fvt: np.ndarray,
     *,
@@ -5018,6 +5148,7 @@ def _fallback_component_diagnostics(
     elif component_policy in {
         "degraded_primary_filtered",
         "degraded_primary_skeletonized",
+        "degraded_primary_topology_guarded",
     }:
         accepted_components = _filtered_fallback_components(
             components,
@@ -5292,9 +5423,13 @@ def _apply_boundary_skinner_fallback(
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
     fallback_connectivity = "edge"
+    v5_guardrail_enabled = (
+        fallback_enabled and fallback_policy == "degraded_primary_topology_guarded"
+    )
     if fallback_policy in {
         "degraded_primary_filtered",
         "degraded_primary_skeletonized",
+        "degraded_primary_topology_guarded",
     }:
         component_policy = fallback_policy
     else:
@@ -5389,6 +5524,22 @@ def _apply_boundary_skinner_fallback(
             "skin_fallback_largest_component_size_after_pruning": 0,
             "skin_fallback_pruning_removed_cell_count": 0,
             "skin_fallback_skeletonization_axis_mode": None,
+            "fallback_v5_guardrail": {
+                "enabled": v5_guardrail_enabled,
+                "passed": False,
+                "reasons": [],
+                "max_skin_count": SKIN_FALLBACK_V5_MAX_SKIN_COUNT,
+                "fallback_skin_count": 0,
+                "coverage_of_fvt_positive": 0.0,
+                "min_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE,
+                "max_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE,
+                "small_skin_cell_fraction": 0.0,
+                "max_small_skin_cell_fraction": SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION,
+                "largest_skin_fraction": 0.0,
+                "min_largest_skin_fraction": SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION,
+                "pruned_fraction": 0.0,
+                "max_pruned_fraction": SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION,
+            },
             **component_diagnostics,
         }
     )
@@ -5405,18 +5556,22 @@ def _apply_boundary_skinner_fallback(
         fallback_reason = "empty_primary_skin_with_positive_fvt"
     else:
         diagnostics["fallback_degraded_reasons"] = degraded_reasons
+        if fallback_policy == "degraded_primary_topology_guarded" and primary_skin_count == 0:
+            diagnostics["fallback_reason"] = "empty_primary_not_supported_by_topology_guarded"
+            diagnostics["fallback_v5_guardrail"]["reasons"] = ["empty_primary_not_supported"]
+            return
         if not degraded_reasons:
             diagnostics["fallback_reason"] = "primary_skin_healthy"
             return
         if not boundary_degraded_reasons:
             diagnostics["fallback_reason"] = "primary_boundary_degraded_not_detected"
             return
-        if (
-            fallback_policy == "degraded_primary_skeletonized"
-            and not _skeletonized_fallback_boundary_trigger_sufficient(
-                boundary_degraded_reasons=boundary_degraded_reasons,
-                scanner_target_positive_mask=scanner_target_positive_mask,
-            )
+        if fallback_policy in {
+            "degraded_primary_skeletonized",
+            "degraded_primary_topology_guarded",
+        } and not _skeletonized_fallback_boundary_trigger_sufficient(
+            boundary_degraded_reasons=boundary_degraded_reasons,
+            scanner_target_positive_mask=scanner_target_positive_mask,
         ):
             diagnostics["fallback_reason"] = "primary_boundary_degraded_not_sufficient"
             return
@@ -5430,13 +5585,17 @@ def _apply_boundary_skinner_fallback(
     if component_policy in {
         "degraded_primary_filtered",
         "degraded_primary_skeletonized",
+        "degraded_primary_topology_guarded",
     }:
         accepted_components = _filtered_fallback_components(
             _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
             candidate_cell_count=fvt_positive_count,
         )
         accepted_mask = _mask_from_components(fvt.shape, accepted_components)
-        if component_policy == "degraded_primary_skeletonized":
+        if component_policy in {
+            "degraded_primary_skeletonized",
+            "degraded_primary_topology_guarded",
+        }:
             accepted_mask, pruning_diagnostics = _skeletonize_fallback_components(
                 fvt,
                 vp,
@@ -5460,8 +5619,6 @@ def _apply_boundary_skinner_fallback(
         diagnostics["fallback_reason"] = "connected_component_fallback_empty"
         return
 
-    replaced_primary = bool(skins)
-    skins[:] = fallback_skins
     fallback_topology = skin_topology_metrics(
         fallback_skins,
         fvt.shape,
@@ -5472,6 +5629,24 @@ def _apply_boundary_skinner_fallback(
         if fvt_positive_count
         else 0.0
     )
+    if fallback_policy == "degraded_primary_topology_guarded":
+        guardrail = _fallback_v5_guardrail_report(
+            fallback_topology=fallback_topology,
+            fvt_positive_count=fvt_positive_count,
+            pruned_fraction=(
+                float(diagnostics.get("skin_fallback_pruning_removed_cell_count", 0))
+                / float(diagnostics.get("skin_fallback_raw_component_cell_count", 0))
+                if int(diagnostics.get("skin_fallback_raw_component_cell_count", 0)) > 0
+                else 0.0
+            ),
+        )
+        diagnostics["fallback_v5_guardrail"] = guardrail
+        if not guardrail["passed"]:
+            diagnostics["fallback_reason"] = "fallback_v5_guardrail_failed"
+            return
+
+    replaced_primary = bool(skins)
+    skins[:] = fallback_skins
     diagnostics.update(
         {
             "fallback_used": True,
