@@ -132,8 +132,14 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_primary_small_cell_fraction",
     "skin_primary_cell_coverage_of_fvt_positive",
     "skin_primary_largest_coverage_of_fvt_positive",
+    "skin_primary_edge_shell_fraction",
+    "skin_fvt_positive_edge_shell_fraction",
+    "skin_scanner_target_positive_edge_shell_fraction",
+    "skin_fvt_to_scanner_target_distance_p95",
     "skin_primary_degraded_candidate",
     "skin_primary_degraded_reasons",
+    "skin_primary_boundary_degraded_candidate",
+    "skin_primary_boundary_degraded_reasons",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -193,6 +199,8 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_primary_small_cell_fraction",
     "skin_primary_cell_coverage_of_fvt_positive",
     "skin_primary_largest_coverage_of_fvt_positive",
+    "skin_primary_edge_shell_fraction",
+    "skin_fvt_positive_edge_shell_fraction",
     "skin_buffered_f1_r2",
     "skin_buffered_precision_r2",
     "skin_buffered_recall_r2",
@@ -412,11 +420,34 @@ def _assert_scanner_downstream_contract(diagnostic: dict[str, object]) -> None:
         assert int(diagnostic[key]) >= 0
     for key in (
         "scanner_ft_to_fet_retention_fraction",
+        "scanner_ft_to_fv_positive_candidate_count_ratio",
+        "scanner_ft_to_fvt_positive_candidate_count_ratio",
+        "fv_to_fvt_positive_candidate_count_ratio",
+        "fvt_candidate_to_scanner_ft_distance_p50",
+        "fvt_candidate_to_scanner_ft_distance_p95",
+        "fvt_candidate_to_fv_distance_p50",
+        "fvt_candidate_to_fv_distance_p95",
+        "scanner_ft_positive_edge_shell_fraction",
+        "scanner_fet_positive_edge_shell_fraction",
+        "fv_positive_edge_shell_fraction",
+        "fvt_positive_edge_shell_fraction",
         "fvt_to_fv_positive_fraction",
         "fvt_positive_edge_candidate_fraction",
         "fvt_positive_edge_false_positive_fraction",
     ):
         assert math.isfinite(float(diagnostic[key]))
+    for key, candidate_name, reference_name in (
+        ("scanner_ft_vs_fv_positive_buffered_overlap_radius2", "scanner_ft", "fv"),
+        ("scanner_ft_vs_fvt_positive_buffered_overlap_radius2", "scanner_ft", "fvt"),
+        ("fv_vs_fvt_positive_buffered_overlap_radius2", "fv", "fvt"),
+    ):
+        overlap = diagnostic[key]
+        assert isinstance(overlap, dict)
+        assert overlap["candidate_mask"] == candidate_name
+        assert overlap["reference_mask"] == reference_name
+        assert math.isfinite(float(overlap["buffered_f1"]))
+        assert math.isfinite(float(overlap["buffered_precision"]))
+        assert math.isfinite(float(overlap["buffered_recall"]))
     assert diagnostic["voter_thin_mode"] in {
         "reference",
         "normal",
@@ -517,6 +548,14 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2() -> None:
     module = _load_report_module()
 
     assert module.parse_variants("voter_thin_hybrid_v2") == ("voter_thin_hybrid_v2",)
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_hybrid_v2_recenter() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("voter_thin_hybrid_v2_recenter_scanner_target") == (
+        "voter_thin_hybrid_v2_recenter_scanner_target",
+    )
 
 
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
@@ -1544,6 +1583,162 @@ def test_report_3d_synthetic_quality_voter_thin_hybrid_v2_variant_passes(
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     variant = metrics["cases"][0]["variants"]["voter_thin_hybrid_v2"]
     assert variant["pyosv"]["fvt"]["max"] > 0.0
+
+
+def test_fvt_recenter_moves_edge_candidate_toward_stronger_target() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((5, 5, 5), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    target = np.zeros_like(fvt)
+    fvt[2, 1, 2] = 4.0
+    target[2, 1, 2] = 0.2
+    target[2, 3, 2] = 0.9
+
+    recentered, diagnostic = module._recenter_edge_fvt_to_target(
+        fvt,
+        vp,
+        vt,
+        target=target,
+        target_source="scanner_fet",
+        max_shift=3,
+        edge_margin=2,
+    )
+
+    assert recentered[2, 1, 2] == 0.0
+    assert recentered[2, 3, 2] == pytest.approx(4.0)
+    assert diagnostic["fvt_recenter_candidate_count"] == 1
+    assert diagnostic["fvt_recenter_moved_count"] == 1
+    assert diagnostic["fvt_recenter_value_source"] == "original_fvt"
+
+
+def test_fvt_recenter_collision_keeps_higher_original_fvt_deterministically() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((5, 7, 5), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.full_like(fvt, 90.0)
+    target = np.zeros_like(fvt)
+    fvt[2, 0, 2] = 2.0
+    fvt[2, 2, 2] = 5.0
+    target[2, 1, 2] = 1.0
+
+    first, first_diagnostic = module._recenter_edge_fvt_to_target(
+        fvt,
+        vp,
+        vt,
+        target=target,
+        target_source="scanner_fet",
+        max_shift=1,
+        edge_margin=3,
+    )
+    second, second_diagnostic = module._recenter_edge_fvt_to_target(
+        fvt,
+        vp,
+        vt,
+        target=target,
+        target_source="scanner_fet",
+        max_shift=1,
+        edge_margin=3,
+    )
+
+    np.testing.assert_array_equal(first, second)
+    assert first[2, 1, 2] == pytest.approx(5.0)
+    assert np.count_nonzero(first) == 1
+    assert first_diagnostic["fvt_recenter_collision_count"] == 1
+    assert second_diagnostic["fvt_recenter_collision_count"] == 1
+
+
+def test_report_3d_synthetic_quality_recenter_oracle_records_target_source() -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        variants=("voter_thin_hybrid_v2_recenter_scanner_target",),
+        workflow_mode="quality",
+        input_mode="oracle",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    variant = report["cases"][0]["variants"]["voter_thin_hybrid_v2_recenter_scanner_target"]
+    diagnostic = variant["fvt_recenter"]
+    assert diagnostic["fvt_recenter_enabled"] is True
+    assert diagnostic["fvt_recenter_target_source"] == "oracle_ft"
+    assert diagnostic["fvt_recenter_edge_shell_only"] is True
+
+
+def test_report_3d_synthetic_quality_recenter_scanner_records_diagnostics_and_csv(
+    tmp_path: Path,
+) -> None:
+    module = _load_report_module()
+
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        variants=("voter_thin_hybrid_v2_recenter_scanner_target",),
+        workflow_mode="quality",
+        input_mode="scanner",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    variant = report["cases"][0]["variants"]["voter_thin_hybrid_v2_recenter_scanner_target"]
+    diagnostic = variant["fvt_recenter"]
+    assert diagnostic["fvt_recenter_target_source"] == "scanner_fet"
+    for key in (
+        "fvt_recenter_candidate_count",
+        "fvt_recenter_moved_count",
+        "fvt_recenter_collision_count",
+        "fvt_recenter_positive_count_before",
+        "fvt_recenter_positive_count_after",
+    ):
+        assert int(diagnostic[key]) >= 0
+    for key in (
+        "fvt_recenter_mean_shift",
+        "fvt_recenter_p95_shift",
+        "fvt_recenter_max_shift",
+        "fvt_recenter_to_target_distance_p95_before",
+        "fvt_recenter_to_target_distance_p95_after",
+    ):
+        assert math.isfinite(float(diagnostic[key]))
+
+    module.write_summary_csv(report, tmp_path)
+    with (tmp_path / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    row = rows[0]
+    assert row["fvt_recenter_enabled"] == "True"
+    assert row["fvt_recenter_target_source"] == "scanner_fet"
+    assert row["fvt_recenter_candidate_count"] != ""
+    assert row["fvt_recenter_to_target_distance_p95_after"] != ""
+
+
+def test_report_3d_synthetic_quality_hybrid_v2_output_unchanged_without_recenter() -> None:
+    module = _load_report_module()
+    kwargs = {
+        "case_set": "minimal",
+        "shape": (17, 17, 17),
+        "workflow_mode": "quality",
+        "input_mode": "oracle",
+        "skinning_config": module.SyntheticSkinningConfig(enabled=False),
+    }
+
+    plain = module.build_report(variants=("voter_thin_hybrid_v2",), **kwargs)
+    with_recenter_variant = module.build_report(
+        variants=(
+            "voter_thin_hybrid_v2",
+            "voter_thin_hybrid_v2_recenter_scanner_target",
+        ),
+        **kwargs,
+    )
+
+    plain_variant = plain["cases"][0]["variants"]["voter_thin_hybrid_v2"]
+    repeated_plain_variant = with_recenter_variant["cases"][0]["variants"]["voter_thin_hybrid_v2"]
+    assert "fvt_recenter" not in plain_variant
+    assert "fvt_recenter" not in repeated_plain_variant
+    assert plain_variant["pyosv"]["fvt"] == repeated_plain_variant["pyosv"]["fvt"]
+    assert (
+        plain_variant["quality"]["fvt_positive_top_truth_count"]
+        == repeated_plain_variant["quality"]["fvt_positive_top_truth_count"]
+    )
 
 
 def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
@@ -3229,6 +3424,14 @@ def test_scanner_downstream_diagnostics_are_opt_in_and_do_not_change_outputs(
         "scanner_downstream_fvt_to_fv_positive_fraction",
         "scanner_downstream_fvt_positive_edge_candidate_fraction",
         "scanner_downstream_fvt_positive_edge_false_positive_fraction",
+        "scanner_downstream_scanner_ft_positive_count",
+        "scanner_downstream_scanner_fet_positive_count",
+        "scanner_downstream_fv_positive_count",
+        "scanner_downstream_fvt_positive_count",
+        "scanner_downstream_ft_to_fvt_overlap_f1",
+        "scanner_downstream_fvt_to_ft_distance_p95",
+        "scanner_downstream_fvt_edge_shell_fraction",
+        "scanner_downstream_fv_to_fvt_positive_ratio",
         "scanner_downstream_reference_fvt_positive_buffered_f1_r2",
         "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
         "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
@@ -3266,6 +3469,14 @@ def test_scanner_downstream_diagnostics_both_mode_lives_on_scanner_pipeline(
     assert "scanner_downstream" not in variant["pipelines"]["oracle"]
     scanner_downstream = variant["pipelines"]["scanner"]["scanner_downstream"]
     _assert_scanner_downstream_contract(scanner_downstream)
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    rows_by_pipeline = {row["pipeline"]: row for row in rows}
+    assert rows_by_pipeline["oracle"]["scanner_downstream_scanner_ft_positive_count"] == ""
+    scanner_row = rows_by_pipeline["scanner"]
+    assert scanner_row["scanner_downstream_scanner_ft_positive_count"] != ""
+    assert math.isfinite(float(scanner_row["scanner_downstream_ft_to_fvt_overlap_f1"]))
 
 
 def test_report_synthetic_quality_scanner_thin_mode_none_runs(tmp_path: Path) -> None:
@@ -3585,14 +3796,22 @@ def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
         "skin_primary_small_cell_fraction",
         "skin_primary_cell_coverage_of_fvt_positive",
         "skin_primary_largest_coverage_of_fvt_positive",
+        "skin_primary_edge_shell_fraction",
+        "skin_fvt_positive_edge_shell_fraction",
     ):
         assert math.isfinite(float(diagnostics[field]))
         assert math.isfinite(float(rows[0][field]))
     assert isinstance(diagnostics["skin_primary_degraded_candidate"], bool)
     assert isinstance(diagnostics["skin_primary_degraded_reasons"], list)
+    assert isinstance(diagnostics["skin_primary_boundary_degraded_candidate"], bool)
+    assert isinstance(diagnostics["skin_primary_boundary_degraded_reasons"], list)
     assert rows[0]["skin_primary_degraded_candidate"] in {"True", "False"}
     assert rows[0]["skin_primary_degraded_reasons"] == ",".join(
         diagnostics["skin_primary_degraded_reasons"]
+    )
+    assert rows[0]["skin_primary_boundary_degraded_candidate"] in {"True", "False"}
+    assert rows[0]["skin_primary_boundary_degraded_reasons"] == ",".join(
+        diagnostics["skin_primary_boundary_degraded_reasons"]
     )
 
 
@@ -3676,6 +3895,8 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback()
     assert diagnostics["fallback_policy"] == "degraded_primary"
     assert diagnostics["fallback_used"] is True
     assert diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is True
+    assert "fvt_positive_edge_shell" in diagnostics["skin_primary_boundary_degraded_reasons"]
     assert diagnostics["fallback_replaced_primary"] is True
     assert diagnostics["fallback_primary_skin_count"] == 1
     assert diagnostics["fallback_primary_cell_count"] == 1
@@ -3686,6 +3907,51 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback()
     assert diagnostics["fallback_reason"] == "degraded_primary:undercovered"
     assert len(skins) == 1
     assert len(skins[0]) == 5
+
+
+def test_report_3d_synthetic_quality_degraded_primary_policy_blocks_non_boundary() -> None:
+    module = _load_report_module()
+    fvt = np.zeros((7, 7, 7), dtype=np.float32)
+    fvt[3, 3, 2:5] = 1.0
+    vp = np.zeros_like(fvt)
+    vt = np.zeros_like(fvt)
+    skins = [_fault_skin([(3, 3, 3)])]
+    diagnostics: dict[str, object] = {}
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=fvt.shape,
+        fvt_positive_candidate_count=3,
+        small_skin_size=1,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary",
+            small_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback_v2",
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["skin_primary_degraded_candidate"] is True
+    assert diagnostics["skin_primary_degraded_reasons"] == ["low_fvt_positive_coverage"]
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is False
+    assert diagnostics["skin_primary_boundary_degraded_reasons"] == []
+    assert diagnostics["skin_fvt_positive_edge_shell_fraction"] == pytest.approx(0.0)
+    assert diagnostics["skin_primary_edge_shell_fraction"] == pytest.approx(0.0)
+    assert diagnostics["fallback_policy"] == "degraded_primary"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_boundary_degraded_not_detected"
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is False
+    assert diagnostics["fallback_degraded_reasons"] == ["low_fvt_positive_coverage"]
+    assert len(skins) == 1
+    assert len(skins[0]) == 1
 
 
 def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fallback() -> None:
@@ -3723,6 +3989,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fa
     assert diagnostics["fallback_policy"] == "degraded_primary_filtered"
     assert diagnostics["fallback_used"] is True
     assert diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is True
     assert diagnostics["fallback_replaced_primary"] is True
     assert diagnostics["fallback_candidate_count"] == 13
     assert diagnostics["fallback_coverage_before"] == pytest.approx(1 / 13)
@@ -3921,6 +4188,17 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
     assert current_diagnostics["skin_primary_degraded_candidate"] is True
     assert "low_fvt_positive_coverage" in current_diagnostics["skin_primary_degraded_reasons"]
     assert current_diagnostics["skin_primary_cell_coverage_of_fvt_positive"] < 0.50
+    assert current_diagnostics["skin_primary_boundary_degraded_candidate"] is True
+    assert (
+        "low_primary_coverage_with_edge_local_candidates"
+        in current_diagnostics["skin_primary_boundary_degraded_reasons"]
+    )
+    assert current_diagnostics["skin_fvt_positive_edge_shell_fraction"] > 0.0
+    assert current_diagnostics["skin_primary_edge_shell_fraction"] > 0.0
+    assert math.isfinite(
+        float(current_diagnostics["skin_scanner_target_positive_edge_shell_fraction"])
+    )
+    assert math.isfinite(float(current_diagnostics["skin_fvt_to_scanner_target_distance_p95"]))
     assert current_diagnostics["fallback_used"] is False
     assert current_diagnostics["fallback_reason"] == "primary_skin_nonempty"
     assert current_diagnostics["fallback_triggered_by_degraded_primary"] is False
@@ -3928,11 +4206,13 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
     assert v2_diagnostics["fallback_policy"] == "degraded_primary"
     assert v2_diagnostics["fallback_used"] is True
     assert v2_diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert v2_diagnostics["skin_primary_boundary_degraded_candidate"] is True
     assert v2_diagnostics["skin_fallback_component_policy"] == "all"
 
     assert v3_diagnostics["fallback_policy"] == "degraded_primary_filtered"
     assert v3_diagnostics["fallback_used"] is True
     assert v3_diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert v3_diagnostics["skin_primary_boundary_degraded_candidate"] is True
     assert v3_diagnostics["skin_fallback_component_policy"] == "degraded_primary_filtered"
     assert v3_diagnostics["skin_fallback_component_count"] > 0
     assert v3_diagnostics["skin_fallback_accepted_component_count"] > 0
@@ -3961,8 +4241,14 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
         "skin_primary_largest_fraction",
         "skin_primary_cell_coverage_of_fvt_positive",
         "skin_primary_largest_coverage_of_fvt_positive",
+        "skin_primary_edge_shell_fraction",
+        "skin_fvt_positive_edge_shell_fraction",
+        "skin_scanner_target_positive_edge_shell_fraction",
+        "skin_fvt_to_scanner_target_distance_p95",
         "skin_primary_degraded_candidate",
         "skin_primary_degraded_reasons",
+        "skin_primary_boundary_degraded_candidate",
+        "skin_primary_boundary_degraded_reasons",
         "skin_fallback_policy",
         "skin_fallback_component_policy",
         "skin_fallback_component_count",
@@ -3992,6 +4278,18 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
         "low_fvt_positive_coverage"
         in summary_rows["current_default"]["skin_primary_degraded_reasons"]
     )
+    assert summary_rows["current_default"]["skin_primary_boundary_degraded_candidate"] == "True"
+    assert (
+        "low_primary_coverage_with_edge_local_candidates"
+        in summary_rows["current_default"]["skin_primary_boundary_degraded_reasons"]
+    )
+    for column in (
+        "skin_primary_edge_shell_fraction",
+        "skin_fvt_positive_edge_shell_fraction",
+        "skin_scanner_target_positive_edge_shell_fraction",
+        "skin_fvt_to_scanner_target_distance_p95",
+    ):
+        assert math.isfinite(float(summary_rows["current_default"][column]))
     assert summary_rows["current_default"]["skin_fallback_policy"] == "empty_primary"
     assert summary_rows["current_default"]["skin_fallback_used"] == "False"
     assert (
@@ -4012,6 +4310,47 @@ def test_report_3d_synthetic_quality_scanner_boundary_v3_improves_skin(
         float(summary_rows["quality_boundary_skinner_fallback_v3"]["skin_buffered_f1_r2"])
         >= float(summary_rows["current_default"]["skin_buffered_f1_r2"]) + 0.25
     )
+
+
+def test_report_3d_synthetic_quality_scanner_vertical_v3_blocks_boundary_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    vertical_definition = next(
+        definition
+        for definition in module.EXTENDED_CASES
+        if definition.case_id == "single_vertical_plane"
+    )
+    monkeypatch.setitem(module.CASE_SETS, "vertical_only", (vertical_definition,))
+
+    report = module.build_report(
+        case_set="vertical_only",
+        shape=(49, 49, 49),
+        workflow_mode="quality",
+        input_mode="scanner",
+        scanner_config=module.SyntheticScannerConfig(
+            backend="quality",
+            refinement_factor=2,
+        ),
+        variants=("quality_boundary_skinner_fallback_v3",),
+    )
+    variant = report["cases"][0]["variants"]["quality_boundary_skinner_fallback_v3"]
+    diagnostics = variant["skinning"]["diagnostics"]
+
+    assert diagnostics["skin_primary_degraded_candidate"] is True
+    assert diagnostics["skin_primary_degraded_reasons"] == [
+        "low_fvt_positive_coverage",
+        "fragmented_primary_skins",
+    ]
+    assert diagnostics["skin_primary_boundary_degraded_candidate"] is False
+    assert diagnostics["skin_primary_boundary_degraded_reasons"] == []
+    assert diagnostics["skin_primary_edge_shell_fraction"] == pytest.approx(0.0)
+    assert diagnostics["skin_fvt_positive_edge_shell_fraction"] < 0.20
+    assert diagnostics["fallback_policy"] == "degraded_primary_filtered"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_boundary_degraded_not_detected"
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is False
+    assert diagnostics["fallback_replaced_primary"] is False
 
 
 def test_report_3d_synthetic_quality_degraded_primary_policy_keeps_healthy_primary() -> None:

@@ -105,6 +105,14 @@ SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE = 0.50
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT = 8
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION = 0.75
 SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION = 0.25
+# Boundary degraded-primary fallback is intentionally stricter than the generic
+# degraded-primary diagnostics. These thresholds require boundary-local evidence
+# before diagnostic degraded-primary variants replace a non-empty primary skin.
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_FVT_EDGE_SHELL_FRACTION = 0.25
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_SCANNER_TARGET_DISTANCE_P95 = 2.0
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MAX_CELL_COVERAGE = 0.50
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_FVT_FRACTION = 0.15
+SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_PRIMARY_FRACTION = 0.05
 SKIN_FALLBACK_FILTER_MAX_COMPONENTS = 3
 SKIN_FALLBACK_FILTER_MIN_COMPONENT_SIZE_FLOOR = 8
 SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION = 0.05
@@ -116,6 +124,7 @@ VARIANT_NAMES = (
     "voter_thin_normal",
     "voter_thin_hybrid",
     "voter_thin_hybrid_v2",
+    "voter_thin_hybrid_v2_recenter_scanner_target",
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
@@ -147,6 +156,7 @@ BASELINE_VARIANT = "current_default"
 SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
 SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
+FVT_RECENTER_MAX_SHIFT = 3
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
 SCANNER_BACKENDS = ("reference-like", "fast", "quality", "ensemble")
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
@@ -1323,6 +1333,8 @@ def _run_oracle_pipeline(
         skinning_config=skinning_config,
         variant=variant,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        fvt_recenter_target=case.ft_oracle,
+        fvt_recenter_target_source="oracle_ft",
     )
 
 
@@ -1349,6 +1361,9 @@ def _run_scanner_pipeline(
         skinning_config=skinning_config,
         variant=variant,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        scanner_target_positive_mask=_positive_candidate_mask(scanner_volumes["scanner_ft"]),
+        fvt_recenter_target=scanner_volumes["scanner_fet"],
+        fvt_recenter_target_source="scanner_fet",
     )
     report["scanner"] = scanner_report
     report["scanner_quality"] = _scanner_truth_quality(
@@ -1795,28 +1810,101 @@ def _scanner_downstream_diagnostics(
     fvt: np.ndarray,
     truth_metric_config: SyntheticTruthMetricConfig,
 ) -> dict[str, Any]:
-    scanner_ft_positive_count = _positive_candidate_count(scanner_volumes["scanner_ft"])
-    scanner_fet_positive_count = _positive_candidate_count(scanner_volumes["scanner_fet"])
-    fv_positive_count = _positive_candidate_count(fv)
-    fvt_positive_count = _positive_candidate_count(fvt)
+    scanner_ft_positive = _positive_candidate_mask(scanner_volumes["scanner_ft"])
+    scanner_fet_positive = _positive_candidate_mask(scanner_volumes["scanner_fet"])
+    fv_positive = _positive_candidate_mask(fv)
+    fvt_positive = _positive_candidate_mask(fvt)
+    scanner_ft_positive_count = _candidate_count(scanner_ft_positive)
+    scanner_fet_positive_count = _candidate_count(scanner_fet_positive)
+    fv_positive_count = _candidate_count(fv_positive)
+    fvt_positive_count = _candidate_count(fvt_positive)
+    fvt_to_scanner_ft_distance = surface_distance_metrics(
+        fvt_positive,
+        scanner_ft_positive,
+    )
+    fvt_to_fv_distance = surface_distance_metrics(
+        fvt_positive,
+        fv_positive,
+    )
+    buffer_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius,
+        "buffer_radius",
+    )
     voter_thin_mode = _thin_mode_for_variant(variant, voting_config)
     plateau_source = "scanner_fet" if voter_thin_mode in {"hybrid_v2", "normal_plateau"} else None
 
     diagnostic = {
         "scanner_ft_positive_candidate_count": scanner_ft_positive_count,
         "scanner_fet_positive_candidate_count": scanner_fet_positive_count,
+        "scanner_ft_to_fv_positive_candidate_count_ratio": _fraction_or_zero(
+            fv_positive_count,
+            scanner_ft_positive_count,
+        ),
+        "scanner_ft_to_fvt_positive_candidate_count_ratio": _fraction_or_zero(
+            fvt_positive_count,
+            scanner_ft_positive_count,
+        ),
         "scanner_ft_to_fet_retention_fraction": _fraction_or_zero(
             scanner_fet_positive_count,
             scanner_ft_positive_count,
         ),
         "fv_positive_candidate_count": fv_positive_count,
         "fvt_positive_candidate_count": fvt_positive_count,
+        "fv_to_fvt_positive_candidate_count_ratio": _fraction_or_zero(
+            fvt_positive_count,
+            fv_positive_count,
+        ),
         "fvt_to_fv_positive_fraction": _fraction_or_zero(
             fvt_positive_count,
             fv_positive_count,
         ),
+        "scanner_ft_vs_fv_positive_buffered_overlap_radius2": _positive_pair_overlap(
+            candidate_name="scanner_ft",
+            reference_name="fv",
+            candidate_mask=scanner_ft_positive,
+            reference_mask=fv_positive,
+            buffer_radius=buffer_radius,
+        ),
+        "scanner_ft_vs_fvt_positive_buffered_overlap_radius2": _positive_pair_overlap(
+            candidate_name="scanner_ft",
+            reference_name="fvt",
+            candidate_mask=scanner_ft_positive,
+            reference_mask=fvt_positive,
+            buffer_radius=buffer_radius,
+        ),
+        "fv_vs_fvt_positive_buffered_overlap_radius2": _positive_pair_overlap(
+            candidate_name="fv",
+            reference_name="fvt",
+            candidate_mask=fv_positive,
+            reference_mask=fvt_positive,
+            buffer_radius=buffer_radius,
+        ),
+        "fvt_candidate_to_scanner_ft_distance_p50": fvt_to_scanner_ft_distance[
+            "candidate_to_truth_median"
+        ],
+        "fvt_candidate_to_scanner_ft_distance_p95": fvt_to_scanner_ft_distance[
+            "candidate_to_truth_p95"
+        ],
+        "fvt_candidate_to_fv_distance_p50": fvt_to_fv_distance["candidate_to_truth_median"],
+        "fvt_candidate_to_fv_distance_p95": fvt_to_fv_distance["candidate_to_truth_p95"],
+        "scanner_ft_positive_edge_shell_fraction": _edge_candidate_fraction(
+            scanner_ft_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "scanner_fet_positive_edge_shell_fraction": _edge_candidate_fraction(
+            scanner_fet_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "fv_positive_edge_shell_fraction": _edge_candidate_fraction(
+            fv_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
+        "fvt_positive_edge_shell_fraction": _edge_candidate_fraction(
+            fvt_positive,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        ),
         "fvt_positive_edge_candidate_fraction": _edge_candidate_fraction(
-            fvt > np.float32(NONZERO_EPSILON),
+            fvt_positive,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         ),
         "fvt_positive_edge_false_positive_fraction": report["quality"]["edge_false_positive"][
@@ -1945,13 +2033,41 @@ def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -
         "voter_thin_normal": "normal",
         "voter_thin_hybrid": "hybrid",
         "voter_thin_hybrid_v2": "hybrid_v2",
+        "voter_thin_hybrid_v2_recenter_scanner_target": "hybrid_v2",
         "voter_thin_normal_plateau": "normal_plateau",
     }
     return variant_thin_modes.get(variant, voting_config.voter_thin_mode)
 
 
 def _positive_candidate_count(array: np.ndarray) -> int:
-    return int(np.count_nonzero(np.asarray(array) > np.float32(NONZERO_EPSILON)))
+    return _candidate_count(_positive_candidate_mask(array))
+
+
+def _positive_candidate_mask(array: np.ndarray) -> np.ndarray:
+    return np.asarray(array) > np.float32(NONZERO_EPSILON)
+
+
+def _candidate_count(mask: np.ndarray) -> int:
+    return int(np.count_nonzero(np.asarray(mask, dtype=bool)))
+
+
+def _positive_pair_overlap(
+    *,
+    candidate_name: str,
+    reference_name: str,
+    candidate_mask: np.ndarray,
+    reference_mask: np.ndarray,
+    buffer_radius: float,
+) -> dict[str, str | float | int]:
+    return {
+        "candidate_mask": candidate_name,
+        "reference_mask": reference_name,
+        **buffered_surface_overlap(
+            candidate_mask,
+            reference_mask,
+            radius=buffer_radius,
+        ),
+    }
 
 
 def _fraction_or_zero(numerator: int, denominator: int) -> float:
@@ -1980,6 +2096,209 @@ def _edge_mask(shape: tuple[int, ...], margin: int) -> np.ndarray:
         mask[tuple(lower)] = True
         mask[tuple(upper)] = True
     return mask
+
+
+def _recenter_edge_fvt_to_target(
+    fvt: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    *,
+    target: np.ndarray,
+    target_source: str,
+    max_shift: int,
+    edge_margin: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    fvt_array = np.asarray(fvt, dtype=np.float32)
+    vp_array = np.asarray(vp, dtype=np.float32)
+    vt_array = np.asarray(vt, dtype=np.float32)
+    target_array = np.asarray(target, dtype=np.float32)
+    if fvt_array.ndim != 3:
+        raise ValueError("fvt must be a 3D array")
+    if vp_array.shape != fvt_array.shape or vt_array.shape != fvt_array.shape:
+        raise ValueError("fvt, vp, and vt shapes must match")
+    if target_array.shape != fvt_array.shape:
+        raise ValueError("fvt and target shapes must match")
+    if not (
+        np.all(np.isfinite(fvt_array))
+        and np.all(np.isfinite(vp_array))
+        and np.all(np.isfinite(vt_array))
+        and np.all(np.isfinite(target_array))
+    ):
+        raise ValueError("fvt recenter inputs must contain only finite values")
+    shift_limit = _validate_nonnegative_int(max_shift, "max_shift")
+    before_positive = _positive_candidate_mask(fvt_array)
+    edge_candidates = before_positive & _edge_mask(fvt_array.shape, edge_margin)
+    edge_candidate_indices = np.argwhere(edge_candidates)
+    candidate_count = int(edge_candidate_indices.shape[0])
+    recentered = np.zeros_like(fvt_array, dtype=np.float32)
+    if candidate_count == 0:
+        recentered[before_positive] = fvt_array[before_positive]
+        return recentered, _empty_fvt_recenter_diagnostic(
+            target_source=target_source,
+            candidate_count=0,
+            positive_count_before=int(np.count_nonzero(before_positive)),
+            positive_count_after=int(np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))),
+            before_positive=before_positive,
+        )
+
+    destination_to_candidate: dict[
+        tuple[int, int, int], tuple[int, float, float, tuple[int, int, int]]
+    ] = {}
+    shifts: list[float] = []
+    moved_count = 0
+    collision_count = 0
+    for stable_index, (i3, i2, i1) in enumerate(np.argwhere(before_positive)):
+        source = (int(i3), int(i2), int(i1))
+        if bool(edge_candidates[source]):
+            destination, shift = _fvt_recenter_destination(
+                source,
+                vp_array,
+                vt_array,
+                target_array,
+                max_shift=shift_limit,
+            )
+            shifts.append(float(shift))
+            if shift > 0:
+                moved_count += 1
+        else:
+            destination, shift = source, 0
+        value = float(fvt_array[source])
+        existing = destination_to_candidate.get(destination)
+        candidate_record = (stable_index, value, float(shift), source)
+        if existing is None:
+            destination_to_candidate[destination] = candidate_record
+            continue
+        collision_count += 1
+        if value > existing[1] or (value == existing[1] and stable_index < existing[0]):
+            destination_to_candidate[destination] = candidate_record
+
+    for destination, (_, value, _, _) in destination_to_candidate.items():
+        recentered[destination] = np.float32(value)
+
+    shift_values = np.asarray(shifts, dtype=np.float64)
+    diagnostic = {
+        "fvt_recenter_enabled": True,
+        "fvt_recenter_target_source": target_source,
+        "fvt_recenter_candidate_count": candidate_count,
+        "fvt_recenter_moved_count": int(moved_count),
+        "fvt_recenter_collision_count": int(collision_count),
+        "fvt_recenter_mean_shift": float(np.mean(shift_values)) if shift_values.size else 0.0,
+        "fvt_recenter_p95_shift": float(np.percentile(shift_values, 95))
+        if shift_values.size
+        else 0.0,
+        "fvt_recenter_max_shift": float(np.max(shift_values)) if shift_values.size else 0.0,
+        "fvt_recenter_edge_shell_only": True,
+        "fvt_recenter_positive_count_before": int(np.count_nonzero(before_positive)),
+        "fvt_recenter_positive_count_after": int(
+            np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))
+        ),
+        "fvt_recenter_value_source": "original_fvt",
+        "_before_positive_mask": before_positive,
+    }
+    return recentered, diagnostic
+
+
+def _empty_fvt_recenter_diagnostic(
+    *,
+    target_source: str,
+    candidate_count: int,
+    positive_count_before: int,
+    positive_count_after: int,
+    before_positive: np.ndarray,
+) -> dict[str, Any]:
+    return {
+        "fvt_recenter_enabled": True,
+        "fvt_recenter_target_source": target_source,
+        "fvt_recenter_candidate_count": int(candidate_count),
+        "fvt_recenter_moved_count": 0,
+        "fvt_recenter_collision_count": 0,
+        "fvt_recenter_mean_shift": 0.0,
+        "fvt_recenter_p95_shift": 0.0,
+        "fvt_recenter_max_shift": 0.0,
+        "fvt_recenter_edge_shell_only": True,
+        "fvt_recenter_positive_count_before": int(positive_count_before),
+        "fvt_recenter_positive_count_after": int(positive_count_after),
+        "fvt_recenter_value_source": "original_fvt",
+        "_before_positive_mask": before_positive,
+    }
+
+
+def _fvt_recenter_destination(
+    source: tuple[int, int, int],
+    vp: np.ndarray,
+    vt: np.ndarray,
+    target: np.ndarray,
+    *,
+    max_shift: int,
+) -> tuple[tuple[int, int, int], int]:
+    if max_shift <= 0:
+        return source, 0
+    i3, i2, i1 = source
+    axis = _dominant_fault_normal_array_axis(float(vp[source]), float(vt[source]))
+    current_target = float(target[source])
+    best_destination = source
+    best_target = current_target
+    best_abs_shift = 0
+    for offset in range(-max_shift, max_shift + 1):
+        if offset == 0:
+            continue
+        destination = [i3, i2, i1]
+        destination[axis] += offset
+        if not _inside_shape(tuple(destination), target.shape):
+            continue
+        destination_tuple = (int(destination[0]), int(destination[1]), int(destination[2]))
+        target_value = float(target[destination_tuple])
+        abs_shift = abs(offset)
+        if target_value > best_target or (
+            target_value == best_target and best_abs_shift > 0 and abs_shift < best_abs_shift
+        ):
+            best_destination = destination_tuple
+            best_target = target_value
+            best_abs_shift = abs_shift
+    if best_target <= current_target:
+        return source, 0
+    return best_destination, best_abs_shift
+
+
+def _dominant_fault_normal_array_axis(strike: float, dip: float) -> int:
+    p = math.radians(strike)
+    t = math.radians(dip)
+    components = (
+        abs(-math.sin(t) * math.sin(p)),  # i3
+        abs(math.sin(t) * math.cos(p)),  # i2
+        abs(-math.cos(t)),  # i1
+    )
+    return int(np.argmax(np.asarray(components, dtype=np.float32)))
+
+
+def _inside_shape(index: tuple[int, int, int], shape: tuple[int, ...]) -> bool:
+    return all(0 <= int(value) < int(size) for value, size in zip(index, shape, strict=True))
+
+
+def _fvt_recenter_target_distance_diagnostics(
+    *,
+    before: np.ndarray | None,
+    after: np.ndarray | None,
+    target: np.ndarray | None,
+) -> dict[str, float | None]:
+    if before is None or after is None or target is None:
+        before_p95 = None
+        after_p95 = None
+    else:
+        before_distance = surface_distance_metrics(
+            np.asarray(before, dtype=bool),
+            np.asarray(target, dtype=bool),
+        )
+        after_distance = surface_distance_metrics(
+            np.asarray(after, dtype=bool),
+            np.asarray(target, dtype=bool),
+        )
+        before_p95 = before_distance["candidate_to_truth_p95"]
+        after_p95 = after_distance["candidate_to_truth_p95"]
+    return {
+        "fvt_recenter_to_target_distance_p95_before": before_p95,
+        "fvt_recenter_to_target_distance_p95_after": after_p95,
+    }
 
 
 def _run_voter_thinning_diagnostic(
@@ -2204,6 +2523,9 @@ def _run_voting_from_attributes(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
     include_thinning_diagnostic: bool = False,
+    scanner_target_positive_mask: np.ndarray | None = None,
+    fvt_recenter_target: np.ndarray | None = None,
+    fvt_recenter_target_source: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
@@ -2241,6 +2563,21 @@ def _run_voting_from_attributes(
         reference_sigma=voting_config.reference_thin_sigma,
         plateau_tie_breaker=plateau_tie_breaker,
     )
+    fvt_recenter_diagnostic: dict[str, Any] | None = None
+    if variant == "voter_thin_hybrid_v2_recenter_scanner_target":
+        recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
+        recenter_target_source = (
+            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
+        )
+        fvt, fvt_recenter_diagnostic = _recenter_edge_fvt_to_target(
+            fvt,
+            vp,
+            vt,
+            target=recenter_target,
+            target_source=recenter_target_source,
+            max_shift=FVT_RECENTER_MAX_SHIFT,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        )
 
     truth_surface_half_width = _validate_nonnegative_finite_scalar(
         truth_metric_config.truth_surface_half_width,
@@ -2371,6 +2708,16 @@ def _run_voting_from_attributes(
             "edge_false_positive": edge_false_positive_metrics,
         },
     }
+    if fvt_recenter_diagnostic is not None:
+        target_positive = _positive_candidate_mask(recenter_target)
+        fvt_recenter_diagnostic.update(
+            _fvt_recenter_target_distance_diagnostics(
+                before=fvt_recenter_diagnostic.pop("_before_positive_mask"),
+                after=_positive_candidate_mask(fvt),
+                target=target_positive,
+            )
+        )
+        report["fvt_recenter"] = fvt_recenter_diagnostic
     diagnostic_volumes: dict[str, np.ndarray] = {}
     if include_thinning_diagnostic:
         thinning_diagnostic, diagnostic_volumes = _run_voter_thinning_diagnostic(
@@ -2409,6 +2756,7 @@ def _run_voting_from_attributes(
             skinning_config=skinning_config,
             variant=variant,
             diagnostics=skin_diagnostics,
+            scanner_target_positive_mask=scanner_target_positive_mask,
         )
         report["skinning"]["diagnostics"] = skin_diagnostics
         skin_metrics = skin_truth_metrics(
@@ -2914,8 +3262,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_primary_small_cell_fraction",
                 "skin_primary_cell_coverage_of_fvt_positive",
                 "skin_primary_largest_coverage_of_fvt_positive",
+                "skin_primary_edge_shell_fraction",
+                "skin_fvt_positive_edge_shell_fraction",
+                "skin_scanner_target_positive_edge_shell_fraction",
+                "skin_fvt_to_scanner_target_distance_p95",
                 "skin_primary_degraded_candidate",
                 "skin_primary_degraded_reasons",
+                "skin_primary_boundary_degraded_candidate",
+                "skin_primary_boundary_degraded_reasons",
                 "skin_buffered_f1_r2",
                 "skin_buffered_precision_r2",
                 "skin_buffered_recall_r2",
@@ -2941,6 +3295,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_downstream_fvt_to_fv_positive_fraction",
                 "scanner_downstream_fvt_positive_edge_candidate_fraction",
                 "scanner_downstream_fvt_positive_edge_false_positive_fraction",
+                "scanner_downstream_scanner_ft_positive_count",
+                "scanner_downstream_scanner_fet_positive_count",
+                "scanner_downstream_fv_positive_count",
+                "scanner_downstream_fvt_positive_count",
+                "scanner_downstream_ft_to_fvt_overlap_f1",
+                "scanner_downstream_fvt_to_ft_distance_p95",
+                "scanner_downstream_fvt_edge_shell_fraction",
+                "scanner_downstream_fv_to_fvt_positive_ratio",
                 "scanner_downstream_voter_thin_mode",
                 "scanner_downstream_plateau_tie_breaker_source",
                 "scanner_downstream_scanner_thin_mode",
@@ -2948,6 +3310,19 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "scanner_downstream_hybrid_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_hybrid_v2_fvt_positive_buffered_f1_r2",
                 "scanner_downstream_normal_plateau_fvt_positive_buffered_f1_r2",
+                "fvt_recenter_enabled",
+                "fvt_recenter_target_source",
+                "fvt_recenter_candidate_count",
+                "fvt_recenter_moved_count",
+                "fvt_recenter_collision_count",
+                "fvt_recenter_mean_shift",
+                "fvt_recenter_p95_shift",
+                "fvt_recenter_max_shift",
+                "fvt_recenter_edge_shell_only",
+                "fvt_recenter_positive_count_before",
+                "fvt_recenter_positive_count_after",
+                "fvt_recenter_to_target_distance_p95_before",
+                "fvt_recenter_to_target_distance_p95_after",
                 "thinning_diag_reference_fvt_buffered_f1_r2",
                 "thinning_diag_normal_fvt_buffered_f1_r2",
                 "thinning_diag_normal_minus_reference_fvt_buffered_f1_r2",
@@ -3009,6 +3384,9 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         variant_report=variant_report,
                     )
                     scanner_downstream_row = _summary_csv_scanner_downstream_row(
+                        variant_report=variant_report,
+                    )
+                    fvt_recenter_row = _summary_csv_fvt_recenter_row(
                         variant_report=variant_report,
                     )
                     thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
@@ -3076,6 +3454,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             **scanner_row,
                             **scanner_matrix_row,
                             **scanner_downstream_row,
+                            **fvt_recenter_row,
                             **thinning_diagnostic_row,
                             **comparison_row,
                         }
@@ -3172,6 +3551,14 @@ def _summary_csv_scanner_downstream_row(
         "scanner_downstream_fvt_to_fv_positive_fraction": None,
         "scanner_downstream_fvt_positive_edge_candidate_fraction": None,
         "scanner_downstream_fvt_positive_edge_false_positive_fraction": None,
+        "scanner_downstream_scanner_ft_positive_count": None,
+        "scanner_downstream_scanner_fet_positive_count": None,
+        "scanner_downstream_fv_positive_count": None,
+        "scanner_downstream_fvt_positive_count": None,
+        "scanner_downstream_ft_to_fvt_overlap_f1": None,
+        "scanner_downstream_fvt_to_ft_distance_p95": None,
+        "scanner_downstream_fvt_edge_shell_fraction": None,
+        "scanner_downstream_fv_to_fvt_positive_ratio": None,
         "scanner_downstream_voter_thin_mode": None,
         "scanner_downstream_plateau_tie_breaker_source": None,
         "scanner_downstream_scanner_thin_mode": None,
@@ -3186,6 +3573,9 @@ def _summary_csv_scanner_downstream_row(
     thinning_modes = diagnostic.get("thinning_modes")
     if not isinstance(thinning_modes, Mapping):
         thinning_modes = {}
+    ft_to_fvt_overlap = diagnostic.get("scanner_ft_vs_fvt_positive_buffered_overlap_radius2")
+    if not isinstance(ft_to_fvt_overlap, Mapping):
+        ft_to_fvt_overlap = {}
 
     def thinning_f1(mode: str) -> float | None:
         mode_report = thinning_modes.get(mode)
@@ -3219,6 +3609,24 @@ def _summary_csv_scanner_downstream_row(
         "scanner_downstream_fvt_positive_edge_false_positive_fraction": diagnostic.get(
             "fvt_positive_edge_false_positive_fraction"
         ),
+        "scanner_downstream_scanner_ft_positive_count": diagnostic.get(
+            "scanner_ft_positive_candidate_count"
+        ),
+        "scanner_downstream_scanner_fet_positive_count": diagnostic.get(
+            "scanner_fet_positive_candidate_count"
+        ),
+        "scanner_downstream_fv_positive_count": diagnostic.get("fv_positive_candidate_count"),
+        "scanner_downstream_fvt_positive_count": diagnostic.get("fvt_positive_candidate_count"),
+        "scanner_downstream_ft_to_fvt_overlap_f1": ft_to_fvt_overlap.get("buffered_f1"),
+        "scanner_downstream_fvt_to_ft_distance_p95": diagnostic.get(
+            "fvt_candidate_to_scanner_ft_distance_p95"
+        ),
+        "scanner_downstream_fvt_edge_shell_fraction": diagnostic.get(
+            "fvt_positive_edge_shell_fraction"
+        ),
+        "scanner_downstream_fv_to_fvt_positive_ratio": diagnostic.get(
+            "fv_to_fvt_positive_candidate_count_ratio"
+        ),
         "scanner_downstream_voter_thin_mode": diagnostic.get("voter_thin_mode"),
         "scanner_downstream_plateau_tie_breaker_source": diagnostic.get(
             "plateau_tie_breaker_source"
@@ -3231,6 +3639,31 @@ def _summary_csv_scanner_downstream_row(
             "normal_plateau"
         ),
     }
+
+
+def _summary_csv_fvt_recenter_row(
+    *,
+    variant_report: Mapping[str, Any],
+) -> dict[str, str | bool | int | float | None]:
+    keys = (
+        "fvt_recenter_enabled",
+        "fvt_recenter_target_source",
+        "fvt_recenter_candidate_count",
+        "fvt_recenter_moved_count",
+        "fvt_recenter_collision_count",
+        "fvt_recenter_mean_shift",
+        "fvt_recenter_p95_shift",
+        "fvt_recenter_max_shift",
+        "fvt_recenter_edge_shell_only",
+        "fvt_recenter_positive_count_before",
+        "fvt_recenter_positive_count_after",
+        "fvt_recenter_to_target_distance_p95_before",
+        "fvt_recenter_to_target_distance_p95_after",
+    )
+    diagnostic = variant_report.get("fvt_recenter")
+    if not isinstance(diagnostic, Mapping):
+        return {key: None for key in keys}
+    return {key: diagnostic.get(key) for key in keys}
 
 
 def _iter_pipeline_reports(
@@ -3406,8 +3839,14 @@ def _summary_csv_skin_diagnostics_row(
             "skin_primary_small_cell_fraction": 0.0,
             "skin_primary_cell_coverage_of_fvt_positive": 0.0,
             "skin_primary_largest_coverage_of_fvt_positive": 0.0,
+            "skin_primary_edge_shell_fraction": 0.0,
+            "skin_fvt_positive_edge_shell_fraction": 0.0,
+            "skin_scanner_target_positive_edge_shell_fraction": None,
+            "skin_fvt_to_scanner_target_distance_p95": None,
             "skin_primary_degraded_candidate": False,
             "skin_primary_degraded_reasons": "",
+            "skin_primary_boundary_degraded_candidate": False,
+            "skin_primary_boundary_degraded_reasons": "",
         }
     if diagnostics is None:
         return {
@@ -3457,12 +3896,21 @@ def _summary_csv_skin_diagnostics_row(
             "skin_primary_small_cell_fraction": None,
             "skin_primary_cell_coverage_of_fvt_positive": None,
             "skin_primary_largest_coverage_of_fvt_positive": None,
+            "skin_primary_edge_shell_fraction": None,
+            "skin_fvt_positive_edge_shell_fraction": None,
+            "skin_scanner_target_positive_edge_shell_fraction": None,
+            "skin_fvt_to_scanner_target_distance_p95": None,
             "skin_primary_degraded_candidate": None,
             "skin_primary_degraded_reasons": None,
+            "skin_primary_boundary_degraded_candidate": None,
+            "skin_primary_boundary_degraded_reasons": None,
         }
     degraded_reasons = diagnostics.get("skin_primary_degraded_reasons")
     if isinstance(degraded_reasons, list):
         degraded_reasons = ",".join(str(reason) for reason in degraded_reasons)
+    boundary_degraded_reasons = diagnostics.get("skin_primary_boundary_degraded_reasons")
+    if isinstance(boundary_degraded_reasons, list):
+        boundary_degraded_reasons = ",".join(str(reason) for reason in boundary_degraded_reasons)
     fallback_degraded_reasons = diagnostics.get("fallback_degraded_reasons")
     if isinstance(fallback_degraded_reasons, list):
         fallback_degraded_reasons = ",".join(str(reason) for reason in fallback_degraded_reasons)
@@ -3543,8 +3991,22 @@ def _summary_csv_skin_diagnostics_row(
         "skin_primary_largest_coverage_of_fvt_positive": diagnostics.get(
             "skin_primary_largest_coverage_of_fvt_positive"
         ),
+        "skin_primary_edge_shell_fraction": diagnostics.get("skin_primary_edge_shell_fraction"),
+        "skin_fvt_positive_edge_shell_fraction": diagnostics.get(
+            "skin_fvt_positive_edge_shell_fraction"
+        ),
+        "skin_scanner_target_positive_edge_shell_fraction": diagnostics.get(
+            "skin_scanner_target_positive_edge_shell_fraction"
+        ),
+        "skin_fvt_to_scanner_target_distance_p95": diagnostics.get(
+            "skin_fvt_to_scanner_target_distance_p95"
+        ),
         "skin_primary_degraded_candidate": diagnostics.get("skin_primary_degraded_candidate"),
         "skin_primary_degraded_reasons": degraded_reasons,
+        "skin_primary_boundary_degraded_candidate": diagnostics.get(
+            "skin_primary_boundary_degraded_candidate"
+        ),
+        "skin_primary_boundary_degraded_reasons": boundary_degraded_reasons,
     }
 
 
@@ -3618,6 +4080,11 @@ def _add_primary_skin_diagnostics(
     largest_size = int(topology["largest_skin_size"])
     cell_coverage = float(unique_cell_count / positive_count) if positive_count else 0.0
     largest_coverage = float(largest_size / positive_count) if positive_count else 0.0
+    primary_mask = skin_mask_from_skins(skins, shape)
+    primary_edge_shell_fraction = _edge_candidate_fraction(
+        primary_mask,
+        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+    )
     reasons = _primary_skin_degraded_reasons(
         fvt_positive_candidate_count=positive_count,
         skin_count=int(topology["skin_count"]),
@@ -3637,6 +4104,7 @@ def _add_primary_skin_diagnostics(
             "skin_primary_small_cell_fraction": float(topology["small_skin_cell_fraction"]),
             "skin_primary_cell_coverage_of_fvt_positive": cell_coverage,
             "skin_primary_largest_coverage_of_fvt_positive": largest_coverage,
+            "skin_primary_edge_shell_fraction": primary_edge_shell_fraction,
             "skin_primary_degraded_candidate": bool(reasons),
             "skin_primary_degraded_reasons": reasons,
         }
@@ -3666,6 +4134,41 @@ def _primary_skin_degraded_reasons(
         reasons.append("fragmented_primary_skins")
     if float(small_skin_cell_fraction) > SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION:
         reasons.append("high_small_skin_cell_fraction")
+    return reasons
+
+
+def _primary_boundary_degraded_reasons(
+    *,
+    generic_degraded: bool,
+    fvt_positive_candidate_count: int,
+    cell_coverage_of_fvt_positive: float,
+    fvt_positive_edge_shell_fraction: float,
+    primary_edge_shell_fraction: float,
+    fvt_to_scanner_target_distance_p95: float | None,
+) -> list[str]:
+    if not generic_degraded or int(fvt_positive_candidate_count) <= 0:
+        return []
+
+    reasons: list[str] = []
+    if (
+        float(fvt_positive_edge_shell_fraction)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_FVT_EDGE_SHELL_FRACTION
+    ):
+        reasons.append("fvt_positive_edge_shell")
+    if (
+        fvt_to_scanner_target_distance_p95 is not None
+        and float(fvt_to_scanner_target_distance_p95)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_SCANNER_TARGET_DISTANCE_P95
+    ):
+        reasons.append("fvt_far_from_scanner_target")
+    if (
+        float(cell_coverage_of_fvt_positive) < SKIN_PRIMARY_BOUNDARY_DEGRADED_MAX_CELL_COVERAGE
+        and float(fvt_positive_edge_shell_fraction)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_FVT_FRACTION
+        and float(primary_edge_shell_fraction)
+        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_PRIMARY_FRACTION
+    ):
+        reasons.append("low_primary_coverage_with_edge_local_candidates")
     return reasons
 
 
@@ -3833,7 +4336,10 @@ def _apply_boundary_skinner_fallback(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
     diagnostics: dict[str, Any],
+    scanner_target_positive_mask: np.ndarray | None = None,
 ) -> None:
+    del variant
+
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
     fallback_connectivity = "edge"
@@ -3865,6 +4371,37 @@ def _apply_boundary_skinner_fallback(
         largest_fraction=float(diagnostics.get("skin_primary_largest_fraction", 0.0)),
         small_skin_cell_fraction=float(diagnostics.get("skin_primary_small_cell_fraction", 0.0)),
     )
+    positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
+    fvt_positive_edge_shell_fraction = _edge_candidate_fraction(
+        positive_mask,
+        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+    )
+    primary_edge_shell_fraction = float(diagnostics.get("skin_primary_edge_shell_fraction", 0.0))
+    scanner_target_positive_edge_shell_fraction: float | None = None
+    fvt_to_scanner_target_distance_p95: float | None = None
+    if scanner_target_positive_mask is not None:
+        scanner_target_mask = np.asarray(scanner_target_positive_mask, dtype=bool)
+        if scanner_target_mask.shape != positive_mask.shape:
+            raise ValueError("scanner_target_positive_mask shape must match fvt")
+        scanner_target_positive_edge_shell_fraction = _edge_candidate_fraction(
+            scanner_target_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+        )
+        fvt_to_scanner_target_distance = surface_distance_metrics(
+            positive_mask,
+            scanner_target_mask,
+        )
+        fvt_to_scanner_target_distance_p95 = fvt_to_scanner_target_distance[
+            "candidate_to_truth_p95"
+        ]
+    boundary_degraded_reasons = _primary_boundary_degraded_reasons(
+        generic_degraded=bool(degraded_reasons),
+        fvt_positive_candidate_count=fvt_positive_count,
+        cell_coverage_of_fvt_positive=coverage_before,
+        fvt_positive_edge_shell_fraction=fvt_positive_edge_shell_fraction,
+        primary_edge_shell_fraction=primary_edge_shell_fraction,
+        fvt_to_scanner_target_distance_p95=fvt_to_scanner_target_distance_p95,
+    )
     diagnostics.update(
         {
             "fallback_enabled": fallback_enabled,
@@ -3883,6 +4420,14 @@ def _apply_boundary_skinner_fallback(
             "fallback_candidate_count": fvt_positive_count,
             "fallback_coverage_before": coverage_before,
             "fallback_coverage_after": coverage_before,
+            "skin_fvt_positive_edge_shell_fraction": fvt_positive_edge_shell_fraction,
+            "skin_primary_edge_shell_fraction": primary_edge_shell_fraction,
+            "skin_scanner_target_positive_edge_shell_fraction": (
+                scanner_target_positive_edge_shell_fraction
+            ),
+            "skin_fvt_to_scanner_target_distance_p95": fvt_to_scanner_target_distance_p95,
+            "skin_primary_boundary_degraded_candidate": bool(boundary_degraded_reasons),
+            "skin_primary_boundary_degraded_reasons": boundary_degraded_reasons,
             **component_diagnostics,
         }
     )
@@ -3902,6 +4447,9 @@ def _apply_boundary_skinner_fallback(
         if not degraded_reasons:
             diagnostics["fallback_reason"] = "primary_skin_healthy"
             return
+        if not boundary_degraded_reasons:
+            diagnostics["fallback_reason"] = "primary_boundary_degraded_not_detected"
+            return
         diagnostics["fallback_triggered_by_degraded_primary"] = True
         fallback_reason = "degraded_primary:" + ",".join(
             _fallback_degraded_reason_labels(degraded_reasons)
@@ -3910,7 +4458,6 @@ def _apply_boundary_skinner_fallback(
     fallback_fvt = fvt
     fallback_min_skin_size = skinning_config.min_skin_size
     if component_policy == "degraded_primary_filtered":
-        positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
         accepted_components = _filtered_fallback_components(
             _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
             candidate_cell_count=fvt_positive_count,
