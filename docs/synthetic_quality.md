@@ -218,7 +218,7 @@ quality
   Truth-quality mode for controlled synthetic evaluation. Effective
   voter_thin_mode is hybrid_v2 unless --voter-thin-mode is passed. Support-aware
   surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
-  is enabled by default.
+  is enabled by default, including boundary skinner fallback.
 
 diagnostic
   Diagnostic mode. Effective voter_thin_mode is reference unless
@@ -243,8 +243,8 @@ the `surface_support_weighted` variant record their effective values in the
 same config/report fields. Skinning diagnostics such as `quality_skinner_v2`
 record effective skinning values under each variant's `config.skinning`; under
 `--workflow-mode quality`, `current_default` records the same quality skinner v2
-profile (`growth_source=pre_thin`, `effective_accepted_occupancy_radius=1`).
-`summary.csv` includes `workflow_mode` near
+profile (`growth_source=pre_thin`, `effective_accepted_occupancy_radius=1`,
+`boundary_skinner_fallback=true`). `summary.csv` includes `workflow_mode` near
 `input_mode` on every row.
 
 ## Curved Surface Thinning Diagnostic
@@ -982,6 +982,7 @@ voter_thin_hybrid_v2
 voter_thin_normal_plateau
 surface_support_weighted
 quality_skinner_v2
+quality_boundary_skinner_fallback
 ```
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
@@ -990,19 +991,26 @@ judgments; they make the same truth metrics comparable across voter settings.
 diagnostic support-aware voting experiment with `0.5, 1.0`; it is not the
 quality workflow default.
 `quality_skinner_v2` is also included in the `quality-matrix` preset as a
-diagnostic skinning experiment. It uses the quality skinner, adaptive seed and
-grow thresholds, `growth_source=pre_thin`, and
+diagnostic skinning experiment. It uses the quality skinner, an adaptive seed
+threshold with fixed quality grow threshold, `growth_source=pre_thin`, and
 `accepted_occupancy_radius=1`. Under `--workflow-mode quality`, this matches
 `current_default`; under `reference` and `diagnostic` workflows, it remains an
 explicit diagnostic override.
+`quality_boundary_skinner_fallback` is included in the `quality-matrix` preset
+as a diagnostic fallback experiment. It sets
+`boundary_skinner_fallback=true`; under `--workflow-mode quality`, this matches
+`current_default`, while under `reference` and `diagnostic` workflows it remains
+an explicit fallback override. The fallback is reported when it is enabled and
+only used when primary skinning returns zero skins and `fvt` has positive
+samples.
 `summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
 pipeline column, variant column, baseline variant, input mode, workflow mode,
 buffered F1, candidate-to-truth p95 distance, fvt median orientation error
 columns, `fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`,
 positive-only top-truth candidate and fvt metric columns, skin topology and
-truth metric columns, and fvt and skin delta columns against the baseline.
-Scanner columns are always in the header; they are populated for scanner
-pipeline rows and empty for oracle pipeline rows.
+truth metric columns, skin fallback diagnostic columns, and fvt and skin delta
+columns against the baseline. Scanner columns are always in the header; they
+are populated for scanner pipeline rows and empty for oracle pipeline rows.
 
 Positive-only top-truth columns:
 
@@ -1045,6 +1053,20 @@ skin_largest_size
 skin_largest_fraction
 skin_small_count
 skin_small_cell_fraction
+skin_seed_candidate_count_before_spacing
+skin_seed_count_after_spacing
+skin_seed_rejected_by_occupied
+skin_grow_attempt_count
+skin_discarded_empty_count
+skin_discarded_small_count
+skin_accepted_count
+skin_fallback_enabled
+skin_fallback_used
+skin_fallback_reason
+skin_fallback_method
+skin_fallback_input
+skin_fallback_skin_count
+skin_fallback_cell_count
 skin_buffered_f1_r2
 skin_buffered_precision_r2
 skin_buffered_recall_r2

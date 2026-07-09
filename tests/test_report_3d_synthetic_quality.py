@@ -33,6 +33,7 @@ DIAGNOSTIC_VARIANTS = (
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
+    "quality_boundary_skinner_fallback",
 )
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
@@ -772,7 +773,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
             "current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
-            "surface_support_weighted,quality_skinner_v2"
+            "surface_support_weighted,quality_skinner_v2,"
+            "quality_boundary_skinner_fallback"
         ),
     )
 
@@ -1609,6 +1611,7 @@ def test_report_3d_synthetic_quality_build_report_reference_workflow_defaults() 
     assert report["config"]["voting"]["voter_thin_mode"] == "reference"
     assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
+    assert report["config"]["skinning"]["boundary_skinner_fallback"] is False
 
 
 def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() -> None:
@@ -1632,6 +1635,7 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is True
     assert report["config"]["skinning"]["accepted_occupancy_radius"] == 1
     assert report["config"]["skinning"]["effective_accepted_occupancy_radius"] == 1
+    assert report["config"]["skinning"]["boundary_skinner_fallback"] is True
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins() -> None:
@@ -1649,6 +1653,7 @@ def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins()
     assert report["config"]["skinning"]["method"] == "reference"
     assert report["config"]["skinning"]["min_likelihood"] == 0.5
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is False
+    assert report["config"]["skinning"]["boundary_skinner_fallback"] is False
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() -> None:
@@ -1716,6 +1721,7 @@ def test_quality_workflow_current_default_uses_hybrid_v2_without_support(
     assert quality_metrics["config"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert quality_metrics["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert quality_metrics["config"]["voting"]["surface_support_exponent"] == 0.0
+    assert quality_metrics["config"]["skinning"]["boundary_skinner_fallback"] is True
 
     with (reference_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
         reference_rows = list(csv.DictReader(file))
@@ -2106,6 +2112,7 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "accepted_occupancy_radius": 1,
         "effective_accepted_occupancy_radius": 1,
         "small_skin_size": 5,
+        "boundary_skinner_fallback": False,
     }
 
 

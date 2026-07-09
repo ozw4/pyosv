@@ -127,11 +127,7 @@ def time_repeated(
 
 
 def timing_summary(name: str, times: list[float]) -> str:
-    return (
-        f"name={name} "
-        f"best_seconds={min(times):.6f} "
-        f"mean_seconds={float(np.mean(times)):.6f}"
-    )
+    return f"name={name} best_seconds={min(times):.6f} mean_seconds={float(np.mean(times)):.6f}"
 
 
 if __name__ == "__main__":

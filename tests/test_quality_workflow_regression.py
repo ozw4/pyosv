@@ -197,6 +197,7 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert quality["skinning"]["seed_min_ep"] == 0.5
     assert quality["skinning"]["accepted_occupancy_radius"] == 1
     assert quality["skinning"]["effective_accepted_occupancy_radius"] == 1
+    assert quality["skinning"]["boundary_skinner_fallback"] is True
 
 
 def test_quality_workflow_key_metrics_are_finite(
@@ -230,10 +231,12 @@ def test_quality_workflow_key_metrics_are_finite(
 
             skin = quality["skin"]
             assert skin is not None
-            assert (
-                skinning_report["diagnostics"]["accepted_skin_count"]
-                == skin["topology"]["skin_count"]
-            )
+            diagnostics = skinning_report["diagnostics"]
+            skin_count = skin["topology"]["skin_count"]
+            if diagnostics["fallback_used"]:
+                assert diagnostics["fallback_skin_count"] == skin_count
+            else:
+                assert diagnostics["accepted_skin_count"] == skin_count
             for field in (
                 "topology",
                 "buffered_overlap_radius2",
@@ -331,6 +334,16 @@ def test_quality_boundary_skinner_fallback_recovers_boundary_skin() -> None:
     assert skin["topology"]["skin_count"] > 0
     assert skin["buffered_overlap_radius2"]["buffered_f1"] > 0.5
 
+    current_default = cases["boundary_plane"]["variants"]["current_default"]
+    current_diagnostics = current_default["skinning"]["diagnostics"]
+    current_skin = current_default["quality"]["skin"]
+    assert current_default["config"]["skinning"]["boundary_skinner_fallback"] is True
+    assert current_diagnostics["fallback_enabled"] is True
+    assert current_diagnostics["fallback_used"] is True
+    assert current_diagnostics["fallback_skin_count"] == current_skin["topology"]["skin_count"]
+    assert current_skin["topology"]["skin_count"] > 0
+    assert current_skin["buffered_overlap_radius2"]["buffered_f1"] >= 0.5
+
 
 def test_quality_boundary_skinner_fallback_does_not_run_when_primary_succeeds() -> None:
     module = _load_report_module()
@@ -423,15 +436,16 @@ def test_quality_workflow_case_specific_guardrails(
     assert _float_metric(boundary, *FVT_POSITIVE_EDGE_FALSE_POSITIVE_FRACTION) <= 1.0e-12
     diagnostics = boundary["variants"]["current_default"]["skinning"]["diagnostics"]
     skin_count = _float_metric(boundary, "quality", "skin", "topology", "skin_count")
-    assert diagnostics["accepted_skin_count"] == skin_count
-    assert diagnostics["seed_count_after_spacing"] > 0
-    if skin_count == 0:
-        assert (
-            diagnostics["seed_count_after_spacing"] == 0
-            or diagnostics["grow_attempt_count"] == 0
-            or diagnostics["discarded_empty_skin_count"] > 0
-            or diagnostics["discarded_small_skin_count"] > 0
-        )
+    assert skin_count > 0
+    assert _float_metric(boundary, *SKIN_BUFFERED_F1_R2) >= 0.5
+    assert (
+        _float_metric(boundary, "quality", "skin", "surface_distance", "candidate_to_truth_p95")
+        <= 3.0
+    )
+    assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["fallback_reason"] == "empty_primary_skin_with_positive_fvt"
+    assert diagnostics["fallback_skin_count"] == skin_count
     _assert_quality_at_least_reference_delta(
         reference_cases,
         quality_cases,

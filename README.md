@@ -149,8 +149,9 @@ crossing, boundary, and weak/noisy faults, voter variants, and skinning
 metrics. That document also explains controlled report workflow modes:
 `reference` is the default reference-alignment mode, `quality` defaults voter
 thinning to the truth-quality-favored `hybrid_v2` path with support-aware surface
-voting inactive and the quality skinner v2 profile, and `diagnostic` keeps
-the reference path while enabling reference-vs-normal thinning diagnostics.
+voting inactive, the quality skinner v2 profile, and boundary skinner fallback,
+and `diagnostic` keeps the reference path while enabling reference-vs-normal
+thinning diagnostics.
 The current quality workflow profile and guardrails are summarized in
 `docs/quality_mode.md`. A typical extended report run is:
 

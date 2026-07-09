@@ -122,6 +122,7 @@ QUALITY_MATRIX_VARIANTS = (
     "voter_thin_normal_plateau",
     "surface_support_weighted",
     "quality_skinner_v2",
+    "quality_boundary_skinner_fallback",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -301,6 +302,7 @@ def _effective_skinning_config_for_workflow(
         min_likelihood=min_likelihood,
         accepted_occupancy_radius=accepted_occupancy_radius,
         growth_source=growth_source,
+        boundary_skinner_fallback=True,
     )
 
 
@@ -309,15 +311,17 @@ def _effective_skinning_config_for_variant(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
 ) -> SyntheticSkinningConfig:
-    if variant != "quality_skinner_v2":
-        return skinning_config
-    return replace(
-        skinning_config,
-        method="quality",
-        min_likelihood=None,
-        accepted_occupancy_radius=1,
-        growth_source="pre_thin",
-    )
+    if variant == "quality_skinner_v2":
+        return replace(
+            skinning_config,
+            method="quality",
+            min_likelihood=None,
+            accepted_occupancy_radius=1,
+            growth_source="pre_thin",
+        )
+    if variant == "quality_boundary_skinner_fallback":
+        return replace(skinning_config, boundary_skinner_fallback=True)
+    return skinning_config
 
 
 def _effective_voter_thin_mode(
@@ -580,12 +584,15 @@ class SyntheticSkinningConfig:
     reskin: bool = True
     accepted_occupancy_radius: int | None = None
     small_skin_size: int = 10
+    boundary_skinner_fallback: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise ValueError("enabled must be a bool")
         if not isinstance(self.reskin, bool):
             raise ValueError("reskin must be a bool")
+        if not isinstance(self.boundary_skinner_fallback, bool):
+            raise ValueError("boundary_skinner_fallback must be a bool")
         if self.method not in SKINNER_METHODS:
             raise ValueError("skinner_method must be one of: " + ", ".join(SKINNER_METHODS))
         if self.growth_source not in SKINNER_GROWTH_SOURCES:
@@ -638,6 +645,7 @@ class SyntheticSkinningConfig:
                 5 if self.accepted_occupancy_radius is None else int(self.accepted_occupancy_radius)
             ),
             "small_skin_size": int(self.small_skin_size),
+            "boundary_skinner_fallback": self.boundary_skinner_fallback,
         }
 
 
@@ -684,7 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
             "    --variants current_default,no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
-            "surface_support_weighted,quality_skinner_v2 \\\n"
+            "surface_support_weighted,quality_skinner_v2,"
+            "quality_boundary_skinner_fallback \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -3057,7 +3066,7 @@ def _apply_boundary_skinner_fallback(
     variant: str,
     diagnostics: dict[str, Any],
 ) -> None:
-    fallback_enabled = variant == "quality_boundary_skinner_fallback"
+    fallback_enabled = skinning_config.boundary_skinner_fallback
     diagnostics.update(
         {
             "fallback_enabled": fallback_enabled,
