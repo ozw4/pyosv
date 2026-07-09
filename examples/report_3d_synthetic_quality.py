@@ -114,6 +114,7 @@ VARIANT_NAMES = (
     "surface_support_weighted",
     "quality_skinner_v2",
     "quality_boundary_skinner_fallback",
+    "quality_boundary_skinner_fallback_v2",
 )
 DEFAULT_VARIANTS = ("current_default",)
 QUALITY_MATRIX_VARIANTS = (
@@ -127,6 +128,7 @@ QUALITY_MATRIX_VARIANTS = (
     "surface_support_weighted",
     "quality_skinner_v2",
     "quality_boundary_skinner_fallback",
+    "quality_boundary_skinner_fallback_v2",
 )
 VARIANT_PRESETS = {
     "default": DEFAULT_VARIANTS,
@@ -150,6 +152,7 @@ SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE = 0.75
 SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE = 0.25
 SKINNER_METHODS = ("reference", "quality", "connected_component")
 SKINNER_GROWTH_SOURCES = ("thinned", "pre_thin")
+BOUNDARY_SKINNER_FALLBACK_POLICIES = ("empty_primary", "degraded_primary")
 REFERENCE_SKINNER_SEED_MIN_EP = 0.8
 QUALITY_SKINNER_SEED_MIN_EP = 0.5
 VARIANT_COMPARISON_METRICS = (
@@ -325,6 +328,12 @@ def _effective_skinning_config_for_variant(
         )
     if variant == "quality_boundary_skinner_fallback":
         return replace(skinning_config, boundary_skinner_fallback=True)
+    if variant == "quality_boundary_skinner_fallback_v2":
+        return replace(
+            skinning_config,
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary",
+        )
     return skinning_config
 
 
@@ -589,6 +598,7 @@ class SyntheticSkinningConfig:
     accepted_occupancy_radius: int | None = None
     small_skin_size: int = 10
     boundary_skinner_fallback: bool = False
+    boundary_skinner_fallback_policy: str = "empty_primary"
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -597,6 +607,11 @@ class SyntheticSkinningConfig:
             raise ValueError("reskin must be a bool")
         if not isinstance(self.boundary_skinner_fallback, bool):
             raise ValueError("boundary_skinner_fallback must be a bool")
+        if self.boundary_skinner_fallback_policy not in BOUNDARY_SKINNER_FALLBACK_POLICIES:
+            raise ValueError(
+                "boundary_skinner_fallback_policy must be one of: "
+                + ", ".join(BOUNDARY_SKINNER_FALLBACK_POLICIES)
+            )
         if self.method not in SKINNER_METHODS:
             raise ValueError("skinner_method must be one of: " + ", ".join(SKINNER_METHODS))
         if self.growth_source not in SKINNER_GROWTH_SOURCES:
@@ -650,6 +665,7 @@ class SyntheticSkinningConfig:
             ),
             "small_skin_size": int(self.small_skin_size),
             "boundary_skinner_fallback": self.boundary_skinner_fallback,
+            "boundary_skinner_fallback_policy": self.boundary_skinner_fallback_policy,
         }
 
 
@@ -697,7 +713,8 @@ def build_parser() -> argparse.ArgumentParser:
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
             "surface_support_weighted,quality_skinner_v2,"
-            "quality_boundary_skinner_fallback \\\n"
+            "quality_boundary_skinner_fallback,"
+            "quality_boundary_skinner_fallback_v2 \\\n"
             "    --output-dir outputs/3d/synthetic_quality/extended_001 \\\n"
             "    --pretty \\\n"
             "    --save-figures \\\n"
@@ -2609,12 +2626,21 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "skin_discarded_small_count",
                 "skin_accepted_count",
                 "skin_fallback_enabled",
+                "skin_fallback_policy",
                 "skin_fallback_used",
                 "skin_fallback_reason",
                 "skin_fallback_method",
                 "skin_fallback_input",
                 "skin_fallback_skin_count",
                 "skin_fallback_cell_count",
+                "skin_fallback_triggered_by_degraded_primary",
+                "skin_fallback_degraded_reasons",
+                "skin_fallback_replaced_primary",
+                "skin_fallback_primary_skin_count",
+                "skin_fallback_primary_cell_count",
+                "skin_fallback_candidate_count",
+                "skin_fallback_coverage_before",
+                "skin_fallback_coverage_after",
                 "skin_primary_count",
                 "skin_primary_cell_count",
                 "skin_primary_unique_cell_count",
@@ -2985,12 +3011,21 @@ def _summary_csv_skin_diagnostics_row(
             "skin_discarded_small_count": 0,
             "skin_accepted_count": 0,
             "skin_fallback_enabled": False,
+            "skin_fallback_policy": None,
             "skin_fallback_used": False,
             "skin_fallback_reason": None,
             "skin_fallback_method": None,
             "skin_fallback_input": None,
             "skin_fallback_skin_count": 0,
             "skin_fallback_cell_count": 0,
+            "skin_fallback_triggered_by_degraded_primary": False,
+            "skin_fallback_degraded_reasons": "",
+            "skin_fallback_replaced_primary": False,
+            "skin_fallback_primary_skin_count": 0,
+            "skin_fallback_primary_cell_count": 0,
+            "skin_fallback_candidate_count": 0,
+            "skin_fallback_coverage_before": 0.0,
+            "skin_fallback_coverage_after": 0.0,
             "skin_primary_count": 0,
             "skin_primary_cell_count": 0,
             "skin_primary_unique_cell_count": 0,
@@ -3013,12 +3048,21 @@ def _summary_csv_skin_diagnostics_row(
             "skin_discarded_small_count": None,
             "skin_accepted_count": None,
             "skin_fallback_enabled": None,
+            "skin_fallback_policy": None,
             "skin_fallback_used": None,
             "skin_fallback_reason": None,
             "skin_fallback_method": None,
             "skin_fallback_input": None,
             "skin_fallback_skin_count": None,
             "skin_fallback_cell_count": None,
+            "skin_fallback_triggered_by_degraded_primary": None,
+            "skin_fallback_degraded_reasons": None,
+            "skin_fallback_replaced_primary": None,
+            "skin_fallback_primary_skin_count": None,
+            "skin_fallback_primary_cell_count": None,
+            "skin_fallback_candidate_count": None,
+            "skin_fallback_coverage_before": None,
+            "skin_fallback_coverage_after": None,
             "skin_primary_count": None,
             "skin_primary_cell_count": None,
             "skin_primary_unique_cell_count": None,
@@ -3034,6 +3078,9 @@ def _summary_csv_skin_diagnostics_row(
     degraded_reasons = diagnostics.get("skin_primary_degraded_reasons")
     if isinstance(degraded_reasons, list):
         degraded_reasons = ",".join(str(reason) for reason in degraded_reasons)
+    fallback_degraded_reasons = diagnostics.get("fallback_degraded_reasons")
+    if isinstance(fallback_degraded_reasons, list):
+        fallback_degraded_reasons = ",".join(str(reason) for reason in fallback_degraded_reasons)
     return {
         "skin_seed_candidate_count_before_spacing": diagnostics.get(
             "seed_candidate_count_before_spacing"
@@ -3045,12 +3092,23 @@ def _summary_csv_skin_diagnostics_row(
         "skin_discarded_small_count": diagnostics.get("discarded_small_skin_count"),
         "skin_accepted_count": diagnostics.get("accepted_skin_count"),
         "skin_fallback_enabled": diagnostics.get("fallback_enabled"),
+        "skin_fallback_policy": diagnostics.get("fallback_policy"),
         "skin_fallback_used": diagnostics.get("fallback_used"),
         "skin_fallback_reason": diagnostics.get("fallback_reason"),
         "skin_fallback_method": diagnostics.get("fallback_method"),
         "skin_fallback_input": diagnostics.get("fallback_input"),
         "skin_fallback_skin_count": diagnostics.get("fallback_skin_count"),
         "skin_fallback_cell_count": diagnostics.get("fallback_cell_count"),
+        "skin_fallback_triggered_by_degraded_primary": diagnostics.get(
+            "fallback_triggered_by_degraded_primary"
+        ),
+        "skin_fallback_degraded_reasons": fallback_degraded_reasons,
+        "skin_fallback_replaced_primary": diagnostics.get("fallback_replaced_primary"),
+        "skin_fallback_primary_skin_count": diagnostics.get("fallback_primary_skin_count"),
+        "skin_fallback_primary_cell_count": diagnostics.get("fallback_primary_cell_count"),
+        "skin_fallback_candidate_count": diagnostics.get("fallback_candidate_count"),
+        "skin_fallback_coverage_before": diagnostics.get("fallback_coverage_before"),
+        "skin_fallback_coverage_after": diagnostics.get("fallback_coverage_after"),
         "skin_primary_count": diagnostics.get("skin_primary_count"),
         "skin_primary_cell_count": diagnostics.get("skin_primary_cell_count"),
         "skin_primary_unique_cell_count": diagnostics.get("skin_primary_unique_cell_count"),
@@ -3201,27 +3259,65 @@ def _apply_boundary_skinner_fallback(
     diagnostics: dict[str, Any],
 ) -> None:
     fallback_enabled = skinning_config.boundary_skinner_fallback
+    fallback_policy = skinning_config.boundary_skinner_fallback_policy
+    fvt_positive_count = int(np.count_nonzero(np.asarray(fvt) > np.float32(NONZERO_EPSILON)))
+    primary_skin_count = int(diagnostics.get("skin_primary_count", len(skins)))
+    primary_cell_count = int(
+        diagnostics.get("skin_primary_cell_count", sum(len(skin) for skin in skins))
+    )
+    primary_unique_cell_count = int(
+        diagnostics.get("skin_primary_unique_cell_count", primary_cell_count)
+    )
+    coverage_before = (
+        float(primary_unique_cell_count / fvt_positive_count) if fvt_positive_count else 0.0
+    )
+    degraded_reasons = _primary_skin_degraded_reasons(
+        fvt_positive_candidate_count=fvt_positive_count,
+        skin_count=primary_skin_count,
+        cell_coverage_of_fvt_positive=coverage_before,
+        largest_fraction=float(diagnostics.get("skin_primary_largest_fraction", 0.0)),
+        small_skin_cell_fraction=float(diagnostics.get("skin_primary_small_cell_fraction", 0.0)),
+    )
     diagnostics.update(
         {
             "fallback_enabled": fallback_enabled,
+            "fallback_policy": fallback_policy if fallback_enabled else None,
             "fallback_used": False,
             "fallback_reason": None,
             "fallback_method": ("connected_component_on_fvt" if fallback_enabled else None),
             "fallback_input": "fvt" if fallback_enabled else None,
             "fallback_skin_count": 0,
             "fallback_cell_count": 0,
+            "fallback_triggered_by_degraded_primary": False,
+            "fallback_degraded_reasons": [],
+            "fallback_replaced_primary": False,
+            "fallback_primary_skin_count": primary_skin_count,
+            "fallback_primary_cell_count": primary_cell_count,
+            "fallback_candidate_count": fvt_positive_count,
+            "fallback_coverage_before": coverage_before,
+            "fallback_coverage_after": coverage_before,
         }
     )
     if not fallback_enabled:
         return
-    if skins:
-        diagnostics["fallback_reason"] = "primary_skin_nonempty"
-        return
 
-    fvt_positive_count = int(np.count_nonzero(np.asarray(fvt) > np.float32(NONZERO_EPSILON)))
     if fvt_positive_count == 0:
         diagnostics["fallback_reason"] = "empty_primary_skin_without_positive_fvt"
         return
+    if fallback_policy == "empty_primary":
+        if skins:
+            diagnostics["fallback_reason"] = "primary_skin_nonempty"
+            return
+        fallback_reason = "empty_primary_skin_with_positive_fvt"
+    else:
+        diagnostics["fallback_degraded_reasons"] = degraded_reasons
+        if not degraded_reasons:
+            diagnostics["fallback_reason"] = "primary_skin_healthy"
+            return
+        diagnostics["fallback_triggered_by_degraded_primary"] = True
+        fallback_reason = "degraded_primary:" + ",".join(
+            _fallback_degraded_reason_labels(degraded_reasons)
+        )
 
     fallback_skins = find_connected_component_skins(
         fvt,
@@ -3235,15 +3331,38 @@ def _apply_boundary_skinner_fallback(
         diagnostics["fallback_reason"] = "connected_component_fallback_empty"
         return
 
-    skins.extend(fallback_skins)
+    replaced_primary = bool(skins)
+    skins[:] = fallback_skins
+    fallback_topology = skin_topology_metrics(
+        fallback_skins,
+        fvt.shape,
+        small_skin_size=skinning_config.small_skin_size,
+    )
+    coverage_after = (
+        float(int(fallback_topology["unique_cell_count"]) / fvt_positive_count)
+        if fvt_positive_count
+        else 0.0
+    )
     diagnostics.update(
         {
             "fallback_used": True,
-            "fallback_reason": "empty_primary_skin_with_positive_fvt",
+            "fallback_reason": fallback_reason,
             "fallback_skin_count": int(len(fallback_skins)),
             "fallback_cell_count": int(sum(len(skin) for skin in fallback_skins)),
+            "fallback_replaced_primary": replaced_primary,
+            "fallback_coverage_after": coverage_after,
         }
     )
+
+
+def _fallback_degraded_reason_labels(reasons: Sequence[str]) -> list[str]:
+    labels = {
+        "empty_primary_skin": "empty_primary",
+        "low_fvt_positive_coverage": "undercovered",
+        "fragmented_primary_skins": "fragmented",
+        "high_small_skin_cell_fraction": "small_skin_dominated",
+    }
+    return [labels.get(reason, reason) for reason in reasons]
 
 
 def _find_synthetic_skins(

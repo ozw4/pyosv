@@ -34,6 +34,7 @@ DIAGNOSTIC_VARIANTS = (
     "surface_support_weighted",
     "quality_skinner_v2",
     "quality_boundary_skinner_fallback",
+    "quality_boundary_skinner_fallback_v2",
 )
 EXPECTED_VOLUME_FILES = (
     "truth_fault_mask.dat",
@@ -92,12 +93,21 @@ EXPECTED_SKIN_SUMMARY_FIELDS = (
     "skin_discarded_small_count",
     "skin_accepted_count",
     "skin_fallback_enabled",
+    "skin_fallback_policy",
     "skin_fallback_used",
     "skin_fallback_reason",
     "skin_fallback_method",
     "skin_fallback_input",
     "skin_fallback_skin_count",
     "skin_fallback_cell_count",
+    "skin_fallback_triggered_by_degraded_primary",
+    "skin_fallback_degraded_reasons",
+    "skin_fallback_replaced_primary",
+    "skin_fallback_primary_skin_count",
+    "skin_fallback_primary_cell_count",
+    "skin_fallback_candidate_count",
+    "skin_fallback_coverage_before",
+    "skin_fallback_coverage_after",
     "skin_primary_count",
     "skin_primary_cell_count",
     "skin_primary_unique_cell_count",
@@ -141,6 +151,11 @@ SKIN_NUMERIC_SUMMARY_FIELDS = (
     "skin_accepted_count",
     "skin_fallback_skin_count",
     "skin_fallback_cell_count",
+    "skin_fallback_primary_skin_count",
+    "skin_fallback_primary_cell_count",
+    "skin_fallback_candidate_count",
+    "skin_fallback_coverage_before",
+    "skin_fallback_coverage_after",
     "skin_primary_count",
     "skin_primary_cell_count",
     "skin_primary_unique_cell_count",
@@ -453,6 +468,14 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_skinner_fal
 
     assert module.parse_variants("quality_boundary_skinner_fallback") == (
         "quality_boundary_skinner_fallback",
+    )
+
+
+def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_skinner_fallback_v2() -> None:
+    module = _load_report_module()
+
+    assert module.parse_variants("quality_boundary_skinner_fallback_v2") == (
+        "quality_boundary_skinner_fallback_v2",
     )
 
 
@@ -803,7 +826,8 @@ def test_report_3d_synthetic_quality_variants_write_metrics_and_summary_rows(
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
             "surface_support_weighted,quality_skinner_v2,"
-            "quality_boundary_skinner_fallback"
+            "quality_boundary_skinner_fallback,"
+            "quality_boundary_skinner_fallback_v2"
         ),
     )
 
@@ -1554,6 +1578,7 @@ def test_report_3d_synthetic_quality_boundary_fallback_variant_cli_contract(
     variant = metrics["cases"][0]["variants"]["quality_boundary_skinner_fallback"]
     diagnostics = variant["skinning"]["diagnostics"]
     assert diagnostics["fallback_enabled"] is True
+    assert diagnostics["fallback_policy"] == "empty_primary"
     assert diagnostics["fallback_used"] is False
     assert diagnostics["fallback_reason"] == "primary_skin_nonempty"
     assert diagnostics["fallback_method"] == "connected_component_on_fvt"
@@ -1565,12 +1590,52 @@ def test_report_3d_synthetic_quality_boundary_fallback_variant_cli_contract(
         rows = list(csv.DictReader(file))
     assert rows[0]["variant"] == "quality_boundary_skinner_fallback"
     assert rows[0]["skin_fallback_enabled"] == "True"
+    assert rows[0]["skin_fallback_policy"] == "empty_primary"
     assert rows[0]["skin_fallback_used"] == "False"
     assert rows[0]["skin_fallback_reason"] == "primary_skin_nonempty"
     assert rows[0]["skin_fallback_method"] == "connected_component_on_fvt"
     assert rows[0]["skin_fallback_input"] == "fvt"
     assert rows[0]["skin_fallback_skin_count"] == "0"
     assert rows[0]["skin_fallback_cell_count"] == "0"
+
+
+def test_report_3d_synthetic_quality_boundary_fallback_v2_cli_records_policy(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "synthetic_quality"
+
+    result = _run_script(
+        "--case-set",
+        "minimal",
+        "--shape",
+        "17,17,17",
+        "--workflow-mode",
+        "quality",
+        "--variants",
+        "quality_boundary_skinner_fallback_v2",
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["config"]["variants"] == ["quality_boundary_skinner_fallback_v2"]
+    variant = metrics["cases"][0]["variants"]["quality_boundary_skinner_fallback_v2"]
+    assert variant["config"]["skinning"]["boundary_skinner_fallback"] is True
+    assert variant["config"]["skinning"]["boundary_skinner_fallback_policy"] == "degraded_primary"
+    diagnostics = variant["skinning"]["diagnostics"]
+    assert diagnostics["fallback_policy"] == "degraded_primary"
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is False
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_skin_healthy"
+
+    with (output_dir / "summary.csv").open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["variant"] == "quality_boundary_skinner_fallback_v2"
+    assert rows[0]["skin_fallback_policy"] == "degraded_primary"
+    assert rows[0]["skin_fallback_triggered_by_degraded_primary"] == "False"
+    assert rows[0]["skin_fallback_replaced_primary"] == "False"
+    assert rows[0]["skin_fallback_degraded_reasons"] == ""
 
 
 @pytest.mark.parametrize(
@@ -1641,6 +1706,7 @@ def test_report_3d_synthetic_quality_build_report_reference_workflow_defaults() 
     assert report["config"]["voting"]["surface_support_min_fraction"] == 0.0
     assert report["config"]["voting"]["surface_support_exponent"] == 0.0
     assert report["config"]["skinning"]["boundary_skinner_fallback"] is False
+    assert report["config"]["skinning"]["boundary_skinner_fallback_policy"] == "empty_primary"
 
 
 def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() -> None:
@@ -1665,6 +1731,7 @@ def test_report_3d_synthetic_quality_build_report_quality_workflow_defaults() ->
     assert report["config"]["skinning"]["accepted_occupancy_radius"] == 1
     assert report["config"]["skinning"]["effective_accepted_occupancy_radius"] == 1
     assert report["config"]["skinning"]["boundary_skinner_fallback"] is True
+    assert report["config"]["skinning"]["boundary_skinner_fallback_policy"] == "empty_primary"
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins() -> None:
@@ -1683,6 +1750,7 @@ def test_report_3d_synthetic_quality_build_report_explicit_skinner_method_wins()
     assert report["config"]["skinning"]["min_likelihood"] == 0.5
     assert report["config"]["skinning"]["adaptive_min_likelihood"] is False
     assert report["config"]["skinning"]["boundary_skinner_fallback"] is False
+    assert report["config"]["skinning"]["boundary_skinner_fallback_policy"] == "empty_primary"
 
 
 def test_report_3d_synthetic_quality_build_report_explicit_voting_config_wins() -> None:
@@ -2142,6 +2210,7 @@ def test_report_3d_synthetic_quality_records_skinner_options(tmp_path: Path) -> 
         "effective_accepted_occupancy_radius": 1,
         "small_skin_size": 5,
         "boundary_skinner_fallback": False,
+        "boundary_skinner_fallback_policy": "empty_primary",
     }
 
 
@@ -3062,6 +3131,91 @@ def test_report_3d_synthetic_quality_primary_skin_diagnostics_keep_healthy() -> 
     assert diagnostics["skin_primary_count"] == 1
     assert diagnostics["skin_primary_cell_coverage_of_fvt_positive"] == pytest.approx(1.0)
     assert diagnostics["skin_primary_largest_fraction"] == pytest.approx(1.0)
+
+
+def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback() -> None:
+    module = _load_report_module()
+    fvt = np.ones((1, 1, 5), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.zeros_like(fvt)
+    skins = [_fault_skin([(0, 0, 0)])]
+    diagnostics: dict[str, object] = {}
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=fvt.shape,
+        fvt_positive_candidate_count=5,
+        small_skin_size=1,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary",
+            small_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback_v2",
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["fallback_policy"] == "degraded_primary"
+    assert diagnostics["fallback_used"] is True
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is True
+    assert diagnostics["fallback_replaced_primary"] is True
+    assert diagnostics["fallback_primary_skin_count"] == 1
+    assert diagnostics["fallback_primary_cell_count"] == 1
+    assert diagnostics["fallback_candidate_count"] == 5
+    assert diagnostics["fallback_coverage_before"] == pytest.approx(0.2)
+    assert diagnostics["fallback_coverage_after"] == pytest.approx(1.0)
+    assert diagnostics["fallback_degraded_reasons"] == ["low_fvt_positive_coverage"]
+    assert diagnostics["fallback_reason"] == "degraded_primary:undercovered"
+    assert len(skins) == 1
+    assert len(skins[0]) == 5
+
+
+def test_report_3d_synthetic_quality_degraded_primary_policy_keeps_healthy_primary() -> None:
+    module = _load_report_module()
+    fvt = np.ones((1, 1, 5), dtype=np.float32)
+    vp = np.zeros_like(fvt)
+    vt = np.zeros_like(fvt)
+    skins = [_fault_skin([(index, 0, 0) for index in range(5)])]
+    diagnostics: dict[str, object] = {}
+    module._add_primary_skin_diagnostics(
+        diagnostics,
+        skins,
+        shape=fvt.shape,
+        fvt_positive_candidate_count=5,
+        small_skin_size=1,
+    )
+
+    module._apply_boundary_skinner_fallback(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=module.SyntheticSkinningConfig(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary",
+            small_skin_size=1,
+        ),
+        variant="quality_boundary_skinner_fallback_v2",
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["fallback_policy"] == "degraded_primary"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["fallback_reason"] == "primary_skin_healthy"
+    assert diagnostics["fallback_triggered_by_degraded_primary"] is False
+    assert diagnostics["fallback_replaced_primary"] is False
+    assert diagnostics["fallback_degraded_reasons"] == []
+    assert diagnostics["fallback_coverage_before"] == pytest.approx(1.0)
+    assert diagnostics["fallback_coverage_after"] == pytest.approx(1.0)
+    assert len(skins) == 1
+    assert len(skins[0]) == 5
 
 
 def test_report_3d_synthetic_quality_skip_skinning_writes_disabled_contract(
