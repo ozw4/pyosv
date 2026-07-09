@@ -3659,9 +3659,9 @@ def _primary_skin_degraded_reasons(
         reasons.append("empty_primary_skin")
     if float(cell_coverage_of_fvt_positive) < SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE:
         reasons.append("low_fvt_positive_coverage")
-    if (
+    if int(skin_count) > 0 and (
         int(skin_count) >= SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT
-        and float(largest_fraction) < SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
+        or float(largest_fraction) < SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
     ):
         reasons.append("fragmented_primary_skins")
     if float(small_skin_cell_fraction) > SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION:
@@ -3690,7 +3690,7 @@ def _fallback_component_diagnostics(
         filter_min_component_size = 0
         filter_min_fraction_of_largest = 0.0
         filter_max_components = 0
-    elif component_policy == "filtered":
+    elif component_policy == "degraded_primary_filtered":
         accepted_components = _filtered_fallback_components(
             components,
             candidate_cell_count=candidate_cell_count,
@@ -3837,7 +3837,9 @@ def _apply_boundary_skinner_fallback(
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
     fallback_connectivity = "edge"
-    component_policy = "filtered" if fallback_policy == "degraded_primary_filtered" else "all"
+    component_policy = (
+        "degraded_primary_filtered" if fallback_policy == "degraded_primary_filtered" else "all"
+    )
     component_diagnostics = _fallback_component_diagnostics(
         fvt,
         min_skin_size=skinning_config.min_skin_size,
@@ -3907,7 +3909,7 @@ def _apply_boundary_skinner_fallback(
 
     fallback_fvt = fvt
     fallback_min_skin_size = skinning_config.min_skin_size
-    if component_policy == "filtered":
+    if component_policy == "degraded_primary_filtered":
         positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
         accepted_components = _filtered_fallback_components(
             _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
