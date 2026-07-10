@@ -320,16 +320,6 @@ EXPECTED_THINNING_DIAGNOSTIC_SUMMARY_FIELDS = (
     "thinning_diag_normal_only_count",
     "thinning_diag_jaccard",
 )
-EXPECTED_VOTER_SUMMARY_FIELDS = (
-    "surface_voting_boundary_policy",
-    "voter_boundary_affected_seed_count",
-    "voter_skipped_seed_count",
-    "voter_support_fraction_mean",
-    "voter_support_fraction_min",
-    "voter_surface_projection_count",
-    "voter_selected_invalid_sample_count",
-    "voter_face_center_vote_count",
-)
 EXPECTED_THINNING_DIAGNOSTIC_VOLUME_FILES = (
     "fvt_reference.dat",
     "fvt_normal.dat",
@@ -624,7 +614,6 @@ def test_report_3d_synthetic_quality_help_exits_successfully() -> None:
     assert "--voter-thin-mode" in result.stdout
     assert "--surface-support-min-fraction" in result.stdout
     assert "--surface-support-exponent" in result.stdout
-    assert "boundary_aware_voter_v1" in result.stdout
     assert "--thinning-diagnostics" in result.stdout
     assert "--include-thinning-diagnostic" in result.stdout
     assert "--thinning-diagnostic-cases" in result.stdout
@@ -696,30 +685,6 @@ def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_seed_retent
 
     assert module.parse_variants("boundary_seed_retention_v1") == ("boundary_seed_retention_v1",)
     assert "boundary_seed_retention_v1" not in module.QUALITY_MATRIX_VARIANTS
-
-
-def test_report_3d_synthetic_quality_parse_variants_accepts_boundary_aware_voter() -> None:
-    module = _load_report_module()
-
-    assert module.parse_variants("boundary_aware_voter_v1") == ("boundary_aware_voter_v1",)
-    assert "boundary_aware_voter_v1" in module.VARIANT_NAMES
-    assert "boundary_aware_voter_v1" not in module.DEFAULT_VARIANTS
-    assert "boundary_aware_voter_v1" not in module.QUALITY_MATRIX_VARIANTS
-
-
-def test_report_3d_synthetic_quality_voter_csv_defaults_are_reference_compatible() -> None:
-    module = _load_report_module()
-
-    assert module._summary_csv_voting_row(variant_report={}) == {
-        "surface_voting_boundary_policy": "reference",
-        "voter_boundary_affected_seed_count": 0,
-        "voter_skipped_seed_count": 0,
-        "voter_support_fraction_mean": 1.0,
-        "voter_support_fraction_min": 1.0,
-        "voter_surface_projection_count": 0,
-        "voter_selected_invalid_sample_count": 0,
-        "voter_face_center_vote_count": 0,
-    }
 
 
 def test_report_3d_synthetic_quality_parse_variants_accepts_surface_support_weighted() -> None:
@@ -923,11 +888,6 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
         assert summary["finite_fraction"] == 1.0
         assert summary["max"] > 0.0
         assert 0.0 < summary["nonzero_fraction"] <= 1.0
-    voting = case["pyosv"]["voting"]
-    assert voting["surface_voting_boundary_policy"] == "reference"
-    assert voting["surface_support_min_fraction"] == 0.0
-    assert voting["surface_support_exponent"] == 0.0
-    assert voting["diagnostic_summary"]["selected_invalid_sample_count"] >= 0
 
     with summary_path.open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
@@ -937,11 +897,6 @@ def test_report_3d_synthetic_quality_minimal_case_writes_contract_files(
     assert rows[0]["shape_n3"] == "17"
     assert rows[0]["shape_n2"] == "17"
     assert rows[0]["shape_n1"] == "17"
-    assert rows[0]["surface_voting_boundary_policy"] == "reference"
-    for field in EXPECTED_VOTER_SUMMARY_FIELDS[1:]:
-        assert rows[0][field] != ""
-        assert math.isfinite(float(rows[0][field]))
-    assert int(rows[0]["voter_selected_invalid_sample_count"]) >= 0
     assert float(rows[0]["fv_max"]) > 0.0
     assert float(rows[0]["fv_nonzero_fraction"]) > 0.0
     assert float(rows[0]["fv_buffered_f1_r2"]) > 0.0
@@ -2085,57 +2040,10 @@ def test_report_3d_synthetic_quality_surface_support_weighted_variant_passes(
     assert metrics["config"]["variants"] == ["surface_support_weighted"]
     variant = metrics["cases"][0]["variants"]["surface_support_weighted"]
     assert variant["pyosv"]["fvt"]["finite_fraction"] == 1.0
-    voting = variant["pyosv"]["voting"]
-    assert voting["surface_voting_boundary_policy"] == "reference"
-    assert voting["surface_support_min_fraction"] == 0.5
-    assert voting["surface_support_exponent"] == 1.0
-    assert voting["diagnostic_summary"]["selected_invalid_sample_count"] >= 0
-
-
-def test_report_3d_synthetic_quality_boundary_aware_voter_json_and_csv_contract(
-    tmp_path: Path,
-) -> None:
-    module = _load_report_module()
-    module.CASE_SETS["boundary-only"] = (
-        module.SyntheticQualityCaseDefinition(
-            case_id="boundary_plane",
-            factory=module.make_boundary_plane_case,
-        ),
-    )
-
-    report = module.build_report(
-        case_set="boundary-only",
-        shape=(9, 9, 9),
-        variants=("current_default", "boundary_aware_voter_v1"),
-        workflow_mode="quality",
-        skinning_config=module.SyntheticSkinningConfig(enabled=False),
-    )
-    serialized = json.loads(module.report_to_json(report))
-    variants = serialized["cases"][0]["variants"]
-    current_voting = variants["current_default"]["pyosv"]["voting"]
-    candidate_voting = variants["boundary_aware_voter_v1"]["pyosv"]["voting"]
-
-    assert current_voting["surface_voting_boundary_policy"] == "reference"
-    assert candidate_voting["surface_voting_boundary_policy"] == "masked_in_bounds"
-    assert (
-        candidate_voting["surface_support_min_fraction"]
-        == current_voting["surface_support_min_fraction"]
-    )
-    assert (
-        candidate_voting["surface_support_exponent"] == current_voting["surface_support_exponent"]
-    )
-    assert candidate_voting["diagnostic_summary"]["selected_invalid_sample_count"] == 0
-
-    module.write_summary_csv(report, tmp_path)
-    with (tmp_path / "summary.csv").open(encoding="utf-8", newline="") as file:
-        rows = {row["variant"]: row for row in csv.DictReader(file)}
-    assert rows["current_default"]["surface_voting_boundary_policy"] == "reference"
-    assert rows["boundary_aware_voter_v1"]["surface_voting_boundary_policy"] == "masked_in_bounds"
-    for row in rows.values():
-        for field in EXPECTED_VOTER_SUMMARY_FIELDS[1:]:
-            assert row[field] != ""
-            assert math.isfinite(float(row[field]))
-    assert rows["boundary_aware_voter_v1"]["voter_selected_invalid_sample_count"] == "0"
+    assert variant["pyosv"]["voting"] == {
+        "surface_support_min_fraction": 0.5,
+        "surface_support_exponent": 1.0,
+    }
 
 
 def test_report_3d_synthetic_quality_quality_skinner_v2_records_effective_config(
