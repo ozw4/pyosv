@@ -79,6 +79,20 @@ from pyosv.evaluation.synthetic_quality.profiles import (
     _effective_voter_thin_mode,
     _validate_workflow_mode,
 )
+from pyosv.evaluation.synthetic_quality.variants import (
+    BASELINE_VARIANT,
+    DEFAULT_VARIANTS,
+    QUALITY_MATRIX_VARIANTS,  # noqa: F401 - compatibility export
+    VARIANT_NAMES,
+    VARIANT_PRESETS,
+    VariantSpec,
+    effective_skinning_config,
+    effective_thin_mode,
+    get_variant_spec,
+    resolve_variants,
+    validate_variant_preset,
+    validate_variants,
+)
 from pyosv.cells import FaultCell
 from pyosv.orient3d import FaultOrientScanner3
 from pyosv.skinner import FaultSkinner, find_connected_component_skins
@@ -151,50 +165,7 @@ SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE = 1.25
 SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION = 0.20
 SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION = 0.50
 SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION = 0.60
-VARIANT_NAMES = (
-    "current_default",
-    "boundary_aware_voter_v1",
-    "no_surface_orientation_smoothing",
-    "final_norm_smoothing_1",
-    "voter_thin_normal",
-    "voter_thin_hybrid",
-    "voter_thin_hybrid_v2",
-    "voter_thin_hybrid_v2_recenter_scanner_target",
-    "boundary_edge_thin_v1",
-    "boundary_seed_retention_v1",
-    "voter_thin_normal_plateau",
-    "surface_support_weighted",
-    "quality_skinner_v2",
-    "quality_boundary_skinner_fallback",
-    "quality_boundary_skinner_fallback_v2",
-    "quality_boundary_skinner_fallback_v3",
-    "quality_boundary_skinner_fallback_v4",
-    "quality_boundary_skinner_fallback_v5",
-)
-DEFAULT_VARIANTS = ("current_default",)
-QUALITY_MATRIX_VARIANTS = (
-    "current_default",
-    "no_surface_orientation_smoothing",
-    "final_norm_smoothing_1",
-    "voter_thin_normal",
-    "voter_thin_hybrid",
-    "voter_thin_hybrid_v2",
-    "voter_thin_normal_plateau",
-    "surface_support_weighted",
-    "quality_skinner_v2",
-    "quality_boundary_skinner_fallback",
-    "quality_boundary_skinner_fallback_v2",
-    "quality_boundary_skinner_fallback_v3",
-    "quality_boundary_skinner_fallback_v4",
-)
-VARIANT_PRESETS = {
-    "default": DEFAULT_VARIANTS,
-    "quality-matrix": QUALITY_MATRIX_VARIANTS,
-}
 DEFAULT_VARIANT_PRESET = "default"
-BASELINE_VARIANT = "current_default"
-SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
-SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 FVT_RECENTER_MAX_SHIFT = 3
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
@@ -267,45 +238,7 @@ def _effective_skinning_config_for_variant(
     skinning_config: SyntheticSkinningConfig,
     variant: str,
 ) -> SyntheticSkinningConfig:
-    if variant == "quality_skinner_v2":
-        return replace(
-            skinning_config,
-            method="quality",
-            min_likelihood=None,
-            accepted_occupancy_radius=1,
-            growth_source="pre_thin",
-        )
-    if variant == "quality_boundary_skinner_fallback":
-        return replace(skinning_config, boundary_skinner_fallback=True)
-    if variant == "quality_boundary_skinner_fallback_v2":
-        return replace(
-            skinning_config,
-            boundary_skinner_fallback=True,
-            boundary_skinner_fallback_policy="degraded_primary",
-        )
-    if variant == "quality_boundary_skinner_fallback_v3":
-        return replace(
-            skinning_config,
-            boundary_skinner_fallback=True,
-            boundary_skinner_fallback_policy="degraded_primary_filtered",
-        )
-    if variant == "quality_boundary_skinner_fallback_v4":
-        return replace(
-            skinning_config,
-            boundary_skinner_fallback=True,
-            boundary_skinner_fallback_policy="degraded_primary_skeletonized",
-        )
-    if variant == "quality_boundary_skinner_fallback_v5":
-        return replace(
-            skinning_config,
-            method="quality",
-            min_likelihood=None,
-            accepted_occupancy_radius=1,
-            growth_source="pre_thin",
-            boundary_skinner_fallback=True,
-            boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
-        )
-    return skinning_config
+    return effective_skinning_config(get_variant_spec(variant), skinning_config)
 
 
 CSV_VARIANT_COMPARISON_FIELDS = (
@@ -809,13 +742,9 @@ def _run_case_variant(
     include_thinning_diagnostic: bool,
     include_scanner_downstream_diagnostics: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    if variant not in VARIANT_NAMES:
-        raise ValueError(f"unknown variant: {variant}")
+    variant_spec = get_variant_spec(variant)
     valid_input_mode = _validate_input_mode(input_mode)
-    skinning_config = _effective_skinning_config_for_variant(
-        skinning_config=skinning_config,
-        variant=variant,
-    )
+    skinning_config = effective_skinning_config(variant_spec, skinning_config)
 
     if valid_input_mode == "oracle":
         return _run_oracle_pipeline(
@@ -823,7 +752,7 @@ def _run_case_variant(
             voting_config=voting_config,
             truth_metric_config=truth_metric_config,
             skinning_config=skinning_config,
-            variant=variant,
+            variant_spec=variant_spec,
             include_thinning_diagnostic=include_thinning_diagnostic,
         )
 
@@ -835,7 +764,7 @@ def _run_case_variant(
             voting_config=voting_config,
             truth_metric_config=truth_metric_config,
             skinning_config=skinning_config,
-            variant=variant,
+            variant_spec=variant_spec,
             include_thinning_diagnostic=include_thinning_diagnostic,
         )
         pipelines["oracle"] = oracle_report
@@ -847,7 +776,7 @@ def _run_case_variant(
         scanner_config=scanner_config,
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
-        variant=variant,
+        variant_spec=variant_spec,
         scanner_backend_matrix=scanner_backend_matrix,
         include_thinning_diagnostic=include_thinning_diagnostic,
         include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
@@ -942,7 +871,7 @@ def _run_oracle_pipeline(
     voting_config: SyntheticVotingConfig,
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
-    variant: str,
+    variant_spec: VariantSpec,
     include_thinning_diagnostic: bool,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     return _run_voting_from_attributes(
@@ -953,7 +882,7 @@ def _run_oracle_pipeline(
         voting_config=voting_config,
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
-        variant=variant,
+        variant_spec=variant_spec,
         include_thinning_diagnostic=include_thinning_diagnostic,
         fvt_recenter_target=case.ft_oracle,
         fvt_recenter_target_source="oracle_ft",
@@ -967,7 +896,7 @@ def _run_scanner_pipeline(
     scanner_config: SyntheticScannerConfig,
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
-    variant: str,
+    variant_spec: VariantSpec,
     scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
     include_scanner_downstream_diagnostics: bool,
@@ -981,7 +910,7 @@ def _run_scanner_pipeline(
         voting_config=voting_config,
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
-        variant=variant,
+        variant_spec=variant_spec,
         include_thinning_diagnostic=include_thinning_diagnostic,
         scanner_target_positive_mask=_positive_candidate_mask(scanner_volumes["scanner_ft"]),
         fvt_recenter_target=scanner_volumes["scanner_fet"],
@@ -998,7 +927,7 @@ def _run_scanner_pipeline(
             case=case,
             scanner_config=scanner_config,
             voting_config=voting_config,
-            variant=variant,
+            variant_spec=variant_spec,
             report=report,
             scanner_volumes=scanner_volumes,
             fv=volumes["fv_py"],
@@ -1010,7 +939,7 @@ def _run_scanner_pipeline(
         report["scanner_stage_loss"] = _scanner_stage_loss_diagnostics(
             case=case,
             voting_config=voting_config,
-            variant=variant,
+            variant_spec=variant_spec,
             scanner_volumes=scanner_volumes,
             fv=volumes["fv_py"],
             fvt=volumes["fvt_py"],
@@ -1024,7 +953,7 @@ def _run_scanner_pipeline(
             scanner_config=scanner_config,
             truth_metric_config=truth_metric_config,
             skinning_config=skinning_config,
-            variant=variant,
+            variant_spec=variant_spec,
             include_thinning_diagnostic=include_thinning_diagnostic,
             selected_report=report,
         )
@@ -1039,7 +968,7 @@ def _scanner_backend_matrix_report(
     scanner_config: SyntheticScannerConfig,
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
-    variant: str,
+    variant_spec: VariantSpec,
     include_thinning_diagnostic: bool,
     selected_report: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1057,7 +986,7 @@ def _scanner_backend_matrix_report(
                 scanner_config=replace(scanner_config, backend=backend),
                 truth_metric_config=truth_metric_config,
                 skinning_config=skinning_config,
-                variant=variant,
+                variant_spec=variant_spec,
                 scanner_backend_matrix=False,
                 include_thinning_diagnostic=include_thinning_diagnostic,
                 include_scanner_downstream_diagnostics=False,
@@ -1433,7 +1362,7 @@ def _scanner_downstream_diagnostics(
     case: Synthetic3DCase,
     scanner_config: SyntheticScannerConfig,
     voting_config: SyntheticVotingConfig,
-    variant: str,
+    variant_spec: VariantSpec,
     report: Mapping[str, Any],
     scanner_volumes: Mapping[str, np.ndarray],
     fv: np.ndarray,
@@ -1462,7 +1391,7 @@ def _scanner_downstream_diagnostics(
         truth_metric_config.buffer_radius,
         "buffer_radius",
     )
-    voter_thin_mode = _thin_mode_for_variant(variant, voting_config)
+    voter_thin_mode = effective_thin_mode(variant_spec, voting_config)
     plateau_source = "scanner_fet" if voter_thin_mode in {"hybrid_v2", "normal_plateau"} else None
 
     diagnostic = {
@@ -1610,7 +1539,7 @@ def _scanner_stage_loss_diagnostics(
     *,
     case: Synthetic3DCase,
     voting_config: SyntheticVotingConfig,
-    variant: str,
+    variant_spec: VariantSpec,
     scanner_volumes: Mapping[str, np.ndarray],
     fv: np.ndarray,
     fvt: np.ndarray,
@@ -1635,7 +1564,7 @@ def _scanner_stage_loss_diagnostics(
         tt=scanner_volumes["scanner_ftt"],
     )
     boundary_seed_retention: dict[str, Any] | None = None
-    if variant == "boundary_seed_retention_v1":
+    if variant_spec.seed_policy == "boundary_seed_retention_v1":
         _, seeds, boundary_seed_retention = _boundary_seed_retention_v1_seeds(
             voting_config=voting_config,
             ft=scanner_volumes["scanner_fet"],
@@ -1959,15 +1888,7 @@ def _scanner_downstream_thinning_report(
 
 
 def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -> str:
-    variant_thin_modes = {
-        "voter_thin_normal": "normal",
-        "voter_thin_hybrid": "hybrid",
-        "voter_thin_hybrid_v2": "hybrid_v2",
-        "voter_thin_hybrid_v2_recenter_scanner_target": "hybrid_v2",
-        "boundary_edge_thin_v1": "hybrid_v2",
-        "voter_thin_normal_plateau": "normal_plateau",
-    }
-    return variant_thin_modes.get(variant, voting_config.voter_thin_mode)
+    return effective_thin_mode(get_variant_spec(variant), voting_config)
 
 
 def _positive_candidate_count(array: np.ndarray) -> int:
@@ -2619,7 +2540,7 @@ def _run_voting_from_attributes(
     voting_config: SyntheticVotingConfig,
     truth_metric_config: SyntheticTruthMetricConfig,
     skinning_config: SyntheticSkinningConfig,
-    variant: str,
+    variant_spec: VariantSpec,
     include_thinning_diagnostic: bool = False,
     scanner_target_positive_mask: np.ndarray | None = None,
     fvt_recenter_target: np.ndarray | None = None,
@@ -2631,23 +2552,29 @@ def _run_voting_from_attributes(
         rw=voting_config.rw,
     )
     voter.set_attribute_smoothing(voting_config.attribute_smoothing)
-    surface_support_min_fraction = voting_config.surface_support_min_fraction
-    surface_support_exponent = voting_config.surface_support_exponent
-    if variant == "surface_support_weighted":
-        surface_support_min_fraction = SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION
-        surface_support_exponent = SURFACE_SUPPORT_WEIGHTED_EXPONENT
+    voting_patch = variant_spec.voting
+    surface_support_min_fraction = (
+        voting_config.surface_support_min_fraction
+        if voting_patch.support_min_fraction is None
+        else voting_patch.support_min_fraction
+    )
+    surface_support_exponent = (
+        voting_config.surface_support_exponent
+        if voting_patch.support_exponent is None
+        else voting_patch.support_exponent
+    )
     voter.set_surface_support_policy(
         min_fraction=surface_support_min_fraction,
         exponent=surface_support_exponent,
     )
-    if variant == "boundary_aware_voter_v1":
-        voter.set_surface_voting_boundary_policy("masked_in_bounds")
-    if variant == "no_surface_orientation_smoothing":
-        voter.set_surface_orientation_smoothing(0.0)
-    if variant == "final_norm_smoothing_1":
-        voter.set_final_normalization_smoothing(1.0)
+    if voting_patch.boundary_policy is not None:
+        voter.set_surface_voting_boundary_policy(voting_patch.boundary_policy)
+    if voting_patch.orientation_smoothing is not None:
+        voter.set_surface_orientation_smoothing(voting_patch.orientation_smoothing)
+    if voting_patch.final_normalization_smoothing is not None:
+        voter.set_final_normalization_smoothing(voting_patch.final_normalization_smoothing)
     boundary_seed_retention_diagnostic: dict[str, Any] | None = None
-    if variant == "boundary_seed_retention_v1":
+    if variant_spec.seed_policy == "boundary_seed_retention_v1":
         boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
@@ -2676,7 +2603,7 @@ def _run_voting_from_attributes(
         tt=tt,
     )
     surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
-    thin_mode = _thin_mode_for_variant(variant, voting_config)
+    thin_mode = effective_thin_mode(variant_spec, voting_config)
     plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
     fvt = voter.thin(
         fv,
@@ -2688,7 +2615,7 @@ def _run_voting_from_attributes(
     )
     fvt_recenter_diagnostic: dict[str, Any] | None = None
     boundary_edge_thin_diagnostic: dict[str, Any] | None = None
-    if variant == "voter_thin_hybrid_v2_recenter_scanner_target":
+    if variant_spec.post_thinning_policy == "recenter_scanner_target":
         recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
         recenter_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
@@ -2702,7 +2629,7 @@ def _run_voting_from_attributes(
             max_shift=FVT_RECENTER_MAX_SHIFT,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
-    if variant == "boundary_edge_thin_v1":
+    if variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
         boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
@@ -2899,7 +2826,7 @@ def _run_voting_from_attributes(
             vp,
             vt,
             skinning_config=skinning_config,
-            variant=variant,
+            variant=variant_spec.name,
             diagnostics=skin_diagnostics,
             scanner_target_positive_mask=scanner_target_positive_mask,
         )
@@ -3202,22 +3129,11 @@ def _build_report_and_volumes(
 
 
 def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:
-    valid_variants = tuple(variants)
-    if not valid_variants:
-        raise ValueError("variants must include at least one variant")
-    unknown = sorted(set(valid_variants).difference(VARIANT_NAMES))
-    if unknown:
-        raise ValueError(f"unknown variant(s): {','.join(unknown)}")
-    duplicates = {variant for variant in valid_variants if valid_variants.count(variant) > 1}
-    if duplicates:
-        raise ValueError(f"duplicate variant(s): {','.join(sorted(duplicates))}")
-    return valid_variants
+    return validate_variants(variants)
 
 
 def _validate_variant_preset(variant_preset: str) -> str:
-    if variant_preset not in VARIANT_PRESETS:
-        raise ValueError("variant_preset must be one of: " + ", ".join(sorted(VARIANT_PRESETS)))
-    return variant_preset
+    return validate_variant_preset(variant_preset)
 
 
 def _resolve_variants(
@@ -3225,9 +3141,7 @@ def _resolve_variants(
     variants: Sequence[str] | None,
     variant_preset: str,
 ) -> tuple[str, ...]:
-    if variants is not None:
-        return _validate_variants(variants)
-    return _validate_variants(VARIANT_PRESETS[_validate_variant_preset(variant_preset)])
+    return resolve_variants(variants=variants, variant_preset=variant_preset)
 
 
 def _validate_thinning_diagnostic_cases(case_ids: Sequence[str]) -> tuple[str, ...]:
@@ -5043,7 +4957,7 @@ def _apply_boundary_skinner_fallback(
     diagnostics: dict[str, Any],
     scanner_target_positive_mask: np.ndarray | None = None,
 ) -> None:
-    del variant
+    get_variant_spec(variant)
 
     fallback_enabled = skinning_config.boundary_skinner_fallback
     fallback_policy = skinning_config.boundary_skinner_fallback_policy
