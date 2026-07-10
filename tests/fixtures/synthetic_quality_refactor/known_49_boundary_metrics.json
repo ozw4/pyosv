@@ -1,0 +1,26 @@
+{
+  "boundary_aware_voter_v1": {
+    "fvt_positive_buffered_f1_r2": 0.7407472564114501,
+    "fvt_positive_distance_p95": 4.0,
+    "skin_buffered_f1_r2": 0.4181316298976995,
+    "skin_cell_to_fvt_positive_candidate_ratio": 0.275301957517701,
+    "skin_count": 21
+  },
+  "case_id": "boundary_plane",
+  "current_default": {
+    "fvt_positive_buffered_f1_r2": 0.7394944663024711,
+    "fvt_positive_distance_p95": 4.0,
+    "skin_buffered_f1_r2": 0.4538895417030243,
+    "skin_cell_to_fvt_positive_candidate_ratio": 0.31112036651395253,
+    "skin_count": 17
+  },
+  "pipeline": "scanner",
+  "scanner_backend": "quality",
+  "scanner_refinement_factor": 2,
+  "shape": [
+    49,
+    49,
+    49
+  ],
+  "workflow_mode": "quality"
+}
