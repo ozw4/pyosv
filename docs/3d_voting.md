@@ -123,9 +123,21 @@ coordinates without assuming `kw-rw` or `kv-rv`.
 
 Surface extraction then uses a private mask-aware DP path. Invalid states stay
 out of attribute smoothing, forward/reverse accumulation, and backtracking. A
-seed is skipped when no strain-feasible surface exists. If final surface
-smoothing moves a lag outside a column's feasible interval, it is projected to
-the nearest feasible lag and the projection is counted in the seed diagnostic.
+seed is skipped when no strain-feasible surface exists. After optional surface
+smoothing, the raw smoothed surface is revalidated against the mask and the
+strain limits in both tangential directions. If it is not jointly feasible, a
+deterministic global recovery is attempted over the full selected rectangle;
+independent nearest-column projection is not sufficient. Recovery does not move
+a lag to an integer center merely because it is fractional: a value already in
+a valid Java-rounding cell is retained when the mask and both strain directions
+permit it. If no global mask-and-strain-feasible surface can be recovered, the
+seed is skipped with `skip_reason="no_feasible_surface"`.
+
+`surface_projection_count` compares the raw smoothed surface with the final
+mask-and-strain-feasible surface. It counts the `(w, v)` columns whose value
+changed, with each changed column counted once even if global recovery adjusted
+it more than once. When surface smoothing is disabled, the existing diagnostic
+contract reports zero smoothing projections.
 
 Masked vote scoring uses only valid selected volume samples. Its support
 fraction is the number of valid selected columns divided by the full

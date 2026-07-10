@@ -199,6 +199,77 @@ def test_numba_masked_surface_pipeline_matches_python_fallback(
     assert selected_valid.all()
 
 
+def test_numba_masked_surface_post_smoothing_strain_recovery_matches_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cost = np.zeros((1, 4, 5), dtype=np.float32)
+    valid_mask = np.zeros_like(cost, dtype=np.bool_)
+    for iv, (start, stop) in enumerate(((4, 4), (0, 4), (2, 3), (2, 3))):
+        valid_mask[0, iv, start : stop + 1] = True
+    kwargs = {
+        "lmin": -2,
+        "bstrain1": 4,
+        "bstrain2": 4,
+        "attribute_smoothing": 0,
+        "surface_smoothing1": 2.0,
+        "surface_smoothing2": 2.0,
+    }
+
+    monkeypatch.setattr(dp, "NUMBA_AVAILABLE", False)
+    fallback, fallback_projection_count = dp._find_surface_3d_masked(
+        cost,
+        valid_mask,
+        **kwargs,
+    )
+    monkeypatch.setattr(dp, "NUMBA_AVAILABLE", True)
+    accelerated, accelerated_projection_count = dp._find_surface_3d_masked(
+        cost,
+        valid_mask,
+        **kwargs,
+    )
+
+    assert fallback is not None
+    assert accelerated is not None
+    assert accelerated_projection_count == fallback_projection_count
+    np.testing.assert_allclose(accelerated, fallback, rtol=1.0e-6, atol=1.0e-6)
+    for surface in (fallback, accelerated):
+        assert surface.dtype == np.float32
+        assert dp._surface_respects_masked_strain(
+            surface,
+            valid_mask,
+            lmin=-2,
+            bstrain1=4,
+            bstrain2=4,
+        )
+        assert np.max(np.abs(np.diff(surface, axis=1))) <= np.float32(0.25 + 1.0e-6)
+
+
+def test_numba_masked_projection_matches_python_at_java_rounding_cells() -> None:
+    upper_predecessor = np.nextafter(np.float32(2.5), np.float32(-np.inf))
+    cases: list[tuple[np.ndarray, np.ndarray, int]] = []
+
+    isolated = np.zeros((1, 1, 5), dtype=np.bool_)
+    isolated[0, 0, 2] = True
+    for value in (np.float32(1.5), np.float32(2.5), upper_predecessor):
+        cases.append((np.array([[value]], dtype=np.float32), isolated, 0))
+
+    endpoints = np.zeros((1, 2, 5), dtype=np.bool_)
+    endpoints[0, 0, 0] = True
+    endpoints[0, 1, 4] = True
+    cases.append((np.array([[-0.25, 4.25]], dtype=np.float32), endpoints, 0))
+
+    tie_mask = np.zeros((1, 1, 3), dtype=np.bool_)
+    tie_mask[0, 0, (0, 2)] = True
+    cases.append((np.array([[1.0]], dtype=np.float32), tie_mask, 0))
+
+    for surface, valid_mask, lmin in cases:
+        fallback = dp._project_surface_to_valid_mask_python(surface, valid_mask, lmin)
+        accelerated = dp._project_surface_to_valid_mask_numba(surface, valid_mask, lmin)
+
+        assert accelerated[1:] == fallback[1:]
+        np.testing.assert_array_equal(accelerated[0], fallback[0])
+
+
 def _cost_image(offset: float = 0.0) -> np.ndarray:
     ni = 13
     nl = 7

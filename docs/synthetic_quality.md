@@ -303,8 +303,12 @@ asymmetry, then use lexicographic
 `(w_start, v_start, w_stop, v_stop)` order. Explicit full-box offsets preserve
 surface-to-volume mapping after a crop. Mask-aware attribute smoothing,
 forward/reverse DP, and backtracking exclude invalid states. A strain-infeasible
-surface is skipped; surface smoothing results are projected to the nearest
-feasible lag interval and counted.
+surface is skipped. After smoothing, mask validity and strain are revalidated
+in both tangential directions. If necessary, deterministic global feasibility
+recovery constructs a jointly valid surface across the selected rectangle; a
+fractional lag that remains feasible in its Java-rounding cell is not moved
+unnecessarily to an integer center. If recovery cannot find a feasible result,
+the seed records `skip_reason="no_feasible_surface"`.
 
 Only valid selected samples contribute to the surface score. Support fraction
 uses the full `(2*rw+1)*(2*rv+1)` patch area, not the cropped rectangle, before
@@ -323,6 +327,13 @@ counts, support-fraction minimum and mean, smoothing projection count,
 selected-invalid count, and face center-vote count. Per-seed diagnostics add
 orientation source and skip reason and contain only scalar indices, counts,
 fractions, and strings; no volume or per-voxel mask is retained.
+
+The smoothing projection count is column-based:
+`surface_projection_count` compares the raw smoothed surface with the final
+mask-and-strain-feasible surface and counts each `(w, v)` column whose value
+changed once, regardless of how many global-recovery updates affected it. It is
+not a count of independent nearest-interval projections, and it is zero when
+surface smoothing is disabled.
 
 The documented 49^3 quality-scanner `boundary_plane` baseline for
 `current_default` is `fvt_positive_buffered_f1_r2=0.739494`,

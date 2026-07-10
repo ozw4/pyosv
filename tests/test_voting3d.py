@@ -2752,6 +2752,79 @@ def test_crop_masked_uvw_box_preserves_full_box_offsets_and_counts() -> None:
     np.testing.assert_array_equal(cropped.valid_lag_mask, mask[1:4, 0:3, :])
 
 
+def test_masked_sampler_boundary_crop_extracts_valid_smoothed_strain_surface() -> None:
+    shape = (11, 11, 11)
+    c1, c2, c3 = 0, 5, 5
+    strike_angle = 37.0
+    dip_angle = 61.0
+    normal = fault_normal_vector_from_strike_and_dip(strike_angle, dip_angle)
+    dip = fault_dip_vector_from_strike_and_dip(strike_angle, dip_angle)
+    strike = fault_strike_vector_from_strike_and_dip(strike_angle, dip_angle)
+    i3, i2, i1 = np.indices(shape, dtype=np.float32)
+    x1 = i1 - np.float32(c1)
+    x2 = i2 - np.float32(c2)
+    x3 = i3 - np.float32(c3)
+    local_u = x1 * normal[0] + x2 * normal[1] + x3 * normal[2]
+    local_v = x1 * dip[0] + x2 * dip[1] + x3 * dip[2]
+    local_w = x1 * strike[0] + x2 * strike[1] + x3 * strike[2]
+    signed_distance = local_u - np.float32(0.15) * local_v + np.float32(0.10) * local_w
+    ft = np.exp(np.float32(-0.5) * (signed_distance / np.float32(0.6)) ** np.float32(2.0)).astype(
+        np.float32
+    )
+
+    voter = OptimalSurfaceVoter(ru=3, rv=4, rw=4)
+    voter.set_strain_max(0.25, 0.25)
+    voter.set_surface_smoothing(2.0, 2.0)
+    voter.set_surface_voting_boundary_policy("masked_in_bounds")
+    full_samples = voter._samples_in_uvw_box_masked(
+        c1,
+        c2,
+        c3,
+        normal,
+        dip,
+        strike,
+        ft,
+    )
+    supported_columns = np.any(full_samples.valid_lag_mask, axis=2)
+    rectangle = voting3d._select_supported_origin_rectangle(
+        supported_columns,
+        origin_w=voter.rw,
+        origin_v=voter.rv,
+    )
+
+    assert ft.dtype == np.float32
+    assert np.isfinite(ft).all()
+    assert full_samples.in_bounds_lag_count < full_samples.admissible_lag_count
+    assert rectangle is not None
+    samples = voting3d._crop_masked_uvw_box(full_samples, rectangle)
+    surface, _ = voting3d._find_surface_3d_masked(
+        samples.costs,
+        samples.valid_lag_mask,
+        lmin=voter.lmin,
+        bstrain1=voter.bstrain1,
+        bstrain2=voter.bstrain2,
+        attribute_smoothing=voter.attribute_smoothing,
+        surface_smoothing1=voter.surface_smoothing1,
+        surface_smoothing2=voter.surface_smoothing2,
+    )
+
+    assert surface is not None
+    assert surface.dtype == np.float32
+    assert np.isfinite(surface).all()
+    selected_lags = np.floor(surface.astype(np.float64) - voter.lmin + 0.5).astype(np.intp)
+    selected_mask = np.take_along_axis(
+        samples.valid_lag_mask,
+        selected_lags[:, :, np.newaxis],
+        axis=2,
+    )
+    assert selected_mask.all()
+    strain1 = np.float32(1.0 / voter.bstrain1)
+    strain2 = np.float32(1.0 / voter.bstrain2)
+    tolerance = np.float32(1.0e-6)
+    assert np.max(np.abs(np.diff(surface, axis=1))) <= strain1 + tolerance
+    assert np.max(np.abs(np.diff(surface, axis=0))) <= strain2 + tolerance
+
+
 @pytest.mark.parametrize(
     "seed_index",
     [

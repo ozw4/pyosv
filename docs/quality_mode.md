@@ -48,17 +48,24 @@ does not clamp out-of-volume UVW samples. It carries an explicit lag mask into
 surface extraction, crops tangential support to the deterministic maximum
 all-supported rectangle containing the local origin, and maps that crop with
 full-box offsets. Invalid DP states cannot be selected; infeasible surfaces are
-diagnosed and skipped, while lags displaced by surface smoothing are projected
-to the nearest feasible interval. Scoring uses only valid selected samples and
-normalizes support against the full tangential patch. Center votes may land on
-all six faces, with bounds-checked reinforcement writes.
+diagnosed and skipped. After smoothing, mask validity and strain are rechecked
+in both tangential directions. A deterministic global feasibility recovery is
+used when necessary; it retains a fractional value that is already feasible in
+its Java-rounding cell instead of moving it unnecessarily to an integer center.
+If no jointly feasible result exists, the seed records
+`skip_reason="no_feasible_surface"`. Scoring uses only valid selected samples
+and normalizes support against the full tangential patch. Center votes may land
+on all six faces, with bounds-checked reinforcement writes.
 
 Per-seed diagnostics report full/cropped support, smoothing projections,
 selected-invalid samples, face center votes, orientation source, and skip
 reason; their aggregate reports boundary-affected, voted, and skipped seed
-counts plus support/projection/vote totals. A full tangential box uses the
-extracted surface orientation. A cropped box deliberately falls back to the
-seed orientation and records
+counts plus support/projection/vote totals. `surface_projection_count` is the
+number of `(w, v)` columns whose value differs between the raw smoothed surface
+and the final mask-and-strain-feasible surface, with each changed column counted
+once. It is zero when surface smoothing is disabled. A full tangential box uses
+the extracted surface orientation. A cropped box deliberately falls back to
+the seed orientation and records
 `orientation_source="seed_boundary_fallback"`; local boundary-normal
 estimation is outside this candidate's scope.
 
