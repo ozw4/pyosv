@@ -8,9 +8,12 @@ quality experiments.
 `reference` workflow is for origin-aligned regression comparison. Its defaults
 keep reference-like voter thinning and disable support-aware surface voting
 (`surface_support_min_fraction=0.0`,
-`surface_support_exponent=0.0`). Use it when checking that Python behavior
-remains close to the current reference-oriented path. It is not the place to
-evaluate processing-quality improvements.
+`surface_support_exponent=0.0`). It also keeps
+`surface_voting_boundary_policy="reference"`: UVW samples outside the volume
+are clamped to the image edge, while `i2` and `i3` face source samples are
+excluded from surface vote averaging and accumulation. Use this workflow when
+checking that Python behavior remains close to the current reference-oriented
+path. It is not the place to evaluate processing-quality improvements.
 
 `quality` workflow is the current quality-first synthetic profile. Its defaults
 use `hybrid_v2` voter thinning, disable support-aware surface voting, use the
@@ -23,11 +26,57 @@ quality skinner v2 profile, and enable boundary skinner fallback
 runs when primary skinning returns no skins and the thinned vote volume has
 positive samples. It is not a universal production profile; use it while
 reviewing the controlled synthetic benchmark matrix and checking that the
-candidate set is not over-filtered for the cases under study.
+candidate set is not over-filtered for the cases under study. The quality
+workflow also retains `surface_voting_boundary_policy="reference"`; masked UVW
+boundary voting is not part of `current_default`.
 
 `diagnostic` workflow keeps the reference workflow defaults and enables
 thinning diagnostics. Use it when comparing current behavior, diagnostic
 variants, and reference-vs-normal thinning on the same synthetic truth.
+
+## Boundary-aware Voter Candidate
+
+`boundary_aware_voter_v1` is an explicit-only synthetic-report variant. It
+keeps the selected workflow's scanner backend, scanner thinning, seed
+selection, voter thinning, and skinner settings identical to
+`current_default`, but calls
+`set_surface_voting_boundary_policy("masked_in_bounds")`. It is absent from
+the default variant list and the `quality-matrix` preset.
+
+The masked policy is a quality experiment, not a reference-equivalence mode. It
+does not clamp out-of-volume UVW samples. It carries an explicit lag mask into
+surface extraction, crops tangential support to the deterministic maximum
+all-supported rectangle containing the local origin, and maps that crop with
+full-box offsets. Invalid DP states cannot be selected; infeasible surfaces are
+diagnosed and skipped. After smoothing, mask validity and strain are rechecked
+in both tangential directions. A deterministic global feasibility recovery is
+used when necessary; it retains a fractional value that is already feasible in
+its Java-rounding cell instead of moving it unnecessarily to an integer center.
+If no jointly feasible result exists, the seed records
+`skip_reason="no_feasible_surface"`. Scoring uses only valid selected samples
+and normalizes support against the full tangential patch. Center votes may land
+on all six faces, with bounds-checked reinforcement writes.
+
+Per-seed diagnostics report full/cropped support, smoothing projections,
+selected-invalid samples, face center votes, orientation source, and skip
+reason; their aggregate reports boundary-affected, voted, and skipped seed
+counts plus support/projection/vote totals. `surface_projection_count` is the
+number of `(w, v)` columns whose value differs between the raw smoothed surface
+and the final mask-and-strain-feasible surface, with each changed column counted
+once. It is zero when surface smoothing is disabled. A full tangential box uses
+the extracted surface orientation. A cropped box deliberately falls back to
+the seed orientation and records
+`orientation_source="seed_boundary_fallback"`; local boundary-normal
+estimation is outside this candidate's scope.
+
+Synthetic JSON stores the aggregate under `pyosv.voting.diagnostic_summary`
+beside `surface_voting_boundary_policy` and the existing support settings.
+`summary.csv` exposes the policy plus boundary-affected/skipped seed counts,
+support-fraction mean/minimum, projection count, selected-invalid count, and
+face center-vote count. Reference rows use nonblank neutral/count values.
+
+This candidate is not promoted and must not be described as higher quality or
+as a new default until the documented scanner-boundary promotion gate passes.
 
 ## Synthetic Truth Benchmark
 
@@ -85,7 +134,7 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --case-set extended \
   --shape 49,49,49 \
   --workflow-mode quality \
-  --variants current_default,boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
+  --variants current_default,boundary_aware_voter_v1,boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
   --input-mode both \
   --scanner-backend quality \
   --scanner-refinement-factor 2 \
@@ -111,14 +160,15 @@ python scripts/compare_quality_reports.py \
   --output-markdown outputs/3d/synthetic_quality/promotion_candidates_49/fallback_v5_delta.md
 ```
 
-Repeat the same command with `--candidate-variant boundary_edge_thin_v1` and
+Repeat the same command with `--candidate-variant boundary_aware_voter_v1`,
+`--candidate-variant boundary_edge_thin_v1`, and
 `--candidate-variant boundary_seed_retention_v1`, or run the aggregate checker:
 
 ```bash
 python scripts/check_synthetic_quality_promotion_gate.py \
   --baseline-summary outputs/3d/synthetic_quality/promotion_candidates_49/summary.csv \
   --candidate-summary outputs/3d/synthetic_quality/promotion_candidates_49/summary.csv \
-  --candidate-variants boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
+  --candidate-variants boundary_aware_voter_v1,boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
   --output-json outputs/3d/synthetic_quality/promotion_candidates_49/promotion_gate.json \
   --output-markdown outputs/3d/synthetic_quality/promotion_candidates_49/promotion_gate.md
 ```
@@ -170,9 +220,11 @@ The `quality-matrix` preset includes `current_default`,
 `quality_boundary_skinner_fallback_v2`,
 `quality_boundary_skinner_fallback_v3`, and
 `quality_boundary_skinner_fallback_v4`. The quality workflow default uses the
-`hybrid_v2` voter thinning path. The hybrid voter thinning variant uses reference-like
-thinning in stable-orientation regions and fault-normal thinning where local
-orientation changes rapidly. The `voter_thin_hybrid_v2` diagnostic variant
+`hybrid_v2` voter thinning path. `boundary_aware_voter_v1` is intentionally not
+in this preset and remains available only by explicit `--variants` selection.
+The hybrid voter thinning variant uses reference-like thinning in
+stable-orientation regions and fault-normal thinning where local orientation
+changes rapidly. The `voter_thin_hybrid_v2` diagnostic variant
 keeps that stable-plane preference, only adopts positive fault-normal
 candidates in rough-orientation regions, and uses plateau-aware edge fallback
 with the input fault likelihood as the retained-layer tie-breaker. The
@@ -292,13 +344,15 @@ also remains diagnostic. The known scanner-inclusive boundary issue remains
 open: scanner `ft` can be high quality while downstream FVT and skinning
 degrade near boundaries.
 
-For the #339 promotion-candidate flow above, no new 49^3
-`promotion_candidates_49` benchmark output has been recorded in this repository
-update. The `quality current_default` profile is therefore unchanged, and
-`boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
-`quality_boundary_skinner_fallback_v5` remain unpromoted until their
-`promotion_gate.json` shows the scanner-boundary gate passing without material
-non-boundary, oracle, fallback-replacement, or topology regressions.
+For the promotion-candidate flow above, no new 49^3
+`promotion_candidates_49` result for `boundary_aware_voter_v1` has been
+recorded in this repository update. Adding it to the reproducible command does
+not imply that benchmark was run. The `quality current_default` profile is
+therefore unchanged, and `boundary_aware_voter_v1`, `boundary_edge_thin_v1`,
+`boundary_seed_retention_v1`, and `quality_boundary_skinner_fallback_v5` remain
+unpromoted until their `promotion_gate.json` shows the scanner-boundary gate
+passing without material non-boundary, oracle, fallback-replacement, or
+topology regressions.
 
 For skin extraction, `--workflow-mode quality` defaults to
 `--skinner-method quality` unless `--skinner-method` is passed explicitly. The
