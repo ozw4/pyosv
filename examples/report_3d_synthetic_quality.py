@@ -20,7 +20,7 @@ import math
 import sys
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from os import PathLike
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -29,14 +29,8 @@ import numpy as np
 
 from pyosv.synthetic3d import (
     Synthetic3DCase,
-    make_boundary_plane_case,
-    make_crossing_planes_case,
-    make_curved_surface_case,
-    make_parallel_planes_case,
+    make_boundary_plane_case,  # noqa: F401 - compatibility export
     make_scanner_input_from_case,
-    make_single_dipping_plane_case,
-    make_single_vertical_plane_case,
-    make_weak_noisy_plane_case,
     validate_shape3,
 )
 from pyosv.synthetic_metrics import (
@@ -60,6 +54,30 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticVotingConfig,
     _validate_nonnegative_finite_scalar,
     _validate_nonnegative_int,
+)
+from pyosv.evaluation.synthetic_quality.cases import (
+    CASE_IDS,  # noqa: F401 - compatibility export
+    CASE_SETS,
+    EXTENDED_CASES,  # noqa: F401 - compatibility export
+    GEOMETRY_CASES,  # noqa: F401 - compatibility export
+    MINIMAL_CASES,  # noqa: F401 - compatibility export
+    SyntheticQualityCaseDefinition,
+    validate_case_ids,
+    validate_case_set,
+)
+from pyosv.evaluation.synthetic_quality.profiles import (
+    WORKFLOW_MODES,
+    _default_skinner_method_for_workflow,  # noqa: F401 - compatibility export
+    _default_skinner_min_likelihood_for_method,  # noqa: F401 - compatibility export
+    _default_surface_support_policy_for_workflow,
+    _default_voter_thin_mode_for_workflow,
+    _effective_include_thinning_diagnostic,
+    _effective_skinner_method,
+    _effective_skinner_min_likelihood,
+    _effective_skinning_config_for_workflow,
+    _effective_surface_support_policy,
+    _effective_voter_thin_mode,
+    _validate_workflow_mode,
 )
 from pyosv.cells import FaultCell
 from pyosv.orient3d import FaultOrientScanner3
@@ -179,7 +197,6 @@ SURFACE_SUPPORT_WEIGHTED_MIN_FRACTION = 0.5
 SURFACE_SUPPORT_WEIGHTED_EXPONENT = 1.0
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 FVT_RECENTER_MAX_SHIFT = 3
-WORKFLOW_MODES = ("reference", "quality", "diagnostic")
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
 SCANNER_ENSEMBLE_COMPONENT_BACKENDS = ("reference-like", "quality", "fast")
 SCANNER_ENSEMBLE_PRIORS = {
@@ -238,99 +255,11 @@ VARIANT_COMPARISON_METRICS = (
 )
 
 
-def _validate_workflow_mode(value: str) -> str:
-    if value not in WORKFLOW_MODES:
-        raise ValueError("workflow_mode must be one of: " + ", ".join(WORKFLOW_MODES))
-    return value
-
-
 def parse_workflow_mode(text: str) -> str:
     try:
         return _validate_workflow_mode(text)
     except ValueError as error:
         raise argparse.ArgumentTypeError(str(error)) from error
-
-
-def _default_voter_thin_mode_for_workflow(workflow_mode: str) -> str:
-    return "hybrid_v2" if workflow_mode == "quality" else "reference"
-
-
-def _default_surface_support_policy_for_workflow(
-    workflow_mode: str,
-) -> tuple[float, float]:
-    return 0.0, 0.0
-
-
-def _default_skinner_method_for_workflow(workflow_mode: str) -> str:
-    return "quality" if workflow_mode == "quality" else "reference"
-
-
-def _default_skinner_min_likelihood_for_method(method: str) -> float | None:
-    return None if method == "quality" else 0.5
-
-
-def _effective_skinner_method(
-    *,
-    workflow_mode: str,
-    skinner_method: str | None,
-) -> str:
-    if skinner_method is not None:
-        return skinner_method
-    return _default_skinner_method_for_workflow(workflow_mode)
-
-
-def _effective_skinner_min_likelihood(
-    *,
-    skinner_method: str,
-    min_likelihood: float | None,
-) -> float | None:
-    if min_likelihood is not None:
-        return min_likelihood
-    return _default_skinner_min_likelihood_for_method(skinner_method)
-
-
-def _effective_skinning_config_for_workflow(
-    *,
-    workflow_mode: str,
-    skinning_config: SyntheticSkinningConfig,
-    skinner_method_explicit: bool = False,
-    skinner_min_likelihood_explicit: bool = False,
-    skinner_growth_source_explicit: bool = False,
-    skinner_accepted_occupancy_radius_explicit: bool = False,
-) -> SyntheticSkinningConfig:
-    if workflow_mode != "quality" or skinning_config.method not in {
-        "reference",
-        "quality",
-    }:
-        return skinning_config
-    if skinner_method_explicit and skinning_config.method != "quality":
-        return skinning_config
-    min_likelihood = skinning_config.min_likelihood
-    if (
-        not skinner_min_likelihood_explicit
-        and min_likelihood == SyntheticSkinningConfig().min_likelihood
-    ):
-        min_likelihood = None
-    accepted_occupancy_radius = skinning_config.accepted_occupancy_radius
-    if (
-        not skinner_accepted_occupancy_radius_explicit
-        and accepted_occupancy_radius == SyntheticSkinningConfig().accepted_occupancy_radius
-    ):
-        accepted_occupancy_radius = 1
-    growth_source = skinning_config.growth_source
-    if (
-        not skinner_growth_source_explicit
-        and growth_source == SyntheticSkinningConfig().growth_source
-    ):
-        growth_source = "pre_thin"
-    return replace(
-        skinning_config,
-        method="quality",
-        min_likelihood=min_likelihood,
-        accepted_occupancy_radius=accepted_occupancy_radius,
-        growth_source=growth_source,
-        boundary_skinner_fallback=True,
-    )
 
 
 def _effective_skinning_config_for_variant(
@@ -379,40 +308,6 @@ def _effective_skinning_config_for_variant(
     return skinning_config
 
 
-def _effective_voter_thin_mode(
-    *,
-    workflow_mode: str,
-    voter_thin_mode: str | None,
-) -> str:
-    if voter_thin_mode is not None:
-        return voter_thin_mode
-    return _default_voter_thin_mode_for_workflow(workflow_mode)
-
-
-def _effective_surface_support_policy(
-    *,
-    workflow_mode: str,
-    min_fraction: float | None,
-    exponent: float | None,
-) -> tuple[float, float]:
-    default_min_fraction, default_exponent = _default_surface_support_policy_for_workflow(
-        workflow_mode
-    )
-    if min_fraction is not None:
-        default_min_fraction = min_fraction
-    if exponent is not None:
-        default_exponent = exponent
-    return default_min_fraction, default_exponent
-
-
-def _effective_include_thinning_diagnostic(
-    *,
-    workflow_mode: str,
-    include_thinning_diagnostic: bool,
-) -> bool:
-    return include_thinning_diagnostic or workflow_mode == "diagnostic"
-
-
 CSV_VARIANT_COMPARISON_FIELDS = (
     (
         "fvt_buffered_f1_delta_vs_baseline",
@@ -451,46 +346,6 @@ CSV_VARIANT_COMPARISON_FIELDS = (
         "skin_count_delta_vs_current",
     ),
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SyntheticQualityCaseDefinition:
-    """A controlled synthetic report case definition."""
-
-    case_id: str
-    factory: Callable[[tuple[int, int, int]], Synthetic3DCase]
-
-
-MINIMAL_CASES = (
-    SyntheticQualityCaseDefinition(
-        case_id="single_vertical_plane",
-        factory=make_single_vertical_plane_case,
-    ),
-)
-GEOMETRY_CASES = (
-    *MINIMAL_CASES,
-    SyntheticQualityCaseDefinition(
-        case_id="single_dipping_plane",
-        factory=make_single_dipping_plane_case,
-    ),
-    SyntheticQualityCaseDefinition(
-        case_id="curved_surface",
-        factory=make_curved_surface_case,
-    ),
-)
-EXTENDED_CASES = (
-    *GEOMETRY_CASES,
-    SyntheticQualityCaseDefinition("parallel_planes", make_parallel_planes_case),
-    SyntheticQualityCaseDefinition("crossing_planes", make_crossing_planes_case),
-    SyntheticQualityCaseDefinition("boundary_plane", make_boundary_plane_case),
-    SyntheticQualityCaseDefinition("weak_noisy_plane", make_weak_noisy_plane_case),
-)
-CASE_SETS = {
-    "minimal": MINIMAL_CASES,
-    "geometry": GEOMETRY_CASES,
-    "extended": EXTENDED_CASES,
-}
-CASE_IDS = tuple(definition.case_id for definition in EXTENDED_CASES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3262,10 +3117,7 @@ def _build_report_and_volumes(
         include_thinning_diagnostic=include_thinning_diagnostic,
     )
     diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
-    try:
-        case_definitions = CASE_SETS[case_set]
-    except KeyError as error:
-        raise ValueError(f"unknown case_set: {case_set}") from error
+    case_definitions = validate_case_set(case_set)
 
     cases = []
     volume_outputs = {}
@@ -3379,21 +3231,11 @@ def _resolve_variants(
 
 
 def _validate_thinning_diagnostic_cases(case_ids: Sequence[str]) -> tuple[str, ...]:
-    valid_case_ids = tuple(case_ids)
-    if not valid_case_ids:
-        raise ValueError("thinning_diagnostic_cases must include at least one case ID")
-    unknown = sorted(set(valid_case_ids).difference(CASE_IDS))
-    if unknown:
-        raise ValueError(
-            f"unknown thinning diagnostic case ID(s): {','.join(unknown)}; "
-            f"choices: {','.join(CASE_IDS)}"
-        )
-    duplicates = {case_id for case_id in valid_case_ids if valid_case_ids.count(case_id) > 1}
-    if duplicates:
-        raise ValueError(
-            f"duplicate thinning diagnostic case ID(s): {','.join(sorted(duplicates))}"
-        )
-    return valid_case_ids
+    return validate_case_ids(
+        case_ids,
+        description="thinning diagnostic",
+        sequence_name="thinning_diagnostic_cases",
+    )
 
 
 def _variant_comparison(
