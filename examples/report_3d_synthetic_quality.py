@@ -126,6 +126,7 @@ SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION = 0.50
 SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION = 0.60
 VARIANT_NAMES = (
     "current_default",
+    "boundary_aware_voter_v1",
     "no_surface_orientation_smoothing",
     "final_norm_smoothing_1",
     "voter_thin_normal",
@@ -770,7 +771,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  PYTHONPATH=src python examples/report_3d_synthetic_quality.py \\\n"
             "    --case-set extended \\\n"
             "    --shape 33,33,33 \\\n"
-            "    --variants current_default,no_surface_orientation_smoothing,"
+            "    --variants current_default,boundary_aware_voter_v1,"
+            "no_surface_orientation_smoothing,"
             "final_norm_smoothing_1,voter_thin_normal,voter_thin_hybrid,"
             "voter_thin_hybrid_v2,voter_thin_normal_plateau,"
             "surface_support_weighted,quality_skinner_v2,"
@@ -3053,6 +3055,8 @@ def _run_voting_from_attributes(
         min_fraction=surface_support_min_fraction,
         exponent=surface_support_exponent,
     )
+    if variant == "boundary_aware_voter_v1":
+        voter.set_surface_voting_boundary_policy("masked_in_bounds")
     if variant == "no_surface_orientation_smoothing":
         voter.set_surface_orientation_smoothing(0.0)
     if variant == "final_norm_smoothing_1":
@@ -3086,6 +3090,7 @@ def _run_voting_from_attributes(
         pt=pt,
         tt=tt,
     )
+    surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
     thin_mode = _thin_mode_for_variant(variant, voting_config)
     plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
     fvt = voter.thin(
@@ -3177,8 +3182,10 @@ def _run_voting_from_attributes(
             "fv": _array_summary(fv),
             "fvt": _array_summary(fvt),
             "voting": {
+                "surface_voting_boundary_policy": voter.surface_voting_boundary_policy,
                 "surface_support_min_fraction": float(surface_support_min_fraction),
                 "surface_support_exponent": float(surface_support_exponent),
+                "diagnostic_summary": surface_voting_diagnostic_summary,
             },
         },
         "quality": {
@@ -3740,6 +3747,14 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                 "shape_n3",
                 "shape_n2",
                 "shape_n1",
+                "surface_voting_boundary_policy",
+                "voter_boundary_affected_seed_count",
+                "voter_skipped_seed_count",
+                "voter_support_fraction_mean",
+                "voter_support_fraction_min",
+                "voter_surface_projection_count",
+                "voter_selected_invalid_sample_count",
+                "voter_face_center_vote_count",
                 "fv_max",
                 "fv_mean",
                 "fv_nonzero_fraction",
@@ -4016,6 +4031,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                     thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
                         variant_report.get("thinning_diagnostic"),
                     )
+                    voting_row = _summary_csv_voting_row(variant_report=variant_report)
                     writer.writerow(
                         {
                             "case_id": case["case_id"],
@@ -4027,6 +4043,7 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                             "shape_n3": n3,
                             "shape_n2": n2,
                             "shape_n1": n1,
+                            **voting_row,
                             "fv_max": fv["max"],
                             "fv_mean": fv["mean"],
                             "fv_nonzero_fraction": fv["nonzero_fraction"],
@@ -4087,6 +4104,39 @@ def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]
                         }
                     )
     return output_path
+
+
+def _summary_csv_voting_row(*, variant_report: Mapping[str, Any]) -> dict[str, str | float | int]:
+    """Return stable scalar voter diagnostics, including for pre-diagnostic reports."""
+
+    pyosv = variant_report.get("pyosv")
+    voting = pyosv.get("voting") if isinstance(pyosv, Mapping) else None
+    if not isinstance(voting, Mapping):
+        voting = {}
+    diagnostic = voting.get("diagnostic_summary")
+    if not isinstance(diagnostic, Mapping):
+        diagnostic = {}
+
+    projection_count = diagnostic.get(
+        "surface_projection_count",
+        diagnostic.get("projection_count", 0),
+    )
+    return {
+        "surface_voting_boundary_policy": str(
+            voting.get("surface_voting_boundary_policy", "reference")
+        ),
+        "voter_boundary_affected_seed_count": int(
+            diagnostic.get("boundary_affected_seed_count", 0)
+        ),
+        "voter_skipped_seed_count": int(diagnostic.get("skipped_seed_count", 0)),
+        "voter_support_fraction_mean": float(diagnostic.get("support_fraction_mean", 1.0)),
+        "voter_support_fraction_min": float(diagnostic.get("support_fraction_min", 1.0)),
+        "voter_surface_projection_count": int(projection_count),
+        "voter_selected_invalid_sample_count": int(
+            diagnostic.get("selected_invalid_sample_count", 0)
+        ),
+        "voter_face_center_vote_count": int(diagnostic.get("face_center_vote_count", 0)),
+    }
 
 
 def _summary_csv_scanner_row(
