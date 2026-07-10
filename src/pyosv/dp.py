@@ -349,6 +349,971 @@ def find_surface_3d(
     return surface.astype(np.float32, copy=False)
 
 
+def _find_surface_3d_masked(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    lmin: int,
+    bstrain1: int,
+    bstrain2: int,
+    attribute_smoothing: int = 1,
+    surface_smoothing1: float = 0.0,
+    surface_smoothing2: float = 0.0,
+) -> tuple[np.ndarray | None, int]:
+    """Find a surface while excluding invalid lag states from all DP stages.
+
+    This private path is used by boundary-aware surface voting. ``None`` means
+    that no strain-feasible surface spans the supplied tangential rectangle.
+    The integer return value counts columns whose lag was projected back to a
+    valid state after optional surface smoothing.
+    """
+
+    cost_array = validate_cost_3d(cost)
+    valid_mask_array = _validate_valid_mask_3d(valid_mask, cost_array.shape)
+    lmin_int = _validate_int(lmin, "lmin")
+    bstrain1_int = _validate_positive_int(bstrain1, "bstrain1")
+    bstrain2_int = _validate_positive_int(bstrain2, "bstrain2")
+    attribute_smoothing_int = _validate_nonnegative_int(
+        attribute_smoothing,
+        "attribute_smoothing",
+    )
+    surface_smoothing1_float = _validate_nonnegative_float(
+        surface_smoothing1,
+        "surface_smoothing1",
+    )
+    surface_smoothing2_float = _validate_nonnegative_float(
+        surface_smoothing2,
+        "surface_smoothing2",
+    )
+
+    if 0 in cost_array.shape:
+        return None, 0
+    if not valid_mask_array.any(axis=2).all():
+        return None, 0
+
+    smoothed_cost = cost_array.copy()
+    for _ in range(attribute_smoothing_int):
+        smoothed_cost = _smooth_fault_attributes_3d_masked(
+            smoothed_cost,
+            valid_mask_array,
+            bstrain1=bstrain1_int,
+            bstrain2=bstrain2_int,
+        )
+
+    effective_mask = valid_mask_array & np.isfinite(smoothed_cost)
+    if not effective_mask.any(axis=2).all():
+        return None, 0
+
+    surface = _extract_masked_surface_rows(
+        smoothed_cost,
+        effective_mask,
+        lmin=lmin_int,
+        bstrain=bstrain1_int,
+    )
+    if surface is None:
+        surface = _minimum_cost_masked_surface(
+            smoothed_cost,
+            effective_mask,
+            lmin=lmin_int,
+        )
+    if not effective_mask.all() and not _surface_respects_masked_strain(
+        surface,
+        effective_mask,
+        lmin=lmin_int,
+        bstrain1=bstrain1_int,
+        bstrain2=bstrain2_int,
+    ):
+        surface = _recover_bidirectionally_feasible_surface(
+            surface,
+            effective_mask,
+            lmin=lmin_int,
+            bstrain1=bstrain1_int,
+            bstrain2=bstrain2_int,
+        )
+        if surface is None:
+            return None, 0
+
+    smoothing_applied = surface_smoothing1_float > 0.0 or surface_smoothing2_float > 0.0
+    if smoothing_applied:
+        surface = smooth_surface_2d(
+            surface,
+            sigma1=surface_smoothing1_float,
+            sigma2=surface_smoothing2_float,
+        )
+        surface, projection_count, projection_ok = _project_surface_to_valid_mask(
+            surface,
+            effective_mask,
+            lmin_int,
+        )
+        if not projection_ok:
+            return None, 0
+    else:
+        projection_count = 0
+    return surface.astype(np.float32, copy=False), projection_count
+
+
+def _extract_masked_surface_rows(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    lmin: int,
+    bstrain: int,
+) -> np.ndarray | None:
+    nrow, npath, _ = cost.shape
+    surface = np.empty((nrow, npath), dtype=np.float32)
+    for row in range(nrow):
+        path, feasible = _find_path_2d_masked(
+            cost[row],
+            valid_mask[row],
+            lmin=lmin,
+            bstrain=bstrain,
+        )
+        if not feasible:
+            return None
+        surface[row] = path
+    return surface
+
+
+def _minimum_cost_masked_surface(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    lmin: int,
+) -> np.ndarray:
+    nw, nv, _ = cost.shape
+    surface = np.empty((nw, nv), dtype=np.float32)
+    for iw in range(nw):
+        for iv in range(nv):
+            valid_indices = np.flatnonzero(valid_mask[iw, iv])
+            valid_costs = cost[iw, iv, valid_indices]
+            best_offset = int(np.argmin(valid_costs))
+            surface[iw, iv] = np.float32(lmin + int(valid_indices[best_offset]))
+    return surface
+
+
+def _surface_respects_masked_strain(
+    surface: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    lmin: int,
+    bstrain1: int,
+    bstrain2: int,
+) -> bool:
+    nw, nv = surface.shape
+    nu = valid_mask.shape[2]
+    for iw in range(nw):
+        for iv in range(nv):
+            lag_index = math.floor(float(surface[iw, iv] - lmin) + 0.5)
+            if lag_index < 0 or lag_index >= nu or not valid_mask[iw, iv, lag_index]:
+                return False
+
+    tolerance = np.float32(1.0e-6)
+    strain1 = np.float32(1.0 / bstrain1)
+    strain2 = np.float32(1.0 / bstrain2)
+    if nv > 1 and np.any(np.abs(np.diff(surface, axis=1)) > strain1 + tolerance):
+        return False
+    return not (nw > 1 and np.any(np.abs(np.diff(surface, axis=0)) > strain2 + tolerance))
+
+
+def _recover_bidirectionally_feasible_surface(
+    surface: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    lmin: int,
+    bstrain1: int,
+    bstrain2: int,
+) -> np.ndarray | None:
+    """Recover a deterministic feasible surface from column lag intervals."""
+
+    nw, nv, nu = valid_mask.shape
+    lower = np.empty((nw, nv), dtype=np.float64)
+    upper = np.empty((nw, nv), dtype=np.float64)
+    for iw in range(nw):
+        for iv in range(nv):
+            valid_indices = np.flatnonzero(valid_mask[iw, iv])
+            if valid_indices.size == 0:
+                return None
+            first_index = int(valid_indices[0])
+            last_index = int(valid_indices[-1])
+            first_lag = lmin + first_index
+            last_lag = lmin + last_index
+            lower[iw, iv] = max(float(lmin), float(first_lag) - 0.5)
+            if last_index == nu - 1:
+                upper[iw, iv] = float(last_lag)
+            else:
+                upper_boundary = np.float32(float(last_lag) + 0.5)
+                upper[iw, iv] = float(
+                    np.nextafter(
+                        upper_boundary,
+                        np.float32(-np.inf),
+                        dtype=np.float32,
+                    )
+                )
+
+    strain1 = 1.0 / bstrain1
+    strain2 = 1.0 / bstrain2
+    for _ in range(max(1, 2 * nw * nv)):
+        changed = False
+        for iw in range(nw):
+            for iv in range(nv - 1):
+                changed |= _tighten_strain_bounds_pair(
+                    lower,
+                    upper,
+                    (iw, iv),
+                    (iw, iv + 1),
+                    strain1,
+                )
+        for iw in range(nw - 1):
+            for iv in range(nv):
+                changed |= _tighten_strain_bounds_pair(
+                    lower,
+                    upper,
+                    (iw, iv),
+                    (iw + 1, iv),
+                    strain2,
+                )
+        if np.any(lower > upper + 1.0e-9):
+            return None
+        if not changed:
+            break
+
+    width = upper - lower
+    denominator = float(np.sum(width * width))
+    if denominator > 0.0:
+        alpha = float(np.sum((surface.astype(np.float64) - lower) * width) / denominator)
+        alpha = min(max(alpha, 0.0), 1.0)
+    else:
+        alpha = 0.0
+    candidates = (
+        lower + alpha * width,
+        lower,
+        upper,
+        0.5 * (lower + upper),
+    )
+    for candidate in candidates:
+        candidate_float32 = candidate.astype(np.float32)
+        if _surface_respects_masked_strain(
+            candidate_float32,
+            valid_mask,
+            lmin=lmin,
+            bstrain1=bstrain1,
+            bstrain2=bstrain2,
+        ):
+            return candidate_float32
+    return None
+
+
+def _tighten_strain_bounds_pair(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    first: tuple[int, int],
+    second: tuple[int, int],
+    strain: float,
+) -> bool:
+    first_lower = lower[first]
+    second_lower = lower[second]
+    first_upper = upper[first]
+    second_upper = upper[second]
+    new_first_lower = max(first_lower, second_lower - strain)
+    new_second_lower = max(second_lower, first_lower - strain)
+    new_first_upper = min(first_upper, second_upper + strain)
+    new_second_upper = min(second_upper, first_upper + strain)
+    changed = (
+        new_first_lower != first_lower
+        or new_second_lower != second_lower
+        or new_first_upper != first_upper
+        or new_second_upper != second_upper
+    )
+    lower[first] = new_first_lower
+    lower[second] = new_second_lower
+    upper[first] = new_first_upper
+    upper[second] = new_second_upper
+    return changed
+
+
+def _smooth_fault_attributes_3d_masked(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    bstrain1: int,
+    bstrain2: int,
+) -> np.ndarray:
+    """Apply staged attribute smoothing without admitting masked lag states."""
+
+    nw, nv, nu = cost.shape
+    smoothed_v = np.empty((nw, nv, nu), dtype=np.float32)
+    for iw in range(nw):
+        smoothed_v[iw] = _smooth_fault_attributes_2d_masked(
+            cost[iw],
+            valid_mask[iw],
+            bstrain1,
+        )
+
+    smoothed_w = np.empty_like(smoothed_v, dtype=np.float32)
+    for iv in range(nv):
+        smoothed_w[:, iv, :] = _smooth_fault_attributes_2d_masked(
+            smoothed_v[:, iv, :],
+            valid_mask[:, iv, :],
+            bstrain2,
+        )
+    return smoothed_w
+
+
+def _smooth_fault_attributes_2d_masked(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    bstrain: int,
+) -> np.ndarray:
+    if NUMBA_AVAILABLE:
+        return _smooth_fault_attributes_2d_masked_numba(cost, valid_mask, bstrain)
+    return _smooth_fault_attributes_2d_masked_python(cost, valid_mask, bstrain)
+
+
+def _smooth_fault_attributes_2d_masked_python(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    bstrain: int,
+) -> np.ndarray:
+    forward = _accumulate_2d_masked_python(cost, valid_mask, bstrain, 1)
+    reverse = _accumulate_2d_masked_python(cost, valid_mask, bstrain, -1)
+    smoothed = np.full(cost.shape, np.inf, dtype=np.float32)
+    finite = valid_mask & np.isfinite(cost) & np.isfinite(forward) & np.isfinite(reverse)
+    smoothed[finite] = forward[finite] + reverse[finite] - cost[finite]
+    return smoothed
+
+
+@njit(cache=True)
+def _smooth_fault_attributes_2d_masked_numba(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    bstrain: int,
+) -> np.ndarray:
+    forward = _accumulate_2d_masked_numba(cost, valid_mask, bstrain, 1)
+    reverse = _accumulate_2d_masked_numba(cost, valid_mask, bstrain, -1)
+    ni, nl = cost.shape
+    smoothed = np.full(cost.shape, np.inf, dtype=np.float32)
+    for ii in range(ni):
+        for il in range(nl):
+            if (
+                valid_mask[ii, il]
+                and np.isfinite(cost[ii, il])
+                and np.isfinite(forward[ii, il])
+                and np.isfinite(reverse[ii, il])
+            ):
+                smoothed[ii, il] = forward[ii, il] + reverse[ii, il] - cost[ii, il]
+    return smoothed
+
+
+def _find_path_2d_masked(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    lmin: int,
+    bstrain: int,
+) -> tuple[np.ndarray, bool]:
+    if NUMBA_AVAILABLE:
+        accumulated = _accumulate_2d_masked_numba(cost, valid_mask, bstrain, 1)
+        return _backtrack_2d_masked_numba(
+            accumulated,
+            cost,
+            valid_mask,
+            lmin,
+            bstrain,
+            -1,
+        )
+
+    accumulated = _accumulate_2d_masked_python(cost, valid_mask, bstrain, 1)
+    return _backtrack_2d_masked_python(
+        accumulated,
+        cost,
+        valid_mask,
+        lmin,
+        bstrain,
+        -1,
+    )
+
+
+def _accumulate_2d_masked_python(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    bstrain: int,
+    direction: int,
+) -> np.ndarray:
+    ni, nl = cost.shape
+    ni_last = ni - 1
+    nl_last = nl - 1
+    start = 0 if direction > 0 else ni_last
+    stop = ni if direction > 0 else -1
+    step = 1 if direction > 0 else -1
+
+    accumulated = np.full(cost.shape, np.inf, dtype=np.float32)
+    for il in range(nl):
+        if valid_mask[start, il] and np.isfinite(cost[start, il]):
+            accumulated[start, il] = cost[start, il]
+
+    for ii in range(start + step, stop, step):
+        ji = min(max(ii - step, 0), ni_last)
+        jb = min(max(ii - step * bstrain, 0), ni_last)
+
+        for il in range(nl):
+            if not valid_mask[ii, il] or not np.isfinite(cost[ii, il]):
+                continue
+
+            il_minus = max(il - 1, 0)
+            il_plus = min(il + 1, nl_last)
+            cost_minus = np.float32(np.inf)
+            if _masked_interpolated_transition_is_valid_python(
+                valid_mask,
+                ii,
+                il,
+                jb,
+                il_minus,
+                bstrain,
+            ):
+                cost_minus = _masked_transition_cost_python(
+                    accumulated,
+                    cost,
+                    valid_mask,
+                    ji,
+                    jb,
+                    -step,
+                    il_minus,
+                )
+            cost_same = accumulated[ji, il]
+            cost_plus = np.float32(np.inf)
+            if _masked_interpolated_transition_is_valid_python(
+                valid_mask,
+                ii,
+                il,
+                jb,
+                il_plus,
+                bstrain,
+            ):
+                cost_plus = _masked_transition_cost_python(
+                    accumulated,
+                    cost,
+                    valid_mask,
+                    ji,
+                    jb,
+                    -step,
+                    il_plus,
+                )
+            best_cost = _min3_prefer_center(cost_minus, cost_same, cost_plus)
+            if np.isfinite(best_cost):
+                accumulated[ii, il] = best_cost + cost[ii, il]
+
+    return accumulated
+
+
+def _masked_transition_cost_python(
+    accumulated: np.ndarray,
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    start: int,
+    stop: int,
+    step: int,
+    lag_index: int,
+) -> np.float32:
+    transition_cost = accumulated[stop, lag_index]
+    if not np.isfinite(transition_cost):
+        return np.float32(np.inf)
+    for ii in range(start, stop, step):
+        if not valid_mask[ii, lag_index] or not np.isfinite(cost[ii, lag_index]):
+            return np.float32(np.inf)
+        transition_cost += cost[ii, lag_index]
+    return np.float32(transition_cost)
+
+
+def _masked_interpolated_transition_is_valid_python(
+    valid_mask: np.ndarray,
+    current_index: int,
+    current_lag_index: int,
+    previous_index: int,
+    previous_lag_index: int,
+    bstrain: int,
+) -> bool:
+    step = 1 if previous_index > current_index else -1
+    inverse_bstrain = np.float32(1.0 / bstrain)
+    lag = np.float32(current_lag_index)
+    lag_step = np.float32((previous_lag_index - current_lag_index) * inverse_bstrain)
+    sample_index = current_index
+    while sample_index != previous_index:
+        sample_index += step
+        lag = np.float32(lag + lag_step)
+        selected_lag_index = math.floor(float(lag) + 0.5)
+        if (
+            selected_lag_index < 0
+            or selected_lag_index >= valid_mask.shape[1]
+            or not valid_mask[sample_index, selected_lag_index]
+        ):
+            return False
+    return True
+
+
+@njit(cache=True)
+def _accumulate_2d_masked_numba(
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    bstrain: int,
+    direction: int,
+) -> np.ndarray:
+    ni, nl = cost.shape
+    ni_last = ni - 1
+    nl_last = nl - 1
+    start = 0 if direction > 0 else ni_last
+    stop = ni if direction > 0 else -1
+    step = 1 if direction > 0 else -1
+
+    accumulated = np.full(cost.shape, np.inf, dtype=np.float32)
+    for il in range(nl):
+        if valid_mask[start, il] and np.isfinite(cost[start, il]):
+            accumulated[start, il] = cost[start, il]
+
+    for ii in range(start + step, stop, step):
+        ji = min(max(ii - step, 0), ni_last)
+        jb = min(max(ii - step * bstrain, 0), ni_last)
+
+        for il in range(nl):
+            if not valid_mask[ii, il] or not np.isfinite(cost[ii, il]):
+                continue
+
+            il_minus = max(il - 1, 0)
+            il_plus = min(il + 1, nl_last)
+            cost_minus = np.float32(np.inf)
+            if _masked_interpolated_transition_is_valid_numba(
+                valid_mask,
+                ii,
+                il,
+                jb,
+                il_minus,
+                bstrain,
+            ):
+                cost_minus = _masked_transition_cost_numba(
+                    accumulated,
+                    cost,
+                    valid_mask,
+                    ji,
+                    jb,
+                    -step,
+                    il_minus,
+                )
+            cost_same = accumulated[ji, il]
+            cost_plus = np.float32(np.inf)
+            if _masked_interpolated_transition_is_valid_numba(
+                valid_mask,
+                ii,
+                il,
+                jb,
+                il_plus,
+                bstrain,
+            ):
+                cost_plus = _masked_transition_cost_numba(
+                    accumulated,
+                    cost,
+                    valid_mask,
+                    ji,
+                    jb,
+                    -step,
+                    il_plus,
+                )
+            best_cost = _min3_prefer_center_numba(cost_minus, cost_same, cost_plus)
+            if np.isfinite(best_cost):
+                accumulated[ii, il] = best_cost + cost[ii, il]
+
+    return accumulated
+
+
+@njit(cache=True)
+def _masked_transition_cost_numba(
+    accumulated: np.ndarray,
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    start: int,
+    stop: int,
+    step: int,
+    lag_index: int,
+) -> np.float32:
+    transition_cost = accumulated[stop, lag_index]
+    if not np.isfinite(transition_cost):
+        return np.float32(np.inf)
+    for ii in range(start, stop, step):
+        if not valid_mask[ii, lag_index] or not np.isfinite(cost[ii, lag_index]):
+            return np.float32(np.inf)
+        transition_cost += cost[ii, lag_index]
+    return np.float32(transition_cost)
+
+
+@njit(cache=True)
+def _masked_interpolated_transition_is_valid_numba(
+    valid_mask: np.ndarray,
+    current_index: int,
+    current_lag_index: int,
+    previous_index: int,
+    previous_lag_index: int,
+    bstrain: int,
+) -> bool:
+    step = 1 if previous_index > current_index else -1
+    inverse_bstrain = np.float32(1.0 / bstrain)
+    lag = np.float32(current_lag_index)
+    lag_step = np.float32((previous_lag_index - current_lag_index) * inverse_bstrain)
+    sample_index = current_index
+    while sample_index != previous_index:
+        sample_index += step
+        lag = np.float32(lag + lag_step)
+        selected_lag_index = math.floor(float(lag) + 0.5)
+        if (
+            selected_lag_index < 0
+            or selected_lag_index >= valid_mask.shape[1]
+            or not valid_mask[sample_index, selected_lag_index]
+        ):
+            return False
+    return True
+
+
+def _backtrack_2d_masked_python(
+    accumulated: np.ndarray,
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    lmin: int,
+    bstrain: int,
+    direction: int,
+) -> tuple[np.ndarray, bool]:
+    ni, nl = accumulated.shape
+    ni_last = ni - 1
+    nl_last = nl - 1
+    start = 0 if direction > 0 else ni_last
+    end = ni_last if direction > 0 else 0
+    step = 1 if direction > 0 else -1
+    inverse_bstrain = np.float32(1.0 / bstrain)
+
+    path = np.zeros(ni, dtype=np.float32)
+    il, found = _masked_start_lag_python(accumulated, valid_mask, start, lmin)
+    if not found:
+        return path, False
+
+    ii = start
+    path[ii] = il + lmin
+    while ii != end:
+        ji = min(max(ii + step, 0), ni_last)
+        jb = min(max(ii + step * bstrain, 0), ni_last)
+        il_minus = max(il - 1, 0)
+        il_plus = min(il + 1, nl_last)
+
+        cost_minus = np.float32(np.inf)
+        if _masked_interpolated_transition_is_valid_python(
+            valid_mask,
+            ii,
+            il,
+            jb,
+            il_minus,
+            bstrain,
+        ):
+            cost_minus = _masked_transition_cost_python(
+                accumulated,
+                cost,
+                valid_mask,
+                ji,
+                jb,
+                step,
+                il_minus,
+            )
+        cost_same = accumulated[ji, il]
+        cost_plus = np.float32(np.inf)
+        if _masked_interpolated_transition_is_valid_python(
+            valid_mask,
+            ii,
+            il,
+            jb,
+            il_plus,
+            bstrain,
+        ):
+            cost_plus = _masked_transition_cost_python(
+                accumulated,
+                cost,
+                valid_mask,
+                ji,
+                jb,
+                step,
+                il_plus,
+            )
+        best_cost = _min3_prefer_center(cost_minus, cost_same, cost_plus)
+        if not np.isfinite(best_cost):
+            return path, False
+
+        next_il = il
+        if best_cost != cost_same:
+            next_il = il_minus if best_cost == cost_minus else il_plus
+        lag_changed = next_il != il
+        il = next_il
+
+        ii += step
+        path[ii] = il + lmin
+        if lag_changed:
+            du = np.float32((path[ii] - path[ii - step]) * inverse_bstrain)
+            path[ii] = path[ii - step] + du
+            for _ in range(ji, jb, step):
+                ii += step
+                path[ii] = path[ii - step] + du
+
+    return path, _path_uses_valid_mask_python(path, valid_mask, lmin)
+
+
+def _masked_start_lag_python(
+    accumulated: np.ndarray,
+    valid_mask: np.ndarray,
+    start: int,
+    lmin: int,
+) -> tuple[int, bool]:
+    nl = accumulated.shape[1]
+    center = min(max(-lmin, 0), nl - 1)
+    best_lag = center
+    best_cost = np.float32(np.inf)
+    found = False
+    if valid_mask[start, center] and np.isfinite(accumulated[start, center]):
+        best_cost = accumulated[start, center]
+        found = True
+    for lag_index in range(nl):
+        candidate = accumulated[start, lag_index]
+        if valid_mask[start, lag_index] and np.isfinite(candidate) and candidate < best_cost:
+            best_lag = lag_index
+            best_cost = candidate
+            found = True
+    return best_lag, found
+
+
+def _path_uses_valid_mask_python(
+    path: np.ndarray,
+    valid_mask: np.ndarray,
+    lmin: int,
+) -> bool:
+    nl = valid_mask.shape[1]
+    for ii in range(path.shape[0]):
+        lag_index = math.floor(float(path[ii] - lmin) + 0.5)
+        if lag_index < 0 or lag_index >= nl or not valid_mask[ii, lag_index]:
+            return False
+    return True
+
+
+@njit(cache=True)
+def _backtrack_2d_masked_numba(
+    accumulated: np.ndarray,
+    cost: np.ndarray,
+    valid_mask: np.ndarray,
+    lmin: int,
+    bstrain: int,
+    direction: int,
+) -> tuple[np.ndarray, bool]:
+    ni, nl = accumulated.shape
+    ni_last = ni - 1
+    nl_last = nl - 1
+    start = 0 if direction > 0 else ni_last
+    end = ni_last if direction > 0 else 0
+    step = 1 if direction > 0 else -1
+    inverse_bstrain = np.float32(1.0 / bstrain)
+
+    path = np.zeros(ni, dtype=np.float32)
+    center = min(max(-lmin, 0), nl_last)
+    il = center
+    best_cost = np.float32(np.inf)
+    found = False
+    if valid_mask[start, center] and np.isfinite(accumulated[start, center]):
+        best_cost = accumulated[start, center]
+        found = True
+    for lag_index in range(nl):
+        candidate = accumulated[start, lag_index]
+        if valid_mask[start, lag_index] and np.isfinite(candidate) and candidate < best_cost:
+            il = lag_index
+            best_cost = candidate
+            found = True
+    if not found:
+        return path, False
+
+    ii = start
+    path[ii] = il + lmin
+    while ii != end:
+        ji = min(max(ii + step, 0), ni_last)
+        jb = min(max(ii + step * bstrain, 0), ni_last)
+        il_minus = max(il - 1, 0)
+        il_plus = min(il + 1, nl_last)
+
+        cost_minus = np.float32(np.inf)
+        if _masked_interpolated_transition_is_valid_numba(
+            valid_mask,
+            ii,
+            il,
+            jb,
+            il_minus,
+            bstrain,
+        ):
+            cost_minus = _masked_transition_cost_numba(
+                accumulated,
+                cost,
+                valid_mask,
+                ji,
+                jb,
+                step,
+                il_minus,
+            )
+        cost_same = accumulated[ji, il]
+        cost_plus = np.float32(np.inf)
+        if _masked_interpolated_transition_is_valid_numba(
+            valid_mask,
+            ii,
+            il,
+            jb,
+            il_plus,
+            bstrain,
+        ):
+            cost_plus = _masked_transition_cost_numba(
+                accumulated,
+                cost,
+                valid_mask,
+                ji,
+                jb,
+                step,
+                il_plus,
+            )
+        best_cost = _min3_prefer_center_numba(cost_minus, cost_same, cost_plus)
+        if not np.isfinite(best_cost):
+            return path, False
+
+        next_il = il
+        if best_cost != cost_same:
+            next_il = il_minus if best_cost == cost_minus else il_plus
+        lag_changed = next_il != il
+        il = next_il
+
+        ii += step
+        path[ii] = il + lmin
+        if lag_changed:
+            du = np.float32((path[ii] - path[ii - step]) * inverse_bstrain)
+            path[ii] = path[ii - step] + du
+            for _ in range(ji, jb, step):
+                ii += step
+                path[ii] = path[ii - step] + du
+
+    for path_index in range(ni):
+        lag_index = math.floor(float(path[path_index] - lmin) + 0.5)
+        if lag_index < 0 or lag_index >= nl or not valid_mask[path_index, lag_index]:
+            return path, False
+    return path, True
+
+
+def _project_surface_to_valid_mask(
+    surface: np.ndarray,
+    valid_mask: np.ndarray,
+    lmin: int,
+) -> tuple[np.ndarray, int, bool]:
+    if NUMBA_AVAILABLE:
+        return _project_surface_to_valid_mask_numba(surface, valid_mask, lmin)
+    return _project_surface_to_valid_mask_python(surface, valid_mask, lmin)
+
+
+def _project_surface_to_valid_mask_python(
+    surface: np.ndarray,
+    valid_mask: np.ndarray,
+    lmin: int,
+) -> tuple[np.ndarray, int, bool]:
+    projected = surface.astype(np.float32, copy=True)
+    nw, nv = projected.shape
+    nu = valid_mask.shape[2]
+    projection_count = 0
+    for iw in range(nw):
+        for iv in range(nv):
+            value = projected[iw, iv]
+            first_valid_index = -1
+            last_valid_index = -1
+            for candidate_index in range(nu):
+                if valid_mask[iw, iv, candidate_index]:
+                    if first_valid_index < 0:
+                        first_valid_index = candidate_index
+                    last_valid_index = candidate_index
+            if first_valid_index < 0:
+                return projected, projection_count, False
+
+            lower = np.float32(lmin + first_valid_index)
+            upper = np.float32(lmin + last_valid_index)
+            if value < lower:
+                projected[iw, iv] = lower
+                projection_count += 1
+                continue
+            if value > upper:
+                projected[iw, iv] = upper
+                projection_count += 1
+                continue
+
+            lag_index = math.floor(float(value - lmin) + 0.5)
+            if 0 <= lag_index < nu and valid_mask[iw, iv, lag_index]:
+                continue
+
+            nearest_index = -1
+            nearest_distance = np.inf
+            for candidate_index in range(first_valid_index, last_valid_index + 1):
+                if valid_mask[iw, iv, candidate_index]:
+                    distance = abs(float(value - np.float32(lmin + candidate_index)))
+                    if distance < nearest_distance:
+                        nearest_index = candidate_index
+                        nearest_distance = distance
+            if nearest_index < 0:
+                return projected, projection_count, False
+            projected[iw, iv] = np.float32(lmin + nearest_index)
+            projection_count += 1
+    return projected, projection_count, True
+
+
+@njit(cache=True)
+def _project_surface_to_valid_mask_numba(
+    surface: np.ndarray,
+    valid_mask: np.ndarray,
+    lmin: int,
+) -> tuple[np.ndarray, int, bool]:
+    projected = surface.astype(np.float32)
+    nw, nv = projected.shape
+    nu = valid_mask.shape[2]
+    projection_count = 0
+    for iw in range(nw):
+        for iv in range(nv):
+            value = projected[iw, iv]
+            first_valid_index = -1
+            last_valid_index = -1
+            for candidate_index in range(nu):
+                if valid_mask[iw, iv, candidate_index]:
+                    if first_valid_index < 0:
+                        first_valid_index = candidate_index
+                    last_valid_index = candidate_index
+            if first_valid_index < 0:
+                return projected, projection_count, False
+
+            lower = np.float32(lmin + first_valid_index)
+            upper = np.float32(lmin + last_valid_index)
+            if value < lower:
+                projected[iw, iv] = lower
+                projection_count += 1
+                continue
+            if value > upper:
+                projected[iw, iv] = upper
+                projection_count += 1
+                continue
+
+            lag_index = math.floor(float(value - lmin) + 0.5)
+            if 0 <= lag_index < nu and valid_mask[iw, iv, lag_index]:
+                continue
+
+            nearest_index = -1
+            nearest_distance = np.inf
+            for candidate_index in range(first_valid_index, last_valid_index + 1):
+                if valid_mask[iw, iv, candidate_index]:
+                    distance = abs(float(value - np.float32(lmin + candidate_index)))
+                    if distance < nearest_distance:
+                        nearest_index = candidate_index
+                        nearest_distance = distance
+            if nearest_index < 0:
+                return projected, projection_count, False
+            projected[iw, iv] = np.float32(lmin + nearest_index)
+            projection_count += 1
+    return projected, projection_count, True
+
+
 def strain_to_bstrain(strain_max: float) -> int:
     """Convert a maximum strain bound to the integer DP step spacing."""
 
@@ -623,3 +1588,17 @@ def _validate_nonnegative_int(value: int, name: str) -> int:
         raise ValueError(f"{name} must be a nonnegative integer")
 
     return value_int
+
+
+def _validate_valid_mask_3d(
+    valid_mask: np.ndarray,
+    cost_shape: tuple[int, ...],
+) -> np.ndarray:
+    valid_mask_array = np.asarray(valid_mask)
+    if valid_mask_array.ndim != 3:
+        raise ValueError("valid_mask must have shape (nw, nv, nu)")
+    if valid_mask_array.shape != cost_shape:
+        raise ValueError("valid_mask and cost must have the same shape")
+    if valid_mask_array.dtype != np.bool_:
+        raise ValueError("valid_mask must have boolean dtype")
+    return valid_mask_array

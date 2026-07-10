@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from pyosv.dp import (
+    _find_surface_3d_masked,
     accumulate_2d,
     accumulate_forward_2d,
     backtrack_reverse_2d,
@@ -590,6 +591,229 @@ def test_find_surface_3d_is_deterministic() -> None:
     surface2 = find_surface_3d(cost, lmin=-2, bstrain1=2, bstrain2=2)
 
     np.testing.assert_array_equal(surface1, surface2)
+
+
+def test_find_surface_3d_masked_excludes_invalid_very_low_cost_lags() -> None:
+    cost = np.full((3, 7, 5), 8.0, dtype=np.float32)
+    cost[:, :, 0] = -1_000.0
+    cost[:, :, 2] = 0.0
+    valid_mask = np.ones_like(cost, dtype=np.bool_)
+    valid_mask[:, :, 0] = False
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=1,
+    )
+
+    assert surface is not None
+    assert surface.dtype == np.float32
+    np.testing.assert_array_equal(surface, np.zeros((3, 7), dtype=np.float32))
+    assert projection_count == 0
+
+
+def test_find_surface_3d_masked_selects_only_valid_ridge_lags() -> None:
+    ridge_indices = np.array([1, 2, 3, 2, 1], dtype=np.int32)
+    cost = np.full((2, ridge_indices.size, 5), 100.0, dtype=np.float32)
+    valid_mask = np.zeros_like(cost, dtype=np.bool_)
+    for iw in range(cost.shape[0]):
+        for iv, lag_index in enumerate(ridge_indices):
+            cost[iw, iv, lag_index] = 0.0
+            valid_mask[iw, iv, lag_index] = True
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=1,
+    )
+
+    assert surface is not None
+    expected = np.broadcast_to(ridge_indices.astype(np.float32) - 2.0, surface.shape)
+    np.testing.assert_array_equal(surface, expected)
+    selected_indices = np.floor(surface.astype(np.float64) + 2.0 + 0.5).astype(np.intp)
+    selected_valid = np.take_along_axis(valid_mask, selected_indices[:, :, None], axis=2)
+    assert selected_valid.all()
+    assert projection_count == 0
+
+
+def test_find_surface_3d_masked_detects_strain_infeasible_path() -> None:
+    cost = np.zeros((1, 3, 3), dtype=np.float32)
+    valid_mask = np.zeros_like(cost, dtype=np.bool_)
+    valid_mask[0, 0, 0] = True
+    valid_mask[0, 1, 2] = True
+    valid_mask[0, 2, 2] = True
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=-1,
+        bstrain1=1,
+        bstrain2=2,
+        attribute_smoothing=0,
+    )
+
+    assert surface is None
+    assert projection_count == 0
+
+
+def test_find_surface_3d_masked_detects_w_direction_strain_infeasibility() -> None:
+    cost = np.zeros((2, 1, 3), dtype=np.float32)
+    valid_mask = np.zeros_like(cost, dtype=np.bool_)
+    valid_mask[0, 0, 0] = True
+    valid_mask[1, 0, 2] = True
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=-1,
+        bstrain1=2,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+
+    assert surface is None
+    assert projection_count == 0
+
+
+def test_find_surface_3d_masked_recovers_jointly_feasible_bidirectional_surface() -> None:
+    cost = np.array(
+        [
+            [
+                [-0.2588143, 1.0633872, -1.2434108, -1.1908289],
+                [-0.4183583, 0.0651413, -0.337766, 1.9926934],
+            ],
+            [
+                [-0.6038749, 0.6353444, -0.5863985, 0.3207008],
+                [-0.4428899, -0.3930264, 1.6236607, -0.3370287],
+            ],
+        ],
+        dtype=np.float32,
+    )
+    valid_mask = np.array(
+        [
+            [[False, False, True, False], [False, True, False, True]],
+            [[True, False, False, True], [False, True, True, True]],
+        ],
+        dtype=np.bool_,
+    )
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=0,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+
+    assert surface is not None
+    assert projection_count == 0
+    selected = np.floor(surface.astype(np.float64) + 0.5).astype(np.intp)
+    assert np.take_along_axis(valid_mask, selected[:, :, None], axis=2).all()
+    assert np.max(np.abs(np.diff(surface, axis=0))) <= 1.0
+    assert np.max(np.abs(np.diff(surface, axis=1))) <= 1.0
+
+
+def test_find_surface_3d_masked_uses_java_rounding_cells_for_strain_feasibility() -> None:
+    cost = np.zeros((2, 1, 2), dtype=np.float32)
+    valid_mask = np.zeros_like(cost, dtype=np.bool_)
+    valid_mask[0, 0, 0] = True
+    valid_mask[1, 0, 1] = True
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=0,
+        bstrain1=1,
+        bstrain2=2,
+        attribute_smoothing=0,
+    )
+
+    assert surface is not None
+    assert projection_count == 0
+    selected = np.floor(surface.astype(np.float64) + 0.5).astype(np.intp)
+    assert np.take_along_axis(valid_mask, selected[:, :, None], axis=2).all()
+    assert abs(float(surface[1, 0] - surface[0, 0])) <= 0.5 + 1.0e-6
+
+
+def test_find_surface_3d_masked_uses_feasible_alternative_transition() -> None:
+    cost = np.full((1, 5, 5), 100.0, dtype=np.float32)
+    valid_mask = np.zeros_like(cost, dtype=np.bool_)
+    valid_mask[0, :, 2] = True
+    cost[0, :, 2] = 10.0
+    valid_mask[0, 3:, 3] = True
+    cost[0, 4, 3] = -1_000.0
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=-2,
+        bstrain1=4,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+
+    assert surface is not None
+    np.testing.assert_array_equal(surface, np.zeros((1, 5), dtype=np.float32))
+    assert projection_count == 0
+
+
+def test_find_surface_3d_masked_projects_smoothed_lags_to_valid_states() -> None:
+    ridge_indices = np.array([0, 0, 0, 1, 0, 0, 0], dtype=np.int32)
+    cost = np.full((1, ridge_indices.size, 3), 10.0, dtype=np.float32)
+    valid_mask = np.zeros_like(cost, dtype=np.bool_)
+    for iv, lag_index in enumerate(ridge_indices):
+        cost[0, iv, lag_index] = 0.0
+        valid_mask[0, iv, lag_index] = True
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=0,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+        surface_smoothing1=1.0,
+    )
+
+    assert surface is not None
+    assert projection_count > 0
+    selected_indices = np.floor(surface.astype(np.float64) + 0.5).astype(np.intp)
+    selected_valid = np.take_along_axis(valid_mask, selected_indices[:, :, None], axis=2)
+    assert selected_valid.all()
+    np.testing.assert_array_equal(surface[0, 3], np.float32(1.0))
+
+
+def test_find_surface_3d_masked_all_valid_matches_unmasked_surface() -> None:
+    rng = np.random.default_rng(4901)
+    cost = rng.random((3, 7, 5), dtype=np.float32)
+    valid_mask = np.ones_like(cost, dtype=np.bool_)
+
+    expected = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=2,
+        bstrain2=2,
+        attribute_smoothing=1,
+    )
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=-2,
+        bstrain1=2,
+        bstrain2=2,
+        attribute_smoothing=1,
+    )
+
+    assert surface is not None
+    np.testing.assert_array_equal(surface, expected)
+    assert projection_count == 0
 
 
 @pytest.mark.parametrize(

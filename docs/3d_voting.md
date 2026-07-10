@@ -87,11 +87,71 @@ JTK clone. This setting is separate from `surface_smoothing1` and
 smoothing for diagnostics that need raw-surface behavior; negative, nonfinite,
 boolean, and nonnumeric values are rejected.
 
-Surface-voting source samples follow the Java reference boundary rule: `i1`
-may lie on an image face, but `i2` and `i3` must be interior before the sample
-contributes to the average or vote accumulation. Crop-edge votes near `i2` and
-`i3` faces can therefore be weaker than older `pyosv` results that accepted all
-in-bounds boundary source samples.
+Surface voting defaults to `surface_voting_boundary_policy="reference"`.
+This keeps the Java-reference-oriented boundary behavior unchanged:
+`samples_in_uvw_box` rounds with Java-style `floor(x + 0.5)` and clamps sampled
+image coordinates to the volume, while vote averaging and accumulation permit
+an `i1` face sample but require `i2` and `i3` source samples to be interior.
+Crop-edge votes near `i2` and `i3` faces can therefore be weaker than older
+`pyosv` results that accepted all in-bounds boundary source samples.
+
+## Boundary-aware Surface Voting
+
+`masked_in_bounds` is an explicit quality experiment for boundary-aware UVW
+surface voting:
+
+```python
+voter.set_surface_voting_boundary_policy("masked_in_bounds")
+```
+
+Only `"reference"` and `"masked_in_bounds"` are accepted. Selecting the
+masked policy does not change the public `samples_in_uvw_box(...)` API or its
+reference clamping behavior. Instead, the surface-voting path uses an internal
+sampler that returns `float32` costs and a boolean lag mask. A lag is valid only
+when it is admitted by `lmins` / `lmaxs` and its Java-rounded global sample is
+inside the volume. Out-of-bounds lags are not clamped, are not treated as
+evidence, and cannot be selected by dynamic programming; no assumption is made
+that fault-likelihood values lie in `[0, 1]`.
+
+For each `(w, v)` column, the masked path marks the column supported when at
+least one lag is valid. It extracts the largest all-supported, axis-aligned
+rectangle containing the local origin. Equal-area rectangles are ordered first
+by lower origin asymmetry and then lexicographically by
+`(w_start, v_start, w_stop, v_stop)`. The selected rectangle carries explicit
+offsets into the full UVW box, so a cropped surface is mapped back to volume
+coordinates without assuming `kw-rw` or `kv-rv`.
+
+Surface extraction then uses a private mask-aware DP path. Invalid states stay
+out of attribute smoothing, forward/reverse accumulation, and backtracking. A
+seed is skipped when no strain-feasible surface exists. If final surface
+smoothing moves a lag outside a column's feasible interval, it is projected to
+the nearest feasible lag and the projection is counted in the seed diagnostic.
+
+Masked vote scoring uses only valid selected volume samples. Its support
+fraction is the number of valid selected columns divided by the full
+`(2*rw+1)*(2*rv+1)` tangential area, not the cropped area; the existing support
+minimum and exponent apply to that value. Center votes may be written on all
+six volume faces, while reinforcement writes retain defensive bounds checks.
+Any selected invalid sample causes the seed vote to be skipped. A full-box
+surface keeps `_surface_strike_and_dip`; an asymmetric/cropped rectangle uses
+the seed `cell.fp` / `cell.ft` orientation and records
+`orientation_source="seed_boundary_fallback"`. This deliberately avoids adding
+a new local-normal model in the boundary experiment.
+
+Each `apply_voting_from_seeds` run replaces the previous immutable per-seed
+diagnostics. They record the seed index, policy, full and selected tangential
+column counts, admissible and in-bounds lag counts, support fraction, center
+lag, smoothing projections, invalid selected samples, center/face vote counts,
+orientation source, and any skip reason. Stable skip reasons include
+`no_supported_origin`, `no_feasible_surface`, `no_valid_surface_samples`,
+`support_below_min_fraction`, and `invalid_selected_sample`. The summary exposes
+only JSON-serializable counts and support statistics; it does not retain
+volumes or per-voxel masks.
+
+`masked_in_bounds` is not a reference-equivalence mode and is not enabled by the
+default `reference` or `quality` workflows or by the `current_default` report
+variant. It must be selected explicitly, including through the synthetic-report
+`boundary_aware_voter_v1` variant.
 
 `OptimalSurfaceVoter.thin` keeps local maxima from `fv` and returns a thinned
 `float32` vote volume with the same shape. The default is the reference-like

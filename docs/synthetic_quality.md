@@ -214,18 +214,19 @@ matrix and the intended role of each workflow.
 ```text
 reference
   Reference-alignment mode. Effective voter_thin_mode is reference unless
-  --voter-thin-mode is passed.
+  --voter-thin-mode is passed. Surface-voting boundary policy is reference.
 
 quality
   Truth-quality mode for controlled synthetic evaluation. Effective
   voter_thin_mode is hybrid_v2 unless --voter-thin-mode is passed. Support-aware
   surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
   is enabled by default, including the empty-primary boundary skinner fallback.
+  Surface-voting boundary policy remains reference.
 
 diagnostic
   Diagnostic mode. Effective voter_thin_mode is reference unless
   --voter-thin-mode is passed, and reference-vs-normal thinning diagnostics are
-  enabled by default.
+  enabled by default. Surface-voting boundary policy remains reference.
 ```
 
 Explicit `--voter-thin-mode reference|normal` always wins over the workflow
@@ -237,7 +238,9 @@ still enables reference-vs-normal thinning diagnostics in `reference` or
 
 The report config always records `config.workflow_mode`. The voting config
 records the effective `config.voting.voter_thin_mode`, after applying the
-workflow preset and any explicit override. For quality mode, `current_default`
+workflow preset and any explicit override. Every default workflow and
+`current_default` record `surface_voting_boundary_policy="reference"` under
+the per-variant `pyosv.voting` object. For quality mode, `current_default`
 records `surface_support_min_fraction=0.0` and
 `surface_support_exponent=0.0`, so the report config shows that support-aware
 voting is not part of the quality default. Explicit CLI support overrides and
@@ -262,14 +265,76 @@ regression tolerances to pass.
 As of the documented scanner-boundary promotion gate, no diagnostic variant has
 been promoted into `quality current_default`. The scanner-inclusive 49^3
 `boundary_plane` case remains an open target. The current promotion-candidate
-flow compares `boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
-`quality_boundary_skinner_fallback_v5` against `current_default` with
+flow compares `boundary_aware_voter_v1`, `boundary_edge_thin_v1`,
+`boundary_seed_retention_v1`, and `quality_boundary_skinner_fallback_v5`
+against `current_default` with
 `scripts/compare_quality_reports.py` or
 `scripts/check_synthetic_quality_promotion_gate.py`. The 49^3
-`promotion_candidates_49` benchmark has not been run in this repository update,
-so these candidates remain unpromoted. See [Quality Mode](quality_mode.md) for
-the exact benchmark commands, metrics, promotion criteria, and diagnostic
-variant descriptions.
+`boundary_aware_voter_v1` promotion benchmark has not been run in this
+repository update, so these candidates remain unpromoted. See
+[Quality Mode](quality_mode.md) for the exact benchmark commands, metrics,
+promotion criteria, and diagnostic variant descriptions.
+
+## Boundary-aware UVW Voting Diagnostic
+
+`boundary_aware_voter_v1` is selected only with an explicit variant name. It is
+not in `DEFAULT_VARIANTS` or the `quality-matrix` preset and has not been
+promoted into `current_default`. For each workflow it keeps the same scanner
+backend, scanner thinning, seed selection, voter thinning, skinner, and support
+settings as that workflow's `current_default`; its only intended processing
+change is:
+
+```python
+voter.set_surface_voting_boundary_policy("masked_in_bounds")
+```
+
+The default `reference` boundary policy preserves reference-oriented semantics:
+UVW coordinates are Java-rounded and clamped to the image, and surface vote
+averaging/accumulation exclude `i2` and `i3` face source samples while allowing
+`i1` face samples. `masked_in_bounds` is a quality experiment, not a
+reference-equivalence mode. Its internal sampler masks every lag outside either
+`lmins` / `lmaxs` or the Java-rounded volume bounds, without converting an
+invalid state to an ordinary cost.
+
+The masked voter marks a tangential `(w, v)` column supported when it contains
+at least one valid lag. It uses the maximum-area, axis-aligned, all-supported
+rectangle containing the local origin. Equal-area choices minimize origin
+asymmetry, then use lexicographic
+`(w_start, v_start, w_stop, v_stop)` order. Explicit full-box offsets preserve
+surface-to-volume mapping after a crop. Mask-aware attribute smoothing,
+forward/reverse DP, and backtracking exclude invalid states. A strain-infeasible
+surface is skipped; surface smoothing results are projected to the nearest
+feasible lag interval and counted.
+
+Only valid selected samples contribute to the surface score. Support fraction
+uses the full `(2*rw+1)*(2*rv+1)` patch area, not the cropped rectangle, before
+the existing minimum-fraction and exponent settings are applied. Center votes
+can be written on all six volume faces, and reinforcement remains bounds
+checked. A nonzero selected-invalid count prevents the vote. Full-box surfaces
+keep the existing surface orientation estimate; cropped surfaces use the seed
+strike/dip and record
+`orientation_source="seed_boundary_fallback"`. The candidate does not add a
+position-varying local orientation model.
+
+Each variant report stores the effective boundary policy, existing support
+policy, and aggregate seed diagnostics under `pyosv.voting`. Diagnostics are
+reset for every voter run. The aggregate includes seed/boundary/voted/skipped
+counts, support-fraction minimum and mean, smoothing projection count,
+selected-invalid count, and face center-vote count. Per-seed diagnostics add
+orientation source and skip reason and contain only scalar indices, counts,
+fractions, and strings; no volume or per-voxel mask is retained.
+
+The documented 49^3 quality-scanner `boundary_plane` baseline for
+`current_default` is `fvt_positive_buffered_f1_r2=0.739494`,
+`fvt_positive_distance_p95=4.0`, `skin_buffered_f1_r2=0.453890`, and
+`skin_count=17`. A candidate that changes FVT must include
+`fvt_positive_buffered_f1_r2 >= 0.90` and
+`fvt_positive_distance_p95 <= 2.0` among its promotion gates, in addition to
+the skin, non-boundary, oracle, and topology guardrails documented in
+[Quality Mode](quality_mode.md). No 49^3 result for
+`boundary_aware_voter_v1` is recorded by this documentation update. Until the
+gate passes, do not describe the candidate as higher quality than the reference
+implementation or as promoted/default behavior.
 
 ## Curved Surface Thinning Diagnostic
 
@@ -425,6 +490,25 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --write-markdown-index
 ```
 
+To smoke-test the opt-in boundary voter against the unchanged quality default,
+run:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 17,17,17 \
+  --workflow-mode quality \
+  --variants current_default,boundary_aware_voter_v1 \
+  --input-mode both \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-downstream-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/boundary_aware_voter_v1_smoke \
+  --pretty
+```
+
+This is a smoke command, not evidence that the 49^3 promotion gate was run.
+
 To compare the oracle upper-bound path with the scanner-inclusive path in one
 report, run `--input-mode both`:
 
@@ -484,6 +568,12 @@ cols = [
     "input_mode",
     "workflow_mode",
     "variant",
+    "surface_voting_boundary_policy",
+    "voter_boundary_affected_seed_count",
+    "voter_skipped_seed_count",
+    "voter_support_fraction_mean",
+    "voter_selected_invalid_sample_count",
+    "voter_face_center_vote_count",
     "fvt_buffered_f1_r2",
     "fvt_distance_p95",
     "fvt_strike_median_error",
@@ -564,6 +654,14 @@ pipeline
 input_mode
 workflow_mode
 variant
+surface_voting_boundary_policy
+voter_boundary_affected_seed_count
+voter_skipped_seed_count
+voter_support_fraction_mean
+voter_support_fraction_min
+voter_surface_projection_count
+voter_selected_invalid_sample_count
+voter_face_center_vote_count
 fvt_buffered_f1_r2
 fvt_distance_p95
 fvt_strike_median_error
@@ -701,7 +799,9 @@ an active-pipeline alias; in `--input-mode both`, it is a `pipelines` map.
     "variants": ["current_default"],
     "input_mode": "both",
     "voting": {
-      "voter_thin_mode": "reference"
+      "voter_thin_mode": "reference",
+      "surface_support_min_fraction": 0.0,
+      "surface_support_exponent": 0.0
     },
     "skinning": {
       "enabled": true,
@@ -731,6 +831,23 @@ an active-pipeline alias; in `--input-mode both`, it is a `pipelines` map.
           "variants": {
             "current_default": {
               "pyosv": {
+                "voting": {
+                  "surface_voting_boundary_policy": "reference",
+                  "surface_support_min_fraction": 0.0,
+                  "surface_support_exponent": 0.0,
+                  "diagnostic_summary": {
+                    "policy": "reference",
+                    "seed_count": 1,
+                    "boundary_affected_seed_count": 0,
+                    "voted_seed_count": 1,
+                    "skipped_seed_count": 0,
+                    "support_fraction_mean": 1.0,
+                    "support_fraction_min": 1.0,
+                    "surface_projection_count": 0,
+                    "selected_invalid_sample_count": 0,
+                    "face_center_vote_count": 0
+                  }
+                },
                 "fv": {},
                 "fvt": {},
                 "skins": {
@@ -896,9 +1013,11 @@ The canonical pipeline schema is:
 
 ```text
 cases[].pipelines.oracle.variants.<variant>.pyosv
+cases[].pipelines.oracle.variants.<variant>.pyosv.voting.diagnostic_summary
 cases[].pipelines.oracle.variants.<variant>.quality
 cases[].pipelines.oracle.variant_comparison
 cases[].pipelines.scanner.variants.<variant>.pyosv
+cases[].pipelines.scanner.variants.<variant>.pyosv.voting.diagnostic_summary
 cases[].pipelines.scanner.variants.<variant>.quality
 cases[].pipelines.scanner.variants.<variant>.scanner_quality
 cases[].pipelines.scanner.variant_comparison
@@ -912,6 +1031,11 @@ they alias the oracle pipeline. Scanner pipeline reports include
 `scanner.input`, raw scanner `ft`/`pt`/`tt`, and used scanner
 `fet`/`fpt`/`ftt` summaries; the corresponding volume artifacts are named
 `ft_used`, `pt_used`, and `tt_used`.
+
+Every variant's `pyosv.voting` object records
+`surface_voting_boundary_policy`, `surface_support_min_fraction`,
+`surface_support_exponent`, and the JSON-scalar-only `diagnostic_summary`.
+Compatibility aliases carry the same object for their active pipeline.
 
 Scanner pipeline reports also include `scanner_quality`, which measures scanner
 outputs before voting/skinning: raw scanner `ft` top-truth-count overlap and
@@ -999,6 +1123,7 @@ directory, for example `single_dipping_plane/`, `curved_surface/`,
 
 ```text
 current_default
+boundary_aware_voter_v1
 no_surface_orientation_smoothing
 final_norm_smoothing_1
 voter_thin_normal
@@ -1018,6 +1143,11 @@ quality_boundary_skinner_fallback_v5
 
 The default is `current_default`. Diagnostic variants do not add pass/fail
 judgments; they make the same truth metrics comparable across voter settings.
+
+`boundary_aware_voter_v1` is explicit-only and is not included in the default
+or `quality-matrix` preset. It changes only the voter boundary policy to
+`masked_in_bounds`; workflow-specific scanner, thinning, seed-selection,
+support, and skinning settings remain those of `current_default`.
 `surface_support_weighted` is included in the `quality-matrix` preset as a
 diagnostic support-aware voting experiment with `0.5, 1.0`; it is not the
 quality workflow default.
@@ -1055,12 +1185,31 @@ explicit variant name. It remains unpromoted until a 49^3 scanner-boundary
 promotion report passes the documented gate.
 `summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
 pipeline column, variant column, baseline variant, input mode, workflow mode,
+surface-voting boundary policy and aggregate voter diagnostics,
 buffered F1, candidate-to-truth p95 distance, fvt median orientation error
 columns, `fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`,
 positive-only top-truth candidate and fvt metric columns, skin topology and
 truth metric columns, skin fallback diagnostic columns, and fvt and skin delta
 columns against the baseline. Scanner columns are always in the header; they
 are populated for scanner pipeline rows and empty for oracle pipeline rows.
+
+Boundary-voter columns:
+
+```text
+surface_voting_boundary_policy
+voter_boundary_affected_seed_count
+voter_skipped_seed_count
+voter_support_fraction_mean
+voter_support_fraction_min
+voter_surface_projection_count
+voter_selected_invalid_sample_count
+voter_face_center_vote_count
+```
+
+These columns are never blank. Reference-policy rows report `reference` plus
+meaningful neutral/count values such as `0` and `1.0`; masked rows report the
+diagnostics from that voter run. A valid `boundary_aware_voter_v1` run must
+report `voter_selected_invalid_sample_count=0`.
 
 Positive-only top-truth columns:
 
