@@ -64,6 +64,16 @@ def test_compare_output_reports_json_csv_and_artifact_differences(tmp_path: Path
     assert any("artifact extra.dat: unexpected" in difference for difference in differences)
 
 
+def test_artifact_manifest_does_not_follow_symlinks(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    external_artifact = tmp_path / "external.dat"
+    external_artifact.write_bytes(b"external volume")
+    (output_dir / "linked.dat").symlink_to(external_artifact)
+
+    assert contract.artifact_manifest(output_dir) == {}
+
+
 def test_update_requires_flag_and_environment_variable(tmp_path: Path, monkeypatch) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()

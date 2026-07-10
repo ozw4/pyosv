@@ -29,7 +29,9 @@ def artifact_manifest(output_dir: Path) -> dict[str, dict[str, int | str]]:
     paths = sorted(
         path
         for path in output_dir.rglob("*")
-        if path.is_file() and (path.suffix == ".dat" or path.name == "skins.json")
+        if not path.is_symlink()
+        and path.is_file()
+        and (path.suffix == ".dat" or path.name == "skins.json")
     )
     return {
         path.relative_to(output_dir).as_posix(): {
