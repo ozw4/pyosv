@@ -112,3 +112,21 @@ def test_report_thinning_wrappers_match_experimental_results() -> None:
 
     np.testing.assert_array_equal(output, expected.output)
     assert diagnostics == expected.diagnostics
+
+    fv = np.zeros_like(fvt)
+    fv[1, 1:3, 1] = 1.0
+    fvt[1, 2, 1] = 1.0
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    thin_kwargs = {
+        "voter": voter,
+        "target": target,
+        "target_source": "scanner_fet",
+        "edge_margin": 1,
+    }
+    expected_thin = apply_boundary_edge_thin_v1(fvt, fv, vp, vt, **thin_kwargs)
+    thin_output, thin_diagnostics = module._apply_boundary_edge_thin_v1(
+        fvt, fv, vp, vt, **thin_kwargs
+    )
+
+    np.testing.assert_array_equal(thin_output, expected_thin.output)
+    assert thin_diagnostics == expected_thin.diagnostics

@@ -123,7 +123,8 @@ def test_ensemble_quality_confidence_weight_preserves_existing_selection() -> No
     }
 
 
-def test_report_wrapper_matches_scanner_api_exactly() -> None:
+@pytest.mark.parametrize("backend", ("reference-like", "fast", "quality", "ensemble"))
+def test_report_wrapper_matches_scanner_api_exactly(backend: str) -> None:
     script = Path(__file__).resolve().parents[3] / "examples" / "report_3d_synthetic_quality.py"
     spec = importlib.util.spec_from_file_location("report_3d_synthetic_quality", script)
     assert spec is not None and spec.loader is not None
@@ -131,7 +132,7 @@ def test_report_wrapper_matches_scanner_api_exactly() -> None:
     spec.loader.exec_module(report_module)
     case = make_single_vertical_plane_case((9, 9, 9))
     config = SyntheticScannerConfig(
-        backend="quality",
+        backend=backend,
         phi_min=0.0,
         phi_max=0.0,
         theta_min=90.0,
