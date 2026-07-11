@@ -24,7 +24,7 @@ from pyosv._voting3d.accumulation import (
 from pyosv._voting3d.models import (
     _MaskedUVWBoxSamples,
     _SurfaceVotingDiagnostic,
-    _TangentialRectangle,
+    _TangentialRectangle as _TangentialRectangle,
 )
 from pyosv._voting3d.config import SurfaceVoterConfig
 from pyosv._voting3d.context import SurfaceVotingContext
@@ -625,7 +625,41 @@ class OptimalSurfaceVoter:
         if not 0 <= c3 < n3:
             raise ValueError("cell.i3 must be inside the image bounds")
 
-        context = SurfaceVotingContext(
+        policy = SURFACE_VOTING_POLICY_REGISTRY.get(self.surface_voting_boundary_policy)
+        if policy is None:
+            allowed = ", ".join(repr(value) for value in _SURFACE_VOTING_BOUNDARY_POLICIES)
+            raise ValueError(f"policy must be one of: {allowed}")
+        handler = {
+            "reference": self._surface_voting_reference,
+            "masked_in_bounds": self._surface_voting_masked_in_bounds,
+        }[self.surface_voting_boundary_policy]
+        return handler(
+            cell,
+            ft_array,
+            fe_array,
+            vp_array,
+            vt_array,
+            vm_array,
+            cell.fault_normal(),
+            cell.fault_dip_vector(),
+            cell.fault_strike_vector(),
+        )
+
+    def _surface_voting_context(
+        self,
+        cell: FaultCell,
+        ft_array: np.ndarray,
+        fe_array: np.ndarray,
+        vp_array: np.ndarray,
+        vt_array: np.ndarray,
+        vm_array: np.ndarray,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+    ) -> SurfaceVotingContext:
+        """Build the facade-routed dependency context used by voting policies."""
+
+        return SurfaceVotingContext(
             config=SurfaceVoterConfig(
                 ru=self.ru,
                 rv=self.rv,
@@ -646,9 +680,9 @@ class OptimalSurfaceVoter:
             vp=vp_array,
             vt=vt_array,
             vm=vm_array,
-            normal=cell.fault_normal(),
-            dip=cell.fault_dip_vector(),
-            strike=cell.fault_strike_vector(),
+            normal=normal,
+            dip=dip,
+            strike=strike,
             sample_reference=self.samples_in_uvw_box,
             sample_masked=self._samples_in_uvw_box_masked,
             find_surface=find_surface_3d,
@@ -663,11 +697,6 @@ class OptimalSurfaceVoter:
             crop_masked_box=_crop_masked_uvw_box,
             surface_center_lag=_surface_center_lag,
         )
-        policy = SURFACE_VOTING_POLICY_REGISTRY.get(self.surface_voting_boundary_policy)
-        if policy is None:
-            allowed = ", ".join(repr(value) for value in _SURFACE_VOTING_BOUNDARY_POLICIES)
-            raise ValueError(f"policy must be one of: {allowed}")
-        return policy.vote(context)
 
     def _surface_voting_reference(
         self,
@@ -681,165 +710,20 @@ class OptimalSurfaceVoter:
         dip: np.ndarray,
         strike: np.ndarray,
     ) -> _SurfaceVotingDiagnostic:
-        """Run the unchanged reference-oriented sampling and source semantics."""
+        """Delegate the compatibility hook to the reference voting policy."""
 
-        c1, c2, c3 = cell.index
-        support = self._samples_in_uvw_box_masked(
-            c1,
-            c2,
-            c3,
-            normal,
-            dip,
-            strike,
+        context = self._surface_voting_context(
+            cell,
             ft_array,
-        )
-        full_column_count = int((2 * self.rw + 1) * (2 * self.rv + 1))
-        costs = self.samples_in_uvw_box(c1, c2, c3, normal, dip, strike, ft_array)
-        surface = find_surface_3d(
-            costs,
-            lmin=self.lmin,
-            bstrain1=self.bstrain1,
-            bstrain2=self.bstrain2,
-            attribute_smoothing=self.attribute_smoothing,
-            surface_smoothing1=self.surface_smoothing1,
-            surface_smoothing2=self.surface_smoothing2,
-        )
-
-        fa, valid_count = _surface_vote_average(
-            c1,
-            c2,
-            c3,
-            self.rv,
-            self.rw,
-            normal,
-            dip,
-            strike,
-            surface,
-            ft_array,
-        )
-        surface_size = int(surface.size)
-        surface_center_lag = _surface_center_lag(surface)
-        if valid_count == 0:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="reference",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=surface_size,
-                admissible_lag_count=support.admissible_lag_count,
-                in_bounds_lag_count=support.in_bounds_lag_count,
-                support_fraction=0.0,
-                surface_center_lag=surface_center_lag,
-                surface_projection_count=0,
-                selected_invalid_sample_count=surface_size,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="no_valid_surface_samples",
-            )
-
-        if surface_size == 0:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="reference",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=0,
-                admissible_lag_count=support.admissible_lag_count,
-                in_bounds_lag_count=support.in_bounds_lag_count,
-                support_fraction=0.0,
-                surface_center_lag=None,
-                surface_projection_count=0,
-                selected_invalid_sample_count=0,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="no_feasible_surface",
-            )
-        support_fraction = float(valid_count) / float(surface_size)
-        if support_fraction < self.surface_support_min_fraction:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="reference",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=surface_size,
-                admissible_lag_count=support.admissible_lag_count,
-                in_bounds_lag_count=support.in_bounds_lag_count,
-                support_fraction=support_fraction,
-                surface_center_lag=surface_center_lag,
-                surface_projection_count=0,
-                selected_invalid_sample_count=surface_size - valid_count,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="support_below_min_fraction",
-            )
-        if self.surface_support_exponent > 0.0:
-            fa = np.float32(
-                fa * np.float32(support_fraction**self.surface_support_exponent),
-            )
-
-        strike_angle, dip_angle = _surface_strike_and_dip(
-            normal,
-            dip,
-            strike,
-            surface,
-            sigma=self.surface_orientation_smoothing,
-        )
-        vp_value = np.float32(strike_angle)
-        vt_value = np.float32(dip_angle)
-        align_i3 = abs(normal[2]) > abs(normal[1])
-
-        _accumulate_surface_votes(
-            c1,
-            c2,
-            c3,
-            self.rv,
-            self.rw,
-            fa,
-            vp_value,
-            vt_value,
-            align_i3,
-            normal,
-            dip,
-            strike,
-            surface,
             fe_array,
             vp_array,
             vt_array,
             vm_array,
-        )
-
-        face_count = _count_reference_face_center_votes(
-            c1,
-            c2,
-            c3,
-            self.rv,
-            self.rw,
             normal,
             dip,
             strike,
-            surface,
-            ft_array.shape,
         )
-        return _SurfaceVotingDiagnostic(
-            seed_index=cell.index,
-            policy="reference",
-            full_tangential_column_count=full_column_count,
-            selected_tangential_column_count=surface_size,
-            admissible_lag_count=support.admissible_lag_count,
-            in_bounds_lag_count=support.in_bounds_lag_count,
-            support_fraction=support_fraction,
-            surface_center_lag=surface_center_lag,
-            surface_projection_count=0,
-            selected_invalid_sample_count=surface_size - valid_count,
-            center_vote_write_count=valid_count,
-            face_center_vote_count=face_count,
-            orientation_source="surface",
-            skipped=False,
-            skip_reason=None,
-        )
+        return SURFACE_VOTING_POLICY_REGISTRY["reference"].vote(context)
 
     def _surface_voting_masked_in_bounds(
         self,
@@ -853,226 +737,20 @@ class OptimalSurfaceVoter:
         dip: np.ndarray,
         strike: np.ndarray,
     ) -> _SurfaceVotingDiagnostic:
-        """Run the opt-in masked UVW, masked-DP, and all-face vote path."""
+        """Delegate the compatibility hook to the masked in-bounds policy."""
 
-        c1, c2, c3 = cell.index
-        full_samples = self._samples_in_uvw_box_masked(
-            c1,
-            c2,
-            c3,
-            normal,
-            dip,
-            strike,
+        context = self._surface_voting_context(
+            cell,
             ft_array,
-        )
-        full_nw, full_nv = full_samples.full_tangential_shape
-        full_column_count = full_nw * full_nv
-        supported_columns = np.any(full_samples.valid_lag_mask, axis=2)
-        rectangle = _select_supported_origin_rectangle(
-            supported_columns,
-            origin_w=self.rw,
-            origin_v=self.rv,
-        )
-        if rectangle is None:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="masked_in_bounds",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=0,
-                admissible_lag_count=full_samples.admissible_lag_count,
-                in_bounds_lag_count=full_samples.in_bounds_lag_count,
-                support_fraction=0.0,
-                surface_center_lag=None,
-                surface_projection_count=0,
-                selected_invalid_sample_count=0,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="no_supported_origin",
-            )
-
-        samples = _crop_masked_uvw_box(full_samples, rectangle)
-        surface, projection_count = _find_surface_3d_masked(
-            samples.costs,
-            samples.valid_lag_mask,
-            lmin=self.lmin,
-            bstrain1=self.bstrain1,
-            bstrain2=self.bstrain2,
-            attribute_smoothing=self.attribute_smoothing,
-            surface_smoothing1=self.surface_smoothing1,
-            surface_smoothing2=self.surface_smoothing2,
-        )
-        if surface is None:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="masked_in_bounds",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=rectangle.size,
-                admissible_lag_count=full_samples.admissible_lag_count,
-                in_bounds_lag_count=full_samples.in_bounds_lag_count,
-                support_fraction=0.0,
-                surface_center_lag=None,
-                surface_projection_count=projection_count,
-                selected_invalid_sample_count=0,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="no_feasible_surface",
-            )
-
-        surface_center_lag = float(surface[self.rw - samples.w_offset, self.rv - samples.v_offset])
-        fa, valid_count, invalid_count = _surface_vote_average_masked(
-            c1,
-            c2,
-            c3,
-            self.rv,
-            self.rw,
-            samples.w_offset,
-            samples.v_offset,
-            self.lmin,
-            normal,
-            dip,
-            strike,
-            surface,
-            samples.valid_lag_mask,
-            ft_array,
-        )
-        support_fraction = float(valid_count) / float(full_column_count)
-        if invalid_count > 0:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="masked_in_bounds",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=rectangle.size,
-                admissible_lag_count=full_samples.admissible_lag_count,
-                in_bounds_lag_count=full_samples.in_bounds_lag_count,
-                support_fraction=support_fraction,
-                surface_center_lag=surface_center_lag,
-                surface_projection_count=projection_count,
-                selected_invalid_sample_count=invalid_count,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="invalid_selected_sample",
-            )
-        if valid_count == 0:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="masked_in_bounds",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=rectangle.size,
-                admissible_lag_count=full_samples.admissible_lag_count,
-                in_bounds_lag_count=full_samples.in_bounds_lag_count,
-                support_fraction=0.0,
-                surface_center_lag=surface_center_lag,
-                surface_projection_count=projection_count,
-                selected_invalid_sample_count=0,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="no_valid_surface_samples",
-            )
-        if support_fraction < self.surface_support_min_fraction:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="masked_in_bounds",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=rectangle.size,
-                admissible_lag_count=full_samples.admissible_lag_count,
-                in_bounds_lag_count=full_samples.in_bounds_lag_count,
-                support_fraction=support_fraction,
-                surface_center_lag=surface_center_lag,
-                surface_projection_count=projection_count,
-                selected_invalid_sample_count=0,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=None,
-                skipped=True,
-                skip_reason="support_below_min_fraction",
-            )
-        if self.surface_support_exponent > 0.0:
-            fa = np.float32(
-                fa * np.float32(support_fraction**self.surface_support_exponent),
-            )
-
-        full_box = rectangle == _TangentialRectangle(0, 0, full_nw, full_nv)
-        if full_box and surface.shape[0] >= 3 and surface.shape[1] >= 3:
-            strike_angle, dip_angle = _surface_strike_and_dip(
-                normal,
-                dip,
-                strike,
-                surface,
-                sigma=self.surface_orientation_smoothing,
-            )
-            orientation_source = "surface"
-        else:
-            strike_angle, dip_angle = cell.fp, cell.ft
-            orientation_source = (
-                "seed_boundary_fallback" if not full_box else "seed_small_surface_fallback"
-            )
-
-        center_count, face_count, accumulation_invalid_count = _accumulate_surface_votes_masked(
-            c1,
-            c2,
-            c3,
-            self.rv,
-            self.rw,
-            samples.w_offset,
-            samples.v_offset,
-            self.lmin,
-            fa,
-            np.float32(strike_angle),
-            np.float32(dip_angle),
-            abs(normal[2]) > abs(normal[1]),
-            normal,
-            dip,
-            strike,
-            surface,
-            samples.valid_lag_mask,
             fe_array,
             vp_array,
             vt_array,
             vm_array,
+            normal,
+            dip,
+            strike,
         )
-        if accumulation_invalid_count > 0:
-            return _SurfaceVotingDiagnostic(
-                seed_index=cell.index,
-                policy="masked_in_bounds",
-                full_tangential_column_count=full_column_count,
-                selected_tangential_column_count=rectangle.size,
-                admissible_lag_count=full_samples.admissible_lag_count,
-                in_bounds_lag_count=full_samples.in_bounds_lag_count,
-                support_fraction=support_fraction,
-                surface_center_lag=surface_center_lag,
-                surface_projection_count=projection_count,
-                selected_invalid_sample_count=accumulation_invalid_count,
-                center_vote_write_count=0,
-                face_center_vote_count=0,
-                orientation_source=orientation_source,
-                skipped=True,
-                skip_reason="invalid_selected_sample",
-            )
-        return _SurfaceVotingDiagnostic(
-            seed_index=cell.index,
-            policy="masked_in_bounds",
-            full_tangential_column_count=full_column_count,
-            selected_tangential_column_count=rectangle.size,
-            admissible_lag_count=full_samples.admissible_lag_count,
-            in_bounds_lag_count=full_samples.in_bounds_lag_count,
-            support_fraction=support_fraction,
-            surface_center_lag=surface_center_lag,
-            surface_projection_count=projection_count,
-            selected_invalid_sample_count=0,
-            center_vote_write_count=center_count,
-            face_center_vote_count=face_count,
-            orientation_source=orientation_source,
-            skipped=False,
-            skip_reason=None,
-        )
+        return SURFACE_VOTING_POLICY_REGISTRY["masked_in_bounds"].vote(context)
 
 
 def _surface_vote_average(
