@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
 import math
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
 
+from pyosv.cli import synthetic_quality
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / "examples" / "report_3d_synthetic_quality.py"
+
 SHAPE = (21, 21, 21)
 CASE_IDS = (
     "single_vertical_plane",
@@ -76,13 +73,7 @@ FVT_EDGE_FALSE_POSITIVE_FRACTION = (
 
 
 def _load_report_module() -> object:
-    spec = importlib.util.spec_from_file_location("report_3d_synthetic_quality", SCRIPT)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return synthetic_quality
 
 
 @pytest.fixture(scope="module")
