@@ -16,9 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import sys
-from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from os import PathLike
@@ -29,9 +27,7 @@ import numpy as np
 
 from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
 from pyosv.experimental.boundary_thinning import (
-    FVT_RECENTER_MAX_SHIFT,
     apply_boundary_edge_thin_v1,
-    dominant_fault_normal_array_axis,
     fvt_recenter_target_distance_diagnostics,
     recenter_edge_fvt_to_target,
 )
@@ -40,17 +36,6 @@ from pyosv.synthetic3d import (
     make_boundary_plane_case,  # noqa: F401 - compatibility export
     validate_shape3,
 )
-from pyosv.synthetic_metrics import (
-    buffered_surface_overlap,
-    edge_false_positive_ratio,
-    masked_orientation_error,
-    skin_mask_from_skins,
-    skin_topology_metrics,
-    skin_truth_metrics,
-    surface_distance_metrics,
-    top_positive_truth_count_mask,
-    top_truth_count_mask,
-)
 from pyosv.evaluation.synthetic_quality.config import (
     SKINNER_GROWTH_SOURCES,
     SKINNER_METHODS,
@@ -58,7 +43,6 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
-    _validate_nonnegative_finite_scalar,
 )
 from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.evaluation.synthetic_quality.diagnostics import (
@@ -76,6 +60,21 @@ from pyosv.evaluation.synthetic_quality.scanner import (
     scan_ensemble_attributes,
     scanner_attributes_from_case,
     unit_range_normalize,
+)
+from pyosv.evaluation.synthetic_quality.pipeline import (
+    run_voting_from_attributes as _package_run_voting_from_attributes,
+)
+from pyosv.evaluation.synthetic_quality.runner import (
+    build_case_report_model as _package_build_case_report_model,
+    case_pipeline_reports as _package_case_pipeline_reports,
+    case_variant_comparison_alias as _package_case_variant_comparison_alias,
+    prepare_case_inputs as _package_prepare_case_inputs,
+    run_case as _package_run_case,
+    run_case_variant as _package_run_case_variant,
+    run_oracle_pipeline as _package_run_oracle_pipeline,
+    run_scanner_pipeline as _package_run_scanner_pipeline,
+    validate_input_mode as _package_validate_input_mode,
+    variant_pipeline_report as _package_variant_pipeline_report,
 )
 from pyosv.evaluation.synthetic_quality.cases import (
     CASE_IDS,  # noqa: F401 - compatibility export
@@ -101,8 +100,13 @@ from pyosv.evaluation.synthetic_quality.profiles import (
     _effective_voter_thin_mode,
     _validate_workflow_mode,
 )
+from pyosv.evaluation.reporting.json_v1 import (
+    LegacyReportV1Adapter,
+    report_to_json as _report_to_json,
+    write_metrics_json as _write_metrics_json,
+)
+from pyosv.evaluation.reporting.models import Report, ReportConfig
 from pyosv.evaluation.synthetic_quality.variants import (
-    BASELINE_VARIANT,
     DEFAULT_VARIANTS,
     QUALITY_MATRIX_VARIANTS,  # noqa: F401 - compatibility export
     VARIANT_NAMES,
@@ -116,8 +120,7 @@ from pyosv.evaluation.synthetic_quality.variants import (
     validate_variants,
 )
 from pyosv.cells import FaultCell
-from pyosv.skinner import FaultSkinner, find_connected_component_skins
-from pyosv.voting3d import OptimalSurfaceVoter
+from pyosv.voting3d import OptimalSurfaceVoter  # noqa: F401 - compatibility export
 
 DEFAULT_SHAPE = (33, 33, 33)
 FORMAT_VERSION = 1
@@ -164,28 +167,6 @@ THINNING_DIAGNOSTIC_VOLUME_NAMES = (
 PIPELINE_OUTPUTS_KEY = "__pipelines__"
 PIPELINE_NAMES = ("oracle", "scanner")
 NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
-SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE = 0.50
-SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT = 8
-SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION = 0.75
-SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION = 0.25
-# Boundary degraded-primary fallback is intentionally stricter than the generic
-# degraded-primary diagnostics. These thresholds require boundary-local evidence
-# before diagnostic degraded-primary variants replace a non-empty primary skin.
-SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_FVT_EDGE_SHELL_FRACTION = 0.25
-SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_SCANNER_TARGET_DISTANCE_P95 = 2.0
-SKIN_PRIMARY_BOUNDARY_DEGRADED_MAX_CELL_COVERAGE = 0.50
-SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_FVT_FRACTION = 0.15
-SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_PRIMARY_FRACTION = 0.05
-SKIN_FALLBACK_FILTER_MAX_COMPONENTS = 3
-SKIN_FALLBACK_FILTER_MIN_COMPONENT_SIZE_FLOOR = 8
-SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION = 0.05
-SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION_OF_LARGEST = 0.10
-SKIN_FALLBACK_V5_MAX_SKIN_COUNT = 3
-SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE = 0.75
-SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE = 1.25
-SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION = 0.20
-SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION = 0.50
-SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION = 0.60
 DEFAULT_VARIANT_PRESET = "default"
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
@@ -646,286 +627,93 @@ def parse_optional_nonnegative_int(text: str) -> int | None:
 
 def run_case(
     case_definition: SyntheticQualityCaseDefinition,
-    *,
-    shape: tuple[int, int, int],
-    voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
-    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
-    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
-    skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
-    variant: str = "current_default",
-    input_mode: str = "oracle",
-    scanner_backend_matrix: bool = False,
-    include_thinning_diagnostic: bool = False,
-    include_scanner_downstream_diagnostics: bool = False,
-    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    case = case_definition.factory(shape)
-    if case.case_id != case_definition.case_id:
-        raise ValueError(
-            f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
-        )
-    diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
-    variant_report, volumes, _ = _run_case_variant(
-        case,
-        voting_config=voting_config,
-        scanner_config=scanner_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant=variant,
-        input_mode=input_mode,
-        scanner_backend_matrix=scanner_backend_matrix,
-        include_thinning_diagnostic=(
-            include_thinning_diagnostic and case.case_id in diagnostic_case_ids
-        ),
-        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    report = {
-        "case_id": case.case_id,
-        "shape": [int(size) for size in case.shape],
-        "truth": _truth_report(case, truth_metric_config),
-        "variants": {variant: variant_report},
-    }
-    if variant == BASELINE_VARIANT:
-        report.update(
-            {key: value for key, value in variant_report.items() if key not in {"pipelines"}}
-        )
-    pipelines = _case_pipeline_reports({variant: variant_report}, input_mode)
-    report["pipelines"] = pipelines
-    report["variant_comparison"] = _case_variant_comparison_alias(pipelines, input_mode)
-    return report, volumes
+    kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
+    kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    evaluation = _package_run_case(case_definition, **kwargs)
+    return dict(evaluation.report_payload), dict(evaluation.artifacts.volumes)
 
 
 def _run_case_variant(
     case: Synthetic3DCase,
-    *,
-    voting_config: SyntheticVotingConfig,
-    scanner_config: SyntheticScannerConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant: str,
-    input_mode: str,
-    scanner_backend_matrix: bool,
-    include_thinning_diagnostic: bool,
-    include_scanner_downstream_diagnostics: bool,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    variant_spec = get_variant_spec(variant)
-    valid_input_mode = _validate_input_mode(input_mode)
-    skinning_config = effective_skinning_config(variant_spec, skinning_config)
-
-    if valid_input_mode == "oracle":
-        return _run_oracle_pipeline(
-            case,
-            voting_config=voting_config,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            include_thinning_diagnostic=include_thinning_diagnostic,
-        )
-
-    pipelines = {}
-    pipeline_outputs = {}
-    if valid_input_mode == "both":
-        oracle_report, oracle_volumes, oracle_skins = _run_oracle_pipeline(
-            case,
-            voting_config=voting_config,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            include_thinning_diagnostic=include_thinning_diagnostic,
-        )
-        pipelines["oracle"] = oracle_report
-        pipeline_outputs["oracle"] = (oracle_report, oracle_volumes, oracle_skins)
-
-    scanner_report, scanner_volumes, scanner_skins = _run_scanner_pipeline(
-        case,
-        voting_config=voting_config,
-        scanner_config=scanner_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant_spec=variant_spec,
-        scanner_backend_matrix=scanner_backend_matrix,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    pipelines["scanner"] = scanner_report
-    pipeline_outputs["scanner"] = (scanner_report, scanner_volumes, scanner_skins)
-
-    active_pipeline = "scanner" if valid_input_mode == "scanner" else "oracle"
-    active_report, active_volumes, active_skins = pipeline_outputs[active_pipeline]
-    report = dict(active_report)
-    report["active_pipeline"] = active_pipeline
-    report["pipelines"] = pipelines
-    if valid_input_mode == "both":
-        pipeline_volumes = {pipeline: outputs[1] for pipeline, outputs in pipeline_outputs.items()}
-        pipeline_skins = {pipeline: outputs[2] for pipeline, outputs in pipeline_outputs.items()}
-        return (
-            report,
-            {PIPELINE_OUTPUTS_KEY: pipeline_volumes},
-            {PIPELINE_OUTPUTS_KEY: pipeline_skins},
-        )
-    return report, active_volumes, active_skins
+    kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
+    kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    evaluation = _package_run_case_variant(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
+    )
 
 
 def _validate_input_mode(input_mode: str) -> str:
-    if input_mode not in {"oracle", "scanner", "both"}:
-        raise ValueError("input_mode must be 'oracle', 'scanner', or 'both'")
-    return input_mode
+    return _package_validate_input_mode(input_mode)
 
 
 def _case_pipeline_reports(
     variant_reports: Mapping[str, Mapping[str, Any]],
     input_mode: str,
 ) -> dict[str, dict[str, Any]]:
-    pipeline_names = {
-        "oracle": ("oracle",),
-        "scanner": ("scanner",),
-        "both": ("oracle", "scanner"),
-    }[_validate_input_mode(input_mode)]
-    return {
-        pipeline: {
-            "variants": {
-                variant: _variant_pipeline_report(variant_report, pipeline)
-                for variant, variant_report in variant_reports.items()
-            },
-            "variant_comparison": _variant_comparison(
-                {
-                    variant: _variant_pipeline_report(variant_report, pipeline)
-                    for variant, variant_report in variant_reports.items()
-                }
-            ),
-        }
-        for pipeline in pipeline_names
-    }
+    return _package_case_pipeline_reports(variant_reports, input_mode)
 
 
 def _variant_pipeline_report(
     variant_report: Mapping[str, Any],
     pipeline: str,
 ) -> Mapping[str, Any]:
-    pipelines = variant_report.get("pipelines")
-    if isinstance(pipelines, Mapping) and pipeline in pipelines:
-        pipeline_report = pipelines[pipeline]
-        if not isinstance(pipeline_report, Mapping):
-            raise TypeError(f"pipeline report must be a mapping: {pipeline}")
-        return pipeline_report
-    if pipeline == "oracle" and "scanner_quality" not in variant_report:
-        return variant_report
-    if pipeline == "scanner" and "scanner_quality" in variant_report:
-        return variant_report
-    raise KeyError(f"missing pipeline report: {pipeline}")
+    return _package_variant_pipeline_report(variant_report, pipeline)
 
 
 def _case_variant_comparison_alias(
     pipelines: Mapping[str, Mapping[str, Any]],
     input_mode: str,
 ) -> dict[str, Any]:
-    valid_input_mode = _validate_input_mode(input_mode)
-    if valid_input_mode == "both":
-        return {
-            "pipelines": {
-                pipeline: pipeline_report["variant_comparison"]
-                for pipeline, pipeline_report in pipelines.items()
-            }
-        }
-    active_pipeline = "scanner" if valid_input_mode == "scanner" else "oracle"
-    return dict(pipelines[active_pipeline]["variant_comparison"])
+    return _package_case_variant_comparison_alias(pipelines, input_mode)
 
 
 def _run_oracle_pipeline(
     case: Synthetic3DCase,
-    *,
-    voting_config: SyntheticVotingConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant_spec: VariantSpec,
-    include_thinning_diagnostic: bool,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    return _run_voting_from_attributes(
-        case,
-        ft=case.ft_oracle,
-        pt=case.pt_oracle,
-        tt=case.tt_oracle,
-        voting_config=voting_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant_spec=variant_spec,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-        fvt_recenter_target=case.ft_oracle,
-        fvt_recenter_target_source="oracle_ft",
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
+    )
+    evaluation = _package_run_oracle_pipeline(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
     )
 
 
 def _run_scanner_pipeline(
     case: Synthetic3DCase,
-    *,
-    voting_config: SyntheticVotingConfig,
-    scanner_config: SyntheticScannerConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant_spec: VariantSpec,
-    scanner_backend_matrix: bool,
-    include_thinning_diagnostic: bool,
-    include_scanner_downstream_diagnostics: bool,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    scanner_report, scanner_volumes = _scanner_attributes_from_case(case, scanner_config)
-    report, volumes, skins_output = _run_voting_from_attributes(
-        case,
-        ft=scanner_volumes["scanner_fet"],
-        pt=scanner_volumes["scanner_fpt"],
-        tt=scanner_volumes["scanner_ftt"],
-        voting_config=voting_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant_spec=variant_spec,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-        scanner_target_positive_mask=_positive_candidate_mask(scanner_volumes["scanner_ft"]),
-        fvt_recenter_target=scanner_volumes["scanner_fet"],
-        fvt_recenter_target_source="scanner_fet",
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    report["scanner"] = scanner_report
-    report["scanner_quality"] = _scanner_truth_quality(
-        case,
-        scanner_volumes=scanner_volumes,
-        truth_metric_config=truth_metric_config,
+    kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
+    kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    evaluation = _package_run_scanner_pipeline(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
     )
-    if include_scanner_downstream_diagnostics:
-        report["scanner_downstream"] = _scanner_downstream_diagnostics(
-            case=case,
-            scanner_config=scanner_config,
-            voting_config=voting_config,
-            variant_spec=variant_spec,
-            report=report,
-            scanner_volumes=scanner_volumes,
-            fv=volumes["fv_py"],
-            vp=volumes["vp_py"],
-            vt=volumes["vt_py"],
-            fvt=volumes["fvt_py"],
-            truth_metric_config=truth_metric_config,
-        )
-        report["scanner_stage_loss"] = _scanner_stage_loss_diagnostics(
-            case=case,
-            voting_config=voting_config,
-            variant_spec=variant_spec,
-            scanner_volumes=scanner_volumes,
-            fv=volumes["fv_py"],
-            fvt=volumes["fvt_py"],
-            skin_mask=volumes["skin_mask_py"],
-            truth_metric_config=truth_metric_config,
-            boundary_seed_selector=_boundary_seed_retention_v1_seeds,
-        )
-    if scanner_backend_matrix:
-        report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
-            case,
-            voting_config=voting_config,
-            scanner_config=scanner_config,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            include_thinning_diagnostic=include_thinning_diagnostic,
-            selected_report=report,
-        )
-    volumes.update(scanner_volumes)
-    return report, volumes, skins_output
 
 
 def _scanner_backend_matrix_report(
@@ -1195,10 +983,6 @@ def _apply_boundary_edge_thin_v1(*args: Any, **kwargs: Any) -> tuple[np.ndarray,
     return result.output, result.diagnostics
 
 
-def _dominant_fault_normal_array_axis(strike: float, dip: float) -> int:
-    return dominant_fault_normal_array_axis(strike, dip)
-
-
 def _scanner_input_association(
     scanner_input: np.ndarray,
     *,
@@ -1218,359 +1002,18 @@ def _masked_mean(values: np.ndarray, mask: np.ndarray) -> float:
 
 def _run_voting_from_attributes(
     case: Synthetic3DCase,
-    *,
-    ft: np.ndarray,
-    pt: np.ndarray,
-    tt: np.ndarray,
-    voting_config: SyntheticVotingConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant_spec: VariantSpec,
-    include_thinning_diagnostic: bool = False,
-    scanner_target_positive_mask: np.ndarray | None = None,
-    fvt_recenter_target: np.ndarray | None = None,
-    fvt_recenter_target_source: str | None = None,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    voter = OptimalSurfaceVoter(
-        ru=voting_config.ru,
-        rv=voting_config.rv,
-        rw=voting_config.rw,
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    voter.set_attribute_smoothing(voting_config.attribute_smoothing)
-    voting_patch = variant_spec.voting
-    surface_support_min_fraction = (
-        voting_config.surface_support_min_fraction
-        if voting_patch.support_min_fraction is None
-        else voting_patch.support_min_fraction
+    evaluation = _package_run_voting_from_attributes(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
     )
-    surface_support_exponent = (
-        voting_config.surface_support_exponent
-        if voting_patch.support_exponent is None
-        else voting_patch.support_exponent
-    )
-    voter.set_surface_support_policy(
-        min_fraction=surface_support_min_fraction,
-        exponent=surface_support_exponent,
-    )
-    if voting_patch.boundary_policy is not None:
-        voter.set_surface_voting_boundary_policy(voting_patch.boundary_policy)
-    if voting_patch.orientation_smoothing is not None:
-        voter.set_surface_orientation_smoothing(voting_patch.orientation_smoothing)
-    if voting_patch.final_normalization_smoothing is not None:
-        voter.set_final_normalization_smoothing(voting_patch.final_normalization_smoothing)
-    boundary_seed_retention_diagnostic: dict[str, Any] | None = None
-    if variant_spec.seed_policy == "boundary_seed_retention_v1":
-        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        boundary_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        seed_result = select_boundary_seed_retention_v1(
-            voting_config=voting_config,
-            ft=ft,
-            pt=pt,
-            tt=tt,
-            target=boundary_target,
-            target_source=boundary_target_source,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        seeds = list(seed_result.selected_seeds)
-        boundary_seed_retention_diagnostic = seed_result.diagnostics
-    else:
-        seeds = voter.pick_seeds(
-            d=voting_config.seed_distance,
-            fm=voting_config.seed_threshold,
-            ft=ft,
-            pt=pt,
-            tt=tt,
-        )
-    fv, vp, vt = voter.apply_voting_from_seeds(
-        seeds,
-        ft=ft,
-        pt=pt,
-        tt=tt,
-    )
-    surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
-    thin_mode = effective_thin_mode(variant_spec, voting_config)
-    plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
-    fvt = voter.thin(
-        fv,
-        vp,
-        vt,
-        mode=thin_mode,
-        reference_sigma=voting_config.reference_thin_sigma,
-        plateau_tie_breaker=plateau_tie_breaker,
-    )
-    fvt_recenter_diagnostic: dict[str, Any] | None = None
-    fvt_recenter_before_positive: np.ndarray | None = None
-    boundary_edge_thin_diagnostic: dict[str, Any] | None = None
-    if variant_spec.post_thinning_policy == "recenter_scanner_target":
-        recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        recenter_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        fvt_recenter_before_positive = _positive_candidate_mask(fvt)
-        recenter_result = recenter_edge_fvt_to_target(
-            fvt,
-            vp,
-            vt,
-            target=recenter_target,
-            target_source=recenter_target_source,
-            max_shift=FVT_RECENTER_MAX_SHIFT,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = recenter_result.output
-        fvt_recenter_diagnostic = recenter_result.diagnostics
-    if variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
-        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        boundary_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        boundary_thin_result = apply_boundary_edge_thin_v1(
-            fvt,
-            fv,
-            vp,
-            vt,
-            voter=voter,
-            target=boundary_target,
-            target_source=boundary_target_source,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = boundary_thin_result.output
-        boundary_edge_thin_diagnostic = boundary_thin_result.diagnostics
-
-    truth_surface_half_width = _validate_nonnegative_finite_scalar(
-        truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
-    )
-    buffer_radius = _validate_nonnegative_finite_scalar(
-        truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
-    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-    fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
-    fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
-    fv_positive_top_truth_count = top_positive_truth_count_mask(fv, truth_surface_mask)
-    fvt_positive_top_truth_count = top_positive_truth_count_mask(fvt, truth_surface_mask)
-    edge_false_positive_metrics = {
-        "fv_top_truth_count": edge_false_positive_ratio(
-            fv_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fvt_top_truth_count": edge_false_positive_ratio(
-            fvt_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fv_positive_top_truth_count": edge_false_positive_ratio(
-            fv_positive_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fvt_positive_top_truth_count": edge_false_positive_ratio(
-            fvt_positive_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-    }
-    report = {
-        "config": {
-            "skinning": skinning_config.as_report_dict(),
-        },
-        "skinning": {"enabled": skinning_config.enabled},
-        "pyosv": {
-            "fv": _array_summary(fv),
-            "fvt": _array_summary(fvt),
-            "voting": {
-                "surface_voting_boundary_policy": voter.surface_voting_boundary_policy,
-                "surface_support_min_fraction": float(surface_support_min_fraction),
-                "surface_support_exponent": float(surface_support_exponent),
-                "diagnostic_summary": surface_voting_diagnostic_summary,
-            },
-        },
-        "quality": {
-            "fv_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fv_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fv_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fv_top_truth_count,
-                ),
-            },
-            "fvt_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fvt_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fvt_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fvt_top_truth_count,
-                ),
-            },
-            "fv_positive_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fv_positive_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fv_positive_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fv_positive_top_truth_count,
-                ),
-            },
-            "fvt_positive_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fvt_positive_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fvt_positive_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fvt_positive_top_truth_count,
-                ),
-            },
-            "edge_false_positive": edge_false_positive_metrics,
-        },
-    }
-    if fvt_recenter_diagnostic is not None:
-        fvt_recenter_diagnostic.update(
-            fvt_recenter_target_distance_diagnostics(
-                before=fvt_recenter_before_positive,
-                after=_positive_candidate_mask(fvt),
-                target=_positive_candidate_mask(recenter_target),
-            )
-        )
-        report["fvt_recenter"] = fvt_recenter_diagnostic
-    if boundary_edge_thin_diagnostic is not None:
-        report["boundary_edge_thin"] = boundary_edge_thin_diagnostic
-    if boundary_seed_retention_diagnostic is not None:
-        report["boundary_seed_retention"] = boundary_seed_retention_diagnostic
-    diagnostic_volumes: dict[str, np.ndarray] = {}
-    if include_thinning_diagnostic:
-        thinning_diagnostic, diagnostic_volumes = _run_voter_thinning_diagnostic(
-            case=case,
-            voter=voter,
-            fv=fv,
-            vp=vp,
-            vt=vt,
-            reference_sigma=voting_config.reference_thin_sigma,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-        )
-        report["thinning_diagnostic"] = thinning_diagnostic
-    if skinning_config.enabled:
-        skin_diagnostics: dict[str, Any] = {}
-        skins = _find_synthetic_skins(
-            fv,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_config,
-            diagnostics=skin_diagnostics,
-        )
-        _add_primary_skin_diagnostics(
-            skin_diagnostics,
-            skins,
-            shape=case.shape,
-            fvt_positive_candidate_count=int(np.count_nonzero(fvt_positive_top_truth_count)),
-            small_skin_size=skinning_config.small_skin_size,
-        )
-        _apply_boundary_skinner_fallback(
-            skins,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_config,
-            variant=variant_spec.name,
-            diagnostics=skin_diagnostics,
-            scanner_target_positive_mask=scanner_target_positive_mask,
-        )
-        report["skinning"]["diagnostics"] = skin_diagnostics
-        skin_metrics = skin_truth_metrics(
-            skins,
-            shape=case.shape,
-            truth_fault_mask=truth_fault_mask,
-            truth_surface_mask=truth_surface_mask,
-            truth_strike=case.truth_strike,
-            truth_dip=case.truth_dip,
-            buffer_radius=buffer_radius,
-            small_skin_size=skinning_config.small_skin_size,
-            truth_fault_id=case.truth_fault_id,
-        )
-        skin_metrics = _normalize_report_skin_metric_keys(skin_metrics)
-        report["pyosv"]["skins"] = skin_metrics["topology"]
-        report["quality"]["skin"] = skin_metrics
-        skin_mask = skin_mask_from_skins(skins, case.shape)
-        report["quality"]["edge_false_positive"]["skin"] = edge_false_positive_ratio(
-            skin_mask,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        )
-        skins_output = _skins_json_payload(skins)
-    else:
-        report["pyosv"]["skins"] = skin_topology_metrics(
-            [],
-            case.shape,
-            small_skin_size=skinning_config.small_skin_size,
-        )
-        report["quality"]["skin"] = None
-        skin_mask = np.zeros(case.shape, dtype=bool)
-        skins_output = _disabled_skins_json_payload()
-
-    volumes = {
-        "truth_fault_mask": case.truth_fault_mask.astype(np.float32),
-        "truth_distance": case.truth_distance,
-        "truth_strike": case.truth_strike,
-        "truth_dip": case.truth_dip,
-        "ft_oracle": case.ft_oracle,
-        "pt_oracle": case.pt_oracle,
-        "tt_oracle": case.tt_oracle,
-        "fv_py": fv,
-        "vp_py": vp,
-        "vt_py": vt,
-        "fvt_py": fvt,
-        "skin_mask_py": skin_mask.astype(np.float32),
-    }
-    volumes.update(diagnostic_volumes)
-    return report, volumes, skins_output
 
 
 def _skins_json_payload(skins: Sequence[Any]) -> dict[str, Any]:
@@ -1741,6 +1184,12 @@ def _build_report_and_volumes(
         variant_reports = {}
         variant_volumes = {}
         variant_skins = {}
+        prepared_inputs = _package_prepare_case_inputs(
+            case,
+            scanner_config=scanner_config,
+            input_mode=valid_input_mode,
+            scanner_backend_matrix=effective_scanner_backend_matrix,
+        )
         for variant in valid_variants:
             variant_report, volumes, skins_output = _run_case_variant(
                 case,
@@ -1755,33 +1204,19 @@ def _build_report_and_volumes(
                     include_thinning_diagnostic and case.case_id in diagnostic_case_ids
                 ),
                 include_scanner_downstream_diagnostics=(effective_scanner_downstream_diagnostics),
+                prepared_inputs=prepared_inputs,
             )
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
             variant_skins[variant] = skins_output
-        pipelines = _case_pipeline_reports(variant_reports, valid_input_mode)
-        case_report = {
-            "case_id": case.case_id,
-            "shape": [int(size) for size in case.shape],
-            "truth": _truth_report(case, truth_metric_config),
-            "variants": variant_reports,
-            "pipelines": pipelines,
-            "variant_comparison": _case_variant_comparison_alias(pipelines, valid_input_mode),
-        }
-        if BASELINE_VARIANT in variant_reports:
-            case_report.update(
-                {
-                    key: value
-                    for key, value in variant_reports[BASELINE_VARIANT].items()
-                    if key not in {"config", "pipelines"}
-                }
-            )
-            case_report["pipelines"] = pipelines
-            case_report["variant_comparison"] = _case_variant_comparison_alias(
-                pipelines,
-                valid_input_mode,
-            )
-        cases.append(case_report)
+        case_model = _package_build_case_report_model(
+            case_id=case.case_id,
+            shape=case.shape,
+            truth=_truth_report(case, truth_metric_config),
+            variant_reports=variant_reports,
+            input_mode=valid_input_mode,
+        )
+        cases.append(case_model)
         volume_outputs[case_definition.case_id] = variant_volumes
         skin_outputs[case_definition.case_id] = variant_skins
 
@@ -1803,11 +1238,8 @@ def _build_report_and_volumes(
     if include_thinning_diagnostic:
         config["thinning_diagnostic"] = {"enabled": True}
 
-    report = {
-        "format_version": FORMAT_VERSION,
-        "config": config,
-        "cases": cases,
-    }
+    report_model = Report(config=ReportConfig(config), cases=tuple(cases))
+    report = LegacyReportV1Adapter().to_dict(report_model)
     return report, volume_outputs, skin_outputs
 
 
@@ -1850,8 +1282,7 @@ def _delta_or_none(value: float | None, baseline_value: float | None) -> float |
 
 
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
-    indent = 2 if pretty else None
-    return json.dumps(report, indent=indent, sort_keys=True) + "\n"
+    return _report_to_json(report, pretty=pretty)
 
 
 def write_metrics_json(
@@ -1860,10 +1291,7 @@ def write_metrics_json(
     *,
     pretty: bool = False,
 ) -> Path:
-    output_path = Path(output_dir) / "metrics.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report_to_json(report, pretty=pretty), encoding="utf-8")
-    return output_path
+    return _write_metrics_json(report, output_dir, pretty=pretty)
 
 
 def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]) -> Path:
@@ -3117,784 +2545,6 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
             else 0.0
         ),
     }
-
-
-def _add_primary_skin_diagnostics(
-    diagnostics: dict[str, Any],
-    skins: Sequence[Any],
-    *,
-    shape: tuple[int, int, int],
-    fvt_positive_candidate_count: int,
-    small_skin_size: int,
-) -> None:
-    topology = skin_topology_metrics(
-        skins,
-        shape,
-        small_skin_size=small_skin_size,
-    )
-    positive_count = int(fvt_positive_candidate_count)
-    if positive_count < 0:
-        raise ValueError("fvt_positive_candidate_count must be non-negative")
-
-    unique_cell_count = int(topology["unique_cell_count"])
-    largest_size = int(topology["largest_skin_size"])
-    cell_coverage = float(unique_cell_count / positive_count) if positive_count else 0.0
-    largest_coverage = float(largest_size / positive_count) if positive_count else 0.0
-    primary_mask = skin_mask_from_skins(skins, shape)
-    primary_edge_shell_fraction = _edge_candidate_fraction(
-        primary_mask,
-        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-    )
-    reasons = _primary_skin_degraded_reasons(
-        fvt_positive_candidate_count=positive_count,
-        skin_count=int(topology["skin_count"]),
-        cell_coverage_of_fvt_positive=cell_coverage,
-        largest_fraction=float(topology["largest_skin_fraction"]),
-        small_skin_cell_fraction=float(topology["small_skin_cell_fraction"]),
-    )
-
-    diagnostics.update(
-        {
-            "skin_primary_count": int(topology["skin_count"]),
-            "skin_primary_cell_count": int(topology["cell_count"]),
-            "skin_primary_unique_cell_count": unique_cell_count,
-            "skin_primary_largest_size": largest_size,
-            "skin_primary_largest_fraction": float(topology["largest_skin_fraction"]),
-            "skin_primary_small_count": int(topology["small_skin_count"]),
-            "skin_primary_small_cell_fraction": float(topology["small_skin_cell_fraction"]),
-            "skin_primary_cell_coverage_of_fvt_positive": cell_coverage,
-            "skin_primary_largest_coverage_of_fvt_positive": largest_coverage,
-            "skin_primary_edge_shell_fraction": primary_edge_shell_fraction,
-            "skin_primary_degraded_candidate": bool(reasons),
-            "skin_primary_degraded_reasons": reasons,
-        }
-    )
-
-
-def _primary_skin_degraded_reasons(
-    *,
-    fvt_positive_candidate_count: int,
-    skin_count: int,
-    cell_coverage_of_fvt_positive: float,
-    largest_fraction: float,
-    small_skin_cell_fraction: float,
-) -> list[str]:
-    if int(fvt_positive_candidate_count) <= 0:
-        return []
-
-    reasons: list[str] = []
-    if int(skin_count) == 0:
-        reasons.append("empty_primary_skin")
-    if float(cell_coverage_of_fvt_positive) < SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE:
-        reasons.append("low_fvt_positive_coverage")
-    if int(skin_count) > 0 and (
-        int(skin_count) >= SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT
-        or float(largest_fraction) < SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
-    ):
-        reasons.append("fragmented_primary_skins")
-    if float(small_skin_cell_fraction) > SKIN_PRIMARY_DEGRADED_MAX_SMALL_CELL_FRACTION:
-        reasons.append("high_small_skin_cell_fraction")
-    return reasons
-
-
-def _primary_boundary_degraded_reasons(
-    *,
-    generic_degraded: bool,
-    fvt_positive_candidate_count: int,
-    cell_coverage_of_fvt_positive: float,
-    fvt_positive_edge_shell_fraction: float,
-    primary_edge_shell_fraction: float,
-    fvt_to_scanner_target_distance_p95: float | None,
-) -> list[str]:
-    if not generic_degraded or int(fvt_positive_candidate_count) <= 0:
-        return []
-
-    reasons: list[str] = []
-    if (
-        float(fvt_positive_edge_shell_fraction)
-        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_FVT_EDGE_SHELL_FRACTION
-    ):
-        reasons.append("fvt_positive_edge_shell")
-    if (
-        fvt_to_scanner_target_distance_p95 is not None
-        and float(fvt_to_scanner_target_distance_p95)
-        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_SCANNER_TARGET_DISTANCE_P95
-    ):
-        reasons.append("fvt_far_from_scanner_target")
-    if (
-        float(cell_coverage_of_fvt_positive) < SKIN_PRIMARY_BOUNDARY_DEGRADED_MAX_CELL_COVERAGE
-        and float(fvt_positive_edge_shell_fraction)
-        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_FVT_FRACTION
-        and float(primary_edge_shell_fraction)
-        >= SKIN_PRIMARY_BOUNDARY_DEGRADED_MIN_EDGE_LOCAL_PRIMARY_FRACTION
-    ):
-        reasons.append("low_primary_coverage_with_edge_local_candidates")
-    return reasons
-
-
-def _skeletonized_fallback_boundary_trigger_sufficient(
-    *,
-    boundary_degraded_reasons: Sequence[str],
-    scanner_target_positive_mask: np.ndarray | None,
-) -> bool:
-    if not boundary_degraded_reasons:
-        return False
-    if scanner_target_positive_mask is None:
-        return False
-    return any(
-        reason in boundary_degraded_reasons
-        for reason in (
-            "fvt_far_from_scanner_target",
-            "low_primary_coverage_with_edge_local_candidates",
-        )
-    )
-
-
-def _fallback_v5_guardrail_report(
-    *,
-    fallback_topology: Mapping[str, Any],
-    fvt_positive_count: int,
-    pruned_fraction: float,
-) -> dict[str, Any]:
-    fallback_skin_count = int(fallback_topology["skin_count"])
-    fallback_unique_cell_count = int(fallback_topology["unique_cell_count"])
-    coverage_of_fvt_positive = (
-        float(fallback_unique_cell_count / int(fvt_positive_count))
-        if int(fvt_positive_count) > 0
-        else 0.0
-    )
-    small_skin_cell_fraction = float(fallback_topology["small_skin_cell_fraction"])
-    largest_skin_fraction = float(fallback_topology["largest_skin_fraction"])
-    pruned_fraction = float(pruned_fraction)
-
-    reasons: list[str] = []
-    if fallback_skin_count > SKIN_FALLBACK_V5_MAX_SKIN_COUNT:
-        reasons.append("fallback_skin_count_exceeds_max")
-    if not math.isfinite(coverage_of_fvt_positive):
-        reasons.append("coverage_of_fvt_positive_nonfinite")
-    else:
-        if coverage_of_fvt_positive < SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE:
-            reasons.append("coverage_of_fvt_positive_below_min")
-        if coverage_of_fvt_positive > SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE:
-            reasons.append("coverage_of_fvt_positive_above_max")
-    if (
-        not math.isfinite(small_skin_cell_fraction)
-        or small_skin_cell_fraction > SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION
-    ):
-        reasons.append("small_skin_cell_fraction_exceeds_max")
-    if (
-        not math.isfinite(largest_skin_fraction)
-        or largest_skin_fraction < SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION
-    ):
-        reasons.append("largest_skin_fraction_below_min")
-    if not math.isfinite(pruned_fraction) or pruned_fraction > SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION:
-        reasons.append("pruned_fraction_exceeds_max")
-
-    return {
-        "enabled": True,
-        "passed": not reasons,
-        "reasons": reasons,
-        "max_skin_count": SKIN_FALLBACK_V5_MAX_SKIN_COUNT,
-        "fallback_skin_count": fallback_skin_count,
-        "coverage_of_fvt_positive": coverage_of_fvt_positive,
-        "min_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE,
-        "max_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE,
-        "small_skin_cell_fraction": small_skin_cell_fraction,
-        "max_small_skin_cell_fraction": SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION,
-        "largest_skin_fraction": largest_skin_fraction,
-        "min_largest_skin_fraction": SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION,
-        "pruned_fraction": pruned_fraction,
-        "max_pruned_fraction": SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION,
-    }
-
-
-def _fallback_component_diagnostics(
-    fvt: np.ndarray,
-    *,
-    min_skin_size: int | None,
-    small_component_size: int,
-    connectivity: str,
-    component_policy: str = "all",
-) -> dict[str, int | float | str]:
-    mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
-    candidate_cell_count = int(np.count_nonzero(mask))
-    components = _positive_mask_components(mask, connectivity=connectivity)
-    sizes = [len(component) for component in components]
-    if component_policy == "all":
-        accepted_components = [
-            component
-            for component in components
-            if min_skin_size is None or len(component) >= int(min_skin_size)
-        ]
-        filter_min_component_size = 0
-        filter_min_fraction_of_largest = 0.0
-        filter_max_components = 0
-    elif component_policy in {
-        "degraded_primary_filtered",
-        "degraded_primary_skeletonized",
-        "degraded_primary_topology_guarded",
-    }:
-        accepted_components = _filtered_fallback_components(
-            components,
-            candidate_cell_count=candidate_cell_count,
-        )
-        filter_min_component_size = _filtered_fallback_min_component_size(candidate_cell_count)
-        filter_min_fraction_of_largest = SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION_OF_LARGEST
-        filter_max_components = SKIN_FALLBACK_FILTER_MAX_COMPONENTS
-    else:
-        raise ValueError(f"unknown fallback component policy: {component_policy}")
-
-    accepted_sizes = [len(component) for component in accepted_components]
-    discarded_component_count = len(sizes) - len(accepted_sizes)
-    small_component_count = sum(1 for size in sizes if size < int(small_component_size))
-    largest_component_size = sizes[0] if sizes else 0
-    top3_component_cell_count = int(sum(sizes[:3]))
-    return {
-        "skin_fallback_component_count": int(len(components)),
-        "skin_fallback_candidate_cell_count": candidate_cell_count,
-        "skin_fallback_largest_component_size": int(largest_component_size),
-        "skin_fallback_largest_component_fraction": (
-            float(largest_component_size / candidate_cell_count) if candidate_cell_count else 0.0
-        ),
-        "skin_fallback_top3_component_cell_count": top3_component_cell_count,
-        "skin_fallback_top3_component_fraction": (
-            float(top3_component_cell_count / candidate_cell_count) if candidate_cell_count else 0.0
-        ),
-        "skin_fallback_small_component_count": int(small_component_count),
-        "skin_fallback_component_policy": component_policy,
-        "skin_fallback_accepted_component_count": int(len(accepted_sizes)),
-        "skin_fallback_discarded_component_count": int(discarded_component_count),
-        "skin_fallback_accepted_component_cell_count": int(sum(accepted_sizes)),
-        "skin_fallback_filter_min_component_size": int(filter_min_component_size),
-        "skin_fallback_filter_min_component_fraction_of_largest": float(
-            filter_min_fraction_of_largest
-        ),
-        "skin_fallback_filter_max_components": int(filter_max_components),
-    }
-
-
-def _filtered_fallback_min_component_size(candidate_cell_count: int) -> int:
-    return max(
-        SKIN_FALLBACK_FILTER_MIN_COMPONENT_SIZE_FLOOR,
-        int(math.ceil(SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION * int(candidate_cell_count))),
-    )
-
-
-def _filtered_fallback_components(
-    components: Sequence[Sequence[tuple[int, int, int]]],
-    *,
-    candidate_cell_count: int,
-) -> list[list[tuple[int, int, int]]]:
-    if not components or int(candidate_cell_count) <= 0:
-        return []
-
-    largest_component_size = len(components[0])
-    min_component_size = _filtered_fallback_min_component_size(candidate_cell_count)
-    min_largest_fraction_size = (
-        SKIN_FALLBACK_FILTER_MIN_COMPONENT_FRACTION_OF_LARGEST * largest_component_size
-    )
-    accepted = [
-        list(component)
-        for component in components
-        if len(component) >= min_component_size and len(component) >= min_largest_fraction_size
-    ]
-    if not accepted:
-        accepted = [list(components[0])]
-    return accepted[:SKIN_FALLBACK_FILTER_MAX_COMPONENTS]
-
-
-def _mask_from_components(
-    shape: tuple[int, ...],
-    components: Sequence[Sequence[tuple[int, int, int]]],
-) -> np.ndarray:
-    mask = np.zeros(shape, dtype=bool)
-    for component in components:
-        for i3, i2, i1 in component:
-            mask[i3, i2, i1] = True
-    return mask
-
-
-def _skeletonize_fallback_components(
-    fvt: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    components: Sequence[Sequence[tuple[int, int, int]]],
-    *,
-    scanner_target_positive_mask: np.ndarray | None = None,
-) -> tuple[np.ndarray, dict[str, int | float | str]]:
-    fvt_array = np.asarray(fvt, dtype=np.float32)
-    vp_array = np.asarray(vp, dtype=np.float32)
-    vt_array = np.asarray(vt, dtype=np.float32)
-    if fvt_array.shape != vp_array.shape or fvt_array.shape != vt_array.shape:
-        raise ValueError("fvt, vp, and vt shapes must match")
-    target_mask = None
-    if scanner_target_positive_mask is not None:
-        target_mask = np.asarray(scanner_target_positive_mask, dtype=bool)
-        if target_mask.shape != fvt_array.shape:
-            raise ValueError("scanner_target_positive_mask shape must match fvt")
-
-    retained: set[tuple[int, int, int]] = set()
-    axis_counts = [0, 0, 0]
-    pruned_component_sizes: list[int] = []
-    raw_component_sizes: list[int] = []
-    for component in components:
-        raw_component_sizes.append(len(component))
-        groups: dict[tuple[int, int, int], list[tuple[int, int, int]]] = {}
-        for index in component:
-            i3, i2, i1 = index
-            axis = _dominant_fault_normal_array_axis(vp_array[i3, i2, i1], vt_array[i3, i2, i1])
-            axis_counts[axis] += 1
-            groups.setdefault(_skeletonization_line_key(index, axis), []).append(index)
-
-        component_retained: set[tuple[int, int, int]] = set()
-        for key, line_indices in groups.items():
-            axis = key[0]
-            sorted_line = sorted(line_indices, key=lambda item: item[axis])
-            run: list[tuple[int, int, int]] = []
-            previous_position: int | None = None
-            for index in sorted_line:
-                position = index[axis]
-                if previous_position is None or position == previous_position + 1:
-                    run.append(index)
-                else:
-                    component_retained.add(
-                        _select_skeleton_run_sample(
-                            run,
-                            axis=axis,
-                            fvt=fvt_array,
-                            scanner_target_positive_mask=target_mask,
-                        )
-                    )
-                    run = [index]
-                previous_position = position
-            if run:
-                component_retained.add(
-                    _select_skeleton_run_sample(
-                        run,
-                        axis=axis,
-                        fvt=fvt_array,
-                        scanner_target_positive_mask=target_mask,
-                    )
-                )
-        retained.update(component_retained)
-        pruned_component_sizes.append(len(component_retained))
-
-    mask = np.zeros(fvt_array.shape, dtype=bool)
-    for i3, i2, i1 in retained:
-        mask[i3, i2, i1] = True
-    raw_count = int(sum(raw_component_sizes))
-    pruned_count = int(len(retained))
-    return mask, {
-        "skin_fallback_pruning_method": "fault_normal_line_collapse",
-        "skin_fallback_raw_component_cell_count": raw_count,
-        "skin_fallback_pruned_component_cell_count": pruned_count,
-        "skin_fallback_pruned_fraction": (float(pruned_count / raw_count) if raw_count else 0.0),
-        "skin_fallback_largest_component_size_before_pruning": (
-            int(max(raw_component_sizes)) if raw_component_sizes else 0
-        ),
-        "skin_fallback_largest_component_size_after_pruning": (
-            int(max(pruned_component_sizes)) if pruned_component_sizes else 0
-        ),
-        "skin_fallback_pruning_removed_cell_count": int(raw_count - pruned_count),
-        "skin_fallback_skeletonization_axis_mode": _skeletonization_axis_mode(axis_counts),
-    }
-
-
-def _skeletonization_line_key(
-    index: tuple[int, int, int],
-    axis: int,
-) -> tuple[int, int, int]:
-    if axis == 0:
-        return (axis, index[1], index[2])
-    if axis == 1:
-        return (axis, index[0], index[2])
-    return (axis, index[0], index[1])
-
-
-def _select_skeleton_run_sample(
-    run: Sequence[tuple[int, int, int]],
-    *,
-    axis: int,
-    fvt: np.ndarray,
-    scanner_target_positive_mask: np.ndarray | None,
-) -> tuple[int, int, int]:
-    if not run:
-        raise ValueError("run must include at least one sample")
-    max_fvt = max(float(fvt[index]) for index in run)
-    tied = [index for index in run if float(fvt[index]) == max_fvt]
-    if scanner_target_positive_mask is not None:
-        max_target = max(int(scanner_target_positive_mask[index]) for index in tied)
-        tied = [index for index in tied if int(scanner_target_positive_mask[index]) == max_target]
-    center = 0.5 * (run[0][axis] + run[-1][axis])
-    return min(tied, key=lambda index: (abs(index[axis] - center), index))
-
-
-def _skeletonization_axis_mode(axis_counts: Sequence[int]) -> str:
-    labels = ("i3", "i2", "i1")
-    if not axis_counts or max(axis_counts) == 0:
-        return "none"
-    max_count = max(axis_counts)
-    winners = [labels[index] for index, count in enumerate(axis_counts) if count == max_count]
-    return winners[0] if len(winners) == 1 else "mixed"
-
-
-def _positive_mask_components(
-    mask: np.ndarray,
-    *,
-    connectivity: str,
-) -> list[list[tuple[int, int, int]]]:
-    mask_array = np.asarray(mask, dtype=bool)
-    unvisited = {_index3_tuple(index) for index in np.argwhere(mask_array)}
-    offsets = _fallback_connectivity_offsets_i3i2i1(connectivity)
-    components: list[list[tuple[int, int, int]]] = []
-
-    while unvisited:
-        start = min(unvisited)
-        queue: deque[tuple[int, int, int]] = deque([start])
-        unvisited.remove(start)
-        component: list[tuple[int, int, int]] = []
-        while queue:
-            i3, i2, i1 = queue.popleft()
-            component.append((i3, i2, i1))
-            for d3, d2, d1 in offsets:
-                neighbor = (i3 + d3, i2 + d2, i1 + d1)
-                if neighbor in unvisited:
-                    unvisited.remove(neighbor)
-                    queue.append(neighbor)
-        component.sort()
-        components.append(component)
-
-    components.sort(key=lambda component: (-len(component), component[0]))
-    return components
-
-
-def _index3_tuple(index: np.ndarray) -> tuple[int, int, int]:
-    return (int(index[0]), int(index[1]), int(index[2]))
-
-
-def _fallback_connectivity_offsets_i3i2i1(
-    connectivity: str,
-) -> tuple[tuple[int, int, int], ...]:
-    max_axis_steps = {
-        "face": 1,
-        "edge": 2,
-        "corner": 3,
-    }[connectivity]
-    offsets: list[tuple[int, int, int]] = []
-    for d3 in (-1, 0, 1):
-        for d2 in (-1, 0, 1):
-            for d1 in (-1, 0, 1):
-                if d3 == 0 and d2 == 0 and d1 == 0:
-                    continue
-                if abs(d3) + abs(d2) + abs(d1) <= max_axis_steps:
-                    offsets.append((d3, d2, d1))
-    return tuple(offsets)
-
-
-def _apply_boundary_skinner_fallback(
-    skins: list[Any],
-    fvt: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    *,
-    skinning_config: SyntheticSkinningConfig,
-    variant: str,
-    diagnostics: dict[str, Any],
-    scanner_target_positive_mask: np.ndarray | None = None,
-) -> None:
-    get_variant_spec(variant)
-
-    fallback_enabled = skinning_config.boundary_skinner_fallback
-    fallback_policy = skinning_config.boundary_skinner_fallback_policy
-    fallback_connectivity = "edge"
-    v5_guardrail_enabled = (
-        fallback_enabled and fallback_policy == "degraded_primary_topology_guarded"
-    )
-    if fallback_policy in {
-        "degraded_primary_filtered",
-        "degraded_primary_skeletonized",
-        "degraded_primary_topology_guarded",
-    }:
-        component_policy = fallback_policy
-    else:
-        component_policy = "all"
-    component_diagnostics = _fallback_component_diagnostics(
-        fvt,
-        min_skin_size=skinning_config.min_skin_size,
-        small_component_size=skinning_config.small_skin_size,
-        connectivity=fallback_connectivity,
-        component_policy=component_policy,
-    )
-    fvt_positive_count = int(component_diagnostics["skin_fallback_candidate_cell_count"])
-    primary_skin_count = int(diagnostics.get("skin_primary_count", len(skins)))
-    primary_cell_count = int(
-        diagnostics.get("skin_primary_cell_count", sum(len(skin) for skin in skins))
-    )
-    primary_unique_cell_count = int(
-        diagnostics.get("skin_primary_unique_cell_count", primary_cell_count)
-    )
-    coverage_before = (
-        float(primary_unique_cell_count / fvt_positive_count) if fvt_positive_count else 0.0
-    )
-    degraded_reasons = _primary_skin_degraded_reasons(
-        fvt_positive_candidate_count=fvt_positive_count,
-        skin_count=primary_skin_count,
-        cell_coverage_of_fvt_positive=coverage_before,
-        largest_fraction=float(diagnostics.get("skin_primary_largest_fraction", 0.0)),
-        small_skin_cell_fraction=float(diagnostics.get("skin_primary_small_cell_fraction", 0.0)),
-    )
-    positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
-    fvt_positive_edge_shell_fraction = _edge_candidate_fraction(
-        positive_mask,
-        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-    )
-    primary_edge_shell_fraction = float(diagnostics.get("skin_primary_edge_shell_fraction", 0.0))
-    scanner_target_positive_edge_shell_fraction: float | None = None
-    fvt_to_scanner_target_distance_p95: float | None = None
-    if scanner_target_positive_mask is not None:
-        scanner_target_mask = np.asarray(scanner_target_positive_mask, dtype=bool)
-        if scanner_target_mask.shape != positive_mask.shape:
-            raise ValueError("scanner_target_positive_mask shape must match fvt")
-        scanner_target_positive_edge_shell_fraction = _edge_candidate_fraction(
-            scanner_target_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt_to_scanner_target_distance = surface_distance_metrics(
-            positive_mask,
-            scanner_target_mask,
-        )
-        fvt_to_scanner_target_distance_p95 = fvt_to_scanner_target_distance[
-            "candidate_to_truth_p95"
-        ]
-    boundary_degraded_reasons = _primary_boundary_degraded_reasons(
-        generic_degraded=bool(degraded_reasons),
-        fvt_positive_candidate_count=fvt_positive_count,
-        cell_coverage_of_fvt_positive=coverage_before,
-        fvt_positive_edge_shell_fraction=fvt_positive_edge_shell_fraction,
-        primary_edge_shell_fraction=primary_edge_shell_fraction,
-        fvt_to_scanner_target_distance_p95=fvt_to_scanner_target_distance_p95,
-    )
-    diagnostics.update(
-        {
-            "fallback_enabled": fallback_enabled,
-            "fallback_policy": fallback_policy if fallback_enabled else None,
-            "fallback_used": False,
-            "fallback_reason": None,
-            "fallback_method": ("connected_component_on_fvt" if fallback_enabled else None),
-            "fallback_input": "fvt" if fallback_enabled else None,
-            "fallback_skin_count": 0,
-            "fallback_cell_count": 0,
-            "fallback_triggered_by_degraded_primary": False,
-            "fallback_degraded_reasons": [],
-            "fallback_replaced_primary": False,
-            "fallback_primary_skin_count": primary_skin_count,
-            "fallback_primary_cell_count": primary_cell_count,
-            "fallback_candidate_count": fvt_positive_count,
-            "fallback_coverage_before": coverage_before,
-            "fallback_coverage_after": coverage_before,
-            "skin_fvt_positive_edge_shell_fraction": fvt_positive_edge_shell_fraction,
-            "skin_primary_edge_shell_fraction": primary_edge_shell_fraction,
-            "skin_scanner_target_positive_edge_shell_fraction": (
-                scanner_target_positive_edge_shell_fraction
-            ),
-            "skin_fvt_to_scanner_target_distance_p95": fvt_to_scanner_target_distance_p95,
-            "skin_primary_boundary_degraded_candidate": bool(boundary_degraded_reasons),
-            "skin_primary_boundary_degraded_reasons": boundary_degraded_reasons,
-            "skin_fallback_pruning_method": None,
-            "skin_fallback_raw_component_cell_count": 0,
-            "skin_fallback_pruned_component_cell_count": 0,
-            "skin_fallback_pruned_fraction": 0.0,
-            "skin_fallback_largest_component_size_before_pruning": 0,
-            "skin_fallback_largest_component_size_after_pruning": 0,
-            "skin_fallback_pruning_removed_cell_count": 0,
-            "skin_fallback_skeletonization_axis_mode": None,
-            "fallback_v5_guardrail": {
-                "enabled": v5_guardrail_enabled,
-                "passed": False,
-                "reasons": [],
-                "max_skin_count": SKIN_FALLBACK_V5_MAX_SKIN_COUNT,
-                "fallback_skin_count": 0,
-                "coverage_of_fvt_positive": 0.0,
-                "min_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MIN_COVERAGE_OF_FVT_POSITIVE,
-                "max_coverage_of_fvt_positive": SKIN_FALLBACK_V5_MAX_COVERAGE_OF_FVT_POSITIVE,
-                "small_skin_cell_fraction": 0.0,
-                "max_small_skin_cell_fraction": SKIN_FALLBACK_V5_MAX_SMALL_SKIN_CELL_FRACTION,
-                "largest_skin_fraction": 0.0,
-                "min_largest_skin_fraction": SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION,
-                "pruned_fraction": 0.0,
-                "max_pruned_fraction": SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION,
-            },
-            **component_diagnostics,
-        }
-    )
-    if not fallback_enabled:
-        return
-
-    if fvt_positive_count == 0:
-        diagnostics["fallback_reason"] = "empty_primary_skin_without_positive_fvt"
-        return
-    if fallback_policy == "degraded_primary_topology_guarded" and primary_skin_count == 0:
-        diagnostics["fallback_degraded_reasons"] = degraded_reasons
-        diagnostics["fallback_reason"] = "empty_primary_not_supported_by_topology_guarded"
-        diagnostics["fallback_v5_guardrail"]["reasons"] = ["empty_primary_not_supported"]
-        return
-    if fallback_policy == "empty_primary":
-        if skins:
-            diagnostics["fallback_reason"] = "primary_skin_nonempty"
-            return
-        fallback_reason = "empty_primary_skin_with_positive_fvt"
-    else:
-        diagnostics["fallback_degraded_reasons"] = degraded_reasons
-        if not degraded_reasons:
-            diagnostics["fallback_reason"] = "primary_skin_healthy"
-            return
-        if not boundary_degraded_reasons:
-            diagnostics["fallback_reason"] = "primary_boundary_degraded_not_detected"
-            return
-        if fallback_policy in {
-            "degraded_primary_skeletonized",
-            "degraded_primary_topology_guarded",
-        } and not _skeletonized_fallback_boundary_trigger_sufficient(
-            boundary_degraded_reasons=boundary_degraded_reasons,
-            scanner_target_positive_mask=scanner_target_positive_mask,
-        ):
-            diagnostics["fallback_reason"] = "primary_boundary_degraded_not_sufficient"
-            return
-        diagnostics["fallback_triggered_by_degraded_primary"] = True
-        fallback_reason = "degraded_primary:" + ",".join(
-            _fallback_degraded_reason_labels(degraded_reasons)
-        )
-
-    fallback_fvt = fvt
-    fallback_min_skin_size = skinning_config.min_skin_size
-    if component_policy in {
-        "degraded_primary_filtered",
-        "degraded_primary_skeletonized",
-        "degraded_primary_topology_guarded",
-    }:
-        accepted_components = _filtered_fallback_components(
-            _positive_mask_components(positive_mask, connectivity=fallback_connectivity),
-            candidate_cell_count=fvt_positive_count,
-        )
-        accepted_mask = _mask_from_components(fvt.shape, accepted_components)
-        if component_policy in {
-            "degraded_primary_skeletonized",
-            "degraded_primary_topology_guarded",
-        }:
-            accepted_mask, pruning_diagnostics = _skeletonize_fallback_components(
-                fvt,
-                vp,
-                vt,
-                accepted_components,
-                scanner_target_positive_mask=scanner_target_positive_mask,
-            )
-            diagnostics.update(pruning_diagnostics)
-        fallback_fvt = np.where(accepted_mask, fvt, np.float32(0.0)).astype(np.float32)
-        fallback_min_skin_size = None
-
-    fallback_skins = find_connected_component_skins(
-        fallback_fvt,
-        vp,
-        vt,
-        min_likelihood=NONZERO_EPSILON,
-        min_skin_size=fallback_min_skin_size,
-        connectivity=fallback_connectivity,
-    )
-    if not fallback_skins:
-        diagnostics["fallback_reason"] = "connected_component_fallback_empty"
-        return
-
-    fallback_topology = skin_topology_metrics(
-        fallback_skins,
-        fvt.shape,
-        small_skin_size=skinning_config.small_skin_size,
-    )
-    coverage_after = (
-        float(int(fallback_topology["unique_cell_count"]) / fvt_positive_count)
-        if fvt_positive_count
-        else 0.0
-    )
-    if fallback_policy == "degraded_primary_topology_guarded":
-        guardrail = _fallback_v5_guardrail_report(
-            fallback_topology=fallback_topology,
-            fvt_positive_count=fvt_positive_count,
-            pruned_fraction=(
-                float(diagnostics.get("skin_fallback_pruning_removed_cell_count", 0))
-                / float(diagnostics.get("skin_fallback_raw_component_cell_count", 0))
-                if int(diagnostics.get("skin_fallback_raw_component_cell_count", 0)) > 0
-                else 0.0
-            ),
-        )
-        diagnostics["fallback_v5_guardrail"] = guardrail
-        if not guardrail["passed"]:
-            diagnostics["fallback_reason"] = "fallback_v5_guardrail_failed"
-            return
-
-    replaced_primary = bool(skins)
-    skins[:] = fallback_skins
-    diagnostics.update(
-        {
-            "fallback_used": True,
-            "fallback_reason": fallback_reason,
-            "fallback_skin_count": int(len(fallback_skins)),
-            "fallback_cell_count": int(sum(len(skin) for skin in fallback_skins)),
-            "fallback_replaced_primary": replaced_primary,
-            "fallback_coverage_after": coverage_after,
-        }
-    )
-
-
-def _fallback_degraded_reason_labels(reasons: Sequence[str]) -> list[str]:
-    labels = {
-        "empty_primary_skin": "empty_primary",
-        "low_fvt_positive_coverage": "undercovered",
-        "fragmented_primary_skins": "fragmented",
-        "high_small_skin_cell_fraction": "small_skin_dominated",
-    }
-    return [labels.get(reason, reason) for reason in reasons]
-
-
-def _find_synthetic_skins(
-    fv: np.ndarray,
-    fvt: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    *,
-    skinning_config: SyntheticSkinningConfig,
-    diagnostics: dict[str, Any] | None = None,
-) -> list[Any]:
-    skinner_kwargs: dict[str, Any] = {
-        "method": skinning_config.method,
-        "min_skin_size": skinning_config.min_skin_size,
-    }
-    if skinning_config.min_likelihood is not None:
-        skinner_kwargs["min_likelihood"] = skinning_config.min_likelihood
-    skinner = FaultSkinner(**skinner_kwargs)
-    grow_volume = fvt
-    grow_ft = fvt
-    if skinning_config.growth_source == "pre_thin":
-        grow_volume = fv
-        grow_ft = fv
-    return skinner.find_skins(
-        grow_volume,
-        vp,
-        vt,
-        min_likelihood=skinning_config.min_likelihood,
-        ep=fvt,
-        ft=grow_ft,
-        pt=vp,
-        tt=vt,
-        d=skinning_config.d,
-        ru=skinning_config.ru,
-        rv=skinning_config.rv,
-        rw=skinning_config.rw,
-        max_steps=skinning_config.max_steps,
-        du=skinning_config.du,
-        max_delta_strike=skinning_config.max_delta_strike,
-        reskin=skinning_config.reskin,
-        accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
-        diagnostics=diagnostics,
-    )
 
 
 def write_case_volumes(
