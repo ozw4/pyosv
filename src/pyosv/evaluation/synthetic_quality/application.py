@@ -265,10 +265,11 @@ def _build_report_outputs(
         "skinning": skinning_config.as_report_dict(),
         "scanner_backend_matrix": effective_scanner_backend_matrix,
         "scanner_downstream_diagnostics": effective_scanner_downstream_diagnostics,
-        "scanner_boundary_stage_diagnostics": {
-            "enabled": effective_scanner_boundary_stage_diagnostics,
-        },
     }
+    if include_scanner_boundary_stage_diagnostics:
+        config["scanner_boundary_stage_diagnostics"] = {
+            "enabled": effective_scanner_boundary_stage_diagnostics,
+        }
     if valid_input_mode != "oracle":
         config["input_mode"] = valid_input_mode
         config["scanner"] = scanner_config.as_report_dict()

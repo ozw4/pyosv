@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 
 import numpy as np
 import pytest
 
 from pyosv.evaluation.synthetic_quality.cases import MINIMAL_CASES
+from pyosv.evaluation.synthetic_quality.application import build_report
 from pyosv.evaluation.synthetic_quality.config import (
     SyntheticScannerConfig,
     SyntheticSkinningConfig,
@@ -205,6 +207,163 @@ def test_scanner_boundary_stage_diagnostics_is_independent_opt_in() -> None:
     assert (
         sum(name.startswith("scanner_boundary_stage_") for name in detailed.artifacts.volumes) == 10
     )
+
+
+@pytest.mark.parametrize(
+    ("include_downstream", "include_boundary"),
+    ((False, False), (True, False), (False, True), (True, True)),
+)
+def test_scanner_diagnostic_runners_are_independent(
+    include_downstream: bool,
+    include_boundary: bool,
+) -> None:
+    case = make_single_vertical_plane_case((5, 5, 5))
+    calls: list[str] = []
+
+    def downstream(**kwargs: object) -> dict[str, bool]:
+        calls.append("downstream")
+        return {"called": True}
+
+    def stage_loss(**kwargs: object) -> dict[str, bool]:
+        calls.append("stage_loss")
+        return {"called": True}
+
+    def boundary(**kwargs: object) -> tuple[dict[str, bool], dict[str, np.ndarray]]:
+        calls.append("boundary")
+        return {"called": True}, {}
+
+    result = run_scanner_pipeline(
+        case,
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=_fast_scanner_config(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant_spec=runner.get_variant_spec("current_default"),
+        scanner_backend_matrix=False,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=include_downstream,
+        include_scanner_boundary_stage_diagnostics=include_boundary,
+        scanner_downstream_diagnostic_runner=downstream,
+        scanner_stage_loss_diagnostic_runner=stage_loss,
+        scanner_boundary_stage_diagnostic_runner=boundary,
+    )
+
+    expected_calls = []
+    if include_downstream:
+        expected_calls.extend(("downstream", "stage_loss"))
+    if include_boundary:
+        expected_calls.append("boundary")
+    assert calls == expected_calls
+    assert ("scanner_downstream" in result.report_payload) is include_downstream
+    assert ("scanner_stage_loss" in result.report_payload) is include_downstream
+    assert ("scanner_boundary_stage_diagnostics" in result.report_payload) is include_boundary
+
+
+def test_boundary_diagnostics_apply_only_to_scanner_pipeline_in_both_mode() -> None:
+    case = make_single_vertical_plane_case((5, 5, 5))
+    common = {
+        "voting_config": SyntheticVotingConfig(),
+        "scanner_config": _fast_scanner_config(),
+        "truth_metric_config": SyntheticTruthMetricConfig(),
+        "skinning_config": SyntheticSkinningConfig(enabled=False),
+        "variant": "current_default",
+        "scanner_backend_matrix": False,
+        "include_thinning_diagnostic": False,
+        "include_scanner_downstream_diagnostics": False,
+        "include_scanner_boundary_stage_diagnostics": True,
+    }
+
+    oracle = run_case_variant(case, input_mode="oracle", **common)
+    both = run_case_variant(case, input_mode="both", **common)
+
+    assert "scanner_boundary_stage_diagnostics" not in oracle.report_payload
+    assert "scanner_boundary_stage_diagnostics" not in both.report_payload["pipelines"]["oracle"]
+    scanner_report = both.report_payload["pipelines"]["scanner"]
+    assert "scanner_boundary_stage_diagnostics" in scanner_report
+    json.dumps(both.report_payload, allow_nan=False)
+
+
+def test_boundary_seed_report_uses_the_captured_selected_seed_mask() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    result = run_scanner_pipeline(
+        case,
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=_fast_scanner_config(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant_spec=runner.get_variant_spec("boundary_seed_retention_v1"),
+        scanner_backend_matrix=False,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=False,
+        include_scanner_boundary_stage_diagnostics=True,
+    )
+
+    trace = result.artifacts.stage_trace
+    assert trace is not None
+    selected_count = int(np.count_nonzero(trace.seed_selected_mask))
+    diagnostic = result.report_payload["scanner_boundary_stage_diagnostics"]
+    assert diagnostic["stages"]["seed_selected"]["candidate_count"] == selected_count
+    assert selected_count == result.report_payload["boundary_seed_retention"]["total_seed_count"]
+
+
+def test_backend_matrix_calls_boundary_builder_only_for_selected_backend() -> None:
+    case = make_single_vertical_plane_case((5, 5, 5))
+    calls = 0
+
+    def boundary(**kwargs: object) -> tuple[dict[str, bool], dict[str, np.ndarray]]:
+        nonlocal calls
+        calls += 1
+        return {"called": True}, {}
+
+    result = run_scanner_pipeline(
+        case,
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=_fast_scanner_config(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant_spec=runner.get_variant_spec("current_default"),
+        scanner_backend_matrix=True,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=False,
+        include_scanner_boundary_stage_diagnostics=True,
+        scanner_boundary_stage_diagnostic_runner=boundary,
+    )
+
+    assert calls == 1
+    backends = result.report_payload["scanner_backend_matrix"]["backends"]
+    assert "scanner_boundary_stage_diagnostics" in backends["fast"]
+    assert "scanner_boundary_stage_diagnostics" not in backends["reference-like"]
+    assert "scanner_boundary_stage_diagnostics" not in backends["quality"]
+
+
+def test_report_config_adds_boundary_diagnostics_only_when_requested() -> None:
+    common = {
+        "case_set": "minimal",
+        "shape": (5, 5, 5),
+        "variants": ("current_default",),
+        "skinning_config": SyntheticSkinningConfig(enabled=False),
+    }
+
+    default_report = build_report(input_mode="oracle", **common)
+    oracle_requested = build_report(
+        input_mode="oracle",
+        include_scanner_boundary_stage_diagnostics=True,
+        **common,
+    )
+    scanner_requested = build_report(
+        input_mode="scanner",
+        scanner_config=_fast_scanner_config(),
+        include_scanner_boundary_stage_diagnostics=True,
+        **common,
+    )
+
+    assert "scanner_boundary_stage_diagnostics" not in default_report["config"]
+    assert oracle_requested["config"]["scanner_boundary_stage_diagnostics"] == {"enabled": False}
+    assert scanner_requested["config"]["scanner_boundary_stage_diagnostics"] == {"enabled": True}
+    oracle_variant = oracle_requested["cases"][0]["pipelines"]["oracle"]["variants"][
+        "current_default"
+    ]
+    assert "scanner_boundary_stage_diagnostics" not in oracle_variant
 
 
 def test_scanner_cache_report_build_scans_once_per_case_across_variants(

@@ -55,6 +55,50 @@ def test_scanner_builder_has_stable_stage_transition_and_volume_schema() -> None
         assert set(np.unique(volume)).issubset({0.0, 1.0})
 
 
+@pytest.mark.parametrize("fallback_used", (False, True))
+def test_scanner_builder_reports_primary_fallback_and_final_masks(
+    fallback_used: bool,
+) -> None:
+    case = make_single_vertical_plane_case((5, 5, 5))
+    empty = np.zeros(case.shape, dtype=bool)
+    primary = empty.copy()
+    primary[2, 2, 2] = True
+    fallback = empty.copy()
+    if fallback_used:
+        fallback[0, 0, 0] = True
+    final = fallback if fallback_used else primary
+    trace = PipelineStageTrace3D(
+        seed_candidate_mask=empty,
+        seed_selected_mask=empty,
+        fv_positive_mask=empty,
+        fvt_positive_mask=empty,
+        primary_skin_mask=primary,
+        fallback_skin_mask=fallback,
+        final_skin_mask=final,
+        skinning_enabled=True,
+        fallback_used=fallback_used,
+    )
+
+    report, volumes = build_scanner_boundary_stage_diagnostics(
+        case=case,
+        scanner_volumes={"scanner_ft": empty, "scanner_fet": empty},
+        stage_trace=trace,
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_diagnostics={
+            "fallback_enabled": True,
+            "fallback_reason": "test" if fallback_used else None,
+        },
+    )
+
+    assert report["skinning"]["fallback_used"] is fallback_used
+    assert report["stages"]["primary_skin"]["candidate_count"] == 1
+    assert report["stages"]["fallback_skin"]["candidate_count"] == int(fallback_used)
+    assert report["stages"]["final_skin"]["candidate_count"] == 1
+    np.testing.assert_array_equal(volumes["scanner_boundary_stage_primary_skin"], primary)
+    np.testing.assert_array_equal(volumes["scanner_boundary_stage_fallback_skin"], fallback)
+    np.testing.assert_array_equal(volumes["scanner_boundary_stage_final_skin"], final)
+
+
 def _metrics(
     source: np.ndarray,
     target: np.ndarray,
