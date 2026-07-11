@@ -2,86 +2,105 @@
 
 from __future__ import annotations
 
-import math
-import numbers
 import operator
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import numpy as np
 
-from pyosv._accel import NUMBA_AVAILABLE, njit
+from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._voting3d.accumulation import (
+    _accumulate_surface_votes as _accumulate_surface_votes_impl,
+    _accumulate_surface_votes_masked as _accumulate_surface_votes_masked_impl,
+    _add_surface_vote as _add_surface_vote,
+    _add_surface_vote_numba as _add_surface_vote_numba,
+    _accumulate_surface_votes_masked_numba as _accumulate_surface_votes_masked_numba,
+    _accumulate_surface_votes_masked_python as _accumulate_surface_votes_masked_python,
+    _accumulate_surface_votes_numba as _accumulate_surface_votes_numba,
+    _accumulate_surface_votes_python as _accumulate_surface_votes_python,
+    _count_reference_face_center_votes,
+    _is_valid_surface_vote_sample as _is_valid_surface_vote_sample,
+    _update_orientation_if_stronger as _update_orientation_if_stronger,
+)
+from pyosv._voting3d.models import (
+    _MaskedUVWBoxSamples,
+    _SurfaceVotingDiagnostic,
+    _TangentialRectangle,
+)
+from pyosv._voting3d.normalization import (
+    _normalize_and_power_3d,
+    _normalize_unit_range_in_place as _normalize_unit_range_in_place,
+    _smooth_fault_likelihood_3d,
+)
+from pyosv._voting3d.orientation import (
+    _smooth_surface_for_orientation as _smooth_surface_for_orientation,
+    _surface_center_derivatives as _surface_center_derivatives,
+    _surface_strike_and_dip,
+)
+from pyosv._voting3d.scoring_numba import (
+    _surface_vote_average_masked_numba as _surface_vote_average_masked_numba,
+    _surface_vote_average_numba as _surface_vote_average_numba,
+)
+from pyosv._voting3d.scoring import (
+    _surface_vote_average as _surface_vote_average_impl,
+    _surface_vote_average_masked as _surface_vote_average_masked_impl,
+)
+from pyosv._voting3d.scoring_python import (
+    _surface_vote_average_masked_python as _surface_vote_average_masked_python,
+    _surface_vote_average_python as _surface_vote_average_python,
+)
+from pyosv._voting3d.thinning import (
+    _collapse_candidate_runs_along_axis as _collapse_candidate_runs_along_axis,
+    _edge_region_mask_3d,
+    _fault_normal_components_from_strike_and_dip as _fault_normal_components_from_strike_and_dip,
+    _local_candidate_count_3d,
+    _orientation_roughness_3d,
+    _retain_plateau_run_sample as _retain_plateau_run_sample,
+    _strike_difference_degrees as _strike_difference_degrees,
+    _thin_fault_normal_3d,
+    _thin_fault_normal_plateau_3d,
+    _thin_reference_like_3d,
+)
+from pyosv._voting3d.uvw_numba import (
+    _samples_in_uvw_box_masked_numba,
+    _samples_in_uvw_box_numba,
+)
+from pyosv._voting3d.uvw_python import (
+    _samples_in_uvw_box_masked_python,
+    _samples_in_uvw_box_python,
+)
+from pyosv._voting3d.uvw_sampling import (
+    _crop_masked_uvw_box,
+    _select_supported_origin_rectangle,
+    _surface_center_lag,
+    _validate_uvw_sampling_origin,
+)
+from pyosv._voting3d.validation import (
+    _validate_array3 as _validate_array3,
+    _validate_finite_array2 as _validate_finite_array2,
+    _validate_finite_array3,
+    _validate_finite_vector3 as _validate_finite_vector3,
+    _validate_fraction_float,
+    _validate_int,
+    _validate_matching_arrays3,
+    _validate_matching_finite_arrays3_many,
+    _validate_nonnegative_float,
+    _validate_nonnegative_int,
+    _validate_positive_int as _validate_positive_int,
+    _validate_vector3,
+)
 from pyosv.cells import FaultCell
 from pyosv.dp import (
     _find_surface_3d_masked,
     find_surface_3d,
     shift_range,
-    smooth_surface_2d,
     strain_to_bstrain,
     update_shift_ranges_3d,
 )
-from pyosv.filters import smooth3d
-from pyosv.geometry import strike_and_dip_from_local_surface_derivatives
-from pyosv.interp import sample3
-from pyosv.thinning3d import reference_like_3d_thin_values
 
 __all__ = ["OptimalSurfaceVoter"]
 
 
 _SURFACE_VOTING_BOUNDARY_POLICIES = ("reference", "masked_in_bounds")
-
-
-@dataclass(frozen=True, slots=True)
-class _MaskedUVWBoxSamples:
-    """Seed-local samples plus validity and full-box coordinate metadata."""
-
-    costs: np.ndarray
-    valid_lag_mask: np.ndarray
-    w_offset: int
-    v_offset: int
-    full_tangential_shape: tuple[int, int]
-    admissible_lag_count: int
-    in_bounds_lag_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class _TangentialRectangle:
-    """Half-open full-box indices for a supported origin-containing rectangle."""
-
-    w_start: int
-    v_start: int
-    w_stop: int
-    v_stop: int
-
-    @property
-    def shape(self) -> tuple[int, int]:
-        return (self.w_stop - self.w_start, self.v_stop - self.v_start)
-
-    @property
-    def size(self) -> int:
-        nw, nv = self.shape
-        return nw * nv
-
-
-@dataclass(frozen=True, slots=True)
-class _SurfaceVotingDiagnostic:
-    """Compact immutable outcome for one seed's surface-voting attempt."""
-
-    seed_index: tuple[int, int, int]
-    policy: str
-    full_tangential_column_count: int
-    selected_tangential_column_count: int
-    admissible_lag_count: int
-    in_bounds_lag_count: int
-    support_fraction: float
-    surface_center_lag: float | None
-    surface_projection_count: int
-    selected_invalid_sample_count: int
-    center_vote_write_count: int
-    face_center_vote_count: int
-    orientation_source: str | None
-    skipped: bool
-    skip_reason: str | None
 
 
 class OptimalSurfaceVoter:
@@ -502,17 +521,7 @@ class OptimalSurfaceVoter:
     ) -> np.ndarray:
         """Sample ``1 - fx`` in the seed-centered local ``(w, v, u)`` box."""
 
-        fx_array = _validate_array3(fx, "fx")
-        n3, n2, n1 = fx_array.shape
-        i1 = _validate_int(c1, "c1")
-        i2 = _validate_int(c2, "c2")
-        i3 = _validate_int(c3, "c3")
-        if not 0 <= i1 < n1:
-            raise ValueError("c1 must be inside the image bounds")
-        if not 0 <= i2 < n2:
-            raise ValueError("c2 must be inside the image bounds")
-        if not 0 <= i3 < n3:
-            raise ValueError("c3 must be inside the image bounds")
+        i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
 
         if NUMBA_AVAILABLE:
             return _samples_in_uvw_box_numba(
@@ -556,17 +565,7 @@ class OptimalSurfaceVoter:
     ) -> _MaskedUVWBoxSamples:
         """Sample a full UVW box without treating out-of-bounds lags as evidence."""
 
-        fx_array = _validate_array3(fx, "fx")
-        n3, n2, n1 = fx_array.shape
-        i1 = _validate_int(c1, "c1")
-        i2 = _validate_int(c2, "c2")
-        i3 = _validate_int(c3, "c3")
-        if not 0 <= i1 < n1:
-            raise ValueError("c1 must be inside the image bounds")
-        if not 0 <= i2 < n2:
-            raise ValueError("c2 must be inside the image bounds")
-        if not 0 <= i3 < n3:
-            raise ValueError("c3 must be inside the image bounds")
+        i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
 
         sampler = (
             _samples_in_uvw_box_masked_numba
@@ -1056,375 +1055,6 @@ class OptimalSurfaceVoter:
         )
 
 
-def _normalize_and_power_3d(
-    x: np.ndarray,
-    *,
-    sigma: float = 0.0,
-    power: int = 8,
-) -> np.ndarray:
-    """Normalize a final 3D vote map using Java-reference default semantics.
-
-    By default this mirrors ``OptimalSurfaceVoter.normalization``: subtract the
-    global minimum, divide by the global maximum when nonzero, then apply
-    ``1 - (1 - x) ** power`` without additional smoothing. Set ``sigma > 0`` to
-    opt in to the practical smoothed vote-map behavior.
-    """
-
-    x_array = _validate_finite_array3(x, "x").astype(np.float32, copy=True)
-    sigma_float = _validate_nonnegative_float(sigma, "sigma")
-    power_int = _validate_positive_int(power, "power")
-
-    if x_array.size == 0:
-        return x_array
-
-    if sigma_float > 0.0:
-        x_array = smooth3d(x_array, sigma_float).astype(np.float32, copy=False)
-
-    _normalize_unit_range_in_place(x_array)
-    enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
-    return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
-
-
-def _samples_in_uvw_box_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> np.ndarray:
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                j1 = min(max(j1, 0), n1 - 1)
-                j2 = min(max(j2, 0), n2 - 1)
-                j3 = min(max(j3, 0), n3 - 1)
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-
-    return costs
-
-
-@njit(cache=True)
-def _samples_in_uvw_box_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> np.ndarray:
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                j1 = min(max(j1, 0), n1 - 1)
-                j2 = min(max(j2, 0), n2 - 1)
-                j3 = min(max(j3, 0), n3 - 1)
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-
-    return costs
-
-
-def _samples_in_uvw_box_masked_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Return costs and the admissible, rounded-in-bounds lag mask."""
-
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    valid_lag_mask = np.zeros(costs.shape, dtype=np.bool_)
-    admissible_count = 0
-    in_bounds_count = 0
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                admissible_count += 1
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                if not (0 <= j1 < n1 and 0 <= j2 < n2 and 0 <= j3 < n3):
-                    continue
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-                valid_lag_mask[kw, kv, ku] = True
-                in_bounds_count += 1
-
-    return costs, valid_lag_mask, admissible_count, in_bounds_count
-
-
-@njit(cache=True)
-def _samples_in_uvw_box_masked_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    valid_lag_mask = np.zeros(costs.shape, dtype=np.bool_)
-    admissible_count = 0
-    in_bounds_count = 0
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                admissible_count += 1
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                if not (0 <= j1 < n1 and 0 <= j2 < n2 and 0 <= j3 < n3):
-                    continue
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-                valid_lag_mask[kw, kv, ku] = True
-                in_bounds_count += 1
-
-    return costs, valid_lag_mask, admissible_count, in_bounds_count
-
-
-def _select_supported_origin_rectangle(
-    supported_columns: np.ndarray,
-    *,
-    origin_w: int,
-    origin_v: int,
-) -> _TangentialRectangle | None:
-    """Choose the deterministic largest all-supported rectangle around the origin."""
-
-    supported = np.asarray(supported_columns, dtype=np.bool_)
-    if supported.ndim != 2:
-        raise ValueError("supported_columns must have shape (nw, nv)")
-    nw, nv = supported.shape
-    if not (0 <= origin_w < nw and 0 <= origin_v < nv):
-        raise ValueError("origin must be inside supported_columns")
-    if not supported[origin_w, origin_v]:
-        return None
-
-    invalid = (~supported).astype(np.int32, copy=False)
-    prefix = np.pad(invalid, ((1, 0), (1, 0)), mode="constant")
-    prefix = np.cumsum(np.cumsum(prefix, axis=0), axis=1)
-    best_key: tuple[int, int, int, int, int, int] | None = None
-    best_rectangle: _TangentialRectangle | None = None
-    for w_start in range(origin_w + 1):
-        for w_stop in range(origin_w + 1, nw + 1):
-            for v_start in range(origin_v + 1):
-                for v_stop in range(origin_v + 1, nv + 1):
-                    invalid_count = (
-                        prefix[w_stop, v_stop]
-                        - prefix[w_start, v_stop]
-                        - prefix[w_stop, v_start]
-                        + prefix[w_start, v_start]
-                    )
-                    if invalid_count != 0:
-                        continue
-                    area = (w_stop - w_start) * (v_stop - v_start)
-                    asymmetry = abs((origin_w - w_start) - (w_stop - 1 - origin_w)) + abs(
-                        (origin_v - v_start) - (v_stop - 1 - origin_v)
-                    )
-                    key = (-area, asymmetry, w_start, v_start, w_stop, v_stop)
-                    if best_key is None or key < best_key:
-                        best_key = key
-                        best_rectangle = _TangentialRectangle(
-                            w_start=w_start,
-                            v_start=v_start,
-                            w_stop=w_stop,
-                            v_stop=v_stop,
-                        )
-    return best_rectangle
-
-
-def _crop_masked_uvw_box(
-    samples: _MaskedUVWBoxSamples,
-    rectangle: _TangentialRectangle,
-) -> _MaskedUVWBoxSamples:
-    nw, nv = samples.full_tangential_shape
-    if not (
-        0 <= rectangle.w_start < rectangle.w_stop <= nw
-        and 0 <= rectangle.v_start < rectangle.v_stop <= nv
-    ):
-        raise ValueError("rectangle must be inside the full tangential box")
-    selection = (
-        slice(rectangle.w_start, rectangle.w_stop),
-        slice(rectangle.v_start, rectangle.v_stop),
-        slice(None),
-    )
-    return _MaskedUVWBoxSamples(
-        costs=samples.costs[selection].copy(),
-        valid_lag_mask=samples.valid_lag_mask[selection].copy(),
-        w_offset=rectangle.w_start,
-        v_offset=rectangle.v_start,
-        full_tangential_shape=samples.full_tangential_shape,
-        admissible_lag_count=samples.admissible_lag_count,
-        in_bounds_lag_count=samples.in_bounds_lag_count,
-    )
-
-
-def _surface_center_lag(surface: np.ndarray) -> float | None:
-    if surface.size == 0:
-        return None
-    return float(surface[surface.shape[0] // 2, surface.shape[1] // 2])
-
-
-def _count_reference_face_center_votes(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    volume_shape: tuple[int, int, int],
-) -> int:
-    n3, n2, n1 = volume_shape
-    face_count = 0
-    for kw in range(surface.shape[0]):
-        iw = kw - rw
-        dw1 = c1 + iw * strike[0]
-        dw2 = c2 + iw * strike[1]
-        dw3 = c3 + iw * strike[2]
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            iv = kv - rv
-            i1 = math.floor(float(iu * normal[0] + iv * dip[0] + dw1) + 0.5)
-            i2 = math.floor(float(iu * normal[1] + iv * dip[1] + dw2) + 0.5)
-            i3 = math.floor(float(iu * normal[2] + iv * dip[2] + dw3) + 0.5)
-            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
-                continue
-            if i1 == 0 or i1 == n1 - 1 or i2 == 0 or i2 == n2 - 1 or i3 == 0 or i3 == n3 - 1:
-                face_count += 1
-    return face_count
-
-
 def _surface_vote_average(
     c1: int,
     c2: int,
@@ -1437,90 +1067,19 @@ def _surface_vote_average(
     surface: np.ndarray,
     ft: np.ndarray,
 ) -> tuple[np.float32, int]:
-    if NUMBA_AVAILABLE:
-        return _surface_vote_average_numba(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
-    return _surface_vote_average_python(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
-
-
-def _surface_vote_average_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    ft: np.ndarray,
-) -> tuple[np.float32, int]:
-    n3, n2, n1 = ft.shape
-    fa = np.float32(0.0)
-    valid_count = 0
-    for kw in range(surface.shape[0]):
-        iw = kw - rw
-        dw1 = c1 + iw * strike[0]
-        dw2 = c2 + iw * strike[1]
-        dw3 = c3 + iw * strike[2]
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            iv = kv - rv
-            x1 = iu * normal[0] + iv * dip[0] + dw1
-            x2 = iu * normal[1] + iv * dip[1] + dw2
-            x3 = iu * normal[2] + iv * dip[2] + dw3
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            i3 = math.floor(float(x3) + 0.5)
-            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
-                continue
-
-            fa += ft[i3, i2, i1]
-            valid_count += 1
-
-    if valid_count > 0:
-        fa /= np.float32(valid_count)
-    return fa, valid_count
-
-
-@njit(cache=True)
-def _surface_vote_average_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    ft: np.ndarray,
-) -> tuple[np.float32, int]:
-    n3, n2, n1 = ft.shape
-    fa = np.float32(0.0)
-    valid_count = 0
-    for kw in range(surface.shape[0]):
-        iw = kw - rw
-        dw1 = c1 + iw * strike[0]
-        dw2 = c2 + iw * strike[1]
-        dw3 = c3 + iw * strike[2]
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            iv = kv - rv
-            x1 = iu * normal[0] + iv * dip[0] + dw1
-            x2 = iu * normal[1] + iv * dip[1] + dw2
-            x3 = iu * normal[2] + iv * dip[2] + dw3
-            i1 = math.floor(x1 + 0.5)
-            i2 = math.floor(x2 + 0.5)
-            i3 = math.floor(x3 + 0.5)
-            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
-                continue
-
-            fa += ft[i3, i2, i1]
-            valid_count += 1
-
-    if valid_count > 0:
-        fa /= np.float32(valid_count)
-    return fa, valid_count
+    return _surface_vote_average_impl(
+        c1,
+        c2,
+        c3,
+        rv,
+        rw,
+        normal,
+        dip,
+        strike,
+        surface,
+        ft,
+        use_numba=NUMBA_AVAILABLE,
+    )
 
 
 def _surface_vote_average_masked(
@@ -1539,24 +1098,7 @@ def _surface_vote_average_masked(
     valid_lag_mask: np.ndarray,
     ft: np.ndarray,
 ) -> tuple[np.float32, int, int]:
-    if NUMBA_AVAILABLE:
-        return _surface_vote_average_masked_numba(
-            c1,
-            c2,
-            c3,
-            rv,
-            rw,
-            w_offset,
-            v_offset,
-            lmin,
-            normal,
-            dip,
-            strike,
-            surface,
-            valid_lag_mask,
-            ft,
-        )
-    return _surface_vote_average_masked_python(
+    return _surface_vote_average_masked_impl(
         c1,
         c2,
         c3,
@@ -1571,132 +1113,8 @@ def _surface_vote_average_masked(
         surface,
         valid_lag_mask,
         ft,
+        use_numba=NUMBA_AVAILABLE,
     )
-
-
-def _surface_vote_average_masked_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    w_offset: int,
-    v_offset: int,
-    lmin: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    valid_lag_mask: np.ndarray,
-    ft: np.ndarray,
-) -> tuple[np.float32, int, int]:
-    n3, n2, n1 = ft.shape
-    nu = valid_lag_mask.shape[2]
-    fa = np.float32(0.0)
-    valid_count = 0
-    invalid_count = 0
-    for kw in range(surface.shape[0]):
-        iw = kw + w_offset - rw
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            ku = math.floor(float(iu - lmin) + 0.5)
-            if not 0 <= ku < nu or not valid_lag_mask[kw, kv, ku]:
-                invalid_count += 1
-                continue
-            iv = kv + v_offset - rv
-            x1 = np.float32(
-                float(c1)
-                + float(iw) * float(strike[0])
-                + float(iv) * float(dip[0])
-                + float(iu) * float(normal[0])
-            )
-            x2 = np.float32(
-                float(c2)
-                + float(iw) * float(strike[1])
-                + float(iv) * float(dip[1])
-                + float(iu) * float(normal[1])
-            )
-            x3 = np.float32(
-                float(c3)
-                + float(iw) * float(strike[2])
-                + float(iv) * float(dip[2])
-                + float(iu) * float(normal[2])
-            )
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            i3 = math.floor(float(x3) + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
-                invalid_count += 1
-                continue
-            fa += ft[i3, i2, i1]
-            valid_count += 1
-
-    if valid_count > 0:
-        fa /= np.float32(valid_count)
-    return fa, valid_count, invalid_count
-
-
-@njit(cache=True)
-def _surface_vote_average_masked_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    w_offset: int,
-    v_offset: int,
-    lmin: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    valid_lag_mask: np.ndarray,
-    ft: np.ndarray,
-) -> tuple[np.float32, int, int]:
-    n3, n2, n1 = ft.shape
-    nu = valid_lag_mask.shape[2]
-    fa = np.float32(0.0)
-    valid_count = 0
-    invalid_count = 0
-    for kw in range(surface.shape[0]):
-        iw = kw + w_offset - rw
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            ku = math.floor(float(iu - lmin) + 0.5)
-            if not 0 <= ku < nu or not valid_lag_mask[kw, kv, ku]:
-                invalid_count += 1
-                continue
-            iv = kv + v_offset - rv
-            x1 = np.float32(
-                float(c1)
-                + float(iw) * float(strike[0])
-                + float(iv) * float(dip[0])
-                + float(iu) * float(normal[0])
-            )
-            x2 = np.float32(
-                float(c2)
-                + float(iw) * float(strike[1])
-                + float(iv) * float(dip[1])
-                + float(iu) * float(normal[1])
-            )
-            x3 = np.float32(
-                float(c3)
-                + float(iw) * float(strike[2])
-                + float(iv) * float(dip[2])
-                + float(iu) * float(normal[2])
-            )
-            i1 = math.floor(x1 + 0.5)
-            i2 = math.floor(x2 + 0.5)
-            i3 = math.floor(x3 + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
-                invalid_count += 1
-                continue
-            fa += ft[i3, i2, i1]
-            valid_count += 1
-
-    if valid_count > 0:
-        fa /= np.float32(valid_count)
-    return fa, valid_count, invalid_count
 
 
 def _accumulate_surface_votes(
@@ -1718,28 +1136,7 @@ def _accumulate_surface_votes(
     vt: np.ndarray,
     vm: np.ndarray,
 ) -> None:
-    if NUMBA_AVAILABLE:
-        _accumulate_surface_votes_numba(
-            c1,
-            c2,
-            c3,
-            rv,
-            rw,
-            fa,
-            vp_value,
-            vt_value,
-            align_i3,
-            normal,
-            dip,
-            strike,
-            surface,
-            fe,
-            vp,
-            vt,
-            vm,
-        )
-        return
-    _accumulate_surface_votes_python(
+    _accumulate_surface_votes_impl(
         c1,
         c2,
         c3,
@@ -1757,144 +1154,8 @@ def _accumulate_surface_votes(
         vp,
         vt,
         vm,
+        use_numba=NUMBA_AVAILABLE,
     )
-
-
-def _accumulate_surface_votes_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    fa: np.float32,
-    vp_value: np.float32,
-    vt_value: np.float32,
-    align_i3: bool,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    fe: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    vm: np.ndarray,
-) -> None:
-    n3, n2, n1 = fe.shape
-    for kw in range(surface.shape[0]):
-        iw = kw - rw
-        dw1 = c1 + iw * strike[0]
-        dw2 = c2 + iw * strike[1]
-        dw3 = c3 + iw * strike[2]
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            iv = kv - rv
-            x1 = iu * normal[0] + iv * dip[0] + dw1
-            x2 = iu * normal[1] + iv * dip[1] + dw2
-            x3 = iu * normal[2] + iv * dip[2] + dw3
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            i3 = math.floor(float(x3) + 0.5)
-            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
-                continue
-
-            _add_surface_vote(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-            if align_i3:
-                _add_surface_vote(i3 - 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-                _add_surface_vote(i3 + 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-            else:
-                _add_surface_vote(i3, i2 - 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-                _add_surface_vote(i3, i2 + 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-
-
-@njit(cache=True)
-def _accumulate_surface_votes_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    fa: np.float32,
-    vp_value: np.float32,
-    vt_value: np.float32,
-    align_i3: bool,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    fe: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    vm: np.ndarray,
-) -> None:
-    n3, n2, n1 = fe.shape
-    for kw in range(surface.shape[0]):
-        iw = kw - rw
-        dw1 = c1 + iw * strike[0]
-        dw2 = c2 + iw * strike[1]
-        dw3 = c3 + iw * strike[2]
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            iv = kv - rv
-            x1 = iu * normal[0] + iv * dip[0] + dw1
-            x2 = iu * normal[1] + iv * dip[1] + dw2
-            x3 = iu * normal[2] + iv * dip[2] + dw3
-            i1 = math.floor(x1 + 0.5)
-            i2 = math.floor(x2 + 0.5)
-            i3 = math.floor(x3 + 0.5)
-            if not _is_valid_surface_vote_sample(i1, i2, i3, n1, n2, n3):
-                continue
-
-            _add_surface_vote_numba(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-            if align_i3:
-                _add_surface_vote_numba(
-                    i3 - 1,
-                    i2,
-                    i1,
-                    fa,
-                    vp_value,
-                    vt_value,
-                    fe,
-                    vp,
-                    vt,
-                    vm,
-                )
-                _add_surface_vote_numba(
-                    i3 + 1,
-                    i2,
-                    i1,
-                    fa,
-                    vp_value,
-                    vt_value,
-                    fe,
-                    vp,
-                    vt,
-                    vm,
-                )
-            else:
-                _add_surface_vote_numba(
-                    i3,
-                    i2 - 1,
-                    i1,
-                    fa,
-                    vp_value,
-                    vt_value,
-                    fe,
-                    vp,
-                    vt,
-                    vm,
-                )
-                _add_surface_vote_numba(
-                    i3,
-                    i2 + 1,
-                    i1,
-                    fa,
-                    vp_value,
-                    vt_value,
-                    fe,
-                    vp,
-                    vt,
-                    vm,
-                )
 
 
 def _accumulate_surface_votes_masked(
@@ -1920,31 +1181,7 @@ def _accumulate_surface_votes_masked(
     vt: np.ndarray,
     vm: np.ndarray,
 ) -> tuple[int, int, int]:
-    if NUMBA_AVAILABLE:
-        return _accumulate_surface_votes_masked_numba(
-            c1,
-            c2,
-            c3,
-            rv,
-            rw,
-            w_offset,
-            v_offset,
-            lmin,
-            fa,
-            vp_value,
-            vt_value,
-            align_i3,
-            normal,
-            dip,
-            strike,
-            surface,
-            valid_lag_mask,
-            fe,
-            vp,
-            vt,
-            vm,
-        )
-    return _accumulate_surface_votes_masked_python(
+    return _accumulate_surface_votes_masked_impl(
         c1,
         c2,
         c3,
@@ -1966,757 +1203,5 @@ def _accumulate_surface_votes_masked(
         vp,
         vt,
         vm,
+        use_numba=NUMBA_AVAILABLE,
     )
-
-
-def _accumulate_surface_votes_masked_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    w_offset: int,
-    v_offset: int,
-    lmin: int,
-    fa: np.float32,
-    vp_value: np.float32,
-    vt_value: np.float32,
-    align_i3: bool,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    valid_lag_mask: np.ndarray,
-    fe: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    vm: np.ndarray,
-) -> tuple[int, int, int]:
-    n3, n2, n1 = fe.shape
-    nu = valid_lag_mask.shape[2]
-    center_count = 0
-    face_count = 0
-    invalid_count = 0
-    for kw in range(surface.shape[0]):
-        iw = kw + w_offset - rw
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            ku = math.floor(float(iu - lmin) + 0.5)
-            if not 0 <= ku < nu or not valid_lag_mask[kw, kv, ku]:
-                invalid_count += 1
-                continue
-            iv = kv + v_offset - rv
-            x1 = np.float32(
-                float(c1)
-                + float(iw) * float(strike[0])
-                + float(iv) * float(dip[0])
-                + float(iu) * float(normal[0])
-            )
-            x2 = np.float32(
-                float(c2)
-                + float(iw) * float(strike[1])
-                + float(iv) * float(dip[1])
-                + float(iu) * float(normal[1])
-            )
-            x3 = np.float32(
-                float(c3)
-                + float(iw) * float(strike[2])
-                + float(iv) * float(dip[2])
-                + float(iu) * float(normal[2])
-            )
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            i3 = math.floor(float(x3) + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
-                invalid_count += 1
-                continue
-            center_count += 1
-            if i1 == 0 or i1 == n1 - 1 or i2 == 0 or i2 == n2 - 1 or i3 == 0 or i3 == n3 - 1:
-                face_count += 1
-
-    if invalid_count > 0:
-        return 0, 0, invalid_count
-
-    for kw in range(surface.shape[0]):
-        iw = kw + w_offset - rw
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            iv = kv + v_offset - rv
-            x1 = np.float32(
-                float(c1)
-                + float(iw) * float(strike[0])
-                + float(iv) * float(dip[0])
-                + float(iu) * float(normal[0])
-            )
-            x2 = np.float32(
-                float(c2)
-                + float(iw) * float(strike[1])
-                + float(iv) * float(dip[1])
-                + float(iu) * float(normal[1])
-            )
-            x3 = np.float32(
-                float(c3)
-                + float(iw) * float(strike[2])
-                + float(iv) * float(dip[2])
-                + float(iu) * float(normal[2])
-            )
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            i3 = math.floor(float(x3) + 0.5)
-            _add_surface_vote(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-            if align_i3:
-                _add_surface_vote(i3 - 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-                _add_surface_vote(i3 + 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-            else:
-                _add_surface_vote(i3, i2 - 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-                _add_surface_vote(i3, i2 + 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-
-    return center_count, face_count, 0
-
-
-@njit(cache=True)
-def _accumulate_surface_votes_masked_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    rv: int,
-    rw: int,
-    w_offset: int,
-    v_offset: int,
-    lmin: int,
-    fa: np.float32,
-    vp_value: np.float32,
-    vt_value: np.float32,
-    align_i3: bool,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    valid_lag_mask: np.ndarray,
-    fe: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    vm: np.ndarray,
-) -> tuple[int, int, int]:
-    n3, n2, n1 = fe.shape
-    nu = valid_lag_mask.shape[2]
-    center_count = 0
-    face_count = 0
-    invalid_count = 0
-    for kw in range(surface.shape[0]):
-        iw = kw + w_offset - rw
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            ku = math.floor(float(iu - lmin) + 0.5)
-            if not 0 <= ku < nu or not valid_lag_mask[kw, kv, ku]:
-                invalid_count += 1
-                continue
-            iv = kv + v_offset - rv
-            x1 = np.float32(
-                float(c1)
-                + float(iw) * float(strike[0])
-                + float(iv) * float(dip[0])
-                + float(iu) * float(normal[0])
-            )
-            x2 = np.float32(
-                float(c2)
-                + float(iw) * float(strike[1])
-                + float(iv) * float(dip[1])
-                + float(iu) * float(normal[1])
-            )
-            x3 = np.float32(
-                float(c3)
-                + float(iw) * float(strike[2])
-                + float(iv) * float(dip[2])
-                + float(iu) * float(normal[2])
-            )
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            i3 = math.floor(float(x3) + 0.5)
-            if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
-                invalid_count += 1
-                continue
-            center_count += 1
-            if i1 == 0 or i1 == n1 - 1 or i2 == 0 or i2 == n2 - 1 or i3 == 0 or i3 == n3 - 1:
-                face_count += 1
-
-    if invalid_count > 0:
-        return 0, 0, invalid_count
-
-    for kw in range(surface.shape[0]):
-        iw = kw + w_offset - rw
-        for kv in range(surface.shape[1]):
-            iu = surface[kw, kv]
-            iv = kv + v_offset - rv
-            x1 = np.float32(
-                float(c1)
-                + float(iw) * float(strike[0])
-                + float(iv) * float(dip[0])
-                + float(iu) * float(normal[0])
-            )
-            x2 = np.float32(
-                float(c2)
-                + float(iw) * float(strike[1])
-                + float(iv) * float(dip[1])
-                + float(iu) * float(normal[1])
-            )
-            x3 = np.float32(
-                float(c3)
-                + float(iw) * float(strike[2])
-                + float(iv) * float(dip[2])
-                + float(iu) * float(normal[2])
-            )
-            i1 = math.floor(float(x1) + 0.5)
-            i2 = math.floor(float(x2) + 0.5)
-            i3 = math.floor(float(x3) + 0.5)
-            _add_surface_vote_numba(i3, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-            if align_i3:
-                _add_surface_vote_numba(i3 - 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-                _add_surface_vote_numba(i3 + 1, i2, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-            else:
-                _add_surface_vote_numba(i3, i2 - 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-                _add_surface_vote_numba(i3, i2 + 1, i1, fa, vp_value, vt_value, fe, vp, vt, vm)
-
-    return center_count, face_count, 0
-
-
-@njit(cache=True)
-def _is_valid_surface_vote_sample(
-    i1: int,
-    i2: int,
-    i3: int,
-    n1: int,
-    n2: int,
-    n3: int,
-) -> bool:
-    return 0 <= i1 < n1 and 0 < i2 < n2 - 1 and 0 < i3 < n3 - 1
-
-
-def _add_surface_vote(
-    i3: int,
-    i2: int,
-    i1: int,
-    fa: np.float32,
-    vp_value: np.float32,
-    vt_value: np.float32,
-    fe: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    vm: np.ndarray,
-) -> None:
-    n3, n2, n1 = fe.shape
-    if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
-        return
-    fe[i3, i2, i1] += fa
-    _update_orientation_if_stronger(i3, i2, i1, fa, vp_value, vt_value, vp, vt, vm)
-
-
-@njit(cache=True)
-def _add_surface_vote_numba(
-    i3: int,
-    i2: int,
-    i1: int,
-    fa: np.float32,
-    vp_value: np.float32,
-    vt_value: np.float32,
-    fe: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    vm: np.ndarray,
-) -> None:
-    n3, n2, n1 = fe.shape
-    if not (0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3):
-        return
-    fe[i3, i2, i1] += fa
-    if fa > vm[i3, i2, i1]:
-        vm[i3, i2, i1] = fa
-        vp[i3, i2, i1] = vp_value
-        vt[i3, i2, i1] = vt_value
-
-
-def _update_orientation_if_stronger(
-    i3: int,
-    i2: int,
-    i1: int,
-    fa: np.float32,
-    vp_value: np.float32,
-    vt_value: np.float32,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    vm: np.ndarray,
-) -> None:
-    if fa > vm[i3, i2, i1]:
-        vm[i3, i2, i1] = fa
-        vp[i3, i2, i1] = vp_value
-        vt[i3, i2, i1] = vt_value
-
-
-def _fault_normal_components_from_strike_and_dip(
-    phi: np.ndarray,
-    theta: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    p = np.deg2rad(phi).astype(np.float32, copy=False)
-    t = np.deg2rad(theta).astype(np.float32, copy=False)
-    cp = np.cos(p)
-    sp = np.sin(p)
-    ct = np.cos(t)
-    st = np.sin(t)
-    w1 = -ct
-    w2 = st * cp
-    w3 = -st * sp
-    return (
-        w1.astype(np.float32, copy=False),
-        w2.astype(np.float32, copy=False),
-        w3.astype(np.float32, copy=False),
-    )
-
-
-def _thin_reference_like_3d(
-    fv: np.ndarray,
-    vp: np.ndarray,
-    *,
-    reference_sigma: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    return reference_like_3d_thin_values(
-        fv,
-        vp,
-        sigma=reference_sigma,
-        reinforce_vertical=True,
-    )
-
-
-def _thin_fault_normal_3d(
-    fv: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-) -> np.ndarray:
-    n3, n2, n1 = fv.shape
-    thinned = np.zeros((n3, n2, n1), dtype=np.float32)
-    if fv.size == 0:
-        return thinned
-
-    fs = smooth3d(fv, 1.0).astype(np.float32, copy=False)
-    i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
-    w1, w2, w3 = _fault_normal_components_from_strike_and_dip(vp, vt)
-
-    fp = sample3(fs, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
-    fm = sample3(fs, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
-    keep = (fp < fs) & (fm < fs)
-    thinned[keep] = fv[keep]
-    return thinned
-
-
-def _thin_fault_normal_plateau_3d(
-    fv: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    *,
-    plateau_tie_breaker: np.ndarray,
-    tolerance: float,
-) -> np.ndarray:
-    n3, n2, n1 = fv.shape
-    thinned = np.zeros((n3, n2, n1), dtype=np.float32)
-    if fv.size == 0:
-        return thinned
-
-    fs = smooth3d(fv, 1.0).astype(np.float32, copy=False)
-    i3, i2, i1 = np.indices((n3, n2, n1), dtype=np.float32)
-    w1, w2, w3 = _fault_normal_components_from_strike_and_dip(vp, vt)
-
-    fp = sample3(fs, i1 + w1, i2 + w2, i3 + w3, order=1, mode="nearest")
-    fm = sample3(fs, i1 - w1, i2 - w2, i3 - w3, order=1, mode="nearest")
-    eps = np.float32(1.0e-6)
-    candidate = (fv > eps) & (fs >= fp - np.float32(tolerance)) & (fs >= fm - np.float32(tolerance))
-    if not np.any(candidate):
-        return thinned
-
-    dominant_axis = np.argmax(
-        np.stack((np.abs(w1), np.abs(w2), np.abs(w3)), axis=0),
-        axis=0,
-    )
-    axis_to_array_axis = (2, 1, 0)
-    for normal_axis, array_axis in enumerate(axis_to_array_axis):
-        axis_candidates = candidate & (dominant_axis == normal_axis)
-        _collapse_candidate_runs_along_axis(
-            fv,
-            plateau_tie_breaker,
-            axis_candidates,
-            array_axis,
-            thinned,
-        )
-
-    return thinned
-
-
-def _collapse_candidate_runs_along_axis(
-    fv: np.ndarray,
-    tie_breaker: np.ndarray,
-    candidate: np.ndarray,
-    axis: int,
-    thinned: np.ndarray,
-) -> None:
-    moved_candidate = np.moveaxis(candidate, axis, -1)
-    moved_fv = np.moveaxis(fv, axis, -1)
-    moved_tie_breaker = np.moveaxis(tie_breaker, axis, -1)
-    moved_thinned = np.moveaxis(thinned, axis, -1)
-
-    line_length = moved_candidate.shape[-1]
-    for line_index in np.ndindex(moved_candidate.shape[:-1]):
-        line = moved_candidate[line_index]
-        start: int | None = None
-        for offset in range(line_length + 1):
-            in_run = offset < line_length and bool(line[offset])
-            if in_run and start is None:
-                start = offset
-            if (not in_run) and start is not None:
-                _retain_plateau_run_sample(
-                    moved_fv[line_index],
-                    moved_tie_breaker[line_index],
-                    moved_thinned[line_index],
-                    start,
-                    offset,
-                )
-                start = None
-
-
-def _retain_plateau_run_sample(
-    fv_line: np.ndarray,
-    tie_breaker_line: np.ndarray,
-    thinned_line: np.ndarray,
-    start: int,
-    stop: int,
-) -> None:
-    run_tie_breaker = tie_breaker_line[start:stop]
-    if np.all(run_tie_breaker == run_tie_breaker[0]):
-        keep_offset = (start + stop - 1) // 2
-    else:
-        keep_offset = start + int(np.argmax(run_tie_breaker))
-    thinned_line[keep_offset] = fv_line[keep_offset]
-
-
-def _edge_region_mask_3d(shape: tuple[int, int, int], margin: int) -> np.ndarray:
-    mask = np.zeros(shape, dtype=np.bool_)
-    if margin == 0 or mask.size == 0:
-        return mask
-
-    n3, n2, n1 = shape
-    m3 = min(margin, n3)
-    m2 = min(margin, n2)
-    m1 = min(margin, n1)
-    mask[:m3, :, :] = True
-    mask[n3 - m3 :, :, :] = True
-    mask[:, :m2, :] = True
-    mask[:, n2 - m2 :, :] = True
-    mask[:, :, :m1] = True
-    mask[:, :, n1 - m1 :] = True
-    return mask
-
-
-def _local_candidate_count_3d(candidate: np.ndarray) -> np.ndarray:
-    candidate_array = np.asarray(candidate, dtype=np.uint8)
-    padded = np.pad(candidate_array, 1, mode="constant", constant_values=0)
-    counts = np.zeros(candidate_array.shape, dtype=np.uint8)
-    for d3 in range(3):
-        for d2 in range(3):
-            for d1 in range(3):
-                counts += padded[
-                    d3 : d3 + candidate_array.shape[0],
-                    d2 : d2 + candidate_array.shape[1],
-                    d1 : d1 + candidate_array.shape[2],
-                ]
-    return counts
-
-
-def _orientation_roughness_3d(
-    vp: np.ndarray,
-    vt: np.ndarray,
-    support: np.ndarray | None = None,
-) -> np.ndarray:
-    if vp.size == 0:
-        return np.zeros(vp.shape, dtype=np.float32)
-
-    if support is None:
-        support_array = np.ones(vp.shape, dtype=np.bool_)
-    else:
-        support_array = np.asarray(support, dtype=np.bool_)
-        if support_array.shape != vp.shape:
-            raise ValueError("support shape must match vp shape")
-
-    roughness_squared = np.zeros(vp.shape, dtype=np.float32)
-    for axis in range(3):
-        if vp.shape[axis] < 2:
-            continue
-
-        strike_diff = _strike_difference_degrees(
-            np.diff(vp, axis=axis).astype(np.float32, copy=False)
-        )
-        dip_diff = np.diff(vt, axis=axis).astype(np.float32, copy=False)
-        diff_squared = strike_diff ** np.float32(2.0) + dip_diff ** np.float32(2.0)
-
-        lower = [slice(None)] * 3
-        upper = [slice(None)] * 3
-        lower[axis] = slice(0, -1)
-        upper[axis] = slice(1, None)
-        pair_support = support_array[tuple(lower)] & support_array[tuple(upper)]
-        diff_squared = np.where(pair_support, diff_squared, np.float32(0.0)).astype(
-            np.float32,
-            copy=False,
-        )
-        np.maximum(
-            roughness_squared[tuple(lower)], diff_squared, out=roughness_squared[tuple(lower)]
-        )
-        np.maximum(
-            roughness_squared[tuple(upper)], diff_squared, out=roughness_squared[tuple(upper)]
-        )
-
-    return np.sqrt(roughness_squared).astype(np.float32, copy=False)
-
-
-def _strike_difference_degrees(delta: np.ndarray) -> np.ndarray:
-    radians = np.deg2rad(delta).astype(np.float32, copy=False)
-    wrapped = 0.5 * np.rad2deg(np.arctan2(np.sin(2.0 * radians), np.cos(2.0 * radians)))
-    return np.abs(wrapped).astype(np.float32, copy=False)
-
-
-def _smooth_fault_likelihood_3d(
-    ft: np.ndarray,
-    *,
-    sigma: float = 1.0,
-) -> np.ndarray:
-    ft_array = _validate_finite_array3(ft, "ft").astype(np.float32, copy=True)
-    sigma_float = _validate_nonnegative_float(sigma, "sigma")
-
-    if ft_array.size == 0:
-        return ft_array
-
-    if sigma_float > 0.0:
-        ft_array = smooth3d(ft_array, sigma_float).astype(np.float32, copy=False)
-
-    _normalize_unit_range_in_place(ft_array)
-    return ft_array
-
-
-def _surface_strike_and_dip(
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    surface: np.ndarray,
-    *,
-    sigma: float | None = None,
-) -> tuple[float, float]:
-    """Return orientation from center differences of a local ``u(w,v)`` surface.
-
-    ``surface`` must be a finite 2D ``(nw, nv)`` array with at least three
-    samples along both axes. If ``sigma`` is ``None`` or ``0.0``, derivatives
-    are computed from the raw surface. If ``sigma`` is positive, the surface is
-    smoothed before computing centered ``du/dv`` and ``du/dw``. The input
-    surface is never modified. Strike/dip signs are delegated to
-    ``strike_and_dip_from_local_surface_derivatives``.
-    """
-
-    normal_array = _validate_finite_vector3(normal, "normal")
-    dip_array = _validate_finite_vector3(dip, "dip")
-    strike_array = _validate_finite_vector3(strike, "strike")
-    surface_array = _smooth_surface_for_orientation(surface, sigma)
-    du_dv, du_dw = _surface_center_derivatives(surface_array)
-    return strike_and_dip_from_local_surface_derivatives(
-        normal_array,
-        dip_array,
-        strike_array,
-        du_dv,
-        du_dw,
-    )
-
-
-def _smooth_surface_for_orientation(
-    surface: np.ndarray,
-    sigma: float | None,
-) -> np.ndarray:
-    surface_array = _validate_finite_array2(surface, "surface").astype(
-        np.float32,
-        copy=True,
-    )
-    if surface_array.shape[0] < 3 or surface_array.shape[1] < 3:
-        raise ValueError("surface must have at least three samples along w and v")
-
-    if sigma is None:
-        return surface_array
-
-    sigma_float = _validate_nonnegative_float(sigma, "sigma")
-    if sigma_float == 0.0:
-        return surface_array
-
-    return smooth_surface_2d(
-        surface_array,
-        sigma1=sigma_float,
-        sigma2=sigma_float,
-    ).astype(np.float32, copy=False)
-
-
-def _surface_center_derivatives(surface: np.ndarray) -> tuple[float, float]:
-    iw = surface.shape[0] // 2
-    iv = surface.shape[1] // 2
-    du_dv = float(0.5 * (surface[iw, iv + 1] - surface[iw, iv - 1]))
-    du_dw = float(0.5 * (surface[iw + 1, iv] - surface[iw - 1, iv]))
-    return du_dv, du_dw
-
-
-def _normalize_unit_range_in_place(x: np.ndarray) -> None:
-    x -= np.min(x)
-    max_value = np.max(x)
-    if max_value > 0.0:
-        x /= max_value
-    np.clip(x, 0.0, 1.0, out=x)
-
-
-def _validate_int(value: int, name: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-
-    try:
-        return operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-
-
-def _validate_nonnegative_int(value: int, name: str) -> int:
-    try:
-        value_int = _validate_int(value, name)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a nonnegative integer") from exc
-
-    if value_int < 0:
-        raise ValueError(f"{name} must be a nonnegative integer")
-
-    return value_int
-
-
-def _validate_positive_int(value: int, name: str) -> int:
-    try:
-        value_int = _validate_int(value, name)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-
-    if value_int <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-
-    return value_int
-
-
-def _validate_nonnegative_float(value: float, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise ValueError(f"{name} must be a finite nonnegative number")
-
-    value_float = float(value)
-
-    if not math.isfinite(value_float) or value_float < 0.0:
-        raise ValueError(f"{name} must be a finite nonnegative number")
-
-    return value_float
-
-
-def _validate_fraction_float(value: float, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise ValueError(f"{name} must be a finite number between 0 and 1")
-
-    value_float = float(value)
-
-    if not math.isfinite(value_float) or value_float < 0.0 or value_float > 1.0:
-        raise ValueError(f"{name} must be a finite number between 0 and 1")
-
-    return value_float
-
-
-def _validate_matching_finite_arrays3_many(
-    arrays: tuple[np.ndarray, ...],
-    names: tuple[str, ...],
-) -> tuple[np.ndarray, ...]:
-    validated = _validate_matching_arrays3(arrays, names)
-    finite_arrays: list[np.ndarray] = []
-    for array, name in zip(validated, names):
-        try:
-            with np.errstate(over="ignore", invalid="ignore"):
-                finite_array = array.astype(np.float32, copy=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{name} must contain numeric finite values") from exc
-
-        if not np.isfinite(finite_array).all():
-            raise ValueError(f"{name} must contain only finite values")
-
-        finite_arrays.append(finite_array)
-
-    return tuple(finite_arrays)
-
-
-def _validate_matching_arrays3(
-    arrays: tuple[np.ndarray, ...],
-    names: tuple[str, ...],
-) -> tuple[np.ndarray, ...]:
-    if len(arrays) != len(names):
-        raise ValueError("arrays and names must have the same length")
-    if not arrays:
-        raise ValueError("at least one array is required")
-
-    validated = tuple(_validate_array3(array, name) for array, name in zip(arrays, names))
-    shape = validated[0].shape
-    first_name = names[0]
-    for array, name in zip(validated[1:], names[1:]):
-        if array.shape != shape:
-            raise ValueError(f"{first_name} and {name} shapes must match")
-
-    return validated
-
-
-def _validate_finite_array3(array: np.ndarray, name: str) -> np.ndarray:
-    array = _validate_array3(array, name)
-    try:
-        with np.errstate(over="ignore", invalid="ignore"):
-            array = array.astype(np.float32, copy=False)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must contain numeric finite values") from exc
-
-    if not np.isfinite(array).all():
-        raise ValueError(f"{name} must contain only finite values")
-
-    return array
-
-
-def _validate_finite_array2(array: np.ndarray, name: str) -> np.ndarray:
-    array = np.asarray(array)
-    if array.ndim != 2:
-        raise ValueError(f"{name} must be a 2D array")
-
-    try:
-        with np.errstate(over="ignore", invalid="ignore"):
-            array = array.astype(np.float32, copy=False)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must contain numeric finite values") from exc
-
-    if not np.isfinite(array).all():
-        raise ValueError(f"{name} must contain only finite values")
-
-    return array
-
-
-def _validate_array3(array: np.ndarray, name: str) -> np.ndarray:
-    array = np.asarray(array)
-    if array.ndim != 3:
-        raise ValueError(f"{name} must be a 3D array")
-
-    return array
-
-
-def _validate_vector3(vector: np.ndarray, name: str) -> np.ndarray:
-    vector_array = np.asarray(vector, dtype=np.float32)
-    if vector_array.shape != (3,):
-        raise ValueError(f"{name} must have shape (3,)")
-
-    return vector_array
-
-
-def _validate_finite_vector3(vector: np.ndarray, name: str) -> np.ndarray:
-    vector_array = _validate_vector3(vector, name)
-    if not np.isfinite(vector_array).all():
-        raise ValueError(f"{name} must contain only finite values")
-
-    return vector_array

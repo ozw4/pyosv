@@ -22,6 +22,17 @@ from pyosv.voting3d import (
 )
 
 
+def test_legacy_private_validation_helpers_remain_available_from_facade() -> None:
+    expected = {
+        "_validate_array3",
+        "_validate_finite_array2",
+        "_validate_finite_vector3",
+        "_validate_positive_int",
+    }
+
+    assert not expected.difference(vars(voting3d))
+
+
 def _java_style_round(value: float) -> int:
     return int(np.floor(float(value) + 0.5))
 

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from pyosv import dp
 from pyosv.dp import (
     _find_surface_3d_masked,
     _project_surface_to_valid_mask_python,
@@ -21,6 +22,18 @@ from pyosv.dp import (
     validate_cost_2d,
     validate_cost_3d,
 )
+
+
+def test_legacy_private_validation_helpers_remain_available_from_facade() -> None:
+    expected = {
+        "_validate_direction",
+        "_validate_int",
+        "_validate_nonnegative_float",
+        "_validate_nonnegative_int",
+        "_validate_positive_int",
+    }
+
+    assert not expected.difference(vars(dp))
 
 
 def test_strain_to_bstrain_matches_reference_spacing() -> None:
@@ -532,6 +545,33 @@ def test_find_surface_3d_surface_smoothing_is_optional(
     np.testing.assert_allclose(surface, expected, atol=0.01)
 
 
+def test_find_surface_3d_uses_facade_find_path_monkeypatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cost = np.zeros((2, 3, 5), dtype=np.float32)
+    calls = 0
+
+    def fake_find_path(cost_row: np.ndarray, **kwargs: object) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        assert cost_row.shape == (3, 5)
+        assert kwargs["lmin"] == -2
+        return np.full(3, 1.25, dtype=np.float32)
+
+    monkeypatch.setattr(dp, "find_path_2d", fake_find_path)
+
+    surface = find_surface_3d(
+        cost,
+        lmin=-2,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=0,
+    )
+
+    assert calls == 2
+    np.testing.assert_array_equal(surface, np.full((2, 3), 1.25, dtype=np.float32))
+
+
 def test_find_surface_3d_surface_smoothing_reduces_abrupt_changes() -> None:
     expected = np.zeros((5, 8), dtype=np.float32)
     expected[:, 4:] = 2.0
@@ -614,6 +654,60 @@ def test_find_surface_3d_masked_excludes_invalid_very_low_cost_lags() -> None:
     assert surface is not None
     assert surface.dtype == np.float32
     np.testing.assert_array_equal(surface, np.zeros((3, 7), dtype=np.float32))
+    assert projection_count == 0
+
+
+def test_find_surface_3d_masked_uses_facade_python_kernel_monkeypatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cost = np.zeros((2, 3, 3), dtype=np.float32)
+    valid_mask = np.ones_like(cost, dtype=np.bool_)
+    accumulate_calls = 0
+    backtrack_calls = 0
+
+    def fake_accumulate(
+        cost_row: np.ndarray,
+        mask_row: np.ndarray,
+        bstrain: int,
+        direction: int,
+    ) -> np.ndarray:
+        nonlocal accumulate_calls
+        accumulate_calls += 1
+        assert bstrain == 1
+        assert direction in (-1, 1)
+        assert mask_row.all()
+        return cost_row.copy()
+
+    def fake_backtrack(
+        accumulated: np.ndarray,
+        cost_row: np.ndarray,
+        mask_row: np.ndarray,
+        lmin: int,
+        bstrain: int,
+        direction: int,
+    ) -> tuple[np.ndarray, bool]:
+        nonlocal backtrack_calls
+        backtrack_calls += 1
+        assert accumulated.shape == cost_row.shape == mask_row.shape
+        assert (lmin, bstrain, direction) == (-1, 1, -1)
+        return np.zeros(cost_row.shape[0], dtype=np.float32), True
+
+    monkeypatch.setattr(dp, "NUMBA_AVAILABLE", False)
+    monkeypatch.setattr(dp, "_accumulate_2d_masked_python", fake_accumulate)
+    monkeypatch.setattr(dp, "_backtrack_2d_masked_python", fake_backtrack)
+
+    surface, projection_count = _find_surface_3d_masked(
+        cost,
+        valid_mask,
+        lmin=-1,
+        bstrain1=1,
+        bstrain2=1,
+        attribute_smoothing=1,
+    )
+
+    assert accumulate_calls == 12
+    assert backtrack_calls == 2
+    np.testing.assert_array_equal(surface, np.zeros((2, 3), dtype=np.float32))
     assert projection_count == 0
 
 
