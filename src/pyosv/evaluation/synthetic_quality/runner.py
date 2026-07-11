@@ -158,6 +158,7 @@ def run_scanner_pipeline(
     scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
     include_scanner_downstream_diagnostics: bool,
+    capture_stage_trace: bool = False,
     thinning_diagnostic_runner: Callable[..., Any] = _run_voter_thinning_diagnostic,
     recenter_distance_diagnostic_runner: Callable[..., Any] = (
         fvt_recenter_target_distance_diagnostics
@@ -182,6 +183,7 @@ def run_scanner_pipeline(
         skinning_config=skinning_config,
         variant_spec=variant_spec,
         include_thinning_diagnostic=include_thinning_diagnostic,
+        capture_stage_trace=capture_stage_trace,
         scanner_target_positive_mask=quality_metrics.positive_candidate_mask(
             scanner_volumes["scanner_ft"]
         ),
@@ -241,7 +243,9 @@ def run_scanner_pipeline(
     return PipelineEvaluation(
         report_payload=report,
         artifacts=PipelineArtifacts(
-            volumes=volumes, skins_payload=evaluation.artifacts.skins_payload
+            volumes=volumes,
+            skins_payload=evaluation.artifacts.skins_payload,
+            stage_trace=evaluation.artifacts.stage_trace,
         ),
     )
 

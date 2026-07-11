@@ -18,6 +18,7 @@ from pyosv.evaluation.synthetic_quality.runner import (
     prepare_case_inputs,
     run_case,
     run_case_variant,
+    run_scanner_pipeline,
 )
 from pyosv.evaluation.synthetic_quality import runner
 from pyosv.cli import synthetic_quality
@@ -160,6 +161,25 @@ def _fast_scanner_config() -> SyntheticScannerConfig:
         sigma2=1.0,
         scanner_thin_mode="none",
     )
+
+
+def test_scanner_pipeline_preserves_captured_stage_trace() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    result = run_scanner_pipeline(
+        case,
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=_fast_scanner_config(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant_spec=runner.get_variant_spec("current_default"),
+        scanner_backend_matrix=False,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=False,
+        capture_stage_trace=True,
+    )
+
+    assert result.artifacts.stage_trace is not None
+    assert result.artifacts.stage_trace.fv_positive_mask.shape == case.shape
 
 
 def test_scanner_cache_report_build_scans_once_per_case_across_variants(
