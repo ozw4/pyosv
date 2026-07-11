@@ -89,7 +89,12 @@ from pyosv.evaluation.synthetic_quality import build_report, run_case
 without writing files. `run_case(...)` evaluates one
 `SyntheticQualityCaseDefinition` and returns its v1 case payload and volume
 mapping. The CLI in `pyosv.cli.synthetic_quality` calls this application layer;
-the example script remains a backward-compatible command wrapper.
+the example script remains a backward-compatible command entry point and
+contains no evaluation implementation. Tests import package APIs directly.
+
+The stage ownership, config/profile/variant resolution order, scanner reuse
+scope, and public/private module boundary are documented in
+[Architecture](architecture.md).
 
 `pyosv.evaluation.reporting` exposes the immutable `Report`, `ReportConfig`,
 `CaseReport`, `PipelineReport`, `VariantReport`, and `VariantComparison` models,
@@ -1396,14 +1401,16 @@ and skin metrics.
 
 ## Test Commands
 
-The PR6 minimum validation command for the synthetic scanner-inclusive suite is:
+The focused validation command for the synthetic scanner-inclusive suite is:
 
 ```bash
 PYTHONPATH=src python -m pytest -q \
   tests/test_synthetic3d.py \
   tests/test_synthetic_metrics.py \
   tests/test_synthetic_oracle_pipeline.py \
-  tests/test_report_3d_synthetic_quality.py
+  tests/evaluation/synthetic_quality \
+  tests/evaluation/reporting \
+  tests/cli/test_synthetic_quality_cli.py
 ```
 
 The broader synthetic voting/skinning checks are:

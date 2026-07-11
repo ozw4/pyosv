@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import numpy as np
 
 from pyosv.experimental.boundary_thinning import (
@@ -91,42 +88,3 @@ def test_boundary_edge_thin_preserves_non_edge_samples_and_input() -> None:
     non_edge = ~np.pad(np.zeros((1, 3, 1), dtype=bool), 2, constant_values=True)
     np.testing.assert_array_equal(result.output[non_edge], original[non_edge])
     assert result.diagnostics["target_source"] == "scanner_fet"
-
-
-def test_report_thinning_wrappers_match_experimental_results() -> None:
-    path = Path(__file__).parents[2] / "examples" / "report_3d_synthetic_quality.py"
-    spec = importlib.util.spec_from_file_location("thinning_wrapper_report", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    fvt = np.zeros((3, 3, 3), dtype=np.float32)
-    fvt[1, 0, 1] = 1.0
-    vp = np.zeros_like(fvt)
-    vt = np.full_like(fvt, 90.0)
-    target = np.zeros_like(fvt)
-    target[1, 1, 1] = 1.0
-    kwargs = {"target": target, "target_source": "scanner_fet", "max_shift": 1, "edge_margin": 1}
-
-    expected = recenter_edge_fvt_to_target(fvt, vp, vt, **kwargs)
-    output, diagnostics = module._recenter_edge_fvt_to_target(fvt, vp, vt, **kwargs)
-
-    np.testing.assert_array_equal(output, expected.output)
-    assert diagnostics == expected.diagnostics
-
-    fv = np.zeros_like(fvt)
-    fv[1, 1:3, 1] = 1.0
-    fvt[1, 2, 1] = 1.0
-    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
-    thin_kwargs = {
-        "voter": voter,
-        "target": target,
-        "target_source": "scanner_fet",
-        "edge_margin": 1,
-    }
-    expected_thin = apply_boundary_edge_thin_v1(fvt, fv, vp, vt, **thin_kwargs)
-    thin_output, thin_diagnostics = module._apply_boundary_edge_thin_v1(
-        fvt, fv, vp, vt, **thin_kwargs
-    )
-
-    np.testing.assert_array_equal(thin_output, expected_thin.output)
-    assert thin_diagnostics == expected_thin.diagnostics

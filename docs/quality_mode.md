@@ -34,6 +34,12 @@ boundary voting is not part of `current_default`.
 thinning diagnostics. Use it when comparing current behavior, diagnostic
 variants, and reference-vs-normal thinning on the same synthetic truth.
 
+Resolution is deterministic: base configuration is filled by the selected
+workflow profile, explicit CLI values override those defaults, and the selected
+variant's declared patch is applied for that variant. Variant definitions live
+in one registry, while promotion thresholds live in one promotion
+specification. See [Architecture](architecture.md) for the ownership boundary.
+
 ## Boundary-aware Voter Candidate
 
 `boundary_aware_voter_v1` is an explicit-only synthetic-report variant. It

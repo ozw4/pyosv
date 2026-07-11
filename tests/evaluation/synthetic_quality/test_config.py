@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from dataclasses import FrozenInstanceError
-from pathlib import Path
 
 import pytest
 
@@ -184,18 +181,3 @@ def test_skinning_config_optional_fields_preserve_none_semantics() -> None:
 def test_configs_are_immutable(config: object, field: str) -> None:
     with pytest.raises(FrozenInstanceError):
         config.__setattr__(field, None)
-
-
-def test_example_module_retains_compatibility_names() -> None:
-    script = Path(__file__).resolve().parents[3] / "examples" / "report_3d_synthetic_quality.py"
-    spec = importlib.util.spec_from_file_location("report_3d_synthetic_quality_config_test", script)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-
-    assert module.SyntheticVotingConfig is SyntheticVotingConfig
-    assert module.SyntheticScannerConfig is SyntheticScannerConfig
-    assert module.SyntheticTruthMetricConfig is SyntheticTruthMetricConfig
-    assert module.SyntheticSkinningConfig is SyntheticSkinningConfig
