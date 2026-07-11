@@ -394,6 +394,7 @@ def build_case_report_model(
     truth: Mapping[str, Any],
     variant_reports: Mapping[str, Mapping[str, Any]],
     input_mode: str,
+    include_baseline_config_alias: bool = False,
 ) -> CaseReport:
     """Build the typed case-level report while retaining legacy baseline aliases."""
 
@@ -411,7 +412,7 @@ def build_case_report_model(
             {
                 key: value
                 for key, value in variant_reports[BASELINE_VARIANT].items()
-                if key not in {"config", "pipelines"}
+                if key != "pipelines" and (include_baseline_config_alias or key != "config")
             }
         )
         payload["pipelines"] = pipelines
@@ -477,6 +478,7 @@ def run_case(
         truth=quality_metrics.truth_report(case, truth_metric_config),
         variant_reports={variant: variant_report},
         input_mode=input_mode,
+        include_baseline_config_alias=True,
     )
     # PipelineEvaluation remains the example-facing compatibility API.
     report = LegacyReportV1Adapter().case_to_dict(report_model)

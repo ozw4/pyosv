@@ -4,7 +4,7 @@ from types import MappingProxyType
 
 import pytest
 
-from pyosv.evaluation.reporting.models import Report
+from pyosv.evaluation.reporting.models import ArtifactReference, Report
 
 
 def _payload() -> dict[str, object]:
@@ -51,3 +51,17 @@ def test_report_model_copies_and_recursively_freezes_metric_payloads() -> None:
     assert isinstance(report.config.values, MappingProxyType)
     with pytest.raises(TypeError):
         report.cases[0].truth["count"] = 3  # type: ignore[index]
+
+
+def test_report_model_has_typed_artifact_reference_relationship() -> None:
+    base = Report.from_dict(_payload())
+    reference = ArtifactReference("case/current_default/fvt_py.dat", {"kind": "volume"})
+    report = Report(
+        config=base.config,
+        cases=base.cases,
+        format_version=base.format_version,
+        artifact_references=(reference,),
+    )
+
+    assert report.artifact_references == (reference,)
+    assert report.artifact_references[0].metadata["kind"] == "volume"

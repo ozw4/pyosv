@@ -93,6 +93,10 @@ def test_run_case_builds_active_pipeline_and_variant_aliases() -> None:
     )
     assert set(result.report_payload["pipelines"]) == {"oracle"}
     assert set(result.report_payload["variants"]) == {"current_default"}
+    assert (
+        result.report_payload["config"]
+        == result.report_payload["variants"]["current_default"]["config"]
+    )
 
 
 def test_example_wrapper_matches_package_report_volumes_and_skins() -> None:

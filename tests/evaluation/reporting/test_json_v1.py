@@ -64,6 +64,14 @@ def test_json_format_and_writer_contract(tmp_path, pretty: bool) -> None:
     assert write_metrics_json(model, tmp_path, pretty=pretty).read_text() == serialized
 
 
+def test_json_helpers_preserve_generic_mapping_compatibility(tmp_path) -> None:
+    payload = {"a": 1, "nested": {"values": [2, None]}}
+    expected = json.dumps(payload, sort_keys=True) + "\n"
+
+    assert report_to_json(payload) == expected
+    assert write_metrics_json(payload, tmp_path).read_text() == expected
+
+
 def test_adapter_rejects_non_v1_model() -> None:
     model = Report.from_dict({**_payload(), "format_version": 2})
     with pytest.raises(ValueError, match="format_version=1"):

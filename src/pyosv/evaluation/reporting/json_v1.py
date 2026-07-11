@@ -55,16 +55,16 @@ class LegacyReportV1Adapter:
         }
 
 
-def _legacy_dict(report: Report | Mapping[str, Any]) -> dict[str, Any]:
+def _legacy_payload(report: Report | Mapping[str, Any]) -> Mapping[str, Any]:
     if isinstance(report, Report):
         return LegacyReportV1Adapter().to_dict(report)
-    return LegacyReportV1Adapter().to_dict(Report.from_dict(report))
+    return report
 
 
 def report_to_json(report: Report | Mapping[str, Any], *, pretty: bool = False) -> str:
     """Serialize a report with the exact legacy v1 JSON formatting contract."""
 
-    return json.dumps(_legacy_dict(report), indent=2 if pretty else None, sort_keys=True) + "\n"
+    return json.dumps(_legacy_payload(report), indent=2 if pretty else None, sort_keys=True) + "\n"
 
 
 def write_metrics_json(

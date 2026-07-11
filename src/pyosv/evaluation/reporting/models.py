@@ -170,6 +170,7 @@ class Report:
     config: ReportConfig
     cases: tuple[CaseReport, ...]
     format_version: int = 1
+    artifact_references: tuple[ArtifactReference, ...] = ()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> Report:
