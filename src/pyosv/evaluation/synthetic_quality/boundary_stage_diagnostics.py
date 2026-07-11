@@ -200,6 +200,7 @@ def stage_mask_profile(
         edge_profile[str(distance)] = _truth_region_metrics(
             candidate & population,
             truth_fault & population,
+            truth_surface & population,
             candidate_to_fault=candidate_to_fault,
             truth_to_candidate=truth_to_candidate,
             candidate_to_surface=candidate_to_surface,
@@ -209,6 +210,7 @@ def stage_mask_profile(
     edge_profile[f"{max_distance + 1}_plus"] = _truth_region_metrics(
         candidate & population,
         truth_fault & population,
+        truth_surface & population,
         candidate_to_fault=candidate_to_fault,
         truth_to_candidate=truth_to_candidate,
         candidate_to_surface=candidate_to_surface,
@@ -220,6 +222,7 @@ def stage_mask_profile(
         "truth": _truth_region_metrics(
             candidate,
             truth_fault,
+            truth_surface,
             candidate_to_fault=candidate_to_fault,
             truth_to_candidate=truth_to_candidate,
             candidate_to_surface=candidate_to_surface,
@@ -229,6 +232,7 @@ def stage_mask_profile(
             "boundary_shell": _truth_region_metrics(
                 candidate & shell,
                 truth_fault & shell,
+                truth_surface & shell,
                 candidate_to_fault=candidate_to_fault,
                 truth_to_candidate=truth_to_candidate,
                 candidate_to_surface=candidate_to_surface,
@@ -237,6 +241,7 @@ def stage_mask_profile(
             "interior": _truth_region_metrics(
                 candidate & ~shell,
                 truth_fault & ~shell,
+                truth_surface & ~shell,
                 candidate_to_fault=candidate_to_fault,
                 truth_to_candidate=truth_to_candidate,
                 candidate_to_surface=candidate_to_surface,
@@ -402,6 +407,7 @@ def _region_metrics(
 def _truth_region_metrics(
     candidate_population: np.ndarray,
     truth_population: np.ndarray,
+    truth_surface_population: np.ndarray,
     *,
     candidate_to_fault: np.ndarray | None,
     truth_to_candidate: np.ndarray | None,
@@ -424,7 +430,7 @@ def _truth_region_metrics(
     candidate_median, candidate_p95 = _distance_statistics(
         candidate_population, candidate_to_surface
     )
-    truth_median, truth_p95 = _distance_statistics(truth_population, truth_to_candidate)
+    truth_median, truth_p95 = _distance_statistics(truth_surface_population, truth_to_candidate)
     return {
         "truth_count": truth_count,
         "matched_truth_count": matched_truth_count,

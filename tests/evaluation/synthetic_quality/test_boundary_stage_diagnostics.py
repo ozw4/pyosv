@@ -337,6 +337,32 @@ def test_stage_profile_regions_and_edge_bins_match_against_full_masks() -> None:
     assert result["edge_distance_profile"]["4_plus"]["truth_count"] == 1
 
 
+def test_stage_profile_truth_distances_use_surface_not_fault_volume() -> None:
+    truth_fault = np.zeros((9, 9, 9), dtype=bool)
+    truth_surface = np.zeros_like(truth_fault)
+    candidate = np.zeros_like(truth_fault)
+    truth_fault[4, 4, 2:7] = True
+    truth_surface[4, 4, 4] = True
+    candidate[4, 4, 4] = True
+
+    result = stage_mask_profile(
+        candidate,
+        truth_fault_mask=truth_fault,
+        truth_surface_mask=truth_surface,
+        match_radius=0.0,
+        edge_margin=2,
+        max_exact_edge_distance=3,
+    )
+
+    assert result["truth"]["truth_count"] == 5
+    assert result["truth"]["truth_recall"] == 0.2
+    assert result["truth"]["truth_to_candidate_distance_median"] == 0.0
+    assert result["truth"]["truth_to_candidate_distance_p95"] == 0.0
+    assert result["regions"]["interior"]["truth_to_candidate_distance_p95"] == 0.0
+    assert result["edge_distance_profile"]["3"]["truth_to_candidate_distance_p95"] is None
+    assert result["edge_distance_profile"]["4_plus"]["truth_to_candidate_distance_p95"] == 0.0
+
+
 def test_stage_profile_components_use_18_neighborhood() -> None:
     mask = np.zeros((4, 4, 4), dtype=bool)
     mask[0, 0, 0] = True
