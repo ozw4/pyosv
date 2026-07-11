@@ -27,6 +27,14 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
+from pyosv.experimental.boundary_thinning import (
+    FVT_RECENTER_MAX_SHIFT,
+    apply_boundary_edge_thin_v1,
+    dominant_fault_normal_array_axis,
+    fvt_recenter_target_distance_diagnostics,
+    recenter_edge_fvt_to_target,
+)
 from pyosv.synthetic3d import (
     Synthetic3DCase,
     make_boundary_plane_case,  # noqa: F401 - compatibility export
@@ -51,14 +59,12 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
     _validate_nonnegative_finite_scalar,
-    _validate_nonnegative_int,
 )
 from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.evaluation.synthetic_quality.diagnostics import (
     _run_voter_thinning_diagnostic,
     _scanner_downstream_diagnostics,
     _scanner_stage_loss_diagnostics,
-    _seed_mask_from_seeds,
 )
 from pyosv.evaluation.synthetic_quality.scanner import (
     SCANNER_BACKENDS,
@@ -182,7 +188,6 @@ SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION = 0.50
 SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION = 0.60
 DEFAULT_VARIANT_PRESET = "default"
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
-FVT_RECENTER_MAX_SHIFT = 3
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
 VARIANT_COMPARISON_METRICS = quality_metrics.VARIANT_COMPARISON_METRICS
 
@@ -1125,118 +1130,10 @@ def _top_truth_count_quality(
 
 
 def _boundary_seed_retention_v1_seeds(
-    *,
-    voting_config: SyntheticVotingConfig,
-    ft: np.ndarray,
-    pt: np.ndarray,
-    tt: np.ndarray,
-    target: np.ndarray,
-    target_source: str,
-    edge_margin: int,
+    **kwargs: Any,
 ) -> tuple[list[FaultCell], list[FaultCell], dict[str, Any]]:
-    ft_array = np.asarray(ft, dtype=np.float32)
-    pt_array = np.asarray(pt, dtype=np.float32)
-    tt_array = np.asarray(tt, dtype=np.float32)
-    target_array = np.asarray(target, dtype=np.float32)
-    if ft_array.ndim != 3:
-        raise ValueError("ft must be a 3D array")
-    if (
-        pt_array.shape != ft_array.shape
-        or tt_array.shape != ft_array.shape
-        or target_array.shape != ft_array.shape
-    ):
-        raise ValueError("boundary_seed_retention_v1 input shapes must match")
-    if not (
-        np.all(np.isfinite(ft_array))
-        and np.all(np.isfinite(pt_array))
-        and np.all(np.isfinite(tt_array))
-        and np.all(np.isfinite(target_array))
-    ):
-        raise ValueError("boundary_seed_retention_v1 inputs must contain only finite values")
-
-    voter = OptimalSurfaceVoter(
-        ru=voting_config.ru,
-        rv=voting_config.rv,
-        rw=voting_config.rw,
-    )
-    default_seeds = voter.pick_seeds(
-        d=voting_config.seed_distance,
-        fm=voting_config.seed_threshold,
-        ft=ft_array,
-        pt=pt_array,
-        tt=tt_array,
-    )
-    edge_shell = _edge_mask(ft_array.shape, edge_margin)
-    edge_ft = ft_array[edge_shell]
-    edge_ft_max = float(np.max(edge_ft)) if edge_ft.size else 0.0
-    ft_threshold = min(float(voting_config.seed_threshold), 0.5 * edge_ft_max)
-    boundary_candidate = (
-        edge_shell & _positive_candidate_mask(target_array) & (ft_array > np.float32(ft_threshold))
-    )
-    boundary_candidate_count = int(np.count_nonzero(boundary_candidate))
-    existing_coordinates = {(seed.i1, seed.i2, seed.i3) for seed in default_seeds}
-    added_coordinates: set[tuple[int, int, int]] = set()
-    added_seeds = []
-    distance = max(0, int(voting_config.seed_distance))
-    candidate_records = []
-    for index in np.argwhere(boundary_candidate):
-        i3, i2, i1 = (int(index[0]), int(index[1]), int(index[2]))
-        candidate_records.append(
-            (
-                -float(target_array[i3, i2, i1]),
-                -float(ft_array[i3, i2, i1]),
-                int(np.ravel_multi_index((i3, i2, i1), ft_array.shape)),
-                i1,
-                i2,
-                i3,
-            )
-        )
-    for _, _, _, i1, i2, i3 in sorted(candidate_records):
-        coordinate = (i1, i2, i3)
-        if coordinate in existing_coordinates:
-            continue
-        if any(
-            abs(i1 - a1) <= distance and abs(i2 - a2) <= distance and abs(i3 - a3) <= distance
-            for a1, a2, a3 in added_coordinates
-        ):
-            continue
-        added_coordinates.add(coordinate)
-        added_seeds.append(
-            FaultCell(
-                i1,
-                i2,
-                i3,
-                ft_array[i3, i2, i1],
-                pt_array[i3, i2, i1],
-                tt_array[i3, i2, i1],
-            )
-        )
-
-    retained_seeds = [*default_seeds, *added_seeds]
-    added_target_values = np.asarray(
-        [target_array[seed.i3, seed.i2, seed.i1] for seed in added_seeds],
-        dtype=np.float32,
-    )
-    diagnostic = {
-        "enabled": True,
-        "target_source": target_source,
-        "edge_margin": int(edge_margin),
-        "default_seed_count": int(len(default_seeds)),
-        "boundary_candidate_count": boundary_candidate_count,
-        "added_seed_count": int(len(added_seeds)),
-        "total_seed_count": int(len(retained_seeds)),
-        "added_seed_edge_shell_fraction": _edge_candidate_fraction(
-            _seed_mask_from_seeds(ft_array.shape, added_seeds),
-            edge_margin=edge_margin,
-        ),
-        "added_seed_target_mean": float(np.mean(added_target_values))
-        if added_target_values.size
-        else 0.0,
-        "added_seed_target_p95": float(np.percentile(added_target_values, 95))
-        if added_target_values.size
-        else 0.0,
-    }
-    return default_seeds, retained_seeds, diagnostic
+    result = select_boundary_seed_retention_v1(**kwargs)
+    return list(result.default_seeds), list(result.selected_seeds), result.diagnostics
 
 
 def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -> str:
@@ -1284,374 +1181,22 @@ def _edge_mask(shape: tuple[int, ...], margin: int) -> np.ndarray:
     return quality_metrics.edge_mask(shape, margin)
 
 
-def _recenter_edge_fvt_to_target(
-    fvt: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    *,
-    target: np.ndarray,
-    target_source: str,
-    max_shift: int,
-    edge_margin: int,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    fvt_array = np.asarray(fvt, dtype=np.float32)
-    vp_array = np.asarray(vp, dtype=np.float32)
-    vt_array = np.asarray(vt, dtype=np.float32)
-    target_array = np.asarray(target, dtype=np.float32)
-    if fvt_array.ndim != 3:
-        raise ValueError("fvt must be a 3D array")
-    if vp_array.shape != fvt_array.shape or vt_array.shape != fvt_array.shape:
-        raise ValueError("fvt, vp, and vt shapes must match")
-    if target_array.shape != fvt_array.shape:
-        raise ValueError("fvt and target shapes must match")
-    if not (
-        np.all(np.isfinite(fvt_array))
-        and np.all(np.isfinite(vp_array))
-        and np.all(np.isfinite(vt_array))
-        and np.all(np.isfinite(target_array))
-    ):
-        raise ValueError("fvt recenter inputs must contain only finite values")
-    shift_limit = _validate_nonnegative_int(max_shift, "max_shift")
-    before_positive = _positive_candidate_mask(fvt_array)
-    edge_candidates = before_positive & _edge_mask(fvt_array.shape, edge_margin)
-    edge_candidate_indices = np.argwhere(edge_candidates)
-    candidate_count = int(edge_candidate_indices.shape[0])
-    recentered = np.zeros_like(fvt_array, dtype=np.float32)
-    if candidate_count == 0:
-        recentered[before_positive] = fvt_array[before_positive]
-        return recentered, _empty_fvt_recenter_diagnostic(
-            target_source=target_source,
-            candidate_count=0,
-            positive_count_before=int(np.count_nonzero(before_positive)),
-            positive_count_after=int(np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))),
-            before_positive=before_positive,
-        )
-
-    destination_to_candidate: dict[
-        tuple[int, int, int], tuple[int, float, float, tuple[int, int, int]]
-    ] = {}
-    shifts: list[float] = []
-    moved_count = 0
-    collision_count = 0
-    for stable_index, (i3, i2, i1) in enumerate(np.argwhere(before_positive)):
-        source = (int(i3), int(i2), int(i1))
-        if bool(edge_candidates[source]):
-            destination, shift = _fvt_recenter_destination(
-                source,
-                vp_array,
-                vt_array,
-                target_array,
-                max_shift=shift_limit,
-            )
-            shifts.append(float(shift))
-            if shift > 0:
-                moved_count += 1
-        else:
-            destination, shift = source, 0
-        value = float(fvt_array[source])
-        existing = destination_to_candidate.get(destination)
-        candidate_record = (stable_index, value, float(shift), source)
-        if existing is None:
-            destination_to_candidate[destination] = candidate_record
-            continue
-        collision_count += 1
-        if value > existing[1] or (value == existing[1] and stable_index < existing[0]):
-            destination_to_candidate[destination] = candidate_record
-
-    for destination, (_, value, _, _) in destination_to_candidate.items():
-        recentered[destination] = np.float32(value)
-
-    shift_values = np.asarray(shifts, dtype=np.float64)
-    diagnostic = {
-        "fvt_recenter_enabled": True,
-        "fvt_recenter_target_source": target_source,
-        "fvt_recenter_candidate_count": candidate_count,
-        "fvt_recenter_moved_count": int(moved_count),
-        "fvt_recenter_collision_count": int(collision_count),
-        "fvt_recenter_mean_shift": (float(np.mean(shift_values)) if shift_values.size else 0.0),
-        "fvt_recenter_p95_shift": (
-            float(np.percentile(shift_values, 95)) if shift_values.size else 0.0
-        ),
-        "fvt_recenter_max_shift": (float(np.max(shift_values)) if shift_values.size else 0.0),
-        "fvt_recenter_edge_shell_only": True,
-        "fvt_recenter_positive_count_before": int(np.count_nonzero(before_positive)),
-        "fvt_recenter_positive_count_after": int(
-            np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))
-        ),
-        "fvt_recenter_value_source": "original_fvt",
-        "_before_positive_mask": before_positive,
-    }
-    return recentered, diagnostic
+def _recenter_edge_fvt_to_target(*args: Any, **kwargs: Any) -> tuple[np.ndarray, dict[str, Any]]:
+    result = recenter_edge_fvt_to_target(*args, **kwargs)
+    return result.output, result.diagnostics
 
 
-def _empty_fvt_recenter_diagnostic(
-    *,
-    target_source: str,
-    candidate_count: int,
-    positive_count_before: int,
-    positive_count_after: int,
-    before_positive: np.ndarray,
-) -> dict[str, Any]:
-    return {
-        "fvt_recenter_enabled": True,
-        "fvt_recenter_target_source": target_source,
-        "fvt_recenter_candidate_count": int(candidate_count),
-        "fvt_recenter_moved_count": 0,
-        "fvt_recenter_collision_count": 0,
-        "fvt_recenter_mean_shift": 0.0,
-        "fvt_recenter_p95_shift": 0.0,
-        "fvt_recenter_max_shift": 0.0,
-        "fvt_recenter_edge_shell_only": True,
-        "fvt_recenter_positive_count_before": int(positive_count_before),
-        "fvt_recenter_positive_count_after": int(positive_count_after),
-        "fvt_recenter_value_source": "original_fvt",
-        "_before_positive_mask": before_positive,
-    }
+def _fvt_recenter_target_distance_diagnostics(**kwargs: Any) -> dict[str, float | None]:
+    return fvt_recenter_target_distance_diagnostics(**kwargs)
 
 
-def _fvt_recenter_destination(
-    source: tuple[int, int, int],
-    vp: np.ndarray,
-    vt: np.ndarray,
-    target: np.ndarray,
-    *,
-    max_shift: int,
-) -> tuple[tuple[int, int, int], int]:
-    if max_shift <= 0:
-        return source, 0
-    i3, i2, i1 = source
-    axis = _dominant_fault_normal_array_axis(float(vp[source]), float(vt[source]))
-    current_target = float(target[source])
-    best_destination = source
-    best_target = current_target
-    best_abs_shift = 0
-    for offset in range(-max_shift, max_shift + 1):
-        if offset == 0:
-            continue
-        destination = [i3, i2, i1]
-        destination[axis] += offset
-        if not _inside_shape(tuple(destination), target.shape):
-            continue
-        destination_tuple = (
-            int(destination[0]),
-            int(destination[1]),
-            int(destination[2]),
-        )
-        target_value = float(target[destination_tuple])
-        abs_shift = abs(offset)
-        if target_value > best_target or (
-            target_value == best_target and best_abs_shift > 0 and abs_shift < best_abs_shift
-        ):
-            best_destination = destination_tuple
-            best_target = target_value
-            best_abs_shift = abs_shift
-    if best_target <= current_target:
-        return source, 0
-    return best_destination, best_abs_shift
+def _apply_boundary_edge_thin_v1(*args: Any, **kwargs: Any) -> tuple[np.ndarray, dict[str, Any]]:
+    result = apply_boundary_edge_thin_v1(*args, **kwargs)
+    return result.output, result.diagnostics
 
 
 def _dominant_fault_normal_array_axis(strike: float, dip: float) -> int:
-    p = math.radians(strike)
-    t = math.radians(dip)
-    components = (
-        abs(-math.sin(t) * math.sin(p)),  # i3
-        abs(math.sin(t) * math.cos(p)),  # i2
-        abs(-math.cos(t)),  # i1
-    )
-    return int(np.argmax(np.asarray(components, dtype=np.float32)))
-
-
-def _inside_shape(index: tuple[int, int, int], shape: tuple[int, ...]) -> bool:
-    return all(0 <= int(value) < int(size) for value, size in zip(index, shape, strict=True))
-
-
-def _fvt_recenter_target_distance_diagnostics(
-    *,
-    before: np.ndarray | None,
-    after: np.ndarray | None,
-    target: np.ndarray | None,
-) -> dict[str, float | None]:
-    if before is None or after is None or target is None:
-        before_p95 = None
-        after_p95 = None
-    else:
-        before_distance = surface_distance_metrics(
-            np.asarray(before, dtype=bool),
-            np.asarray(target, dtype=bool),
-        )
-        after_distance = surface_distance_metrics(
-            np.asarray(after, dtype=bool),
-            np.asarray(target, dtype=bool),
-        )
-        before_p95 = before_distance["candidate_to_truth_p95"]
-        after_p95 = after_distance["candidate_to_truth_p95"]
-    return {
-        "fvt_recenter_to_target_distance_p95_before": before_p95,
-        "fvt_recenter_to_target_distance_p95_after": after_p95,
-    }
-
-
-def _apply_boundary_edge_thin_v1(
-    fvt: np.ndarray,
-    fv: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    *,
-    voter: OptimalSurfaceVoter,
-    target: np.ndarray,
-    target_source: str,
-    edge_margin: int,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    fvt_array = np.asarray(fvt, dtype=np.float32)
-    fv_array = np.asarray(fv, dtype=np.float32)
-    vp_array = np.asarray(vp, dtype=np.float32)
-    vt_array = np.asarray(vt, dtype=np.float32)
-    target_array = np.asarray(target, dtype=np.float32)
-    if fvt_array.ndim != 3:
-        raise ValueError("fvt must be a 3D array")
-    if (
-        fv_array.shape != fvt_array.shape
-        or vp_array.shape != fvt_array.shape
-        or vt_array.shape != fvt_array.shape
-        or target_array.shape != fvt_array.shape
-    ):
-        raise ValueError("boundary_edge_thin_v1 input shapes must match")
-    if not (
-        np.all(np.isfinite(fvt_array))
-        and np.all(np.isfinite(fv_array))
-        and np.all(np.isfinite(vp_array))
-        and np.all(np.isfinite(vt_array))
-        and np.all(np.isfinite(target_array))
-    ):
-        raise ValueError("boundary_edge_thin_v1 inputs must contain only finite values")
-
-    edge_mask = _edge_mask(fvt_array.shape, edge_margin)
-    before_positive = _positive_candidate_mask(fvt_array)
-    edge_positive_before = before_positive & edge_mask
-    target_positive = _positive_candidate_mask(target_array)
-    target_plateau = voter.thin(
-        fv_array,
-        vp_array,
-        vt_array,
-        mode="normal_plateau",
-        plateau_tie_breaker=target_array,
-    )
-    candidate_mask = _positive_candidate_mask(target_plateau) & edge_mask & target_positive
-    result = fvt_array.copy()
-    collision_count = 0
-    adopted_count = 0
-    replaced_count = 0
-
-    line_candidates: dict[tuple[int, int, int], tuple[float, float, int, tuple[int, int, int]]] = {}
-    for index in np.argwhere(candidate_mask):
-        i3, i2, i1 = (int(index[0]), int(index[1]), int(index[2]))
-        axis = _dominant_fault_normal_array_axis(
-            float(vp_array[i3, i2, i1]), float(vt_array[i3, i2, i1])
-        )
-        key = _boundary_edge_line_key(axis, i3, i2, i1)
-        record = (
-            float(target_array[i3, i2, i1]),
-            float(fv_array[i3, i2, i1]),
-            int(np.ravel_multi_index((i3, i2, i1), fvt_array.shape)),
-            (i3, i2, i1),
-        )
-        existing = line_candidates.get(key)
-        if existing is None or _boundary_edge_candidate_precedes(record, existing):
-            line_candidates[key] = record
-
-    for key, (_, _, _, destination) in line_candidates.items():
-        selector = _boundary_edge_line_selector(key)
-        base_line = np.zeros(fvt_array.shape, dtype=bool)
-        base_line[selector] = edge_positive_before[selector]
-        base_count = int(np.count_nonzero(base_line))
-        if base_count > 0:
-            collision_count += base_count
-        destination_was_positive = bool(before_positive[destination])
-        if base_count > 0:
-            base_records: list[tuple[float, float, int, tuple[int, int, int]]] = []
-            for base_index in np.argwhere(base_line):
-                b3, b2, b1 = (
-                    int(base_index[0]),
-                    int(base_index[1]),
-                    int(base_index[2]),
-                )
-                base_records.append(
-                    (
-                        float(target_array[b3, b2, b1]),
-                        float(fv_array[b3, b2, b1]),
-                        int(np.ravel_multi_index((b3, b2, b1), fvt_array.shape)),
-                        (b3, b2, b1),
-                    )
-                )
-            best_base = min(base_records, key=lambda item: (-item[0], -item[1], item[2]))
-            candidate_record = (
-                float(target_array[destination]),
-                float(fv_array[destination]),
-                int(np.ravel_multi_index(destination, fvt_array.shape)),
-                destination,
-            )
-            if not _boundary_edge_candidate_precedes(candidate_record, best_base):
-                continue
-            result[base_line] = np.float32(0.0)
-            replaced_count += int(
-                np.count_nonzero(base_line & ~_single_index_mask(fvt_array.shape, destination))
-            )
-        if not destination_was_positive:
-            adopted_count += 1
-        result[destination] = np.float32(fv_array[destination])
-
-    after_positive = _positive_candidate_mask(result)
-    distance_before = surface_distance_metrics(before_positive, target_positive)
-    distance_after = surface_distance_metrics(after_positive, target_positive)
-    diagnostic = {
-        "enabled": True,
-        "target_source": target_source,
-        "edge_margin": int(edge_margin),
-        "positive_count_before": int(np.count_nonzero(before_positive)),
-        "positive_count_after": int(np.count_nonzero(after_positive)),
-        "edge_positive_count_before": int(np.count_nonzero(edge_positive_before)),
-        "edge_positive_count_after": int(np.count_nonzero(after_positive & edge_mask)),
-        "adopted_candidate_count": int(adopted_count),
-        "replaced_candidate_count": int(replaced_count),
-        "collision_count": int(collision_count),
-        "to_target_distance_p95_before": float(distance_before["candidate_to_truth_p95"]),
-        "to_target_distance_p95_after": float(distance_after["candidate_to_truth_p95"]),
-    }
-    return result.astype(np.float32, copy=False), diagnostic
-
-
-def _boundary_edge_line_key(axis: int, i3: int, i2: int, i1: int) -> tuple[int, int, int]:
-    if axis == 0:
-        return (axis, i2, i1)
-    if axis == 1:
-        return (axis, i3, i1)
-    return (axis, i3, i2)
-
-
-def _boundary_edge_line_selector(key: tuple[int, int, int]) -> tuple[Any, Any, Any]:
-    axis, first, second = key
-    if axis == 0:
-        return (slice(None), first, second)
-    if axis == 1:
-        return (first, slice(None), second)
-    return (first, second, slice(None))
-
-
-def _boundary_edge_candidate_precedes(
-    candidate: tuple[float, float, int, tuple[int, int, int]],
-    existing: tuple[float, float, int, tuple[int, int, int]],
-) -> bool:
-    if candidate[0] != existing[0]:
-        return candidate[0] > existing[0]
-    if candidate[1] != existing[1]:
-        return candidate[1] > existing[1]
-    return candidate[2] < existing[2]
-
-
-def _single_index_mask(shape: tuple[int, int, int], index: tuple[int, int, int]) -> np.ndarray:
-    mask = np.zeros(shape, dtype=bool)
-    mask[index] = True
-    return mask
+    return dominant_fault_normal_array_axis(strike, dip)
 
 
 def _scanner_input_association(
@@ -1719,7 +1264,7 @@ def _run_voting_from_attributes(
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
-        _, seeds, boundary_seed_retention_diagnostic = _boundary_seed_retention_v1_seeds(
+        seed_result = select_boundary_seed_retention_v1(
             voting_config=voting_config,
             ft=ft,
             pt=pt,
@@ -1728,6 +1273,8 @@ def _run_voting_from_attributes(
             target_source=boundary_target_source,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
+        seeds = list(seed_result.selected_seeds)
+        boundary_seed_retention_diagnostic = seed_result.diagnostics
     else:
         seeds = voter.pick_seeds(
             d=voting_config.seed_distance,
@@ -1754,13 +1301,15 @@ def _run_voting_from_attributes(
         plateau_tie_breaker=plateau_tie_breaker,
     )
     fvt_recenter_diagnostic: dict[str, Any] | None = None
+    fvt_recenter_before_positive: np.ndarray | None = None
     boundary_edge_thin_diagnostic: dict[str, Any] | None = None
     if variant_spec.post_thinning_policy == "recenter_scanner_target":
         recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
         recenter_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
-        fvt, fvt_recenter_diagnostic = _recenter_edge_fvt_to_target(
+        fvt_recenter_before_positive = _positive_candidate_mask(fvt)
+        recenter_result = recenter_edge_fvt_to_target(
             fvt,
             vp,
             vt,
@@ -1769,12 +1318,14 @@ def _run_voting_from_attributes(
             max_shift=FVT_RECENTER_MAX_SHIFT,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
+        fvt = recenter_result.output
+        fvt_recenter_diagnostic = recenter_result.diagnostics
     if variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
         boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
-        fvt, boundary_edge_thin_diagnostic = _apply_boundary_edge_thin_v1(
+        boundary_thin_result = apply_boundary_edge_thin_v1(
             fvt,
             fv,
             vp,
@@ -1784,6 +1335,8 @@ def _run_voting_from_attributes(
             target_source=boundary_target_source,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
+        fvt = boundary_thin_result.output
+        boundary_edge_thin_diagnostic = boundary_thin_result.diagnostics
 
     truth_surface_half_width = _validate_nonnegative_finite_scalar(
         truth_metric_config.truth_surface_half_width,
@@ -1917,12 +1470,11 @@ def _run_voting_from_attributes(
         },
     }
     if fvt_recenter_diagnostic is not None:
-        target_positive = _positive_candidate_mask(recenter_target)
         fvt_recenter_diagnostic.update(
-            _fvt_recenter_target_distance_diagnostics(
-                before=fvt_recenter_diagnostic.pop("_before_positive_mask"),
+            fvt_recenter_target_distance_diagnostics(
+                before=fvt_recenter_before_positive,
                 after=_positive_candidate_mask(fvt),
-                target=target_positive,
+                target=_positive_candidate_mask(recenter_target),
             )
         )
         report["fvt_recenter"] = fvt_recenter_diagnostic

@@ -1947,6 +1947,41 @@ def test_report_3d_synthetic_quality_recenter_oracle_records_target_source() -> 
     assert diagnostic["fvt_recenter_edge_shell_only"] is True
 
 
+def test_report_3d_synthetic_quality_recenter_finalizes_distance_from_final_fvt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_report_module()
+    original = module.fvt_recenter_target_distance_diagnostics
+    calls: list[dict[str, np.ndarray | None]] = []
+
+    def record_distance_inputs(**kwargs: np.ndarray | None) -> dict[str, float | None]:
+        calls.append(
+            {
+                key: None if value is None else np.asarray(value).copy()
+                for key, value in kwargs.items()
+            }
+        )
+        return original(**kwargs)
+
+    monkeypatch.setattr(module, "fvt_recenter_target_distance_diagnostics", record_distance_inputs)
+    report = module.build_report(
+        case_set="minimal",
+        shape=(17, 17, 17),
+        variants=("voter_thin_hybrid_v2_recenter_scanner_target",),
+        workflow_mode="quality",
+        input_mode="oracle",
+        skinning_config=module.SyntheticSkinningConfig(enabled=False),
+    )
+
+    assert len(calls) == 1
+    final_after = calls[0]["after"]
+    assert final_after is not None
+    diagnostic = report["cases"][0]["variants"]["voter_thin_hybrid_v2_recenter_scanner_target"][
+        "fvt_recenter"
+    ]
+    assert np.count_nonzero(final_after) == diagnostic["fvt_recenter_positive_count_after"]
+
+
 def test_report_3d_synthetic_quality_recenter_scanner_records_diagnostics_and_csv(
     tmp_path: Path,
 ) -> None:
