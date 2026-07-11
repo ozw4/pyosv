@@ -27,10 +27,17 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
+from pyosv.experimental.boundary_thinning import (
+    FVT_RECENTER_MAX_SHIFT,
+    apply_boundary_edge_thin_v1,
+    dominant_fault_normal_array_axis,
+    fvt_recenter_target_distance_diagnostics,
+    recenter_edge_fvt_to_target,
+)
 from pyosv.synthetic3d import (
     Synthetic3DCase,
     make_boundary_plane_case,  # noqa: F401 - compatibility export
-    make_scanner_input_from_case,
     validate_shape3,
 )
 from pyosv.synthetic_metrics import (
@@ -45,7 +52,6 @@ from pyosv.synthetic_metrics import (
     top_truth_count_mask,
 )
 from pyosv.evaluation.synthetic_quality.config import (
-    SCANNER_BACKENDS,
     SKINNER_GROWTH_SOURCES,
     SKINNER_METHODS,
     SyntheticScannerConfig,
@@ -53,7 +59,23 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
     _validate_nonnegative_finite_scalar,
-    _validate_nonnegative_int,
+)
+from pyosv.evaluation.synthetic_quality import quality_metrics
+from pyosv.evaluation.synthetic_quality.diagnostics import (
+    _run_voter_thinning_diagnostic,
+    _scanner_downstream_diagnostics,
+    _scanner_stage_loss_diagnostics,
+)
+from pyosv.evaluation.synthetic_quality.scanner import (
+    SCANNER_BACKENDS,
+    SCANNER_ENSEMBLE_COMPONENT_BACKENDS,  # noqa: F401 - compatibility export
+    SCANNER_ENSEMBLE_PRIORS,  # noqa: F401 - compatibility export
+    SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE,  # noqa: F401 - compatibility export
+    SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE,  # noqa: F401 - compatibility export
+    scan_backend_attributes,
+    scan_ensemble_attributes,
+    scanner_attributes_from_case,
+    unit_range_normalize,
 )
 from pyosv.evaluation.synthetic_quality.cases import (
     CASE_IDS,  # noqa: F401 - compatibility export
@@ -94,13 +116,12 @@ from pyosv.evaluation.synthetic_quality.variants import (
     validate_variants,
 )
 from pyosv.cells import FaultCell
-from pyosv.orient3d import FaultOrientScanner3
 from pyosv.skinner import FaultSkinner, find_connected_component_skins
 from pyosv.voting3d import OptimalSurfaceVoter
 
 DEFAULT_SHAPE = (33, 33, 33)
 FORMAT_VERSION = 1
-EDGE_FALSE_POSITIVE_MARGIN = 2
+EDGE_FALSE_POSITIVE_MARGIN = quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
 VOLUME_NAMES = (
     "truth_fault_mask",
     "truth_distance",
@@ -142,7 +163,7 @@ THINNING_DIAGNOSTIC_VOLUME_NAMES = (
 )
 PIPELINE_OUTPUTS_KEY = "__pipelines__"
 PIPELINE_NAMES = ("oracle", "scanner")
-NONZERO_EPSILON = 1.0e-6
+NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
 SKIN_PRIMARY_DEGRADED_MIN_CELL_COVERAGE = 0.50
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT = 8
 SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION = 0.75
@@ -167,63 +188,8 @@ SKIN_FALLBACK_V5_MIN_LARGEST_SKIN_FRACTION = 0.50
 SKIN_FALLBACK_V5_MAX_PRUNED_FRACTION = 0.60
 DEFAULT_VARIANT_PRESET = "default"
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
-FVT_RECENTER_MAX_SHIFT = 3
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
-SCANNER_ENSEMBLE_COMPONENT_BACKENDS = ("reference-like", "quality", "fast")
-SCANNER_ENSEMBLE_PRIORS = {
-    "reference-like": 1.00,
-    "quality": 1.05,
-    "fast": 1.00,
-}
-SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE = 0.75
-SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE = 0.25
-VARIANT_COMPARISON_METRICS = (
-    (
-        "fvt_buffered_f1_r2_delta_vs_current",
-        ("quality", "fvt_top_truth_count", "buffered_overlap_radius2", "buffered_f1"),
-    ),
-    (
-        "fvt_candidate_to_truth_p95_delta_vs_current",
-        (
-            "quality",
-            "fvt_top_truth_count",
-            "surface_distance",
-            "candidate_to_truth_p95",
-        ),
-    ),
-    (
-        "fvt_strike_median_error_delta_vs_current",
-        ("quality", "fvt_top_truth_count", "orientation_error", "strike_median"),
-    ),
-    (
-        "fvt_dip_median_error_delta_vs_current",
-        ("quality", "fvt_top_truth_count", "orientation_error", "dip_median"),
-    ),
-    (
-        "fv_buffered_f1_r2_delta_vs_current",
-        ("quality", "fv_top_truth_count", "buffered_overlap_radius2", "buffered_f1"),
-    ),
-    (
-        "skin_buffered_f1_r2_delta_vs_current",
-        ("quality", "skin", "buffered_overlap_radius2", "buffered_f1"),
-    ),
-    (
-        "skin_candidate_to_truth_p95_delta_vs_current",
-        ("quality", "skin", "surface_distance", "candidate_to_truth_p95"),
-    ),
-    (
-        "skin_strike_median_error_delta_vs_current",
-        ("quality", "skin", "orientation_error", "strike_median"),
-    ),
-    (
-        "skin_dip_median_error_delta_vs_current",
-        ("quality", "skin", "orientation_error", "dip_median"),
-    ),
-    (
-        "skin_count_delta_vs_current",
-        ("quality", "skin", "topology", "skin_count"),
-    ),
-)
+VARIANT_COMPARISON_METRICS = quality_metrics.VARIANT_COMPARISON_METRICS
 
 
 def parse_workflow_mode(text: str) -> str:
@@ -945,6 +911,7 @@ def _run_scanner_pipeline(
             fvt=volumes["fvt_py"],
             skin_mask=volumes["skin_mask_py"],
             truth_metric_config=truth_metric_config,
+            boundary_seed_selector=_boundary_seed_retention_v1_seeds,
         )
     if scanner_backend_matrix:
         report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
@@ -1099,182 +1066,39 @@ def _scanner_attributes_from_case(
     case: Synthetic3DCase,
     scanner_config: SyntheticScannerConfig,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
-    scanner = FaultOrientScanner3(scanner_config.sigma1, scanner_config.sigma2)
-    ensemble_report: dict[str, Any] | None = None
-    if scanner_config.backend == "ensemble":
-        ft_scan, pt_scan, tt_scan, confidence, ensemble_report = _scan_ensemble_attributes(
-            scanner,
-            scanner_config,
-            scanner_input,
-        )
-    else:
-        ft_scan, pt_scan, tt_scan, confidence = _scan_backend_attributes(
-            scanner,
-            scanner_config,
-            scanner_input,
-            scanner_config.backend,
-        )
-
-    if scanner_config.scanner_thin_mode == "none":
-        ft_used = ft_scan
-        pt_used = pt_scan
-        tt_used = tt_scan
-    else:
-        ft_used, pt_used, tt_used = scanner.thin(
-            ft_scan,
-            pt_scan,
-            tt_scan,
-            mode=scanner_config.scanner_thin_mode,
-            remove_edge_effects=scanner_config.remove_edge_effects,
-        )
-
-    scanner_report = {
-        "config": scanner_config.as_report_dict(),
-        "input": _array_summary(scanner_input),
-        "ft": _array_summary(ft_scan),
-        "fet": _array_summary(ft_used),
-        "pt": _array_summary(pt_scan),
-        "fpt": _array_summary(pt_used),
-        "tt": _array_summary(tt_scan),
-        "ftt": _array_summary(tt_used),
-    }
-    scanner_volumes = {
-        "scanner_input": scanner_input,
-        "scanner_ft": ft_scan,
-        "scanner_fet": ft_used,
-        "scanner_pt": pt_scan,
-        "scanner_fpt": pt_used,
-        "scanner_tt": tt_scan,
-        "scanner_ftt": tt_used,
-    }
-    if confidence is not None:
-        scanner_report["confidence"] = _array_summary(confidence)
-        scanner_volumes["scanner_confidence"] = confidence
-    if ensemble_report is not None:
-        scanner_report["selection_fraction_by_backend"] = ensemble_report[
-            "selection_fraction_by_backend"
-        ]
-        scanner_report["ensemble"] = ensemble_report
-    return scanner_report, scanner_volumes
+    attributes = scanner_attributes_from_case(
+        case,
+        scanner_config,
+        backend_scan=_scan_backend_attributes,
+        ensemble_scan=_scan_ensemble_attributes,
+    )
+    return dict(attributes.report), dict(attributes.volumes)
 
 
 def _scan_backend_attributes(
-    scanner: FaultOrientScanner3,
+    scanner: Any,
     scanner_config: SyntheticScannerConfig,
     scanner_input: np.ndarray,
     backend: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
-    if backend == "reference-like":
-        ft_scan, pt_scan, tt_scan = scanner.scan(
-            scanner_config.phi_min,
-            scanner_config.phi_max,
-            scanner_config.theta_min,
-            scanner_config.theta_max,
-            scanner_input,
-        )
-        return ft_scan, pt_scan, tt_scan, None
-    if backend == "quality":
-        ft_scan, pt_scan, tt_scan, confidence = scanner.scan_quality(
-            scanner_config.phi_min,
-            scanner_config.phi_max,
-            scanner_config.theta_min,
-            scanner_config.theta_max,
-            scanner_input,
-            refinement_factor=scanner_config.refinement_factor,
-            return_confidence=True,
-        )
-        return ft_scan, pt_scan, tt_scan, confidence
-    if backend == "fast":
-        ft_scan, pt_scan, tt_scan = scanner.scan_fast(
-            scanner_config.phi_min,
-            scanner_config.phi_max,
-            scanner_config.theta_min,
-            scanner_config.theta_max,
-            scanner_input,
-        )
-        return ft_scan, pt_scan, tt_scan, None
-    raise ValueError("scanner_backend must be 'reference-like', 'fast', 'quality', or 'ensemble'")
+    return scan_backend_attributes(scanner, scanner_config, scanner_input, backend)
 
 
 def _scan_ensemble_attributes(
-    scanner: FaultOrientScanner3,
+    scanner: Any,
     scanner_config: SyntheticScannerConfig,
     scanner_input: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, None, dict[str, Any]]:
-    components: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]] = {}
-    for backend in SCANNER_ENSEMBLE_COMPONENT_BACKENDS:
-        components[backend] = _scan_backend_attributes(
-            scanner,
-            scanner_config,
-            scanner_input,
-            backend,
-        )
-
-    adjusted_scores: list[np.ndarray] = []
-    component_reports: dict[str, Any] = {}
-    for backend in SCANNER_ENSEMBLE_COMPONENT_BACKENDS:
-        ft_scan, pt_scan, tt_scan, confidence = components[backend]
-        adjusted_score = _unit_range_normalize(ft_scan) * np.float32(
-            SCANNER_ENSEMBLE_PRIORS[backend]
-        )
-        if backend == "quality":
-            if confidence is None:
-                raise ValueError("quality ensemble component must provide confidence")
-            quality_weight = (
-                np.float32(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE)
-                + np.float32(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE) * confidence
-            )
-            adjusted_score = adjusted_score * quality_weight
-        adjusted_score = adjusted_score.astype(np.float32, copy=False)
-        adjusted_scores.append(adjusted_score)
-        component_report = {
-            "ft": _array_summary(ft_scan),
-            "pt": _array_summary(pt_scan),
-            "tt": _array_summary(tt_scan),
-            "adjusted_score": _array_summary(adjusted_score),
-        }
-        if confidence is not None:
-            component_report["confidence"] = _array_summary(confidence)
-        component_reports[backend] = component_report
-
-    selection = np.argmax(np.stack(adjusted_scores, axis=0), axis=0)
-    ft_ensemble = np.empty(scanner_input.shape, dtype=np.float32)
-    pt_ensemble = np.empty(scanner_input.shape, dtype=np.float32)
-    tt_ensemble = np.empty(scanner_input.shape, dtype=np.float32)
-    total_count = float(selection.size)
-    selection_fraction_by_backend: dict[str, float] = {}
-    for index, backend in enumerate(SCANNER_ENSEMBLE_COMPONENT_BACKENDS):
-        selected = selection == index
-        ft_scan, pt_scan, tt_scan, _ = components[backend]
-        ft_ensemble[selected] = ft_scan[selected]
-        pt_ensemble[selected] = pt_scan[selected]
-        tt_ensemble[selected] = tt_scan[selected]
-        selection_fraction_by_backend[backend] = float(np.count_nonzero(selected) / total_count)
-
-    report = {
-        "component_backends": list(SCANNER_ENSEMBLE_COMPONENT_BACKENDS),
-        "component_priors": {
-            backend: float(prior) for backend, prior in SCANNER_ENSEMBLE_PRIORS.items()
-        },
-        "quality_confidence_weight": {
-            "base": float(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE),
-            "scale": float(SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE),
-        },
-        "selection_fraction_by_backend": selection_fraction_by_backend,
-        "components": component_reports,
-    }
-    return ft_ensemble, pt_ensemble, tt_ensemble, None, report
+    return scan_ensemble_attributes(
+        scanner,
+        scanner_config,
+        scanner_input,
+        backend_scan=_scan_backend_attributes,
+    )
 
 
 def _unit_range_normalize(array: np.ndarray) -> np.ndarray:
-    array_float32 = np.maximum(np.asarray(array, dtype=np.float32), np.float32(0.0))
-    low = float(np.min(array_float32))
-    high = float(np.max(array_float32))
-    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
-        return np.zeros_like(array_float32, dtype=np.float32)
-    normalized = (array_float32 - np.float32(low)) / np.float32(high - low)
-    return np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False)
+    return unit_range_normalize(array)
 
 
 def _scanner_truth_quality(
@@ -1283,58 +1107,11 @@ def _scanner_truth_quality(
     scanner_volumes: Mapping[str, np.ndarray],
     truth_metric_config: SyntheticTruthMetricConfig,
 ) -> dict[str, Any]:
-    truth_surface_half_width = _validate_nonnegative_finite_scalar(
-        truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
+    return quality_metrics.scanner_truth_quality(
+        case,
+        scanner_volumes=scanner_volumes,
+        truth_metric_config=truth_metric_config,
     )
-    buffer_radius = _validate_nonnegative_finite_scalar(
-        truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
-    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-    far_from_truth_mask = np.abs(case.truth_distance) >= np.float32(
-        max(3.0, truth_surface_half_width + 2.0)
-    )
-
-    raw_ft_top_truth_count = top_truth_count_mask(
-        scanner_volumes["scanner_ft"],
-        truth_surface_mask,
-    )
-    used_ft_top_truth_count = top_truth_count_mask(
-        scanner_volumes["scanner_fet"],
-        truth_surface_mask,
-    )
-
-    return {
-        "ft_top_truth_count": _top_truth_count_quality(
-            raw_ft_top_truth_count,
-            truth_fault_mask=truth_fault_mask,
-            truth_surface_mask=truth_surface_mask,
-            buffer_radius=buffer_radius,
-        ),
-        "orientation_error": {
-            "raw_scan_top_truth_count": masked_orientation_error(
-                scanner_volumes["scanner_pt"],
-                scanner_volumes["scanner_tt"],
-                case.truth_strike,
-                case.truth_dip,
-                raw_ft_top_truth_count,
-            ),
-            "used_attributes_top_truth_count": masked_orientation_error(
-                scanner_volumes["scanner_fpt"],
-                scanner_volumes["scanner_ftt"],
-                case.truth_strike,
-                case.truth_dip,
-                used_ft_top_truth_count,
-            ),
-        },
-        "input_association": _scanner_input_association(
-            scanner_volumes["scanner_input"],
-            truth_surface_mask=truth_surface_mask,
-            far_from_truth_mask=far_from_truth_mask,
-        ),
-    }
 
 
 def _top_truth_count_quality(
@@ -1344,547 +1121,19 @@ def _top_truth_count_quality(
     truth_surface_mask: np.ndarray,
     buffer_radius: float,
 ) -> dict[str, Any]:
-    return {
-        "buffered_overlap_radius2": buffered_surface_overlap(
-            candidate_mask,
-            truth_fault_mask,
-            radius=buffer_radius,
-        ),
-        "surface_distance": surface_distance_metrics(
-            candidate_mask,
-            truth_surface_mask,
-        ),
-    }
-
-
-def _scanner_downstream_diagnostics(
-    *,
-    case: Synthetic3DCase,
-    scanner_config: SyntheticScannerConfig,
-    voting_config: SyntheticVotingConfig,
-    variant_spec: VariantSpec,
-    report: Mapping[str, Any],
-    scanner_volumes: Mapping[str, np.ndarray],
-    fv: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    fvt: np.ndarray,
-    truth_metric_config: SyntheticTruthMetricConfig,
-) -> dict[str, Any]:
-    scanner_ft_positive = _positive_candidate_mask(scanner_volumes["scanner_ft"])
-    scanner_fet_positive = _positive_candidate_mask(scanner_volumes["scanner_fet"])
-    fv_positive = _positive_candidate_mask(fv)
-    fvt_positive = _positive_candidate_mask(fvt)
-    scanner_ft_positive_count = _candidate_count(scanner_ft_positive)
-    scanner_fet_positive_count = _candidate_count(scanner_fet_positive)
-    fv_positive_count = _candidate_count(fv_positive)
-    fvt_positive_count = _candidate_count(fvt_positive)
-    fvt_to_scanner_ft_distance = surface_distance_metrics(
-        fvt_positive,
-        scanner_ft_positive,
-    )
-    fvt_to_fv_distance = surface_distance_metrics(
-        fvt_positive,
-        fv_positive,
-    )
-    buffer_radius = _validate_nonnegative_finite_scalar(
-        truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    voter_thin_mode = effective_thin_mode(variant_spec, voting_config)
-    plateau_source = "scanner_fet" if voter_thin_mode in {"hybrid_v2", "normal_plateau"} else None
-
-    diagnostic = {
-        "scanner_ft_positive_candidate_count": scanner_ft_positive_count,
-        "scanner_fet_positive_candidate_count": scanner_fet_positive_count,
-        "scanner_ft_to_fv_positive_candidate_count_ratio": _fraction_or_zero(
-            fv_positive_count,
-            scanner_ft_positive_count,
-        ),
-        "scanner_ft_to_fvt_positive_candidate_count_ratio": _fraction_or_zero(
-            fvt_positive_count,
-            scanner_ft_positive_count,
-        ),
-        "scanner_ft_to_fet_retention_fraction": _fraction_or_zero(
-            scanner_fet_positive_count,
-            scanner_ft_positive_count,
-        ),
-        "fv_positive_candidate_count": fv_positive_count,
-        "fvt_positive_candidate_count": fvt_positive_count,
-        "fv_to_fvt_positive_candidate_count_ratio": _fraction_or_zero(
-            fvt_positive_count,
-            fv_positive_count,
-        ),
-        "fvt_to_fv_positive_fraction": _fraction_or_zero(
-            fvt_positive_count,
-            fv_positive_count,
-        ),
-        "scanner_ft_vs_fv_positive_buffered_overlap_radius2": _positive_pair_overlap(
-            candidate_name="scanner_ft",
-            reference_name="fv",
-            candidate_mask=scanner_ft_positive,
-            reference_mask=fv_positive,
-            buffer_radius=buffer_radius,
-        ),
-        "scanner_ft_vs_fvt_positive_buffered_overlap_radius2": _positive_pair_overlap(
-            candidate_name="scanner_ft",
-            reference_name="fvt",
-            candidate_mask=scanner_ft_positive,
-            reference_mask=fvt_positive,
-            buffer_radius=buffer_radius,
-        ),
-        "fv_vs_fvt_positive_buffered_overlap_radius2": _positive_pair_overlap(
-            candidate_name="fv",
-            reference_name="fvt",
-            candidate_mask=fv_positive,
-            reference_mask=fvt_positive,
-            buffer_radius=buffer_radius,
-        ),
-        "fvt_candidate_to_scanner_ft_distance_p50": fvt_to_scanner_ft_distance[
-            "candidate_to_truth_median"
-        ],
-        "fvt_candidate_to_scanner_ft_distance_p95": fvt_to_scanner_ft_distance[
-            "candidate_to_truth_p95"
-        ],
-        "fvt_candidate_to_fv_distance_p50": fvt_to_fv_distance["candidate_to_truth_median"],
-        "fvt_candidate_to_fv_distance_p95": fvt_to_fv_distance["candidate_to_truth_p95"],
-        "scanner_ft_positive_edge_shell_fraction": _edge_candidate_fraction(
-            scanner_ft_positive,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        ),
-        "scanner_fet_positive_edge_shell_fraction": _edge_candidate_fraction(
-            scanner_fet_positive,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        ),
-        "fv_positive_edge_shell_fraction": _edge_candidate_fraction(
-            fv_positive,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        ),
-        "fvt_positive_edge_shell_fraction": _edge_candidate_fraction(
-            fvt_positive,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        ),
-        "fvt_positive_edge_candidate_fraction": _edge_candidate_fraction(
-            fvt_positive,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        ),
-        "fvt_positive_edge_false_positive_fraction": report["quality"]["edge_false_positive"][
-            "fvt_positive_top_truth_count"
-        ]["edge_false_positive_fraction_of_candidates"],
-        "voter_thin_mode": voter_thin_mode,
-        "plateau_tie_breaker_source": plateau_source,
-        "scanner_thin_mode": scanner_config.scanner_thin_mode,
-    }
-
-    voter = OptimalSurfaceVoter(
-        ru=voting_config.ru,
-        rv=voting_config.rv,
-        rw=voting_config.rw,
-    )
-    thinning_modes = {}
-    for mode in ("reference", "hybrid", "hybrid_v2", "normal_plateau"):
-        tie_breaker = (
-            scanner_volumes["scanner_fet"] if mode in {"hybrid_v2", "normal_plateau"} else None
-        )
-        thinning_modes[mode] = _scanner_downstream_thinning_report(
-            case=case,
-            voter=voter,
-            fv=fv,
-            vp=vp,
-            vt=vt,
-            mode=mode,
-            plateau_tie_breaker=tie_breaker,
-            truth_metric_config=truth_metric_config,
-            reference_sigma=voting_config.reference_thin_sigma,
-        )
-    diagnostic["thinning_modes"] = thinning_modes
-
-    diagnostic["hybrid_v2_tiebreaker_fet"] = _scanner_downstream_thinning_report(
-        case=case,
-        voter=voter,
-        fv=fv,
-        vp=vp,
-        vt=vt,
-        mode="hybrid_v2",
-        plateau_tie_breaker=scanner_volumes["scanner_fet"],
-        truth_metric_config=truth_metric_config,
-        reference_sigma=voting_config.reference_thin_sigma,
-    )
-    diagnostic["hybrid_v2_tiebreaker_fv"] = _scanner_downstream_thinning_report(
-        case=case,
-        voter=voter,
-        fv=fv,
-        vp=vp,
-        vt=vt,
-        mode="hybrid_v2",
-        plateau_tie_breaker=fv,
-        truth_metric_config=truth_metric_config,
-        reference_sigma=voting_config.reference_thin_sigma,
-    )
-    diagnostic["hybrid_v2_tiebreaker_scanner_ft"] = _scanner_downstream_thinning_report(
-        case=case,
-        voter=voter,
-        fv=fv,
-        vp=vp,
-        vt=vt,
-        mode="hybrid_v2",
-        plateau_tie_breaker=scanner_volumes["scanner_ft"],
-        truth_metric_config=truth_metric_config,
-        reference_sigma=voting_config.reference_thin_sigma,
-    )
-    return diagnostic
-
-
-def _scanner_stage_loss_diagnostics(
-    *,
-    case: Synthetic3DCase,
-    voting_config: SyntheticVotingConfig,
-    variant_spec: VariantSpec,
-    scanner_volumes: Mapping[str, np.ndarray],
-    fv: np.ndarray,
-    fvt: np.ndarray,
-    skin_mask: np.ndarray,
-    truth_metric_config: SyntheticTruthMetricConfig,
-) -> dict[str, Any]:
-    truth_surface_half_width = _validate_nonnegative_finite_scalar(
-        truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
-    )
-    buffer_radius = _validate_nonnegative_finite_scalar(
-        truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
-    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-    seed_selected_mask = _seed_selection_diagnostic(
-        shape=case.shape,
-        voting_config=voting_config,
-        ft=scanner_volumes["scanner_fet"],
-        pt=scanner_volumes["scanner_fpt"],
-        tt=scanner_volumes["scanner_ftt"],
-    )
-    boundary_seed_retention: dict[str, Any] | None = None
-    if variant_spec.seed_policy == "boundary_seed_retention_v1":
-        _, seeds, boundary_seed_retention = _boundary_seed_retention_v1_seeds(
-            voting_config=voting_config,
-            ft=scanner_volumes["scanner_fet"],
-            pt=scanner_volumes["scanner_fpt"],
-            tt=scanner_volumes["scanner_ftt"],
-            target=scanner_volumes["scanner_fet"],
-            target_source="scanner_fet",
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        seed_selected_mask = _seed_mask_from_seeds(case.shape, seeds)
-
-    stage_masks = {
-        "scanner_ft_positive": _positive_candidate_mask(scanner_volumes["scanner_ft"]),
-        "scanner_fet_positive": _positive_candidate_mask(scanner_volumes["scanner_fet"]),
-        "seed_candidate": np.asarray(scanner_volumes["scanner_fet"])
-        > np.float32(voting_config.seed_threshold),
-        "seed_selected": seed_selected_mask,
-        "fv_positive": _positive_candidate_mask(fv),
-        "fvt_positive": _positive_candidate_mask(fvt),
-        "skin": np.asarray(skin_mask, dtype=bool),
-    }
-    stages = {
-        name: _scanner_stage_metric(
-            mask,
-            truth_fault_mask=truth_fault_mask,
-            truth_surface_mask=truth_surface_mask,
-            buffer_radius=buffer_radius,
-        )
-        for name, mask in stage_masks.items()
-    }
-    if boundary_seed_retention is not None:
-        stages["seed_selected"]["default_candidate_count"] = int(
-            boundary_seed_retention["default_seed_count"]
-        )
-        stages["seed_selected"]["added_candidate_count"] = int(
-            boundary_seed_retention["added_seed_count"]
-        )
-
-    transition_pairs = (
-        ("scanner_ft_positive", "scanner_fet_positive"),
-        ("scanner_fet_positive", "seed_candidate"),
-        ("seed_candidate", "seed_selected"),
-        ("seed_selected", "fv_positive"),
-        ("fv_positive", "fvt_positive"),
-        ("fvt_positive", "skin"),
-        ("scanner_fet_positive", "seed_selected"),
-    )
-    transitions = {
-        f"{source}_to_{target}": _scanner_stage_transition_metric(
-            source_mask=stage_masks[source],
-            target_mask=stage_masks[target],
-            buffer_radius=buffer_radius,
-        )
-        for source, target in transition_pairs
-    }
-    return {"stages": stages, "transitions": transitions}
-
-
-def _seed_selection_diagnostic(
-    *,
-    shape: tuple[int, int, int],
-    voting_config: SyntheticVotingConfig,
-    ft: np.ndarray,
-    pt: np.ndarray,
-    tt: np.ndarray,
-) -> np.ndarray:
-    voter = OptimalSurfaceVoter(
-        ru=voting_config.ru,
-        rv=voting_config.rv,
-        rw=voting_config.rw,
-    )
-    seeds = voter.pick_seeds(
-        d=voting_config.seed_distance,
-        fm=voting_config.seed_threshold,
-        ft=ft,
-        pt=pt,
-        tt=tt,
-    )
-    return _seed_mask_from_seeds(shape, seeds)
-
-
-def _seed_mask_from_seeds(
-    shape: tuple[int, int, int],
-    seeds: Sequence[FaultCell],
-) -> np.ndarray:
-    mask = np.zeros(shape, dtype=bool)
-    n3, n2, n1 = shape
-    for seed in seeds:
-        if 0 <= seed.i3 < n3 and 0 <= seed.i2 < n2 and 0 <= seed.i1 < n1:
-            mask[seed.i3, seed.i2, seed.i1] = True
-    return mask
-
-
-def _boundary_seed_retention_v1_seeds(
-    *,
-    voting_config: SyntheticVotingConfig,
-    ft: np.ndarray,
-    pt: np.ndarray,
-    tt: np.ndarray,
-    target: np.ndarray,
-    target_source: str,
-    edge_margin: int,
-) -> tuple[list[FaultCell], list[FaultCell], dict[str, Any]]:
-    ft_array = np.asarray(ft, dtype=np.float32)
-    pt_array = np.asarray(pt, dtype=np.float32)
-    tt_array = np.asarray(tt, dtype=np.float32)
-    target_array = np.asarray(target, dtype=np.float32)
-    if ft_array.ndim != 3:
-        raise ValueError("ft must be a 3D array")
-    if (
-        pt_array.shape != ft_array.shape
-        or tt_array.shape != ft_array.shape
-        or target_array.shape != ft_array.shape
-    ):
-        raise ValueError("boundary_seed_retention_v1 input shapes must match")
-    if not (
-        np.all(np.isfinite(ft_array))
-        and np.all(np.isfinite(pt_array))
-        and np.all(np.isfinite(tt_array))
-        and np.all(np.isfinite(target_array))
-    ):
-        raise ValueError("boundary_seed_retention_v1 inputs must contain only finite values")
-
-    voter = OptimalSurfaceVoter(
-        ru=voting_config.ru,
-        rv=voting_config.rv,
-        rw=voting_config.rw,
-    )
-    default_seeds = voter.pick_seeds(
-        d=voting_config.seed_distance,
-        fm=voting_config.seed_threshold,
-        ft=ft_array,
-        pt=pt_array,
-        tt=tt_array,
-    )
-    edge_shell = _edge_mask(ft_array.shape, edge_margin)
-    edge_ft = ft_array[edge_shell]
-    edge_ft_max = float(np.max(edge_ft)) if edge_ft.size else 0.0
-    ft_threshold = min(float(voting_config.seed_threshold), 0.5 * edge_ft_max)
-    boundary_candidate = (
-        edge_shell & _positive_candidate_mask(target_array) & (ft_array > np.float32(ft_threshold))
-    )
-    boundary_candidate_count = int(np.count_nonzero(boundary_candidate))
-    existing_coordinates = {(seed.i1, seed.i2, seed.i3) for seed in default_seeds}
-    added_coordinates: set[tuple[int, int, int]] = set()
-    added_seeds = []
-    distance = max(0, int(voting_config.seed_distance))
-    candidate_records = []
-    for index in np.argwhere(boundary_candidate):
-        i3, i2, i1 = (int(index[0]), int(index[1]), int(index[2]))
-        candidate_records.append(
-            (
-                -float(target_array[i3, i2, i1]),
-                -float(ft_array[i3, i2, i1]),
-                int(np.ravel_multi_index((i3, i2, i1), ft_array.shape)),
-                i1,
-                i2,
-                i3,
-            )
-        )
-    for _, _, _, i1, i2, i3 in sorted(candidate_records):
-        coordinate = (i1, i2, i3)
-        if coordinate in existing_coordinates:
-            continue
-        if any(
-            abs(i1 - a1) <= distance and abs(i2 - a2) <= distance and abs(i3 - a3) <= distance
-            for a1, a2, a3 in added_coordinates
-        ):
-            continue
-        added_coordinates.add(coordinate)
-        added_seeds.append(
-            FaultCell(
-                i1,
-                i2,
-                i3,
-                ft_array[i3, i2, i1],
-                pt_array[i3, i2, i1],
-                tt_array[i3, i2, i1],
-            )
-        )
-
-    retained_seeds = [*default_seeds, *added_seeds]
-    added_target_values = np.asarray(
-        [target_array[seed.i3, seed.i2, seed.i1] for seed in added_seeds],
-        dtype=np.float32,
-    )
-    diagnostic = {
-        "enabled": True,
-        "target_source": target_source,
-        "edge_margin": int(edge_margin),
-        "default_seed_count": int(len(default_seeds)),
-        "boundary_candidate_count": boundary_candidate_count,
-        "added_seed_count": int(len(added_seeds)),
-        "total_seed_count": int(len(retained_seeds)),
-        "added_seed_edge_shell_fraction": _edge_candidate_fraction(
-            _seed_mask_from_seeds(ft_array.shape, added_seeds),
-            edge_margin=edge_margin,
-        ),
-        "added_seed_target_mean": float(np.mean(added_target_values))
-        if added_target_values.size
-        else 0.0,
-        "added_seed_target_p95": float(np.percentile(added_target_values, 95))
-        if added_target_values.size
-        else 0.0,
-    }
-    return default_seeds, retained_seeds, diagnostic
-
-
-def _scanner_stage_metric(
-    candidate_mask: np.ndarray,
-    *,
-    truth_fault_mask: np.ndarray,
-    truth_surface_mask: np.ndarray,
-    buffer_radius: float,
-) -> dict[str, int | float]:
-    candidate = np.asarray(candidate_mask, dtype=bool)
-    overlap = buffered_surface_overlap(
-        candidate,
-        truth_fault_mask,
-        radius=buffer_radius,
-    )
-    distance = surface_distance_metrics(candidate, truth_surface_mask)
-    edge_false_positive = edge_false_positive_ratio(
-        candidate,
-        truth_surface_mask,
-        edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        truth_buffer_radius=buffer_radius,
-    )
-    return {
-        "candidate_count": int(overlap["candidate_count"]),
-        "edge_shell_fraction": _edge_candidate_fraction(
-            candidate,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        ),
-        "truth_buffered_f1_r2": float(overlap["buffered_f1"]),
-        "candidate_to_truth_p95": float(distance["candidate_to_truth_p95"]),
-        "truth_to_candidate_p95": float(distance["truth_to_candidate_p95"]),
-        "edge_false_positive_fraction_of_candidates": float(
-            edge_false_positive["edge_false_positive_fraction_of_candidates"]
-        ),
-    }
-
-
-def _scanner_stage_transition_metric(
-    *,
-    source_mask: np.ndarray,
-    target_mask: np.ndarray,
-    buffer_radius: float,
-) -> dict[str, int | float]:
-    source = np.asarray(source_mask, dtype=bool)
-    target = np.asarray(target_mask, dtype=bool)
-    source_count = _candidate_count(source)
-    target_count = _candidate_count(target)
-    overlap = buffered_surface_overlap(
-        target,
-        source,
-        radius=buffer_radius,
-    )
-    distance = surface_distance_metrics(target, source)
-    return {
-        "source_count": source_count,
-        "target_count": target_count,
-        "target_to_source_count_ratio": _fraction_or_zero(target_count, source_count),
-        "buffered_f1_r2": float(overlap["buffered_f1"]),
-        "target_to_source_distance_p95": float(distance["candidate_to_truth_p95"]),
-    }
-
-
-def _scanner_downstream_thinning_report(
-    *,
-    case: Synthetic3DCase,
-    voter: OptimalSurfaceVoter,
-    fv: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    mode: str,
-    plateau_tie_breaker: np.ndarray | None,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    reference_sigma: float,
-) -> dict[str, Any]:
-    fvt = voter.thin(
-        fv,
-        vp,
-        vt,
-        mode=mode,
-        reference_sigma=reference_sigma,
-        plateau_tie_breaker=plateau_tie_breaker,
-    )
-    truth_surface_half_width = _validate_nonnegative_finite_scalar(
-        truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
-    )
-    buffer_radius = _validate_nonnegative_finite_scalar(
-        truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
-    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-    fvt_positive = top_positive_truth_count_mask(fvt, truth_surface_mask)
-    quality = _top_truth_count_quality(
-        fvt_positive,
+    return quality_metrics.top_truth_count_quality(
+        candidate_mask,
         truth_fault_mask=truth_fault_mask,
         truth_surface_mask=truth_surface_mask,
         buffer_radius=buffer_radius,
     )
-    return {
-        "fvt_positive_candidate_count": int(quality["buffered_overlap_radius2"]["candidate_count"]),
-        "fvt_positive_buffered_f1_r2": quality["buffered_overlap_radius2"]["buffered_f1"],
-        "fvt_positive_distance_p95": quality["surface_distance"]["candidate_to_truth_p95"],
-        "fvt_positive_edge_candidate_fraction": _edge_candidate_fraction(
-            fvt > np.float32(NONZERO_EPSILON),
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        ),
-        "fvt_positive_edge_false_positive_fraction": edge_false_positive_ratio(
-            fvt_positive,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        )["edge_false_positive_fraction_of_candidates"],
-    }
+
+
+def _boundary_seed_retention_v1_seeds(
+    **kwargs: Any,
+) -> tuple[list[FaultCell], list[FaultCell], dict[str, Any]]:
+    result = select_boundary_seed_retention_v1(**kwargs)
+    return list(result.default_seeds), list(result.selected_seeds), result.diagnostics
 
 
 def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -> str:
@@ -1892,15 +1141,15 @@ def _thin_mode_for_variant(variant: str, voting_config: SyntheticVotingConfig) -
 
 
 def _positive_candidate_count(array: np.ndarray) -> int:
-    return _candidate_count(_positive_candidate_mask(array))
+    return quality_metrics.positive_candidate_count(array)
 
 
 def _positive_candidate_mask(array: np.ndarray) -> np.ndarray:
-    return np.asarray(array) > np.float32(NONZERO_EPSILON)
+    return quality_metrics.positive_candidate_mask(array)
 
 
 def _candidate_count(mask: np.ndarray) -> int:
-    return int(np.count_nonzero(np.asarray(mask, dtype=bool)))
+    return quality_metrics.candidate_count(mask)
 
 
 def _positive_pair_overlap(
@@ -1911,596 +1160,43 @@ def _positive_pair_overlap(
     reference_mask: np.ndarray,
     buffer_radius: float,
 ) -> dict[str, str | float | int]:
-    return {
-        "candidate_mask": candidate_name,
-        "reference_mask": reference_name,
-        **buffered_surface_overlap(
-            candidate_mask,
-            reference_mask,
-            radius=buffer_radius,
-        ),
-    }
+    return quality_metrics.positive_pair_overlap(
+        candidate_name=candidate_name,
+        reference_name=reference_name,
+        candidate_mask=candidate_mask,
+        reference_mask=reference_mask,
+        buffer_radius=buffer_radius,
+    )
 
 
 def _fraction_or_zero(numerator: int, denominator: int) -> float:
-    return float(numerator / denominator) if denominator else 0.0
+    return quality_metrics.fraction_or_zero(numerator, denominator)
 
 
 def _edge_candidate_fraction(candidate_mask: np.ndarray, *, edge_margin: int) -> float:
-    candidates = np.asarray(candidate_mask, dtype=bool)
-    candidate_count = int(np.count_nonzero(candidates))
-    if candidate_count == 0:
-        return 0.0
-    edge_mask = _edge_mask(candidates.shape, edge_margin)
-    return float(np.count_nonzero(candidates & edge_mask) / candidate_count)
+    return quality_metrics.edge_candidate_fraction(candidate_mask, edge_margin=edge_margin)
 
 
 def _edge_mask(shape: tuple[int, ...], margin: int) -> np.ndarray:
-    mask = np.zeros(shape, dtype=bool)
-    if margin <= 0 or mask.size == 0:
-        return mask
-    for axis, size in enumerate(shape):
-        width = min(int(margin), int(size))
-        lower = [slice(None)] * len(shape)
-        upper = [slice(None)] * len(shape)
-        lower[axis] = slice(0, width)
-        upper[axis] = slice(size - width, size)
-        mask[tuple(lower)] = True
-        mask[tuple(upper)] = True
-    return mask
+    return quality_metrics.edge_mask(shape, margin)
 
 
-def _recenter_edge_fvt_to_target(
-    fvt: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    *,
-    target: np.ndarray,
-    target_source: str,
-    max_shift: int,
-    edge_margin: int,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    fvt_array = np.asarray(fvt, dtype=np.float32)
-    vp_array = np.asarray(vp, dtype=np.float32)
-    vt_array = np.asarray(vt, dtype=np.float32)
-    target_array = np.asarray(target, dtype=np.float32)
-    if fvt_array.ndim != 3:
-        raise ValueError("fvt must be a 3D array")
-    if vp_array.shape != fvt_array.shape or vt_array.shape != fvt_array.shape:
-        raise ValueError("fvt, vp, and vt shapes must match")
-    if target_array.shape != fvt_array.shape:
-        raise ValueError("fvt and target shapes must match")
-    if not (
-        np.all(np.isfinite(fvt_array))
-        and np.all(np.isfinite(vp_array))
-        and np.all(np.isfinite(vt_array))
-        and np.all(np.isfinite(target_array))
-    ):
-        raise ValueError("fvt recenter inputs must contain only finite values")
-    shift_limit = _validate_nonnegative_int(max_shift, "max_shift")
-    before_positive = _positive_candidate_mask(fvt_array)
-    edge_candidates = before_positive & _edge_mask(fvt_array.shape, edge_margin)
-    edge_candidate_indices = np.argwhere(edge_candidates)
-    candidate_count = int(edge_candidate_indices.shape[0])
-    recentered = np.zeros_like(fvt_array, dtype=np.float32)
-    if candidate_count == 0:
-        recentered[before_positive] = fvt_array[before_positive]
-        return recentered, _empty_fvt_recenter_diagnostic(
-            target_source=target_source,
-            candidate_count=0,
-            positive_count_before=int(np.count_nonzero(before_positive)),
-            positive_count_after=int(np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))),
-            before_positive=before_positive,
-        )
-
-    destination_to_candidate: dict[
-        tuple[int, int, int], tuple[int, float, float, tuple[int, int, int]]
-    ] = {}
-    shifts: list[float] = []
-    moved_count = 0
-    collision_count = 0
-    for stable_index, (i3, i2, i1) in enumerate(np.argwhere(before_positive)):
-        source = (int(i3), int(i2), int(i1))
-        if bool(edge_candidates[source]):
-            destination, shift = _fvt_recenter_destination(
-                source,
-                vp_array,
-                vt_array,
-                target_array,
-                max_shift=shift_limit,
-            )
-            shifts.append(float(shift))
-            if shift > 0:
-                moved_count += 1
-        else:
-            destination, shift = source, 0
-        value = float(fvt_array[source])
-        existing = destination_to_candidate.get(destination)
-        candidate_record = (stable_index, value, float(shift), source)
-        if existing is None:
-            destination_to_candidate[destination] = candidate_record
-            continue
-        collision_count += 1
-        if value > existing[1] or (value == existing[1] and stable_index < existing[0]):
-            destination_to_candidate[destination] = candidate_record
-
-    for destination, (_, value, _, _) in destination_to_candidate.items():
-        recentered[destination] = np.float32(value)
-
-    shift_values = np.asarray(shifts, dtype=np.float64)
-    diagnostic = {
-        "fvt_recenter_enabled": True,
-        "fvt_recenter_target_source": target_source,
-        "fvt_recenter_candidate_count": candidate_count,
-        "fvt_recenter_moved_count": int(moved_count),
-        "fvt_recenter_collision_count": int(collision_count),
-        "fvt_recenter_mean_shift": (float(np.mean(shift_values)) if shift_values.size else 0.0),
-        "fvt_recenter_p95_shift": (
-            float(np.percentile(shift_values, 95)) if shift_values.size else 0.0
-        ),
-        "fvt_recenter_max_shift": (float(np.max(shift_values)) if shift_values.size else 0.0),
-        "fvt_recenter_edge_shell_only": True,
-        "fvt_recenter_positive_count_before": int(np.count_nonzero(before_positive)),
-        "fvt_recenter_positive_count_after": int(
-            np.count_nonzero(recentered > np.float32(NONZERO_EPSILON))
-        ),
-        "fvt_recenter_value_source": "original_fvt",
-        "_before_positive_mask": before_positive,
-    }
-    return recentered, diagnostic
+def _recenter_edge_fvt_to_target(*args: Any, **kwargs: Any) -> tuple[np.ndarray, dict[str, Any]]:
+    result = recenter_edge_fvt_to_target(*args, **kwargs)
+    return result.output, result.diagnostics
 
 
-def _empty_fvt_recenter_diagnostic(
-    *,
-    target_source: str,
-    candidate_count: int,
-    positive_count_before: int,
-    positive_count_after: int,
-    before_positive: np.ndarray,
-) -> dict[str, Any]:
-    return {
-        "fvt_recenter_enabled": True,
-        "fvt_recenter_target_source": target_source,
-        "fvt_recenter_candidate_count": int(candidate_count),
-        "fvt_recenter_moved_count": 0,
-        "fvt_recenter_collision_count": 0,
-        "fvt_recenter_mean_shift": 0.0,
-        "fvt_recenter_p95_shift": 0.0,
-        "fvt_recenter_max_shift": 0.0,
-        "fvt_recenter_edge_shell_only": True,
-        "fvt_recenter_positive_count_before": int(positive_count_before),
-        "fvt_recenter_positive_count_after": int(positive_count_after),
-        "fvt_recenter_value_source": "original_fvt",
-        "_before_positive_mask": before_positive,
-    }
+def _fvt_recenter_target_distance_diagnostics(**kwargs: Any) -> dict[str, float | None]:
+    return fvt_recenter_target_distance_diagnostics(**kwargs)
 
 
-def _fvt_recenter_destination(
-    source: tuple[int, int, int],
-    vp: np.ndarray,
-    vt: np.ndarray,
-    target: np.ndarray,
-    *,
-    max_shift: int,
-) -> tuple[tuple[int, int, int], int]:
-    if max_shift <= 0:
-        return source, 0
-    i3, i2, i1 = source
-    axis = _dominant_fault_normal_array_axis(float(vp[source]), float(vt[source]))
-    current_target = float(target[source])
-    best_destination = source
-    best_target = current_target
-    best_abs_shift = 0
-    for offset in range(-max_shift, max_shift + 1):
-        if offset == 0:
-            continue
-        destination = [i3, i2, i1]
-        destination[axis] += offset
-        if not _inside_shape(tuple(destination), target.shape):
-            continue
-        destination_tuple = (
-            int(destination[0]),
-            int(destination[1]),
-            int(destination[2]),
-        )
-        target_value = float(target[destination_tuple])
-        abs_shift = abs(offset)
-        if target_value > best_target or (
-            target_value == best_target and best_abs_shift > 0 and abs_shift < best_abs_shift
-        ):
-            best_destination = destination_tuple
-            best_target = target_value
-            best_abs_shift = abs_shift
-    if best_target <= current_target:
-        return source, 0
-    return best_destination, best_abs_shift
+def _apply_boundary_edge_thin_v1(*args: Any, **kwargs: Any) -> tuple[np.ndarray, dict[str, Any]]:
+    result = apply_boundary_edge_thin_v1(*args, **kwargs)
+    return result.output, result.diagnostics
 
 
 def _dominant_fault_normal_array_axis(strike: float, dip: float) -> int:
-    p = math.radians(strike)
-    t = math.radians(dip)
-    components = (
-        abs(-math.sin(t) * math.sin(p)),  # i3
-        abs(math.sin(t) * math.cos(p)),  # i2
-        abs(-math.cos(t)),  # i1
-    )
-    return int(np.argmax(np.asarray(components, dtype=np.float32)))
-
-
-def _inside_shape(index: tuple[int, int, int], shape: tuple[int, ...]) -> bool:
-    return all(0 <= int(value) < int(size) for value, size in zip(index, shape, strict=True))
-
-
-def _fvt_recenter_target_distance_diagnostics(
-    *,
-    before: np.ndarray | None,
-    after: np.ndarray | None,
-    target: np.ndarray | None,
-) -> dict[str, float | None]:
-    if before is None or after is None or target is None:
-        before_p95 = None
-        after_p95 = None
-    else:
-        before_distance = surface_distance_metrics(
-            np.asarray(before, dtype=bool),
-            np.asarray(target, dtype=bool),
-        )
-        after_distance = surface_distance_metrics(
-            np.asarray(after, dtype=bool),
-            np.asarray(target, dtype=bool),
-        )
-        before_p95 = before_distance["candidate_to_truth_p95"]
-        after_p95 = after_distance["candidate_to_truth_p95"]
-    return {
-        "fvt_recenter_to_target_distance_p95_before": before_p95,
-        "fvt_recenter_to_target_distance_p95_after": after_p95,
-    }
-
-
-def _apply_boundary_edge_thin_v1(
-    fvt: np.ndarray,
-    fv: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    *,
-    voter: OptimalSurfaceVoter,
-    target: np.ndarray,
-    target_source: str,
-    edge_margin: int,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    fvt_array = np.asarray(fvt, dtype=np.float32)
-    fv_array = np.asarray(fv, dtype=np.float32)
-    vp_array = np.asarray(vp, dtype=np.float32)
-    vt_array = np.asarray(vt, dtype=np.float32)
-    target_array = np.asarray(target, dtype=np.float32)
-    if fvt_array.ndim != 3:
-        raise ValueError("fvt must be a 3D array")
-    if (
-        fv_array.shape != fvt_array.shape
-        or vp_array.shape != fvt_array.shape
-        or vt_array.shape != fvt_array.shape
-        or target_array.shape != fvt_array.shape
-    ):
-        raise ValueError("boundary_edge_thin_v1 input shapes must match")
-    if not (
-        np.all(np.isfinite(fvt_array))
-        and np.all(np.isfinite(fv_array))
-        and np.all(np.isfinite(vp_array))
-        and np.all(np.isfinite(vt_array))
-        and np.all(np.isfinite(target_array))
-    ):
-        raise ValueError("boundary_edge_thin_v1 inputs must contain only finite values")
-
-    edge_mask = _edge_mask(fvt_array.shape, edge_margin)
-    before_positive = _positive_candidate_mask(fvt_array)
-    edge_positive_before = before_positive & edge_mask
-    target_positive = _positive_candidate_mask(target_array)
-    target_plateau = voter.thin(
-        fv_array,
-        vp_array,
-        vt_array,
-        mode="normal_plateau",
-        plateau_tie_breaker=target_array,
-    )
-    candidate_mask = _positive_candidate_mask(target_plateau) & edge_mask & target_positive
-    result = fvt_array.copy()
-    collision_count = 0
-    adopted_count = 0
-    replaced_count = 0
-
-    line_candidates: dict[tuple[int, int, int], tuple[float, float, int, tuple[int, int, int]]] = {}
-    for index in np.argwhere(candidate_mask):
-        i3, i2, i1 = (int(index[0]), int(index[1]), int(index[2]))
-        axis = _dominant_fault_normal_array_axis(
-            float(vp_array[i3, i2, i1]), float(vt_array[i3, i2, i1])
-        )
-        key = _boundary_edge_line_key(axis, i3, i2, i1)
-        record = (
-            float(target_array[i3, i2, i1]),
-            float(fv_array[i3, i2, i1]),
-            int(np.ravel_multi_index((i3, i2, i1), fvt_array.shape)),
-            (i3, i2, i1),
-        )
-        existing = line_candidates.get(key)
-        if existing is None or _boundary_edge_candidate_precedes(record, existing):
-            line_candidates[key] = record
-
-    for key, (_, _, _, destination) in line_candidates.items():
-        selector = _boundary_edge_line_selector(key)
-        base_line = np.zeros(fvt_array.shape, dtype=bool)
-        base_line[selector] = edge_positive_before[selector]
-        base_count = int(np.count_nonzero(base_line))
-        if base_count > 0:
-            collision_count += base_count
-        destination_was_positive = bool(before_positive[destination])
-        if base_count > 0:
-            base_records: list[tuple[float, float, int, tuple[int, int, int]]] = []
-            for base_index in np.argwhere(base_line):
-                b3, b2, b1 = (
-                    int(base_index[0]),
-                    int(base_index[1]),
-                    int(base_index[2]),
-                )
-                base_records.append(
-                    (
-                        float(target_array[b3, b2, b1]),
-                        float(fv_array[b3, b2, b1]),
-                        int(np.ravel_multi_index((b3, b2, b1), fvt_array.shape)),
-                        (b3, b2, b1),
-                    )
-                )
-            best_base = min(base_records, key=lambda item: (-item[0], -item[1], item[2]))
-            candidate_record = (
-                float(target_array[destination]),
-                float(fv_array[destination]),
-                int(np.ravel_multi_index(destination, fvt_array.shape)),
-                destination,
-            )
-            if not _boundary_edge_candidate_precedes(candidate_record, best_base):
-                continue
-            result[base_line] = np.float32(0.0)
-            replaced_count += int(
-                np.count_nonzero(base_line & ~_single_index_mask(fvt_array.shape, destination))
-            )
-        if not destination_was_positive:
-            adopted_count += 1
-        result[destination] = np.float32(fv_array[destination])
-
-    after_positive = _positive_candidate_mask(result)
-    distance_before = surface_distance_metrics(before_positive, target_positive)
-    distance_after = surface_distance_metrics(after_positive, target_positive)
-    diagnostic = {
-        "enabled": True,
-        "target_source": target_source,
-        "edge_margin": int(edge_margin),
-        "positive_count_before": int(np.count_nonzero(before_positive)),
-        "positive_count_after": int(np.count_nonzero(after_positive)),
-        "edge_positive_count_before": int(np.count_nonzero(edge_positive_before)),
-        "edge_positive_count_after": int(np.count_nonzero(after_positive & edge_mask)),
-        "adopted_candidate_count": int(adopted_count),
-        "replaced_candidate_count": int(replaced_count),
-        "collision_count": int(collision_count),
-        "to_target_distance_p95_before": float(distance_before["candidate_to_truth_p95"]),
-        "to_target_distance_p95_after": float(distance_after["candidate_to_truth_p95"]),
-    }
-    return result.astype(np.float32, copy=False), diagnostic
-
-
-def _boundary_edge_line_key(axis: int, i3: int, i2: int, i1: int) -> tuple[int, int, int]:
-    if axis == 0:
-        return (axis, i2, i1)
-    if axis == 1:
-        return (axis, i3, i1)
-    return (axis, i3, i2)
-
-
-def _boundary_edge_line_selector(key: tuple[int, int, int]) -> tuple[Any, Any, Any]:
-    axis, first, second = key
-    if axis == 0:
-        return (slice(None), first, second)
-    if axis == 1:
-        return (first, slice(None), second)
-    return (first, second, slice(None))
-
-
-def _boundary_edge_candidate_precedes(
-    candidate: tuple[float, float, int, tuple[int, int, int]],
-    existing: tuple[float, float, int, tuple[int, int, int]],
-) -> bool:
-    if candidate[0] != existing[0]:
-        return candidate[0] > existing[0]
-    if candidate[1] != existing[1]:
-        return candidate[1] > existing[1]
-    return candidate[2] < existing[2]
-
-
-def _single_index_mask(shape: tuple[int, int, int], index: tuple[int, int, int]) -> np.ndarray:
-    mask = np.zeros(shape, dtype=bool)
-    mask[index] = True
-    return mask
-
-
-def _run_voter_thinning_diagnostic(
-    *,
-    case: Synthetic3DCase,
-    voter: OptimalSurfaceVoter,
-    fv: np.ndarray,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    reference_sigma: float,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig | None,
-) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    del skinning_config
-
-    truth_surface_half_width = _validate_nonnegative_finite_scalar(
-        truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
-    )
-    buffer_radius = _validate_nonnegative_finite_scalar(
-        truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
-    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-
-    fvt_reference = voter.thin(
-        fv,
-        vp,
-        vt,
-        mode="reference",
-        reference_sigma=reference_sigma,
-    )
-    fvt_normal = voter.thin(
-        fv,
-        vp,
-        vt,
-        mode="normal",
-        reference_sigma=reference_sigma,
-    )
-    reference_report = _thinning_mode_diagnostic_report(
-        fvt_reference,
-        vp=vp,
-        vt=vt,
-        case=case,
-        truth_fault_mask=truth_fault_mask,
-        truth_surface_mask=truth_surface_mask,
-        buffer_radius=buffer_radius,
-    )
-    normal_report = _thinning_mode_diagnostic_report(
-        fvt_normal,
-        vp=vp,
-        vt=vt,
-        case=case,
-        truth_fault_mask=truth_fault_mask,
-        truth_surface_mask=truth_surface_mask,
-        buffer_radius=buffer_radius,
-    )
-    report = {
-        "reference": reference_report,
-        "normal": normal_report,
-        "delta": {
-            "normal_minus_reference": _thinning_quality_delta(
-                normal_report["quality"]["fvt_top_truth_count"],
-                reference_report["quality"]["fvt_top_truth_count"],
-            )
-        },
-        "keep_mask": _thinning_keep_mask_comparison(
-            fvt_reference > 0.0,
-            fvt_normal > 0.0,
-            truth_fault_mask=truth_fault_mask,
-            buffer_radius=buffer_radius,
-        ),
-    }
-    volumes = {
-        "fvt_reference_thinning_diagnostic": fvt_reference,
-        "fvt_normal_thinning_diagnostic": fvt_normal,
-        "keep_reference_thinning_diagnostic": (fvt_reference > 0.0).astype(np.float32),
-        "keep_normal_thinning_diagnostic": (fvt_normal > 0.0).astype(np.float32),
-        "keep_both_thinning_diagnostic": ((fvt_reference > 0.0) & (fvt_normal > 0.0)).astype(
-            np.float32
-        ),
-        "keep_reference_only_thinning_diagnostic": (
-            (fvt_reference > 0.0) & ~(fvt_normal > 0.0)
-        ).astype(np.float32),
-        "keep_normal_only_thinning_diagnostic": (
-            (fvt_normal > 0.0) & ~(fvt_reference > 0.0)
-        ).astype(np.float32),
-    }
-    return report, volumes
-
-
-def _thinning_mode_diagnostic_report(
-    fvt: np.ndarray,
-    *,
-    vp: np.ndarray,
-    vt: np.ndarray,
-    case: Synthetic3DCase,
-    truth_fault_mask: np.ndarray,
-    truth_surface_mask: np.ndarray,
-    buffer_radius: float,
-) -> dict[str, Any]:
-    fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
-    quality = _top_truth_count_quality(
-        fvt_top_truth_count,
-        truth_fault_mask=truth_fault_mask,
-        truth_surface_mask=truth_surface_mask,
-        buffer_radius=buffer_radius,
-    )
-    quality["orientation_error"] = masked_orientation_error(
-        vp,
-        vt,
-        case.truth_strike,
-        case.truth_dip,
-        fvt_top_truth_count,
-    )
-    return {
-        "pyosv": {"fvt": _array_summary(fvt)},
-        "quality": {"fvt_top_truth_count": quality},
-    }
-
-
-def _thinning_quality_delta(
-    normal_quality: Mapping[str, Any],
-    reference_quality: Mapping[str, Any],
-) -> dict[str, float]:
-    return {
-        "fvt_buffered_f1_r2": float(
-            normal_quality["buffered_overlap_radius2"]["buffered_f1"]
-            - reference_quality["buffered_overlap_radius2"]["buffered_f1"]
-        ),
-        "fvt_candidate_to_truth_p95": float(
-            normal_quality["surface_distance"]["candidate_to_truth_p95"]
-            - reference_quality["surface_distance"]["candidate_to_truth_p95"]
-        ),
-        "fvt_strike_median_error": float(
-            normal_quality["orientation_error"]["strike_median"]
-            - reference_quality["orientation_error"]["strike_median"]
-        ),
-        "fvt_dip_median_error": float(
-            normal_quality["orientation_error"]["dip_median"]
-            - reference_quality["orientation_error"]["dip_median"]
-        ),
-    }
-
-
-def _thinning_keep_mask_comparison(
-    keep_reference: np.ndarray,
-    keep_normal: np.ndarray,
-    *,
-    truth_fault_mask: np.ndarray,
-    buffer_radius: float,
-) -> dict[str, Any]:
-    reference = np.asarray(keep_reference, dtype=bool)
-    normal = np.asarray(keep_normal, dtype=bool)
-    if reference.shape != normal.shape:
-        raise ValueError(f"keep mask shapes must match, got {reference.shape} and {normal.shape}")
-
-    intersection = reference & normal
-    union = reference | normal
-    reference_only = reference & ~normal
-    normal_only = normal & ~reference
-    intersection_count = int(np.count_nonzero(intersection))
-    union_count = int(np.count_nonzero(union))
-    return {
-        "reference_count": int(np.count_nonzero(reference)),
-        "normal_count": int(np.count_nonzero(normal)),
-        "intersection_count": intersection_count,
-        "union_count": union_count,
-        "reference_only_count": int(np.count_nonzero(reference_only)),
-        "normal_only_count": int(np.count_nonzero(normal_only)),
-        "jaccard": float(intersection_count / union_count) if union_count else 1.0,
-        "reference_only_buffered_overlap_radius2": buffered_surface_overlap(
-            reference_only,
-            truth_fault_mask,
-            radius=buffer_radius,
-        ),
-        "normal_only_buffered_overlap_radius2": buffered_surface_overlap(
-            normal_only,
-            truth_fault_mask,
-            radius=buffer_radius,
-        ),
-    }
+    return dominant_fault_normal_array_axis(strike, dip)
 
 
 def _scanner_input_association(
@@ -2509,26 +1205,15 @@ def _scanner_input_association(
     truth_surface_mask: np.ndarray,
     far_from_truth_mask: np.ndarray,
 ) -> dict[str, float]:
-    input_array = np.asarray(scanner_input, dtype=np.float64)
-    truth_mean = _masked_mean(input_array, truth_surface_mask)
-    far_mean = _masked_mean(input_array, far_from_truth_mask)
-    return {
-        "truth_surface_mean": truth_mean,
-        "far_from_truth_mean": far_mean,
-        "contrast": float(far_mean - truth_mean),
-    }
+    return quality_metrics.scanner_input_association(
+        scanner_input,
+        truth_surface_mask=truth_surface_mask,
+        far_from_truth_mask=far_from_truth_mask,
+    )
 
 
 def _masked_mean(values: np.ndarray, mask: np.ndarray) -> float:
-    sample_mask = np.asarray(mask, dtype=bool)
-    if values.shape != sample_mask.shape:
-        raise ValueError(f"array shapes must match, got {values.shape} and {sample_mask.shape}")
-    if not np.any(sample_mask):
-        return 0.0
-    samples = values[sample_mask]
-    if not np.all(np.isfinite(samples)):
-        raise ValueError("masked values must contain only finite values")
-    return float(np.mean(samples))
+    return quality_metrics.masked_mean(values, mask)
 
 
 def _run_voting_from_attributes(
@@ -2579,7 +1264,7 @@ def _run_voting_from_attributes(
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
-        _, seeds, boundary_seed_retention_diagnostic = _boundary_seed_retention_v1_seeds(
+        seed_result = select_boundary_seed_retention_v1(
             voting_config=voting_config,
             ft=ft,
             pt=pt,
@@ -2588,6 +1273,8 @@ def _run_voting_from_attributes(
             target_source=boundary_target_source,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
+        seeds = list(seed_result.selected_seeds)
+        boundary_seed_retention_diagnostic = seed_result.diagnostics
     else:
         seeds = voter.pick_seeds(
             d=voting_config.seed_distance,
@@ -2614,13 +1301,15 @@ def _run_voting_from_attributes(
         plateau_tie_breaker=plateau_tie_breaker,
     )
     fvt_recenter_diagnostic: dict[str, Any] | None = None
+    fvt_recenter_before_positive: np.ndarray | None = None
     boundary_edge_thin_diagnostic: dict[str, Any] | None = None
     if variant_spec.post_thinning_policy == "recenter_scanner_target":
         recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
         recenter_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
-        fvt, fvt_recenter_diagnostic = _recenter_edge_fvt_to_target(
+        fvt_recenter_before_positive = _positive_candidate_mask(fvt)
+        recenter_result = recenter_edge_fvt_to_target(
             fvt,
             vp,
             vt,
@@ -2629,12 +1318,14 @@ def _run_voting_from_attributes(
             max_shift=FVT_RECENTER_MAX_SHIFT,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
+        fvt = recenter_result.output
+        fvt_recenter_diagnostic = recenter_result.diagnostics
     if variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
         boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
-        fvt, boundary_edge_thin_diagnostic = _apply_boundary_edge_thin_v1(
+        boundary_thin_result = apply_boundary_edge_thin_v1(
             fvt,
             fv,
             vp,
@@ -2644,6 +1335,8 @@ def _run_voting_from_attributes(
             target_source=boundary_target_source,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
+        fvt = boundary_thin_result.output
+        boundary_edge_thin_diagnostic = boundary_thin_result.diagnostics
 
     truth_surface_half_width = _validate_nonnegative_finite_scalar(
         truth_metric_config.truth_surface_half_width,
@@ -2777,12 +1470,11 @@ def _run_voting_from_attributes(
         },
     }
     if fvt_recenter_diagnostic is not None:
-        target_positive = _positive_candidate_mask(recenter_target)
         fvt_recenter_diagnostic.update(
-            _fvt_recenter_target_distance_diagnostics(
-                before=fvt_recenter_diagnostic.pop("_before_positive_mask"),
+            fvt_recenter_target_distance_diagnostics(
+                before=fvt_recenter_before_positive,
                 after=_positive_candidate_mask(fvt),
-                target=target_positive,
+                target=_positive_candidate_mask(recenter_target),
             )
         )
         report["fvt_recenter"] = fvt_recenter_diagnostic
@@ -2932,16 +1624,7 @@ def _truth_report(
     case: Synthetic3DCase,
     truth_metric_config: SyntheticTruthMetricConfig,
 ) -> dict[str, int]:
-    truth_surface_half_width = _validate_nonnegative_finite_scalar(
-        truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
-    )
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
-    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-    return {
-        "fault_voxel_count": int(np.count_nonzero(truth_fault_mask)),
-        "surface_voxel_count": int(np.count_nonzero(truth_surface_mask)),
-    }
+    return quality_metrics.truth_report(case, truth_metric_config)
 
 
 def build_report(
@@ -3155,43 +1838,15 @@ def _validate_thinning_diagnostic_cases(case_ids: Sequence[str]) -> tuple[str, .
 def _variant_comparison(
     variant_reports: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    if BASELINE_VARIANT not in variant_reports:
-        return {"baseline_variant": None, "variants": {}}
-
-    baseline_report = variant_reports[BASELINE_VARIANT]
-    baseline_values = {
-        metric_name: _metric_value(baseline_report, path)
-        for metric_name, path in VARIANT_COMPARISON_METRICS
-    }
-    comparison = {}
-    for variant, variant_report in variant_reports.items():
-        comparison[variant] = {
-            metric_name: _delta_or_none(
-                _metric_value(variant_report, path),
-                baseline_values[metric_name],
-            )
-            for metric_name, path in VARIANT_COMPARISON_METRICS
-        }
-    return {"baseline_variant": BASELINE_VARIANT, "variants": comparison}
+    return quality_metrics.variant_comparison(variant_reports)
 
 
 def _metric_value(report: Mapping[str, Any], path: Sequence[str]) -> float | None:
-    value: Any = report
-    for key in path:
-        if value is None:
-            return None
-        if not isinstance(value, Mapping) or key not in value:
-            return None
-        value = value[key]
-    if value is None:
-        return None
-    return float(value)
+    return quality_metrics.metric_value(report, path)
 
 
 def _delta_or_none(value: float | None, baseline_value: float | None) -> float | None:
-    if value is None or baseline_value is None:
-        return None
-    return float(value - baseline_value)
+    return quality_metrics.delta_or_none(value, baseline_value)
 
 
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
@@ -4426,17 +3081,7 @@ def _summary_csv_skin_diagnostics_row(
 
 
 def _normalize_report_skin_metric_keys(metrics: Mapping[str, Any]) -> dict[str, Any]:
-    report_metrics = dict(metrics)
-    if "buffered_overlap_radius2" in report_metrics:
-        return report_metrics
-
-    buffered_keys = [
-        key for key in report_metrics if str(key).startswith("buffered_overlap_radius")
-    ]
-    if len(buffered_keys) != 1:
-        raise ValueError("skin metrics must include exactly one buffered overlap metric")
-    report_metrics["buffered_overlap_radius2"] = report_metrics.pop(buffered_keys[0])
-    return report_metrics
+    return quality_metrics.normalize_report_skin_metric_keys(metrics)
 
 
 def _summary_csv_comparison_row(comparison: Mapping[str, Any]) -> dict[str, float | None]:

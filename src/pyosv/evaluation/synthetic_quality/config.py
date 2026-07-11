@@ -10,7 +10,8 @@ import numpy as np
 
 from pyosv.synthetic3d import SyntheticScannerInputConfig
 
-SCANNER_BACKENDS = ("reference-like", "fast", "quality", "ensemble")
+from .scanner import SCANNER_BACKENDS
+
 SKINNER_METHODS = ("reference", "quality", "connected_component")
 SKINNER_GROWTH_SOURCES = ("thinned", "pre_thin")
 BOUNDARY_SKINNER_FALLBACK_POLICIES = (
