@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -24,9 +24,16 @@ from pyosv.evaluation.synthetic_quality.diagnostics import (
     _scanner_downstream_diagnostics,
     _scanner_stage_loss_diagnostics,
 )
-from pyosv.evaluation.synthetic_quality.models import PipelineArtifacts, PipelineEvaluation
+from pyosv.evaluation.synthetic_quality.models import (
+    OrientationField3D,
+    PipelineArtifacts,
+    PipelineEvaluation,
+)
 from pyosv.evaluation.synthetic_quality.pipeline import run_voting_from_attributes
-from pyosv.evaluation.synthetic_quality.scanner import scanner_attributes_from_case
+from pyosv.evaluation.synthetic_quality.scanner import (
+    ScannerAttributes,
+    scanner_attributes_from_case,
+)
 from pyosv.evaluation.synthetic_quality.variants import (
     BASELINE_VARIANT,
     VariantSpec,
@@ -42,10 +49,64 @@ SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedScannerInput:
+    """Scanner attributes generated once for one case and scanner configuration."""
+
+    config: SyntheticScannerConfig
+    selected: ScannerAttributes
+    by_backend: Mapping[str, ScannerAttributes]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedCaseInputs:
+    """Variant-independent inputs for one synthetic case."""
+
+    case: Synthetic3DCase
+    oracle: OrientationField3D
+    scanner: PreparedScannerInput | None
+
+
 def validate_input_mode(input_mode: str) -> str:
     if input_mode not in {"oracle", "scanner", "both"}:
         raise ValueError("input_mode must be 'oracle', 'scanner', or 'both'")
     return input_mode
+
+
+def prepare_case_inputs(
+    case: Synthetic3DCase,
+    *,
+    scanner_config: SyntheticScannerConfig,
+    input_mode: str,
+    scanner_backend_matrix: bool,
+) -> PreparedCaseInputs:
+    """Generate inputs shared by every variant in a single report build."""
+
+    valid_input_mode = validate_input_mode(input_mode)
+    oracle = OrientationField3D(ft=case.ft_oracle, pt=case.pt_oracle, tt=case.tt_oracle)
+    if valid_input_mode == "oracle":
+        return PreparedCaseInputs(case=case, oracle=oracle, scanner=None)
+
+    selected = scanner_attributes_from_case(case, scanner_config)
+    by_backend = {scanner_config.backend: selected}
+    if scanner_backend_matrix:
+        backends = SCANNER_BACKEND_MATRIX_BACKENDS
+        if scanner_config.backend not in backends:
+            backends = (*backends, scanner_config.backend)
+        for backend in backends:
+            if backend not in by_backend:
+                by_backend[backend] = scanner_attributes_from_case(
+                    case, replace(scanner_config, backend=backend)
+                )
+    return PreparedCaseInputs(
+        case=case,
+        oracle=oracle,
+        scanner=PreparedScannerInput(
+            config=scanner_config,
+            selected=selected,
+            by_backend=by_backend,
+        ),
+    )
 
 
 def run_oracle_pipeline(
@@ -60,18 +121,24 @@ def run_oracle_pipeline(
     recenter_distance_diagnostic_runner: Callable[..., Any] = (
         fvt_recenter_target_distance_diagnostics
     ),
+    prepared_oracle: OrientationField3D | None = None,
 ) -> PipelineEvaluation:
+    oracle = (
+        OrientationField3D(ft=case.ft_oracle, pt=case.pt_oracle, tt=case.tt_oracle)
+        if prepared_oracle is None
+        else prepared_oracle
+    )
     return run_voting_from_attributes(
         case,
-        ft=case.ft_oracle,
-        pt=case.pt_oracle,
-        tt=case.tt_oracle,
+        ft=oracle.ft,
+        pt=oracle.pt,
+        tt=oracle.tt,
         voting_config=voting_config,
         truth_metric_config=truth_metric_config,
         skinning_config=skinning_config,
         variant_spec=variant_spec,
         include_thinning_diagnostic=include_thinning_diagnostic,
-        fvt_recenter_target=case.ft_oracle,
+        fvt_recenter_target=oracle.ft,
         fvt_recenter_target_source="oracle_ft",
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
@@ -95,8 +162,13 @@ def run_scanner_pipeline(
     ),
     scanner_downstream_diagnostic_runner: Callable[..., Any] = (_scanner_downstream_diagnostics),
     scanner_stage_loss_diagnostic_runner: Callable[..., Any] = _scanner_stage_loss_diagnostics,
+    prepared_scanner: PreparedScannerInput | None = None,
 ) -> PipelineEvaluation:
-    scanner = scanner_attributes_from_case(case, scanner_config)
+    scanner = (
+        scanner_attributes_from_case(case, scanner_config)
+        if prepared_scanner is None
+        else _prepared_scanner_attributes(prepared_scanner, scanner_config)
+    )
     scanner_volumes = dict(scanner.volumes)
     evaluation = run_voting_from_attributes(
         case,
@@ -161,6 +233,7 @@ def run_scanner_pipeline(
             selected_report=report,
             thinning_diagnostic_runner=thinning_diagnostic_runner,
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
+            prepared_scanner=prepared_scanner,
         )
     volumes.update(scanner_volumes)
     return PipelineEvaluation(
@@ -189,10 +262,20 @@ def run_case_variant(
     ),
     scanner_downstream_diagnostic_runner: Callable[..., Any] = (_scanner_downstream_diagnostics),
     scanner_stage_loss_diagnostic_runner: Callable[..., Any] = _scanner_stage_loss_diagnostics,
+    prepared_inputs: PreparedCaseInputs | None = None,
 ) -> PipelineEvaluation:
     variant_spec = get_variant_spec(variant)
     valid_input_mode = validate_input_mode(input_mode)
     effective_skinning = effective_skinning_config(variant_spec, skinning_config)
+    if prepared_inputs is None:
+        prepared_inputs = prepare_case_inputs(
+            case,
+            scanner_config=scanner_config,
+            input_mode=valid_input_mode,
+            scanner_backend_matrix=scanner_backend_matrix,
+        )
+    elif prepared_inputs.case is not case:
+        raise ValueError("prepared inputs must belong to the evaluated case")
     if valid_input_mode == "oracle":
         return run_oracle_pipeline(
             case,
@@ -203,6 +286,7 @@ def run_case_variant(
             include_thinning_diagnostic=include_thinning_diagnostic,
             thinning_diagnostic_runner=thinning_diagnostic_runner,
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
+            prepared_oracle=prepared_inputs.oracle,
         )
 
     outputs: dict[str, PipelineEvaluation] = {}
@@ -216,6 +300,7 @@ def run_case_variant(
             include_thinning_diagnostic=include_thinning_diagnostic,
             thinning_diagnostic_runner=thinning_diagnostic_runner,
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
+            prepared_oracle=prepared_inputs.oracle,
         )
     outputs["scanner"] = run_scanner_pipeline(
         case,
@@ -231,6 +316,7 @@ def run_case_variant(
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         scanner_downstream_diagnostic_runner=scanner_downstream_diagnostic_runner,
         scanner_stage_loss_diagnostic_runner=scanner_stage_loss_diagnostic_runner,
+        prepared_scanner=prepared_inputs.scanner,
     )
     active = "scanner" if valid_input_mode == "scanner" else "oracle"
     active_output = outputs[active]
@@ -382,6 +468,7 @@ def _scanner_backend_matrix_report(
     selected_report: Mapping[str, Any],
     thinning_diagnostic_runner: Callable[..., Any],
     recenter_distance_diagnostic_runner: Callable[..., Any],
+    prepared_scanner: PreparedScannerInput | None,
 ) -> dict[str, Any]:
     reports = {}
     backends = SCANNER_BACKEND_MATRIX_BACKENDS
@@ -404,6 +491,7 @@ def _scanner_backend_matrix_report(
                     include_scanner_downstream_diagnostics=False,
                     thinning_diagnostic_runner=thinning_diagnostic_runner,
                     recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
+                    prepared_scanner=prepared_scanner,
                 ).report_payload
             )
     return {
@@ -412,6 +500,21 @@ def _scanner_backend_matrix_report(
             reports, selected_backend=scanner_config.backend
         ),
     }
+
+
+def _prepared_scanner_attributes(
+    prepared: PreparedScannerInput,
+    scanner_config: SyntheticScannerConfig,
+) -> ScannerAttributes:
+    expected_config = replace(prepared.config, backend=scanner_config.backend)
+    if scanner_config != expected_config:
+        raise ValueError("prepared scanner input does not match scanner configuration")
+    try:
+        return prepared.by_backend[scanner_config.backend]
+    except KeyError as error:
+        raise ValueError(
+            f"prepared scanner input is missing backend {scanner_config.backend!r}"
+        ) from error
 
 
 def _scanner_backend_matrix_comparison(

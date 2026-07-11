@@ -67,6 +67,7 @@ from pyosv.evaluation.synthetic_quality.pipeline import (
 from pyosv.evaluation.synthetic_quality.runner import (
     case_pipeline_reports as _package_case_pipeline_reports,
     case_variant_comparison_alias as _package_case_variant_comparison_alias,
+    prepare_case_inputs as _package_prepare_case_inputs,
     run_case as _package_run_case,
     run_case_variant as _package_run_case_variant,
     run_oracle_pipeline as _package_run_oracle_pipeline,
@@ -1177,6 +1178,12 @@ def _build_report_and_volumes(
         variant_reports = {}
         variant_volumes = {}
         variant_skins = {}
+        prepared_inputs = _package_prepare_case_inputs(
+            case,
+            scanner_config=scanner_config,
+            input_mode=valid_input_mode,
+            scanner_backend_matrix=effective_scanner_backend_matrix,
+        )
         for variant in valid_variants:
             variant_report, volumes, skins_output = _run_case_variant(
                 case,
@@ -1191,6 +1198,7 @@ def _build_report_and_volumes(
                     include_thinning_diagnostic and case.case_id in diagnostic_case_ids
                 ),
                 include_scanner_downstream_diagnostics=(effective_scanner_downstream_diagnostics),
+                prepared_inputs=prepared_inputs,
             )
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes

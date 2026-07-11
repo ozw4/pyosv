@@ -18,9 +18,11 @@ from pyosv.evaluation.synthetic_quality.config import (
 from pyosv.evaluation.synthetic_quality.runner import (
     case_pipeline_reports,
     case_variant_comparison_alias,
+    prepare_case_inputs,
     run_case,
     run_case_variant,
 )
+from pyosv.evaluation.synthetic_quality import runner
 from pyosv.synthetic3d import make_single_vertical_plane_case
 
 
@@ -150,3 +152,122 @@ def test_multiple_variants_build_pipeline_comparison_aliases() -> None:
         case_variant_comparison_alias(pipelines, "oracle")
         == pipelines["oracle"]["variant_comparison"]
     )
+
+
+def _fast_scanner_config() -> SyntheticScannerConfig:
+    return SyntheticScannerConfig(
+        backend="fast",
+        phi_min=0.0,
+        phi_max=0.0,
+        theta_min=90.0,
+        theta_max=90.0,
+        sigma1=1.0,
+        sigma2=1.0,
+        scanner_thin_mode="none",
+    )
+
+
+def test_scanner_cache_report_build_scans_once_per_case_across_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    example = _load_example_module()
+    calls = 0
+    implementation = runner.scanner_attributes_from_case
+
+    def counting_scanner(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return implementation(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "scanner_attributes_from_case", counting_scanner)
+    example.build_report(
+        case_set="extended",
+        shape=(9, 9, 9),
+        scanner_config=_fast_scanner_config(),
+        variants=("current_default", "boundary_aware_voter_v1"),
+        input_mode="both",
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+    )
+
+    assert calls == 7
+
+
+def test_scanner_cache_oracle_input_does_not_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+
+    def unexpected_scan(*args: object, **kwargs: object) -> object:
+        raise AssertionError("oracle input must not invoke the scanner")
+
+    monkeypatch.setattr(runner, "scanner_attributes_from_case", unexpected_scan)
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=_fast_scanner_config(),
+        input_mode="oracle",
+        scanner_backend_matrix=True,
+    )
+
+    assert prepared.scanner is None
+
+
+def test_prepared_scanner_variant_order_is_independent_and_shared_arrays_are_not_mutated() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    scanner_config = _fast_scanner_config()
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=scanner_config,
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+    )
+    assert prepared.scanner is not None
+    original = {name: volume.copy() for name, volume in prepared.scanner.selected.volumes.items()}
+    common = {
+        "voting_config": SyntheticVotingConfig(),
+        "scanner_config": scanner_config,
+        "truth_metric_config": SyntheticTruthMetricConfig(),
+        "skinning_config": SyntheticSkinningConfig(enabled=False),
+        "input_mode": "scanner",
+        "scanner_backend_matrix": False,
+        "include_thinning_diagnostic": False,
+        "include_scanner_downstream_diagnostics": False,
+        "prepared_inputs": prepared,
+    }
+    variants = ("current_default", "boundary_aware_voter_v1")
+    forward = {variant: run_case_variant(case, variant=variant, **common) for variant in variants}
+    reverse = {
+        variant: run_case_variant(case, variant=variant, **common) for variant in reversed(variants)
+    }
+
+    for variant in variants:
+        assert forward[variant].report_payload == reverse[variant].report_payload
+        _assert_nested_arrays_equal(
+            forward[variant].artifacts.volumes,
+            reverse[variant].artifacts.volumes,
+        )
+    for name, expected in original.items():
+        np.testing.assert_array_equal(prepared.scanner.selected.volumes[name], expected)
+
+
+def test_prepared_backend_matrix_scans_each_backend_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    backends: list[str] = []
+    implementation = runner.scanner_attributes_from_case
+
+    def counting_scanner(
+        case_arg: object, config: SyntheticScannerConfig, **kwargs: object
+    ) -> object:
+        backends.append(config.backend)
+        return implementation(case_arg, config, **kwargs)
+
+    monkeypatch.setattr(runner, "scanner_attributes_from_case", counting_scanner)
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=_fast_scanner_config(),
+        input_mode="scanner",
+        scanner_backend_matrix=True,
+    )
+
+    assert prepared.scanner is not None
+    assert backends == ["fast", "reference-like", "quality"]
+    assert set(prepared.scanner.by_backend) == {"reference-like", "quality", "fast"}
