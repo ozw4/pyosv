@@ -76,6 +76,42 @@ The controlled synthetic API includes:
 - scanner-inclusive report/CLI pipeline
 - `examples/report_3d_synthetic_quality.py`
 
+### Report application and serialization API
+
+The package-level application entry points are available without importing CLI
+or artifact-writer code:
+
+```python
+from pyosv.evaluation.synthetic_quality import build_report, run_case
+```
+
+`build_report(...)` returns the stable legacy `format_version=1` report mapping
+without writing files. `run_case(...)` evaluates one
+`SyntheticQualityCaseDefinition` and returns its v1 case payload and volume
+mapping. The CLI in `pyosv.cli.synthetic_quality` calls this application layer;
+the example script remains a backward-compatible command wrapper.
+
+`pyosv.evaluation.reporting` exposes the immutable `Report`, `ReportConfig`,
+`CaseReport`, `PipelineReport`, `VariantReport`, and `VariantComparison` models,
+along with `report_to_json`, `write_metrics_json`, `write_summary_csv`, and the
+declarative `SUMMARY_CSV_V1_FIELDS` field order. Artifact writers live in
+`pyosv.evaluation.reporting.artifacts`, and visual-report Markdown generation
+lives in `pyosv.evaluation.reporting.markdown_v1`. These APIs preserve the v1
+JSON/CSV schema and the existing output tree; they do not introduce a new
+report format.
+
+### Promotion comparison API
+
+`pyosv.evaluation.promotion` exposes `SummaryRow`, `read_summary_rows`,
+`compare_reports`, and `build_promotion_report` for comparing summary CSVs and
+applying the scanner-boundary gate. A `SummaryRow` preserves unknown CSV
+columns in its `values` mapping, while missing or non-finite metric values are
+treated as `None`. Match keys deliberately exclude `variant`, so baseline and
+candidate variants may be selected from the same CSV. JSON remains
+`format_version=1`; the stable Markdown formatters are
+`comparison_markdown` and `promotion_markdown` in
+`pyosv.evaluation.promotion.markdown`.
+
 The controlled synthetic oracle path is:
 
 ```text

@@ -1,13 +1,33 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 from pyosv.evaluation.promotion.comparison import compare_rows
 from pyosv.evaluation.promotion.gates import build_promotion_report, evaluate_gate
 from pyosv.evaluation.promotion.rows import SummaryRow
+from pyosv.evaluation.reporting import SUMMARY_CSV_V1_FIELDS
 
 
 FIXTURE = Path("tests/fixtures/synthetic_quality_refactor/known_49_quality_summary.csv")
+
+
+def test_known_49_fixture_is_a_full_report_artifact() -> None:
+    with FIXTURE.open(encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        rows = list(reader)
+
+    assert tuple(reader.fieldnames or ()) == SUMMARY_CSV_V1_FIELDS
+    assert len(rows) == 28
+    assert {row["variant"] for row in rows} == {
+        "current_default",
+        "boundary_aware_voter_v1",
+    }
+    assert {row["shape_n3"] for row in rows} == {"49"}
+    for row in rows:
+        for field in ("skin_count", "skin_cell_count", "fvt_positive_candidate_count"):
+            if row[field]:
+                int(row[field])
 
 
 def test_none_gate_exact_json_contract() -> None:

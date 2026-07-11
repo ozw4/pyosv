@@ -43,6 +43,10 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticVotingConfig,
 )
 from pyosv.evaluation.synthetic_quality import quality_metrics
+from pyosv.evaluation.synthetic_quality.application import (
+    _build_report_outputs as _package_build_report_outputs,
+    run_case as _package_application_run_case,
+)
 from pyosv.evaluation.synthetic_quality.diagnostics import (
     _run_voter_thinning_diagnostic,
     _scanner_downstream_diagnostics,
@@ -63,11 +67,8 @@ from pyosv.evaluation.synthetic_quality.pipeline import (
     run_voting_from_attributes as _package_run_voting_from_attributes,
 )
 from pyosv.evaluation.synthetic_quality.runner import (
-    build_case_report_model as _package_build_case_report_model,
     case_pipeline_reports as _package_case_pipeline_reports,
     case_variant_comparison_alias as _package_case_variant_comparison_alias,
-    prepare_case_inputs as _package_prepare_case_inputs,
-    run_case as _package_run_case,
     run_case_variant as _package_run_case_variant,
     run_oracle_pipeline as _package_run_oracle_pipeline,
     run_scanner_pipeline as _package_run_scanner_pipeline,
@@ -80,26 +81,21 @@ from pyosv.evaluation.synthetic_quality.cases import (
     EXTENDED_CASES,  # noqa: F401 - compatibility export
     GEOMETRY_CASES,  # noqa: F401 - compatibility export
     MINIMAL_CASES,  # noqa: F401 - compatibility export
-    SyntheticQualityCaseDefinition,
+    SyntheticQualityCaseDefinition as SyntheticQualityCaseDefinition,
     validate_case_ids,
-    validate_case_set,
 )
 from pyosv.evaluation.synthetic_quality.profiles import (
     WORKFLOW_MODES,
     _default_skinner_method_for_workflow,  # noqa: F401 - compatibility export
     _default_skinner_min_likelihood_for_method,  # noqa: F401 - compatibility export
-    _default_surface_support_policy_for_workflow,
-    _default_voter_thin_mode_for_workflow,
     _effective_include_thinning_diagnostic,
     _effective_skinner_method,
     _effective_skinner_min_likelihood,
-    _effective_skinning_config_for_workflow,
     _effective_surface_support_policy,
     _effective_voter_thin_mode,
     _validate_workflow_mode,
 )
 from pyosv.evaluation.reporting.json_v1 import (
-    LegacyReportV1Adapter,
     report_to_json as _report_to_json,
     write_metrics_json as _write_metrics_json,
 )
@@ -122,7 +118,6 @@ from pyosv.evaluation.reporting.csv_v1 import (
     _summary_csv_voting_row as _summary_csv_voting_row,
     write_summary_csv,
 )
-from pyosv.evaluation.reporting.models import Report, ReportConfig
 from pyosv.evaluation.reporting.artifacts import (
     write_case_figures,
     write_case_skins_json,
@@ -577,8 +572,7 @@ def run_case(
     )
     kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
     kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
-    evaluation = _package_run_case(case_definition, **kwargs)
-    return dict(evaluation.report_payload), dict(evaluation.artifacts.volumes)
+    return _package_application_run_case(case_definition, **kwargs)
 
 
 def _run_case_variant(
@@ -1012,177 +1006,25 @@ def _truth_report(
     return quality_metrics.truth_report(case, truth_metric_config)
 
 
-def build_report(
-    *,
-    case_set: str,
-    shape: tuple[int, int, int],
-    voting_config: SyntheticVotingConfig | None = None,
-    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
-    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
-    variants: Sequence[str] = DEFAULT_VARIANTS,
-    variant_preset: str = DEFAULT_VARIANT_PRESET,
-    skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
-    input_mode: str = "oracle",
-    scanner_backend_matrix: bool = False,
-    workflow_mode: str = "reference",
-    skinner_method_explicit: bool = False,
-    skinner_min_likelihood_explicit: bool = False,
-    skinner_growth_source_explicit: bool = False,
-    skinner_accepted_occupancy_radius_explicit: bool = False,
-    include_thinning_diagnostic: bool = False,
-    include_scanner_downstream_diagnostics: bool = False,
-    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
-) -> dict[str, Any]:
-    report, _, _ = _build_report_and_volumes(
-        case_set=case_set,
-        shape=shape,
-        voting_config=voting_config,
-        scanner_config=scanner_config,
-        truth_metric_config=truth_metric_config,
-        variants=variants,
-        variant_preset=variant_preset,
-        skinning_config=skinning_config,
-        input_mode=input_mode,
-        scanner_backend_matrix=scanner_backend_matrix,
-        workflow_mode=workflow_mode,
-        skinner_method_explicit=skinner_method_explicit,
-        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
-        skinner_growth_source_explicit=skinner_growth_source_explicit,
-        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
-        thinning_diagnostic_cases=thinning_diagnostic_cases,
-    )
-    return report
-
-
 def _build_report_and_volumes(
-    *,
-    case_set: str,
-    shape: tuple[int, int, int],
-    voting_config: SyntheticVotingConfig | None = None,
-    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
-    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
-    variants: Sequence[str] = DEFAULT_VARIANTS,
-    variant_preset: str = DEFAULT_VARIANT_PRESET,
-    skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
-    input_mode: str = "oracle",
-    scanner_backend_matrix: bool = False,
-    workflow_mode: str = "reference",
-    skinner_method_explicit: bool = False,
-    skinner_min_likelihood_explicit: bool = False,
-    skinner_growth_source_explicit: bool = False,
-    skinner_accepted_occupancy_radius_explicit: bool = False,
-    include_thinning_diagnostic: bool = False,
-    include_scanner_downstream_diagnostics: bool = False,
-    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
+    **kwargs: Any,
 ) -> tuple[
     dict[str, Any],
     dict[str, dict[str, dict[str, np.ndarray]]],
     dict[str, dict[str, dict[str, Any]]],
 ]:
-    valid_shape = validate_shape3(shape)
-    valid_variants = _validate_variants(variants)
-    valid_variant_preset = _validate_variant_preset(variant_preset)
-    valid_input_mode = _validate_input_mode(input_mode)
-    effective_scanner_backend_matrix = bool(scanner_backend_matrix and valid_input_mode != "oracle")
-    effective_scanner_downstream_diagnostics = bool(
-        include_scanner_downstream_diagnostics and valid_input_mode != "oracle"
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    valid_workflow_mode = _validate_workflow_mode(workflow_mode)
-    skinning_config = _effective_skinning_config_for_workflow(
-        workflow_mode=valid_workflow_mode,
-        skinning_config=skinning_config,
-        skinner_method_explicit=skinner_method_explicit,
-        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
-        skinner_growth_source_explicit=skinner_growth_source_explicit,
-        skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
-    )
-    if voting_config is None:
-        support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
-            valid_workflow_mode
-        )
-        voting_config = SyntheticVotingConfig(
-            voter_thin_mode=_default_voter_thin_mode_for_workflow(valid_workflow_mode),
-            surface_support_min_fraction=support_min_fraction,
-            surface_support_exponent=support_exponent,
-        )
-    include_thinning_diagnostic = _effective_include_thinning_diagnostic(
-        workflow_mode=valid_workflow_mode,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-    )
-    diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
-    case_definitions = validate_case_set(case_set)
+    kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
+    kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    return _package_build_report_outputs(**kwargs)
 
-    cases = []
-    volume_outputs = {}
-    skin_outputs = {}
-    for case_definition in case_definitions:
-        case = case_definition.factory(valid_shape)
-        if case.case_id != case_definition.case_id:
-            raise ValueError(
-                f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
-            )
-        variant_reports = {}
-        variant_volumes = {}
-        variant_skins = {}
-        prepared_inputs = _package_prepare_case_inputs(
-            case,
-            scanner_config=scanner_config,
-            input_mode=valid_input_mode,
-            scanner_backend_matrix=effective_scanner_backend_matrix,
-        )
-        for variant in valid_variants:
-            variant_report, volumes, skins_output = _run_case_variant(
-                case,
-                voting_config=voting_config,
-                scanner_config=scanner_config,
-                truth_metric_config=truth_metric_config,
-                skinning_config=skinning_config,
-                variant=variant,
-                input_mode=valid_input_mode,
-                scanner_backend_matrix=effective_scanner_backend_matrix,
-                include_thinning_diagnostic=(
-                    include_thinning_diagnostic and case.case_id in diagnostic_case_ids
-                ),
-                include_scanner_downstream_diagnostics=(effective_scanner_downstream_diagnostics),
-                prepared_inputs=prepared_inputs,
-            )
-            variant_reports[variant] = variant_report
-            variant_volumes[variant] = volumes
-            variant_skins[variant] = skins_output
-        case_model = _package_build_case_report_model(
-            case_id=case.case_id,
-            shape=case.shape,
-            truth=_truth_report(case, truth_metric_config),
-            variant_reports=variant_reports,
-            input_mode=valid_input_mode,
-        )
-        cases.append(case_model)
-        volume_outputs[case_definition.case_id] = variant_volumes
-        skin_outputs[case_definition.case_id] = variant_skins
 
-    config: dict[str, Any] = {
-        "case_set": case_set,
-        "workflow_mode": valid_workflow_mode,
-        "variant_preset": valid_variant_preset,
-        "shape": [int(size) for size in valid_shape],
-        "variants": list(valid_variants),
-        "voting": voting_config.as_report_dict(),
-        "truth_metrics": truth_metric_config.as_report_dict(),
-        "skinning": skinning_config.as_report_dict(),
-        "scanner_backend_matrix": effective_scanner_backend_matrix,
-        "scanner_downstream_diagnostics": effective_scanner_downstream_diagnostics,
-    }
-    if valid_input_mode != "oracle":
-        config["input_mode"] = valid_input_mode
-        config["scanner"] = scanner_config.as_report_dict()
-    if include_thinning_diagnostic:
-        config["thinning_diagnostic"] = {"enabled": True}
-
-    report_model = Report(config=ReportConfig(config), cases=tuple(cases))
-    report = LegacyReportV1Adapter().to_dict(report_model)
-    return report, volume_outputs, skin_outputs
+def build_report(**kwargs: Any) -> dict[str, Any]:
+    report, _, _ = _build_report_and_volumes(**kwargs)
+    return report
 
 
 def _validate_variants(variants: Sequence[str]) -> tuple[str, ...]:

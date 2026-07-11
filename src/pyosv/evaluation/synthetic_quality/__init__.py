@@ -22,9 +22,9 @@ from .models import (
 
 def __getattr__(name: str) -> Any:
     if name in {"build_report", "run_case"}:
-        from pyosv.cli import synthetic_quality
+        from . import application
 
-        return getattr(synthetic_quality, name)
+        return getattr(application, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
