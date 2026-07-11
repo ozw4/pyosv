@@ -12,6 +12,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import pyosv.experimental.boundary_skinning as boundary_skinning
+import pyosv.experimental.skin_diagnostics as skin_diagnostics
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "examples" / "report_3d_synthetic_quality.py"
@@ -794,9 +797,9 @@ def test_find_synthetic_skins_thinned_uses_fvt_for_growth_and_seed(
             captured["kwargs"] = kwargs
             return []
 
-    monkeypatch.setattr(module, "FaultSkinner", FakeSkinner)
+    monkeypatch.setattr(boundary_skinning, "FaultSkinner", FakeSkinner)
 
-    skins = module._find_synthetic_skins(
+    skins = boundary_skinning.find_synthetic_skins(
         fv,
         fvt,
         vp,
@@ -842,9 +845,9 @@ def test_find_synthetic_skins_pre_thin_uses_fv_for_growth_and_fvt_for_seed(
             captured["kwargs"] = kwargs
             return []
 
-    monkeypatch.setattr(module, "FaultSkinner", FakeSkinner)
+    monkeypatch.setattr(boundary_skinning, "FaultSkinner", FakeSkinner)
 
-    skins = module._find_synthetic_skins(
+    skins = boundary_skinning.find_synthetic_skins(
         fv,
         fvt,
         vp,
@@ -2316,13 +2319,13 @@ def test_report_3d_synthetic_quality_fallback_component_diagnostics_zero_without
     vt = np.zeros_like(fvt)
     diagnostics: dict[str, object] = {}
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         [],
         fvt,
         vp,
         vt,
         skinning_config=module.SyntheticSkinningConfig(boundary_skinner_fallback=False),
-        variant="current_default",
+        variant_spec=module.get_variant_spec("current_default"),
         diagnostics=diagnostics,
     )
 
@@ -2345,21 +2348,20 @@ def test_report_3d_synthetic_quality_fallback_component_diagnostics_zero_without
 
 
 def test_report_3d_synthetic_quality_fallback_component_ordering_is_deterministic() -> None:
-    module = _load_report_module()
     mask = np.zeros((3, 3, 3), dtype=bool)
     mask[0, 2, 0] = True
     mask[0, 2, 1] = True
     mask[0, 0, 2] = True
     mask[1, 0, 2] = True
 
-    components = module._positive_mask_components(mask, connectivity="edge")
+    components = boundary_skinning.positive_mask_components(mask, connectivity="edge")
 
     assert components == [
         [(0, 0, 2), (1, 0, 2)],
         [(0, 2, 0), (0, 2, 1)],
     ]
 
-    diagnostics = module._fallback_component_diagnostics(
+    diagnostics = boundary_skinning.fallback_component_diagnostics(
         mask.astype(np.float32),
         min_skin_size=3,
         small_component_size=3,
@@ -2381,13 +2383,12 @@ def test_report_3d_synthetic_quality_fallback_component_ordering_is_deterministi
 
 
 def test_report_3d_synthetic_quality_filtered_fallback_component_diagnostics() -> None:
-    module = _load_report_module()
     mask = np.zeros((1, 1, 20), dtype=bool)
     mask[0, 0, 0:10] = True
     mask[0, 0, 12:14] = True
     mask[0, 0, 16] = True
 
-    diagnostics = module._fallback_component_diagnostics(
+    diagnostics = boundary_skinning.fallback_component_diagnostics(
         mask.astype(np.float32),
         min_skin_size=1,
         small_component_size=3,
@@ -2412,12 +2413,11 @@ def test_report_3d_synthetic_quality_filtered_fallback_component_diagnostics() -
 
 
 def test_report_3d_synthetic_quality_filtered_fallback_keeps_largest_when_all_small() -> None:
-    module = _load_report_module()
     mask = np.zeros((1, 1, 10), dtype=bool)
     mask[0, 0, 0:4] = True
     mask[0, 0, 7:10] = True
 
-    diagnostics = module._fallback_component_diagnostics(
+    diagnostics = boundary_skinning.fallback_component_diagnostics(
         mask.astype(np.float32),
         min_skin_size=1,
         small_component_size=3,
@@ -2433,14 +2433,13 @@ def test_report_3d_synthetic_quality_filtered_fallback_keeps_largest_when_all_sm
 
 
 def test_report_3d_synthetic_quality_skeletonized_fallback_prunes_subset() -> None:
-    module = _load_report_module()
     fvt = np.ones((1, 3, 4), dtype=np.float32)
     fvt[0, 2, 3] = 2.0
     vp = np.zeros_like(fvt)
     vt = np.full_like(fvt, 90.0)
     component = [(0, i2, i1) for i2 in range(3) for i1 in range(4)]
 
-    mask, diagnostics = module._skeletonize_fallback_components(
+    mask, diagnostics = boundary_skinning.skeletonize_fallback_components(
         fvt,
         vp,
         vt,
@@ -2466,14 +2465,17 @@ def test_report_3d_synthetic_quality_skeletonized_fallback_prunes_subset() -> No
 
 
 def test_report_3d_synthetic_quality_skeletonized_fallback_ties_are_deterministic() -> None:
-    module = _load_report_module()
     fvt = np.ones((1, 4, 1), dtype=np.float32)
     vp = np.zeros_like(fvt)
     vt = np.full_like(fvt, 90.0)
     component = [(0, i2, 0) for i2 in range(4)]
 
-    mask_a, diagnostics_a = module._skeletonize_fallback_components(fvt, vp, vt, [component])
-    mask_b, diagnostics_b = module._skeletonize_fallback_components(fvt, vp, vt, [component])
+    mask_a, diagnostics_a = boundary_skinning.skeletonize_fallback_components(
+        fvt, vp, vt, [component]
+    )
+    mask_b, diagnostics_b = boundary_skinning.skeletonize_fallback_components(
+        fvt, vp, vt, [component]
+    )
 
     assert np.array_equal(mask_a, mask_b)
     assert diagnostics_a == diagnostics_b
@@ -2490,7 +2492,7 @@ def test_report_3d_synthetic_quality_fallback_uses_fvt_candidate_mask_not_vt() -
     skins: list[object] = []
     diagnostics: dict[str, object] = {}
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -2499,7 +2501,7 @@ def test_report_3d_synthetic_quality_fallback_uses_fvt_candidate_mask_not_vt() -
             boundary_skinner_fallback=True,
             min_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback"),
         diagnostics=diagnostics,
     )
 
@@ -2549,12 +2551,12 @@ def test_report_3d_synthetic_quality_fallback_invokes_original_threshold_contrac
         return []
 
     monkeypatch.setattr(
-        module,
+        boundary_skinning,
         "find_connected_component_skins",
         fake_find_connected_component_skins,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         [],
         fvt,
         vp,
@@ -2563,7 +2565,7 @@ def test_report_3d_synthetic_quality_fallback_invokes_original_threshold_contrac
             boundary_skinner_fallback=True,
             min_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback"),
         diagnostics=diagnostics,
     )
 
@@ -4685,14 +4687,13 @@ def test_report_3d_synthetic_quality_skinning_uses_stable_buffer_key(
 
 
 def test_report_3d_synthetic_quality_primary_skin_diagnostics_mark_degraded() -> None:
-    module = _load_report_module()
     diagnostics: dict[str, object] = {}
     skins = [
         _fault_skin([(index, 0, 0)])
-        for index in range(module.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT)
+        for index in range(skin_diagnostics.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT)
     ]
 
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=(3, 3, 20),
@@ -4713,11 +4714,10 @@ def test_report_3d_synthetic_quality_primary_skin_diagnostics_mark_degraded() ->
 
 
 def test_report_3d_synthetic_quality_primary_skin_diagnostics_keep_healthy() -> None:
-    module = _load_report_module()
     diagnostics: dict[str, object] = {}
     skins = [_fault_skin([(index, 0, 0) for index in range(8)])]
 
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=(3, 3, 20),
@@ -4739,7 +4739,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback()
     vt = np.zeros_like(fvt)
     skins = [_fault_skin([(0, 0, 0)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -4747,7 +4747,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback()
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -4757,7 +4757,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_triggers_fallback()
             boundary_skinner_fallback_policy="degraded_primary",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v2",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v2"),
         diagnostics=diagnostics,
     )
 
@@ -4786,7 +4786,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_blocks_non_boundary
     vt = np.zeros_like(fvt)
     skins = [_fault_skin([(3, 3, 3)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -4794,7 +4794,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_blocks_non_boundary
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -4804,7 +4804,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_blocks_non_boundary
             boundary_skinner_fallback_policy="degraded_primary",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v2",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v2"),
         diagnostics=diagnostics,
     )
 
@@ -4833,7 +4833,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fa
     vt = np.zeros_like(fvt)
     skins = [_fault_skin([(0, 0, 0)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -4841,7 +4841,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fa
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -4851,7 +4851,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_policy_filters_fa
             boundary_skinner_fallback_policy="degraded_primary_filtered",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v3",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v3"),
         diagnostics=diagnostics,
     )
 
@@ -4889,7 +4889,7 @@ def test_report_3d_synthetic_quality_skeletonized_degraded_primary_policy_prunes
     scanner_target_positive_mask[:, 1, :] = True
     skins = [_fault_skin([(0, 1, 0)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -4897,7 +4897,7 @@ def test_report_3d_synthetic_quality_skeletonized_degraded_primary_policy_prunes
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -4907,7 +4907,7 @@ def test_report_3d_synthetic_quality_skeletonized_degraded_primary_policy_prunes
             boundary_skinner_fallback_policy="degraded_primary_skeletonized",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v4",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v4"),
         diagnostics=diagnostics,
         scanner_target_positive_mask=scanner_target_positive_mask,
     )
@@ -4942,7 +4942,7 @@ def test_report_3d_synthetic_quality_skeletonized_policy_requires_scanner_target
     vt = np.full_like(fvt, 90.0)
     skins = [_fault_skin([(0, 1, 0)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -4950,7 +4950,7 @@ def test_report_3d_synthetic_quality_skeletonized_policy_requires_scanner_target
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -4960,7 +4960,7 @@ def test_report_3d_synthetic_quality_skeletonized_policy_requires_scanner_target
             boundary_skinner_fallback_policy="degraded_primary_skeletonized",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v4",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v4"),
         diagnostics=diagnostics,
     )
 
@@ -4983,7 +4983,7 @@ def test_report_3d_synthetic_quality_v5_guardrail_blocks_fragmented_fallback() -
     scanner_target_positive_mask[:, 1, :] = True
     skins = [_fault_skin([(0, 1, 0)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -4991,7 +4991,7 @@ def test_report_3d_synthetic_quality_v5_guardrail_blocks_fragmented_fallback() -
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -5001,7 +5001,7 @@ def test_report_3d_synthetic_quality_v5_guardrail_blocks_fragmented_fallback() -
             boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v5",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v5"),
         diagnostics=diagnostics,
         scanner_target_positive_mask=scanner_target_positive_mask,
     )
@@ -5031,7 +5031,7 @@ def test_report_3d_synthetic_quality_v5_rejects_empty_primary_fallback() -> None
     scanner_target_positive_mask = np.ones_like(fvt, dtype=bool)
     skins: list[object] = []
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -5039,7 +5039,7 @@ def test_report_3d_synthetic_quality_v5_rejects_empty_primary_fallback() -> None
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -5049,7 +5049,7 @@ def test_report_3d_synthetic_quality_v5_rejects_empty_primary_fallback() -> None
             boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v5",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v5"),
         diagnostics=diagnostics,
         scanner_target_positive_mask=scanner_target_positive_mask,
     )
@@ -5079,7 +5079,7 @@ def test_report_3d_synthetic_quality_v5_guardrail_passes_and_replaces_primary() 
     scanner_target_positive_mask = np.ones_like(fvt, dtype=bool)
     skins = [_fault_skin([(0, 0, 0)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -5087,7 +5087,7 @@ def test_report_3d_synthetic_quality_v5_guardrail_passes_and_replaces_primary() 
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -5097,7 +5097,7 @@ def test_report_3d_synthetic_quality_v5_guardrail_passes_and_replaces_primary() 
             boundary_skinner_fallback_policy="degraded_primary_topology_guarded",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v5",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v5"),
         diagnostics=diagnostics,
         scanner_target_positive_mask=scanner_target_positive_mask,
     )
@@ -5127,7 +5127,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_triggers_on_skin_
     skins = [_fault_skin([(index, 0, 0) for index in range(93)])]
     skins.extend(_fault_skin([(index, 0, 0)]) for index in range(93, 100))
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -5135,16 +5135,17 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_triggers_on_skin_
         small_skin_size=1,
     )
     assert (
-        diagnostics["skin_primary_count"] == module.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT
+        diagnostics["skin_primary_count"]
+        == skin_diagnostics.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT
     )
     assert diagnostics["skin_primary_cell_coverage_of_fvt_positive"] == pytest.approx(1.0)
     assert (
         diagnostics["skin_primary_largest_fraction"]
-        > module.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
+        > skin_diagnostics.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
     )
     assert diagnostics["skin_primary_small_cell_fraction"] == pytest.approx(0.0)
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -5154,7 +5155,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_triggers_on_skin_
             boundary_skinner_fallback_policy="degraded_primary_filtered",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v3",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v3"),
         diagnostics=diagnostics,
     )
 
@@ -5178,7 +5179,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_triggers_on_large
         _fault_skin([(index, 0, 0) for index in range(5, 10)]),
     ]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -5186,16 +5187,17 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_triggers_on_large
         small_skin_size=1,
     )
     assert (
-        diagnostics["skin_primary_count"] < module.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT
+        diagnostics["skin_primary_count"]
+        < skin_diagnostics.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_SKIN_COUNT
     )
     assert diagnostics["skin_primary_cell_coverage_of_fvt_positive"] == pytest.approx(1.0)
     assert (
         diagnostics["skin_primary_largest_fraction"]
-        < module.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
+        < skin_diagnostics.SKIN_PRIMARY_DEGRADED_FRAGMENTED_MIN_LARGEST_FRACTION
     )
     assert diagnostics["skin_primary_small_cell_fraction"] == pytest.approx(0.0)
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -5205,7 +5207,7 @@ def test_report_3d_synthetic_quality_filtered_degraded_primary_triggers_on_large
             boundary_skinner_fallback_policy="degraded_primary_filtered",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v3",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v3"),
         diagnostics=diagnostics,
     )
 
@@ -5468,7 +5470,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_keeps_healthy_prima
     vt = np.zeros_like(fvt)
     skins = [_fault_skin([(index, 0, 0) for index in range(5)])]
     diagnostics: dict[str, object] = {}
-    module._add_primary_skin_diagnostics(
+    skin_diagnostics.add_primary_skin_diagnostics(
         diagnostics,
         skins,
         shape=fvt.shape,
@@ -5476,7 +5478,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_keeps_healthy_prima
         small_skin_size=1,
     )
 
-    module._apply_boundary_skinner_fallback(
+    boundary_skinning.apply_boundary_skinner_fallback(
         skins,
         fvt,
         vp,
@@ -5486,7 +5488,7 @@ def test_report_3d_synthetic_quality_degraded_primary_policy_keeps_healthy_prima
             boundary_skinner_fallback_policy="degraded_primary",
             small_skin_size=1,
         ),
-        variant="quality_boundary_skinner_fallback_v2",
+        variant_spec=module.get_variant_spec("quality_boundary_skinner_fallback_v2"),
         diagnostics=diagnostics,
     )
 
