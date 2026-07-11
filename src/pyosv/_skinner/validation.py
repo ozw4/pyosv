@@ -21,6 +21,24 @@ def _validate_nonnegative_finite_float(value: float, name: str) -> float:
     return value_float
 
 
+def _validate_unit_interval_float(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a finite number between 0.0 and 1.0")
+
+    value_float = float(value)
+    if not math.isfinite(value_float) or value_float < 0.0 or value_float > 1.0:
+        raise ValueError(f"{name} must be a finite number between 0.0 and 1.0")
+
+    return value_float
+
+
+def _validate_bool(value: bool, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a bool")
+
+    return value
+
+
 def _validate_nonnegative_int(value: int, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a nonnegative integer")
