@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 
 from pyosv.evaluation.synthetic_quality.boundary_stage_diagnostics import (
+    stage_mask_profile,
     stage_transition_correspondence_metrics,
+    transition_centroid_shift_metrics,
+    volume_edge_distance_map,
 )
 
 
@@ -174,3 +177,158 @@ def test_inputs_are_not_modified() -> None:
 
     np.testing.assert_array_equal(source, source_before)
     np.testing.assert_array_equal(target, target_before)
+
+
+def test_volume_edge_distance_map_handles_non_cubic_and_unit_axes() -> None:
+    distances = volume_edge_distance_map((5, 6, 7))
+    assert distances[0, 3, 3] == 0
+    assert distances[1, 3, 3] == 1
+    assert distances[2, 3, 3] == 2
+    np.testing.assert_array_equal(volume_edge_distance_map((1, 3, 4)), 0)
+
+
+def test_stage_profile_identity_and_empty_cases() -> None:
+    truth = np.zeros((5, 5, 5), dtype=bool)
+    truth[2, 2, 2] = True
+    identity = stage_mask_profile(
+        truth,
+        truth_fault_mask=truth,
+        truth_surface_mask=truth,
+        match_radius=1.0,
+        edge_margin=1,
+    )["truth"]
+    assert identity["truth_recall"] == 1.0
+    assert identity["candidate_precision"] == 1.0
+    assert identity["buffered_f1"] == 1.0
+    assert identity["candidate_to_truth_distance_p95"] == 0.0
+
+    empty_candidate = stage_mask_profile(
+        np.zeros_like(truth),
+        truth_fault_mask=truth,
+        truth_surface_mask=truth,
+        match_radius=1.0,
+        edge_margin=1,
+    )["truth"]
+    assert empty_candidate["truth_recall"] == 0.0
+    assert empty_candidate["candidate_precision"] is None
+    assert empty_candidate["truth_to_candidate_distance_median"] is None
+
+    empty_truth = stage_mask_profile(
+        truth,
+        truth_fault_mask=np.zeros_like(truth),
+        truth_surface_mask=np.zeros_like(truth),
+        match_radius=1.0,
+        edge_margin=1,
+    )["truth"]
+    assert empty_truth["truth_recall"] is None
+    assert empty_truth["candidate_precision"] == 0.0
+    assert empty_truth["candidate_to_truth_distance_median"] is None
+
+
+def test_stage_profile_regions_and_edge_bins_match_against_full_masks() -> None:
+    truth = np.zeros((9, 9, 9), dtype=bool)
+    candidate = np.zeros_like(truth)
+    truth[0, 4, 4] = True
+    truth[4, 4, 4] = True
+    candidate[1, 4, 4] = True
+    candidate[4, 4, 4] = True
+    result = stage_mask_profile(
+        candidate,
+        truth_fault_mask=truth,
+        truth_surface_mask=truth,
+        match_radius=1.0,
+        edge_margin=1,
+        max_exact_edge_distance=3,
+    )
+    assert result["regions"]["boundary_shell"]["truth_count"] == 1
+    assert result["regions"]["boundary_shell"]["truth_recall"] == 1.0
+    assert result["regions"]["interior"]["candidate_count"] == 2
+    assert list(result["edge_distance_profile"]) == ["0", "1", "2", "3", "4_plus"]
+    assert result["edge_distance_profile"]["0"]["truth_recall"] == 1.0
+    assert result["edge_distance_profile"]["1"]["candidate_precision"] == 1.0
+    assert result["edge_distance_profile"]["4_plus"]["truth_count"] == 1
+
+
+def test_stage_profile_components_use_18_neighborhood() -> None:
+    mask = np.zeros((4, 4, 4), dtype=bool)
+    mask[0, 0, 0] = True
+    mask[0, 1, 1] = True  # edge-connected
+    mask[1, 2, 1] = True  # edge-connected
+    mask[3, 3, 3] = True  # corner-only from the preceding voxel
+    result = stage_mask_profile(
+        mask,
+        truth_fault_mask=mask,
+        truth_surface_mask=mask,
+        match_radius=0.0,
+        edge_margin=1,
+    )["components"]
+    assert result == {
+        "connectivity": "edge",
+        "component_count": 2,
+        "largest_component_size": 3,
+        "largest_component_fraction": 0.75,
+    }
+
+
+def test_centroid_shift_reorders_coordinates_and_projects_onto_normal() -> None:
+    source = np.zeros((4, 4, 5), dtype=bool)
+    target = np.zeros_like(source)
+    source[1, 2, 1] = True
+    target[1, 2, 2] = True
+    strike = np.zeros(source.shape, dtype=np.float32)
+    dip = np.zeros_like(strike)  # normal=(-1, 0, 0)
+    result = transition_centroid_shift_metrics(
+        source,
+        target,
+        truth_strike=strike,
+        truth_dip=dip,
+        truth_reference_mask=source,
+    )
+    assert result["source_centroid_x1_x2_x3"] == [1.0, 2.0, 1.0]
+    assert result["shift_x1_x2_x3"] == [1.0, 0.0, 0.0]
+    assert result["shift_magnitude"] == 1.0
+    assert result["normal_shift"] == -1.0
+    assert result["tangential_shift_magnitude"] == 0.0
+
+
+def test_centroid_shift_handles_perpendicular_and_missing_inputs() -> None:
+    source = np.zeros((3, 3, 3), dtype=bool)
+    target = np.zeros_like(source)
+    source[1, 1, 1] = True
+    target[1, 2, 1] = True
+    angles = np.zeros(source.shape)
+    result = transition_centroid_shift_metrics(
+        source,
+        target,
+        truth_strike=angles,
+        truth_dip=angles,
+        truth_reference_mask=source,
+    )
+    assert result["normal_shift"] == pytest.approx(0.0)
+    assert result["tangential_shift_magnitude"] == pytest.approx(1.0)
+
+    missing = transition_centroid_shift_metrics(
+        np.zeros_like(source),
+        target,
+        truth_strike=angles,
+        truth_dip=angles,
+        truth_reference_mask=np.zeros_like(source),
+    )
+    assert missing["shift_x1_x2_x3"] is None
+    assert missing["representative_truth_normal_x1_x2_x3"] is None
+    assert missing["normal_shift"] is None
+
+
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf])
+def test_centroid_shift_rejects_non_finite_truth_angles(bad_value: float) -> None:
+    mask = np.zeros((2, 2, 2), dtype=bool)
+    angles = np.zeros(mask.shape)
+    angles[0, 0, 0] = bad_value
+    with pytest.raises(ValueError):
+        transition_centroid_shift_metrics(
+            mask,
+            mask,
+            truth_strike=angles,
+            truth_dip=np.zeros_like(angles),
+            truth_reference_mask=mask,
+        )

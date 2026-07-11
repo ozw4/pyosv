@@ -5,11 +5,183 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, generate_binary_structure, label
 
 from .quality_metrics import edge_mask
 
-__all__ = ["stage_transition_correspondence_metrics"]
+__all__ = [
+    "stage_mask_profile",
+    "stage_transition_correspondence_metrics",
+    "transition_centroid_shift_metrics",
+    "volume_edge_distance_map",
+]
+
+
+def volume_edge_distance_map(shape: tuple[int, int, int]) -> np.ndarray:
+    """Return each voxel's discrete distance from the nearest volume face."""
+
+    if len(shape) != 3 or any(
+        isinstance(size, (bool, np.bool_))
+        or not isinstance(size, (int, np.integer))
+        or int(size) < 0
+        for size in shape
+    ):
+        raise ValueError("shape must contain three non-negative integers")
+    shape = tuple(int(size) for size in shape)
+    distances = np.empty(shape, dtype=np.intp)
+    if distances.size == 0:
+        return distances
+    axis_distances = [np.minimum(np.arange(size), np.arange(size)[::-1]) for size in shape]
+    distances[...] = np.minimum(
+        np.minimum(axis_distances[0][:, None, None], axis_distances[1][None, :, None]),
+        axis_distances[2][None, None, :],
+    )
+    return distances
+
+
+def stage_mask_profile(
+    candidate_mask: np.ndarray,
+    *,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    match_radius: float,
+    edge_margin: int,
+    max_exact_edge_distance: int = 3,
+) -> dict[str, Any]:
+    """Summarize one stage relative to synthetic fault truth."""
+
+    candidate, truth_fault = _validate_masks(candidate_mask, truth_fault_mask)
+    truth_surface = np.asarray(truth_surface_mask, dtype=bool)
+    if truth_surface.ndim != 3 or truth_surface.shape != candidate.shape:
+        raise ValueError(
+            "truth_surface_mask must be 3D and match candidate_mask shape, "
+            f"got {truth_surface.shape} and {candidate.shape}"
+        )
+    radius = _validate_match_radius(match_radius)
+    margin = _validate_edge_margin(edge_margin)
+    max_distance = _validate_nonnegative_integer(max_exact_edge_distance, "max_exact_edge_distance")
+
+    candidate_count = int(np.count_nonzero(candidate))
+    truth_count = int(np.count_nonzero(truth_fault))
+    candidate_to_fault = _distances_to_mask(truth_fault) if truth_count else None
+    truth_to_candidate = _distances_to_mask(candidate) if candidate_count else None
+    candidate_to_surface = _distances_to_mask(truth_surface) if np.any(truth_surface) else None
+
+    shell = edge_mask(candidate.shape, margin)
+    edge_distances = volume_edge_distance_map(candidate.shape)
+    edge_profile: dict[str, Any] = {}
+    for distance in range(max_distance + 1):
+        population = edge_distances == distance
+        edge_profile[str(distance)] = _truth_region_metrics(
+            candidate & population,
+            truth_fault & population,
+            candidate_to_fault=candidate_to_fault,
+            truth_to_candidate=truth_to_candidate,
+            candidate_to_surface=candidate_to_surface,
+            match_radius=radius,
+        )
+    population = edge_distances > max_distance
+    edge_profile[f"{max_distance + 1}_plus"] = _truth_region_metrics(
+        candidate & population,
+        truth_fault & population,
+        candidate_to_fault=candidate_to_fault,
+        truth_to_candidate=truth_to_candidate,
+        candidate_to_surface=candidate_to_surface,
+        match_radius=radius,
+    )
+
+    return {
+        "candidate_count": candidate_count,
+        "truth": _truth_region_metrics(
+            candidate,
+            truth_fault,
+            candidate_to_fault=candidate_to_fault,
+            truth_to_candidate=truth_to_candidate,
+            candidate_to_surface=candidate_to_surface,
+            match_radius=radius,
+        ),
+        "regions": {
+            "boundary_shell": _truth_region_metrics(
+                candidate & shell,
+                truth_fault & shell,
+                candidate_to_fault=candidate_to_fault,
+                truth_to_candidate=truth_to_candidate,
+                candidate_to_surface=candidate_to_surface,
+                match_radius=radius,
+            ),
+            "interior": _truth_region_metrics(
+                candidate & ~shell,
+                truth_fault & ~shell,
+                candidate_to_fault=candidate_to_fault,
+                truth_to_candidate=truth_to_candidate,
+                candidate_to_surface=candidate_to_surface,
+                match_radius=radius,
+            ),
+        },
+        "components": _component_summary(candidate),
+        "edge_distance_profile": edge_profile,
+    }
+
+
+def transition_centroid_shift_metrics(
+    source_mask: np.ndarray,
+    target_mask: np.ndarray,
+    *,
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+    truth_reference_mask: np.ndarray,
+) -> dict[str, Any]:
+    """Measure a stage shift in OSV coordinates and along the mean truth normal."""
+
+    source, target = _validate_masks(source_mask, target_mask)
+    strike = np.asarray(truth_strike)
+    dip = np.asarray(truth_dip)
+    reference = np.asarray(truth_reference_mask, dtype=bool)
+    for name, array in (("truth_strike", strike), ("truth_dip", dip)):
+        if array.ndim != 3 or array.shape != source.shape:
+            raise ValueError(f"{name} must be 3D and match mask shape")
+        if not np.issubdtype(array.dtype, np.number) or not np.all(np.isfinite(array)):
+            raise ValueError(f"{name} must contain only finite numeric values")
+    if reference.ndim != 3 or reference.shape != source.shape:
+        raise ValueError("truth_reference_mask must be 3D and match mask shape")
+
+    source_centroid = _centroid_x1_x2_x3(source)
+    target_centroid = _centroid_x1_x2_x3(target)
+    shift = None
+    magnitude = None
+    if source_centroid is not None and target_centroid is not None:
+        shift_array = np.asarray(target_centroid) - np.asarray(source_centroid)
+        shift = [float(value) for value in shift_array]
+        magnitude = float(np.linalg.norm(shift_array))
+
+    normal = None
+    resultant_length = None
+    if np.any(reference):
+        p = np.deg2rad(strike[reference].astype(np.float64, copy=False))
+        t = np.deg2rad(dip[reference].astype(np.float64, copy=False))
+        normals = np.column_stack((-np.cos(t), np.sin(t) * np.cos(p), -np.sin(t) * np.sin(p)))
+        mean_normal = np.mean(normals, axis=0)
+        resultant_length = float(np.linalg.norm(mean_normal))
+        if resultant_length > 1.0e-12:
+            normal = [float(value) for value in mean_normal / resultant_length]
+
+    normal_shift = None
+    tangential_magnitude = None
+    if shift is not None and normal is not None and magnitude is not None:
+        normal_shift = float(np.dot(shift, normal))
+        tangential_magnitude = float(
+            np.sqrt(max(0.0, magnitude * magnitude - normal_shift * normal_shift))
+        )
+    return {
+        "source_centroid_x1_x2_x3": source_centroid,
+        "target_centroid_x1_x2_x3": target_centroid,
+        "shift_x1_x2_x3": shift,
+        "shift_magnitude": magnitude,
+        "representative_truth_normal_x1_x2_x3": normal,
+        "truth_normal_resultant_length": resultant_length,
+        "normal_shift": normal_shift,
+        "tangential_shift_magnitude": tangential_magnitude,
+    }
 
 
 def stage_transition_correspondence_metrics(
@@ -102,6 +274,72 @@ def _region_metrics(
     }
 
 
+def _truth_region_metrics(
+    candidate_population: np.ndarray,
+    truth_population: np.ndarray,
+    *,
+    candidate_to_fault: np.ndarray | None,
+    truth_to_candidate: np.ndarray | None,
+    candidate_to_surface: np.ndarray | None,
+    match_radius: float,
+) -> dict[str, Any]:
+    candidate_count = int(np.count_nonzero(candidate_population))
+    truth_count = int(np.count_nonzero(truth_population))
+    matched_truth_count = _matched_count(truth_population, truth_to_candidate, match_radius)
+    matched_candidate_count = _matched_count(candidate_population, candidate_to_fault, match_radius)
+    recall = _fraction_or_none(matched_truth_count, truth_count)
+    precision = _fraction_or_none(matched_candidate_count, candidate_count)
+    buffered_f1 = None
+    if recall is not None and precision is not None:
+        buffered_f1 = (
+            0.0
+            if recall + precision == 0.0
+            else float(2.0 * recall * precision / (recall + precision))
+        )
+    candidate_median, candidate_p95 = _distance_statistics(
+        candidate_population, candidate_to_surface
+    )
+    truth_median, truth_p95 = _distance_statistics(truth_population, truth_to_candidate)
+    return {
+        "truth_count": truth_count,
+        "matched_truth_count": matched_truth_count,
+        "truth_recall": recall,
+        "matched_candidate_count": matched_candidate_count,
+        "candidate_count": candidate_count,
+        "candidate_precision": precision,
+        "buffered_f1": buffered_f1,
+        "candidate_to_truth_distance_median": candidate_median,
+        "candidate_to_truth_distance_p95": candidate_p95,
+        "truth_to_candidate_distance_median": truth_median,
+        "truth_to_candidate_distance_p95": truth_p95,
+    }
+
+
+def _component_summary(mask: np.ndarray) -> dict[str, Any]:
+    labels, component_count = label(mask, generate_binary_structure(3, 2))
+    if component_count == 0:
+        largest_size = 0
+        largest_fraction = 0.0
+    else:
+        sizes = np.bincount(labels.ravel())[1:]
+        largest_size = int(np.max(sizes))
+        largest_fraction = float(largest_size / np.count_nonzero(mask))
+    return {
+        "connectivity": "edge",
+        "component_count": int(component_count),
+        "largest_component_size": largest_size,
+        "largest_component_fraction": largest_fraction,
+    }
+
+
+def _centroid_x1_x2_x3(mask: np.ndarray) -> list[float] | None:
+    indices = np.argwhere(mask)
+    if indices.size == 0:
+        return None
+    centroid_i3_i2_i1 = np.mean(indices, axis=0)
+    return [float(value) for value in centroid_i3_i2_i1[::-1]]
+
+
 def _validate_masks(
     source_mask: np.ndarray, target_mask: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -134,6 +372,15 @@ def _validate_edge_margin(value: int) -> int:
     result = int(value)
     if result < 0:
         raise ValueError("edge_margin must be a non-negative integer")
+    return result
+
+
+def _validate_nonnegative_integer(value: int, name: str) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be a non-negative integer")
+    result = int(value)
+    if result < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
     return result
 
 
