@@ -26,13 +26,7 @@ from typing import Any
 import numpy as np
 
 from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
-from pyosv.experimental.boundary_skinning import (
-    apply_boundary_skinner_fallback,
-    find_synthetic_skins,
-)
-from pyosv.experimental.skin_diagnostics import add_primary_skin_diagnostics
 from pyosv.experimental.boundary_thinning import (
-    FVT_RECENTER_MAX_SHIFT,
     apply_boundary_edge_thin_v1,
     fvt_recenter_target_distance_diagnostics,
     recenter_edge_fvt_to_target,
@@ -42,17 +36,6 @@ from pyosv.synthetic3d import (
     make_boundary_plane_case,  # noqa: F401 - compatibility export
     validate_shape3,
 )
-from pyosv.synthetic_metrics import (
-    buffered_surface_overlap,
-    edge_false_positive_ratio,
-    masked_orientation_error,
-    skin_mask_from_skins,
-    skin_topology_metrics,
-    skin_truth_metrics,
-    surface_distance_metrics,
-    top_positive_truth_count_mask,
-    top_truth_count_mask,
-)
 from pyosv.evaluation.synthetic_quality.config import (
     SKINNER_GROWTH_SOURCES,
     SKINNER_METHODS,
@@ -60,7 +43,6 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
-    _validate_nonnegative_finite_scalar,
 )
 from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.evaluation.synthetic_quality.diagnostics import (
@@ -78,6 +60,19 @@ from pyosv.evaluation.synthetic_quality.scanner import (
     scan_ensemble_attributes,
     scanner_attributes_from_case,
     unit_range_normalize,
+)
+from pyosv.evaluation.synthetic_quality.pipeline import (
+    run_voting_from_attributes as _package_run_voting_from_attributes,
+)
+from pyosv.evaluation.synthetic_quality.runner import (
+    case_pipeline_reports as _package_case_pipeline_reports,
+    case_variant_comparison_alias as _package_case_variant_comparison_alias,
+    run_case as _package_run_case,
+    run_case_variant as _package_run_case_variant,
+    run_oracle_pipeline as _package_run_oracle_pipeline,
+    run_scanner_pipeline as _package_run_scanner_pipeline,
+    validate_input_mode as _package_validate_input_mode,
+    variant_pipeline_report as _package_variant_pipeline_report,
 )
 from pyosv.evaluation.synthetic_quality.cases import (
     CASE_IDS,  # noqa: F401 - compatibility export
@@ -118,7 +113,7 @@ from pyosv.evaluation.synthetic_quality.variants import (
     validate_variants,
 )
 from pyosv.cells import FaultCell
-from pyosv.voting3d import OptimalSurfaceVoter
+from pyosv.voting3d import OptimalSurfaceVoter  # noqa: F401 - compatibility export
 
 DEFAULT_SHAPE = (33, 33, 33)
 FORMAT_VERSION = 1
@@ -625,286 +620,93 @@ def parse_optional_nonnegative_int(text: str) -> int | None:
 
 def run_case(
     case_definition: SyntheticQualityCaseDefinition,
-    *,
-    shape: tuple[int, int, int],
-    voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
-    scanner_config: SyntheticScannerConfig = SyntheticScannerConfig(),
-    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig(),
-    skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
-    variant: str = "current_default",
-    input_mode: str = "oracle",
-    scanner_backend_matrix: bool = False,
-    include_thinning_diagnostic: bool = False,
-    include_scanner_downstream_diagnostics: bool = False,
-    thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    case = case_definition.factory(shape)
-    if case.case_id != case_definition.case_id:
-        raise ValueError(
-            f"case factory returned {case.case_id!r}, expected {case_definition.case_id!r}"
-        )
-    diagnostic_case_ids = set(_validate_thinning_diagnostic_cases(thinning_diagnostic_cases))
-    variant_report, volumes, _ = _run_case_variant(
-        case,
-        voting_config=voting_config,
-        scanner_config=scanner_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant=variant,
-        input_mode=input_mode,
-        scanner_backend_matrix=scanner_backend_matrix,
-        include_thinning_diagnostic=(
-            include_thinning_diagnostic and case.case_id in diagnostic_case_ids
-        ),
-        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    report = {
-        "case_id": case.case_id,
-        "shape": [int(size) for size in case.shape],
-        "truth": _truth_report(case, truth_metric_config),
-        "variants": {variant: variant_report},
-    }
-    if variant == BASELINE_VARIANT:
-        report.update(
-            {key: value for key, value in variant_report.items() if key not in {"pipelines"}}
-        )
-    pipelines = _case_pipeline_reports({variant: variant_report}, input_mode)
-    report["pipelines"] = pipelines
-    report["variant_comparison"] = _case_variant_comparison_alias(pipelines, input_mode)
-    return report, volumes
+    kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
+    kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    evaluation = _package_run_case(case_definition, **kwargs)
+    return dict(evaluation.report_payload), dict(evaluation.artifacts.volumes)
 
 
 def _run_case_variant(
     case: Synthetic3DCase,
-    *,
-    voting_config: SyntheticVotingConfig,
-    scanner_config: SyntheticScannerConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant: str,
-    input_mode: str,
-    scanner_backend_matrix: bool,
-    include_thinning_diagnostic: bool,
-    include_scanner_downstream_diagnostics: bool,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    variant_spec = get_variant_spec(variant)
-    valid_input_mode = _validate_input_mode(input_mode)
-    skinning_config = effective_skinning_config(variant_spec, skinning_config)
-
-    if valid_input_mode == "oracle":
-        return _run_oracle_pipeline(
-            case,
-            voting_config=voting_config,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            include_thinning_diagnostic=include_thinning_diagnostic,
-        )
-
-    pipelines = {}
-    pipeline_outputs = {}
-    if valid_input_mode == "both":
-        oracle_report, oracle_volumes, oracle_skins = _run_oracle_pipeline(
-            case,
-            voting_config=voting_config,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            include_thinning_diagnostic=include_thinning_diagnostic,
-        )
-        pipelines["oracle"] = oracle_report
-        pipeline_outputs["oracle"] = (oracle_report, oracle_volumes, oracle_skins)
-
-    scanner_report, scanner_volumes, scanner_skins = _run_scanner_pipeline(
-        case,
-        voting_config=voting_config,
-        scanner_config=scanner_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant_spec=variant_spec,
-        scanner_backend_matrix=scanner_backend_matrix,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-        include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    pipelines["scanner"] = scanner_report
-    pipeline_outputs["scanner"] = (scanner_report, scanner_volumes, scanner_skins)
-
-    active_pipeline = "scanner" if valid_input_mode == "scanner" else "oracle"
-    active_report, active_volumes, active_skins = pipeline_outputs[active_pipeline]
-    report = dict(active_report)
-    report["active_pipeline"] = active_pipeline
-    report["pipelines"] = pipelines
-    if valid_input_mode == "both":
-        pipeline_volumes = {pipeline: outputs[1] for pipeline, outputs in pipeline_outputs.items()}
-        pipeline_skins = {pipeline: outputs[2] for pipeline, outputs in pipeline_outputs.items()}
-        return (
-            report,
-            {PIPELINE_OUTPUTS_KEY: pipeline_volumes},
-            {PIPELINE_OUTPUTS_KEY: pipeline_skins},
-        )
-    return report, active_volumes, active_skins
+    kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
+    kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    evaluation = _package_run_case_variant(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
+    )
 
 
 def _validate_input_mode(input_mode: str) -> str:
-    if input_mode not in {"oracle", "scanner", "both"}:
-        raise ValueError("input_mode must be 'oracle', 'scanner', or 'both'")
-    return input_mode
+    return _package_validate_input_mode(input_mode)
 
 
 def _case_pipeline_reports(
     variant_reports: Mapping[str, Mapping[str, Any]],
     input_mode: str,
 ) -> dict[str, dict[str, Any]]:
-    pipeline_names = {
-        "oracle": ("oracle",),
-        "scanner": ("scanner",),
-        "both": ("oracle", "scanner"),
-    }[_validate_input_mode(input_mode)]
-    return {
-        pipeline: {
-            "variants": {
-                variant: _variant_pipeline_report(variant_report, pipeline)
-                for variant, variant_report in variant_reports.items()
-            },
-            "variant_comparison": _variant_comparison(
-                {
-                    variant: _variant_pipeline_report(variant_report, pipeline)
-                    for variant, variant_report in variant_reports.items()
-                }
-            ),
-        }
-        for pipeline in pipeline_names
-    }
+    return _package_case_pipeline_reports(variant_reports, input_mode)
 
 
 def _variant_pipeline_report(
     variant_report: Mapping[str, Any],
     pipeline: str,
 ) -> Mapping[str, Any]:
-    pipelines = variant_report.get("pipelines")
-    if isinstance(pipelines, Mapping) and pipeline in pipelines:
-        pipeline_report = pipelines[pipeline]
-        if not isinstance(pipeline_report, Mapping):
-            raise TypeError(f"pipeline report must be a mapping: {pipeline}")
-        return pipeline_report
-    if pipeline == "oracle" and "scanner_quality" not in variant_report:
-        return variant_report
-    if pipeline == "scanner" and "scanner_quality" in variant_report:
-        return variant_report
-    raise KeyError(f"missing pipeline report: {pipeline}")
+    return _package_variant_pipeline_report(variant_report, pipeline)
 
 
 def _case_variant_comparison_alias(
     pipelines: Mapping[str, Mapping[str, Any]],
     input_mode: str,
 ) -> dict[str, Any]:
-    valid_input_mode = _validate_input_mode(input_mode)
-    if valid_input_mode == "both":
-        return {
-            "pipelines": {
-                pipeline: pipeline_report["variant_comparison"]
-                for pipeline, pipeline_report in pipelines.items()
-            }
-        }
-    active_pipeline = "scanner" if valid_input_mode == "scanner" else "oracle"
-    return dict(pipelines[active_pipeline]["variant_comparison"])
+    return _package_case_variant_comparison_alias(pipelines, input_mode)
 
 
 def _run_oracle_pipeline(
     case: Synthetic3DCase,
-    *,
-    voting_config: SyntheticVotingConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant_spec: VariantSpec,
-    include_thinning_diagnostic: bool,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    return _run_voting_from_attributes(
-        case,
-        ft=case.ft_oracle,
-        pt=case.pt_oracle,
-        tt=case.tt_oracle,
-        voting_config=voting_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant_spec=variant_spec,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-        fvt_recenter_target=case.ft_oracle,
-        fvt_recenter_target_source="oracle_ft",
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
+    )
+    evaluation = _package_run_oracle_pipeline(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
     )
 
 
 def _run_scanner_pipeline(
     case: Synthetic3DCase,
-    *,
-    voting_config: SyntheticVotingConfig,
-    scanner_config: SyntheticScannerConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant_spec: VariantSpec,
-    scanner_backend_matrix: bool,
-    include_thinning_diagnostic: bool,
-    include_scanner_downstream_diagnostics: bool,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    scanner_report, scanner_volumes = _scanner_attributes_from_case(case, scanner_config)
-    report, volumes, skins_output = _run_voting_from_attributes(
-        case,
-        ft=scanner_volumes["scanner_fet"],
-        pt=scanner_volumes["scanner_fpt"],
-        tt=scanner_volumes["scanner_ftt"],
-        voting_config=voting_config,
-        truth_metric_config=truth_metric_config,
-        skinning_config=skinning_config,
-        variant_spec=variant_spec,
-        include_thinning_diagnostic=include_thinning_diagnostic,
-        scanner_target_positive_mask=_positive_candidate_mask(scanner_volumes["scanner_ft"]),
-        fvt_recenter_target=scanner_volumes["scanner_fet"],
-        fvt_recenter_target_source="scanner_fet",
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    report["scanner"] = scanner_report
-    report["scanner_quality"] = _scanner_truth_quality(
-        case,
-        scanner_volumes=scanner_volumes,
-        truth_metric_config=truth_metric_config,
+    kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
+    kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    evaluation = _package_run_scanner_pipeline(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
     )
-    if include_scanner_downstream_diagnostics:
-        report["scanner_downstream"] = _scanner_downstream_diagnostics(
-            case=case,
-            scanner_config=scanner_config,
-            voting_config=voting_config,
-            variant_spec=variant_spec,
-            report=report,
-            scanner_volumes=scanner_volumes,
-            fv=volumes["fv_py"],
-            vp=volumes["vp_py"],
-            vt=volumes["vt_py"],
-            fvt=volumes["fvt_py"],
-            truth_metric_config=truth_metric_config,
-        )
-        report["scanner_stage_loss"] = _scanner_stage_loss_diagnostics(
-            case=case,
-            voting_config=voting_config,
-            variant_spec=variant_spec,
-            scanner_volumes=scanner_volumes,
-            fv=volumes["fv_py"],
-            fvt=volumes["fvt_py"],
-            skin_mask=volumes["skin_mask_py"],
-            truth_metric_config=truth_metric_config,
-            boundary_seed_selector=_boundary_seed_retention_v1_seeds,
-        )
-    if scanner_backend_matrix:
-        report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
-            case,
-            voting_config=voting_config,
-            scanner_config=scanner_config,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            include_thinning_diagnostic=include_thinning_diagnostic,
-            selected_report=report,
-        )
-    volumes.update(scanner_volumes)
-    return report, volumes, skins_output
 
 
 def _scanner_backend_matrix_report(
@@ -1193,359 +995,18 @@ def _masked_mean(values: np.ndarray, mask: np.ndarray) -> float:
 
 def _run_voting_from_attributes(
     case: Synthetic3DCase,
-    *,
-    ft: np.ndarray,
-    pt: np.ndarray,
-    tt: np.ndarray,
-    voting_config: SyntheticVotingConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    skinning_config: SyntheticSkinningConfig,
-    variant_spec: VariantSpec,
-    include_thinning_diagnostic: bool = False,
-    scanner_target_positive_mask: np.ndarray | None = None,
-    fvt_recenter_target: np.ndarray | None = None,
-    fvt_recenter_target_source: str | None = None,
+    **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
-    voter = OptimalSurfaceVoter(
-        ru=voting_config.ru,
-        rv=voting_config.rv,
-        rw=voting_config.rw,
+    kwargs.setdefault("thinning_diagnostic_runner", _run_voter_thinning_diagnostic)
+    kwargs.setdefault(
+        "recenter_distance_diagnostic_runner", fvt_recenter_target_distance_diagnostics
     )
-    voter.set_attribute_smoothing(voting_config.attribute_smoothing)
-    voting_patch = variant_spec.voting
-    surface_support_min_fraction = (
-        voting_config.surface_support_min_fraction
-        if voting_patch.support_min_fraction is None
-        else voting_patch.support_min_fraction
+    evaluation = _package_run_voting_from_attributes(case, **kwargs)
+    return (
+        dict(evaluation.report_payload),
+        dict(evaluation.artifacts.volumes),
+        dict(evaluation.artifacts.skins_payload),
     )
-    surface_support_exponent = (
-        voting_config.surface_support_exponent
-        if voting_patch.support_exponent is None
-        else voting_patch.support_exponent
-    )
-    voter.set_surface_support_policy(
-        min_fraction=surface_support_min_fraction,
-        exponent=surface_support_exponent,
-    )
-    if voting_patch.boundary_policy is not None:
-        voter.set_surface_voting_boundary_policy(voting_patch.boundary_policy)
-    if voting_patch.orientation_smoothing is not None:
-        voter.set_surface_orientation_smoothing(voting_patch.orientation_smoothing)
-    if voting_patch.final_normalization_smoothing is not None:
-        voter.set_final_normalization_smoothing(voting_patch.final_normalization_smoothing)
-    boundary_seed_retention_diagnostic: dict[str, Any] | None = None
-    if variant_spec.seed_policy == "boundary_seed_retention_v1":
-        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        boundary_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        seed_result = select_boundary_seed_retention_v1(
-            voting_config=voting_config,
-            ft=ft,
-            pt=pt,
-            tt=tt,
-            target=boundary_target,
-            target_source=boundary_target_source,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        seeds = list(seed_result.selected_seeds)
-        boundary_seed_retention_diagnostic = seed_result.diagnostics
-    else:
-        seeds = voter.pick_seeds(
-            d=voting_config.seed_distance,
-            fm=voting_config.seed_threshold,
-            ft=ft,
-            pt=pt,
-            tt=tt,
-        )
-    fv, vp, vt = voter.apply_voting_from_seeds(
-        seeds,
-        ft=ft,
-        pt=pt,
-        tt=tt,
-    )
-    surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
-    thin_mode = effective_thin_mode(variant_spec, voting_config)
-    plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
-    fvt = voter.thin(
-        fv,
-        vp,
-        vt,
-        mode=thin_mode,
-        reference_sigma=voting_config.reference_thin_sigma,
-        plateau_tie_breaker=plateau_tie_breaker,
-    )
-    fvt_recenter_diagnostic: dict[str, Any] | None = None
-    fvt_recenter_before_positive: np.ndarray | None = None
-    boundary_edge_thin_diagnostic: dict[str, Any] | None = None
-    if variant_spec.post_thinning_policy == "recenter_scanner_target":
-        recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        recenter_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        fvt_recenter_before_positive = _positive_candidate_mask(fvt)
-        recenter_result = recenter_edge_fvt_to_target(
-            fvt,
-            vp,
-            vt,
-            target=recenter_target,
-            target_source=recenter_target_source,
-            max_shift=FVT_RECENTER_MAX_SHIFT,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = recenter_result.output
-        fvt_recenter_diagnostic = recenter_result.diagnostics
-    if variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
-        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        boundary_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        boundary_thin_result = apply_boundary_edge_thin_v1(
-            fvt,
-            fv,
-            vp,
-            vt,
-            voter=voter,
-            target=boundary_target,
-            target_source=boundary_target_source,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = boundary_thin_result.output
-        boundary_edge_thin_diagnostic = boundary_thin_result.diagnostics
-
-    truth_surface_half_width = _validate_nonnegative_finite_scalar(
-        truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
-    )
-    buffer_radius = _validate_nonnegative_finite_scalar(
-        truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
-    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-    fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
-    fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
-    fv_positive_top_truth_count = top_positive_truth_count_mask(fv, truth_surface_mask)
-    fvt_positive_top_truth_count = top_positive_truth_count_mask(fvt, truth_surface_mask)
-    edge_false_positive_metrics = {
-        "fv_top_truth_count": edge_false_positive_ratio(
-            fv_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fvt_top_truth_count": edge_false_positive_ratio(
-            fvt_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fv_positive_top_truth_count": edge_false_positive_ratio(
-            fv_positive_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fvt_positive_top_truth_count": edge_false_positive_ratio(
-            fvt_positive_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-    }
-    report = {
-        "config": {
-            "skinning": skinning_config.as_report_dict(),
-        },
-        "skinning": {"enabled": skinning_config.enabled},
-        "pyosv": {
-            "fv": _array_summary(fv),
-            "fvt": _array_summary(fvt),
-            "voting": {
-                "surface_voting_boundary_policy": voter.surface_voting_boundary_policy,
-                "surface_support_min_fraction": float(surface_support_min_fraction),
-                "surface_support_exponent": float(surface_support_exponent),
-                "diagnostic_summary": surface_voting_diagnostic_summary,
-            },
-        },
-        "quality": {
-            "fv_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fv_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fv_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fv_top_truth_count,
-                ),
-            },
-            "fvt_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fvt_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fvt_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fvt_top_truth_count,
-                ),
-            },
-            "fv_positive_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fv_positive_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fv_positive_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fv_positive_top_truth_count,
-                ),
-            },
-            "fvt_positive_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fvt_positive_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fvt_positive_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fvt_positive_top_truth_count,
-                ),
-            },
-            "edge_false_positive": edge_false_positive_metrics,
-        },
-    }
-    if fvt_recenter_diagnostic is not None:
-        fvt_recenter_diagnostic.update(
-            fvt_recenter_target_distance_diagnostics(
-                before=fvt_recenter_before_positive,
-                after=_positive_candidate_mask(fvt),
-                target=_positive_candidate_mask(recenter_target),
-            )
-        )
-        report["fvt_recenter"] = fvt_recenter_diagnostic
-    if boundary_edge_thin_diagnostic is not None:
-        report["boundary_edge_thin"] = boundary_edge_thin_diagnostic
-    if boundary_seed_retention_diagnostic is not None:
-        report["boundary_seed_retention"] = boundary_seed_retention_diagnostic
-    diagnostic_volumes: dict[str, np.ndarray] = {}
-    if include_thinning_diagnostic:
-        thinning_diagnostic, diagnostic_volumes = _run_voter_thinning_diagnostic(
-            case=case,
-            voter=voter,
-            fv=fv,
-            vp=vp,
-            vt=vt,
-            reference_sigma=voting_config.reference_thin_sigma,
-            truth_metric_config=truth_metric_config,
-            skinning_config=skinning_config,
-        )
-        report["thinning_diagnostic"] = thinning_diagnostic
-    if skinning_config.enabled:
-        skin_diagnostics: dict[str, Any] = {}
-        skins = find_synthetic_skins(
-            fv,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_config,
-            diagnostics=skin_diagnostics,
-        )
-        add_primary_skin_diagnostics(
-            skin_diagnostics,
-            skins,
-            shape=case.shape,
-            fvt_positive_candidate_count=int(np.count_nonzero(fvt_positive_top_truth_count)),
-            small_skin_size=skinning_config.small_skin_size,
-        )
-        apply_boundary_skinner_fallback(
-            skins,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            diagnostics=skin_diagnostics,
-            scanner_target_positive_mask=scanner_target_positive_mask,
-        )
-        report["skinning"]["diagnostics"] = skin_diagnostics
-        skin_metrics = skin_truth_metrics(
-            skins,
-            shape=case.shape,
-            truth_fault_mask=truth_fault_mask,
-            truth_surface_mask=truth_surface_mask,
-            truth_strike=case.truth_strike,
-            truth_dip=case.truth_dip,
-            buffer_radius=buffer_radius,
-            small_skin_size=skinning_config.small_skin_size,
-            truth_fault_id=case.truth_fault_id,
-        )
-        skin_metrics = _normalize_report_skin_metric_keys(skin_metrics)
-        report["pyosv"]["skins"] = skin_metrics["topology"]
-        report["quality"]["skin"] = skin_metrics
-        skin_mask = skin_mask_from_skins(skins, case.shape)
-        report["quality"]["edge_false_positive"]["skin"] = edge_false_positive_ratio(
-            skin_mask,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        )
-        skins_output = _skins_json_payload(skins)
-    else:
-        report["pyosv"]["skins"] = skin_topology_metrics(
-            [],
-            case.shape,
-            small_skin_size=skinning_config.small_skin_size,
-        )
-        report["quality"]["skin"] = None
-        skin_mask = np.zeros(case.shape, dtype=bool)
-        skins_output = _disabled_skins_json_payload()
-
-    volumes = {
-        "truth_fault_mask": case.truth_fault_mask.astype(np.float32),
-        "truth_distance": case.truth_distance,
-        "truth_strike": case.truth_strike,
-        "truth_dip": case.truth_dip,
-        "ft_oracle": case.ft_oracle,
-        "pt_oracle": case.pt_oracle,
-        "tt_oracle": case.tt_oracle,
-        "fv_py": fv,
-        "vp_py": vp,
-        "vt_py": vt,
-        "fvt_py": fvt,
-        "skin_mask_py": skin_mask.astype(np.float32),
-    }
-    volumes.update(diagnostic_volumes)
-    return report, volumes, skins_output
 
 
 def _skins_json_payload(skins: Sequence[Any]) -> dict[str, Any]:
