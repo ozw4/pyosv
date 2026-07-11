@@ -4,11 +4,55 @@ import numpy as np
 import pytest
 
 from pyosv.evaluation.synthetic_quality.boundary_stage_diagnostics import (
+    build_scanner_boundary_stage_diagnostics,
     stage_mask_profile,
     stage_transition_correspondence_metrics,
     transition_centroid_shift_metrics,
     volume_edge_distance_map,
 )
+from pyosv.evaluation.synthetic_quality.config import SyntheticTruthMetricConfig
+from pyosv.evaluation.synthetic_quality.models import PipelineStageTrace3D
+from pyosv.synthetic3d import make_single_vertical_plane_case
+
+
+def test_scanner_builder_has_stable_stage_transition_and_volume_schema() -> None:
+    case = make_single_vertical_plane_case((5, 5, 5))
+    empty = np.zeros(case.shape, dtype=bool)
+    trace = PipelineStageTrace3D(
+        seed_candidate_mask=empty,
+        seed_selected_mask=empty,
+        fv_positive_mask=empty,
+        fvt_positive_mask=empty,
+        primary_skin_mask=empty,
+        fallback_skin_mask=empty,
+        final_skin_mask=empty,
+        skinning_enabled=False,
+        fallback_used=False,
+    )
+    scanner_ft = np.zeros(case.shape, dtype=np.float32)
+    scanner_ft[2, 2, 2] = 1.0
+
+    report, volumes = build_scanner_boundary_stage_diagnostics(
+        case=case,
+        scanner_volumes={"scanner_ft": scanner_ft, "scanner_fet": scanner_ft},
+        stage_trace=trace,
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_diagnostics=None,
+    )
+
+    assert report["stage_order"][0:2] == ["scanner_ft_positive", "scanner_fet_positive"]
+    assert report["stage_order"][-3:] == ["primary_skin", "fallback_skin", "final_skin"]
+    assert report["transition_order"][-2:] == [
+        "fvt_positive_to_fallback_skin",
+        "primary_skin_to_fallback_skin",
+    ]
+    assert list(report["stages"]) == report["stage_order"]
+    assert list(report["transitions"]) == report["transition_order"]
+    assert len(volumes) == 10
+    for volume in volumes.values():
+        assert volume.shape == case.shape
+        assert volume.dtype == np.float32
+        assert set(np.unique(volume)).issubset({0.0, 1.0})
 
 
 def _metrics(

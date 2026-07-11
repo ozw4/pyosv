@@ -9,6 +9,9 @@ from typing import Any
 import numpy as np
 
 from pyosv.evaluation.synthetic_quality import quality_metrics
+from pyosv.evaluation.synthetic_quality.boundary_stage_diagnostics import (
+    build_scanner_boundary_stage_diagnostics,
+)
 from pyosv.evaluation.synthetic_quality.cases import (
     SyntheticQualityCaseDefinition,
     validate_case_ids,
@@ -158,6 +161,7 @@ def run_scanner_pipeline(
     scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
     include_scanner_downstream_diagnostics: bool,
+    include_scanner_boundary_stage_diagnostics: bool = False,
     capture_stage_trace: bool = False,
     thinning_diagnostic_runner: Callable[..., Any] = _run_voter_thinning_diagnostic,
     recenter_distance_diagnostic_runner: Callable[..., Any] = (
@@ -165,6 +169,9 @@ def run_scanner_pipeline(
     ),
     scanner_downstream_diagnostic_runner: Callable[..., Any] = (_scanner_downstream_diagnostics),
     scanner_stage_loss_diagnostic_runner: Callable[..., Any] = _scanner_stage_loss_diagnostics,
+    scanner_boundary_stage_diagnostic_runner: Callable[..., Any] = (
+        build_scanner_boundary_stage_diagnostics
+    ),
     prepared_scanner: PreparedScannerInput | None = None,
 ) -> PipelineEvaluation:
     scanner = (
@@ -183,7 +190,7 @@ def run_scanner_pipeline(
         skinning_config=skinning_config,
         variant_spec=variant_spec,
         include_thinning_diagnostic=include_thinning_diagnostic,
-        capture_stage_trace=capture_stage_trace,
+        capture_stage_trace=(capture_stage_trace or include_scanner_boundary_stage_diagnostics),
         scanner_target_positive_mask=quality_metrics.positive_candidate_mask(
             scanner_volumes["scanner_ft"]
         ),
@@ -225,6 +232,19 @@ def run_scanner_pipeline(
             truth_metric_config=truth_metric_config,
             boundary_seed_selector=_boundary_seed_retention_v1_seeds,
         )
+    if include_scanner_boundary_stage_diagnostics:
+        stage_trace = evaluation.artifacts.stage_trace
+        if stage_trace is None:
+            raise RuntimeError("scanner boundary stage diagnostics require a pipeline stage trace")
+        diagnostic_report, diagnostic_volumes = scanner_boundary_stage_diagnostic_runner(
+            case=case,
+            scanner_volumes=scanner_volumes,
+            stage_trace=stage_trace,
+            truth_metric_config=truth_metric_config,
+            skinning_diagnostics=report["skinning"].get("diagnostics"),
+        )
+        report["scanner_boundary_stage_diagnostics"] = diagnostic_report
+        volumes.update(diagnostic_volumes)
     if scanner_backend_matrix:
         report["scanner_backend_matrix"] = _scanner_backend_matrix_report(
             case,
@@ -262,12 +282,16 @@ def run_case_variant(
     scanner_backend_matrix: bool,
     include_thinning_diagnostic: bool,
     include_scanner_downstream_diagnostics: bool,
+    include_scanner_boundary_stage_diagnostics: bool = False,
     thinning_diagnostic_runner: Callable[..., Any] = _run_voter_thinning_diagnostic,
     recenter_distance_diagnostic_runner: Callable[..., Any] = (
         fvt_recenter_target_distance_diagnostics
     ),
     scanner_downstream_diagnostic_runner: Callable[..., Any] = (_scanner_downstream_diagnostics),
     scanner_stage_loss_diagnostic_runner: Callable[..., Any] = _scanner_stage_loss_diagnostics,
+    scanner_boundary_stage_diagnostic_runner: Callable[..., Any] = (
+        build_scanner_boundary_stage_diagnostics
+    ),
     prepared_inputs: PreparedCaseInputs | None = None,
 ) -> PipelineEvaluation:
     variant_spec = get_variant_spec(variant)
@@ -318,10 +342,12 @@ def run_case_variant(
         scanner_backend_matrix=scanner_backend_matrix,
         include_thinning_diagnostic=include_thinning_diagnostic,
         include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
+        include_scanner_boundary_stage_diagnostics=(include_scanner_boundary_stage_diagnostics),
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         scanner_downstream_diagnostic_runner=scanner_downstream_diagnostic_runner,
         scanner_stage_loss_diagnostic_runner=scanner_stage_loss_diagnostic_runner,
+        scanner_boundary_stage_diagnostic_runner=scanner_boundary_stage_diagnostic_runner,
         prepared_scanner=prepared_inputs.scanner,
     )
     active = "scanner" if valid_input_mode == "scanner" else "oracle"
@@ -437,6 +463,7 @@ def run_case(
     scanner_backend_matrix: bool = False,
     include_thinning_diagnostic: bool = False,
     include_scanner_downstream_diagnostics: bool = False,
+    include_scanner_boundary_stage_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
     thinning_diagnostic_runner: Callable[..., Any] = _run_voter_thinning_diagnostic,
     recenter_distance_diagnostic_runner: Callable[..., Any] = (
@@ -444,6 +471,9 @@ def run_case(
     ),
     scanner_downstream_diagnostic_runner: Callable[..., Any] = (_scanner_downstream_diagnostics),
     scanner_stage_loss_diagnostic_runner: Callable[..., Any] = _scanner_stage_loss_diagnostics,
+    scanner_boundary_stage_diagnostic_runner: Callable[..., Any] = (
+        build_scanner_boundary_stage_diagnostics
+    ),
 ) -> PipelineEvaluation:
     case = case_definition.factory(shape)
     if case.case_id != case_definition.case_id:
@@ -470,10 +500,12 @@ def run_case(
             include_thinning_diagnostic and case.case_id in diagnostic_ids
         ),
         include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
+        include_scanner_boundary_stage_diagnostics=(include_scanner_boundary_stage_diagnostics),
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         scanner_downstream_diagnostic_runner=scanner_downstream_diagnostic_runner,
         scanner_stage_loss_diagnostic_runner=scanner_stage_loss_diagnostic_runner,
+        scanner_boundary_stage_diagnostic_runner=scanner_boundary_stage_diagnostic_runner,
     )
     variant_report = evaluation.report_payload
     report_model = build_case_report_model(
@@ -527,6 +559,7 @@ def _scanner_backend_matrix_report(
                     scanner_backend_matrix=False,
                     include_thinning_diagnostic=include_thinning_diagnostic,
                     include_scanner_downstream_diagnostics=False,
+                    include_scanner_boundary_stage_diagnostics=False,
                     thinning_diagnostic_runner=thinning_diagnostic_runner,
                     recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
                     prepared_scanner=prepared_scanner,

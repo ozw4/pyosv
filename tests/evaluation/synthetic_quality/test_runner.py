@@ -182,6 +182,31 @@ def test_scanner_pipeline_preserves_captured_stage_trace() -> None:
     assert result.artifacts.stage_trace.fv_positive_mask.shape == case.shape
 
 
+def test_scanner_boundary_stage_diagnostics_is_independent_opt_in() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    common = dict(
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=_fast_scanner_config(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant_spec=runner.get_variant_spec("current_default"),
+        scanner_backend_matrix=False,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=False,
+    )
+
+    plain = run_scanner_pipeline(case, **common)
+    detailed = run_scanner_pipeline(case, include_scanner_boundary_stage_diagnostics=True, **common)
+
+    assert "scanner_boundary_stage_diagnostics" not in plain.report_payload
+    assert not any(name.startswith("scanner_boundary_stage_") for name in plain.artifacts.volumes)
+    assert "scanner_boundary_stage_diagnostics" in detailed.report_payload
+    assert detailed.artifacts.stage_trace is not None
+    assert (
+        sum(name.startswith("scanner_boundary_stage_") for name in detailed.artifacts.volumes) == 10
+    )
+
+
 def test_scanner_cache_report_build_scans_once_per_case_across_variants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

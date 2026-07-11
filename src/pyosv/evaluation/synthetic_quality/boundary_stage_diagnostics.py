@@ -2,19 +2,144 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt, generate_binary_structure, label
 
+from pyosv.synthetic3d import Synthetic3DCase
+
+from .config import SyntheticTruthMetricConfig, _validate_nonnegative_finite_scalar
+from .models import PipelineStageTrace3D
 from .quality_metrics import edge_mask
+from . import quality_metrics
 
 __all__ = [
+    "build_scanner_boundary_stage_diagnostics",
     "stage_mask_profile",
     "stage_transition_correspondence_metrics",
     "transition_centroid_shift_metrics",
     "volume_edge_distance_map",
 ]
+
+STAGE_ORDER = (
+    "scanner_ft_positive",
+    "scanner_fet_positive",
+    "seed_candidate",
+    "seed_selected",
+    "fv_positive",
+    "fvt_positive",
+    "primary_skin",
+    "fallback_skin",
+    "final_skin",
+)
+TRANSITION_PAIRS = (
+    ("scanner_ft_positive", "scanner_fet_positive"),
+    ("scanner_fet_positive", "seed_candidate"),
+    ("seed_candidate", "seed_selected"),
+    ("seed_selected", "fv_positive"),
+    ("fv_positive", "fvt_positive"),
+    ("fvt_positive", "primary_skin"),
+    ("primary_skin", "final_skin"),
+    ("fvt_positive", "final_skin"),
+    ("fvt_positive", "fallback_skin"),
+    ("primary_skin", "fallback_skin"),
+)
+
+
+def build_scanner_boundary_stage_diagnostics(
+    *,
+    case: Synthetic3DCase,
+    scanner_volumes: Mapping[str, np.ndarray],
+    stage_trace: PipelineStageTrace3D,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    skinning_diagnostics: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    """Build detailed diagnostics from the masks captured by one scanner run."""
+
+    match_radius = _validate_nonnegative_finite_scalar(
+        truth_metric_config.buffer_radius, "buffer_radius"
+    )
+    truth_surface_half_width = _validate_nonnegative_finite_scalar(
+        truth_metric_config.truth_surface_half_width, "truth_surface_half_width"
+    )
+    edge_margin = quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
+    masks = {
+        "scanner_ft_positive": quality_metrics.positive_candidate_mask(
+            scanner_volumes["scanner_ft"]
+        ),
+        "scanner_fet_positive": quality_metrics.positive_candidate_mask(
+            scanner_volumes["scanner_fet"]
+        ),
+        "seed_candidate": stage_trace.seed_candidate_mask,
+        "seed_selected": stage_trace.seed_selected_mask,
+        "fv_positive": stage_trace.fv_positive_mask,
+        "fvt_positive": stage_trace.fvt_positive_mask,
+        "primary_skin": stage_trace.primary_skin_mask,
+        "fallback_skin": stage_trace.fallback_skin_mask,
+        "final_skin": stage_trace.final_skin_mask,
+    }
+    truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
+    stages = {
+        name: stage_mask_profile(
+            masks[name],
+            truth_fault_mask=truth_fault_mask,
+            truth_surface_mask=truth_surface_mask,
+            match_radius=match_radius,
+            edge_margin=edge_margin,
+            max_exact_edge_distance=3,
+        )
+        for name in STAGE_ORDER
+    }
+    transitions = {}
+    for source_name, target_name in TRANSITION_PAIRS:
+        key = f"{source_name}_to_{target_name}"
+        correspondence = stage_transition_correspondence_metrics(
+            masks[source_name],
+            masks[target_name],
+            match_radius=match_radius,
+            edge_margin=edge_margin,
+        )
+        correspondence.update(
+            transition_centroid_shift_metrics(
+                masks[source_name],
+                masks[target_name],
+                truth_strike=case.truth_strike,
+                truth_dip=case.truth_dip,
+                truth_reference_mask=truth_surface_mask,
+            )
+        )
+        transitions[key] = correspondence
+
+    skinning = {} if skinning_diagnostics is None else skinning_diagnostics
+    report = {
+        "config": {
+            "match_radius": float(match_radius),
+            "edge_margin": edge_margin,
+            "edge_distance_exact_max": 3,
+            "component_connectivity": "edge",
+        },
+        "stage_order": list(STAGE_ORDER),
+        "transition_order": [f"{source}_to_{target}" for source, target in TRANSITION_PAIRS],
+        "stages": stages,
+        "transitions": transitions,
+        "skinning": {
+            "enabled": bool(stage_trace.skinning_enabled),
+            "fallback_enabled": bool(skinning.get("fallback_enabled", False)),
+            "fallback_used": bool(stage_trace.fallback_used),
+            "fallback_reason": skinning.get("fallback_reason"),
+        },
+    }
+    volumes = {
+        f"scanner_boundary_stage_{name}": np.asarray(masks[name], dtype=np.float32)
+        for name in STAGE_ORDER
+    }
+    volumes["scanner_boundary_stage_boundary_shell"] = edge_mask(case.shape, edge_margin).astype(
+        np.float32
+    )
+    return report, volumes
 
 
 def volume_edge_distance_map(shape: tuple[int, int, int]) -> np.ndarray:

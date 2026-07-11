@@ -31,6 +31,7 @@ def test_package_cli_help() -> None:
 
     assert result.returncode == 0
     assert "--output-dir" in result.stdout
+    assert "--scanner-boundary-stage-diagnostics" in result.stdout
 
 
 def test_example_wrapper_help() -> None:

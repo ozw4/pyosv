@@ -43,6 +43,9 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticVotingConfig,
 )
 from pyosv.evaluation.synthetic_quality import quality_metrics
+from pyosv.evaluation.synthetic_quality.boundary_stage_diagnostics import (
+    build_scanner_boundary_stage_diagnostics,
+)
 from pyosv.evaluation.synthetic_quality.application import (
     _build_report_outputs as _package_build_report_outputs,
     run_case as _package_application_run_case,
@@ -282,6 +285,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Add scanner downstream fv/fvt retention and thinning-mode diagnostics "
             "for scanner/both input mode."
+        ),
+    )
+    parser.add_argument(
+        "--scanner-boundary-stage-diagnostics",
+        action="store_true",
+        help=(
+            "Add detailed scanner boundary stage profiles and transitions for "
+            "scanner/both input mode."
         ),
     )
     parser.add_argument(
@@ -572,6 +583,10 @@ def run_case(
     )
     kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
     kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    kwargs.setdefault(
+        "scanner_boundary_stage_diagnostic_runner",
+        build_scanner_boundary_stage_diagnostics,
+    )
     return _package_application_run_case(case_definition, **kwargs)
 
 
@@ -585,6 +600,10 @@ def _run_case_variant(
     )
     kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
     kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    kwargs.setdefault(
+        "scanner_boundary_stage_diagnostic_runner",
+        build_scanner_boundary_stage_diagnostics,
+    )
     evaluation = _package_run_case_variant(case, **kwargs)
     return (
         dict(evaluation.report_payload),
@@ -644,6 +663,10 @@ def _run_scanner_pipeline(
     )
     kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
     kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    kwargs.setdefault(
+        "scanner_boundary_stage_diagnostic_runner",
+        build_scanner_boundary_stage_diagnostics,
+    )
     evaluation = _package_run_scanner_pipeline(case, **kwargs)
     return (
         dict(evaluation.report_payload),
@@ -1019,6 +1042,10 @@ def _build_report_and_volumes(
     )
     kwargs.setdefault("scanner_downstream_diagnostic_runner", _scanner_downstream_diagnostics)
     kwargs.setdefault("scanner_stage_loss_diagnostic_runner", _scanner_stage_loss_diagnostics)
+    kwargs.setdefault(
+        "scanner_boundary_stage_diagnostic_runner",
+        build_scanner_boundary_stage_diagnostics,
+    )
     return _package_build_report_outputs(**kwargs)
 
 
@@ -1134,6 +1161,7 @@ def run_example(
     write_markdown_index: bool = False,
     include_thinning_diagnostic: bool = False,
     include_scanner_downstream_diagnostics: bool = False,
+    include_scanner_boundary_stage_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     report, volume_outputs, skin_outputs = _build_report_and_volumes(
@@ -1154,6 +1182,7 @@ def run_example(
         skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
+        include_scanner_boundary_stage_diagnostics=(include_scanner_boundary_stage_diagnostics),
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     write_metrics_json(report, output_dir, pretty=pretty)
@@ -1271,6 +1300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             include_thinning_diagnostic=include_thinning_diagnostic,
             include_scanner_downstream_diagnostics=args.scanner_downstream_diagnostics,
+            include_scanner_boundary_stage_diagnostics=(args.scanner_boundary_stage_diagnostics),
             thinning_diagnostic_cases=args.thinning_diagnostic_cases,
             pretty=args.pretty,
             save_volumes=args.save_volumes,

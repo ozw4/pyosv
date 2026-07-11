@@ -75,6 +75,7 @@ def build_report(
     skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     include_scanner_downstream_diagnostics: bool = False,
+    include_scanner_boundary_stage_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
 ) -> dict[str, Any]:
     """Build a legacy v1 synthetic-quality report without writing artifacts."""
@@ -97,6 +98,7 @@ def build_report(
         skinner_accepted_occupancy_radius_explicit=(skinner_accepted_occupancy_radius_explicit),
         include_thinning_diagnostic=include_thinning_diagnostic,
         include_scanner_downstream_diagnostics=(include_scanner_downstream_diagnostics),
+        include_scanner_boundary_stage_diagnostics=(include_scanner_boundary_stage_diagnostics),
         thinning_diagnostic_cases=thinning_diagnostic_cases,
     )
     return report
@@ -121,11 +123,13 @@ def _build_report_outputs(
     skinner_accepted_occupancy_radius_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     include_scanner_downstream_diagnostics: bool = False,
+    include_scanner_boundary_stage_diagnostics: bool = False,
     thinning_diagnostic_cases: Sequence[str] = DEFAULT_THINNING_DIAGNOSTIC_CASES,
     thinning_diagnostic_runner: Callable[..., Any] | None = None,
     recenter_distance_diagnostic_runner: Callable[..., Any] | None = None,
     scanner_downstream_diagnostic_runner: Callable[..., Any] | None = None,
     scanner_stage_loss_diagnostic_runner: Callable[..., Any] | None = None,
+    scanner_boundary_stage_diagnostic_runner: Callable[..., Any] | None = None,
 ) -> tuple[
     dict[str, Any],
     dict[str, dict[str, dict[str, np.ndarray]]],
@@ -140,6 +144,9 @@ def _build_report_outputs(
     effective_scanner_backend_matrix = bool(scanner_backend_matrix and valid_input_mode != "oracle")
     effective_scanner_downstream_diagnostics = bool(
         include_scanner_downstream_diagnostics and valid_input_mode != "oracle"
+    )
+    effective_scanner_boundary_stage_diagnostics = bool(
+        include_scanner_boundary_stage_diagnostics and valid_input_mode != "oracle"
     )
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
     skinning_config = _effective_skinning_config_for_workflow(
@@ -207,6 +214,10 @@ def _build_report_outputs(
                         "scanner_stage_loss_diagnostic_runner",
                         scanner_stage_loss_diagnostic_runner,
                     ),
+                    (
+                        "scanner_boundary_stage_diagnostic_runner",
+                        scanner_boundary_stage_diagnostic_runner,
+                    ),
                 )
                 if runner is not None
             }
@@ -223,6 +234,9 @@ def _build_report_outputs(
                     include_thinning_diagnostic and case.case_id in diagnostic_case_ids
                 ),
                 include_scanner_downstream_diagnostics=(effective_scanner_downstream_diagnostics),
+                include_scanner_boundary_stage_diagnostics=(
+                    effective_scanner_boundary_stage_diagnostics
+                ),
                 prepared_inputs=prepared_inputs,
                 **diagnostic_runners,
             )
@@ -251,6 +265,9 @@ def _build_report_outputs(
         "skinning": skinning_config.as_report_dict(),
         "scanner_backend_matrix": effective_scanner_backend_matrix,
         "scanner_downstream_diagnostics": effective_scanner_downstream_diagnostics,
+        "scanner_boundary_stage_diagnostics": {
+            "enabled": effective_scanner_boundary_stage_diagnostics,
+        },
     }
     if valid_input_mode != "oracle":
         config["input_mode"] = valid_input_mode
