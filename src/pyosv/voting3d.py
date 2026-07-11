@@ -3,14 +3,44 @@
 from __future__ import annotations
 
 import math
-import numbers
 import operator
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import numpy as np
 
 from pyosv._accel import NUMBA_AVAILABLE, njit
+from pyosv._voting3d.models import (
+    _MaskedUVWBoxSamples,
+    _SurfaceVotingDiagnostic,
+    _TangentialRectangle,
+)
+from pyosv._voting3d.uvw_numba import (
+    _samples_in_uvw_box_masked_numba,
+    _samples_in_uvw_box_numba,
+)
+from pyosv._voting3d.uvw_python import (
+    _samples_in_uvw_box_masked_python,
+    _samples_in_uvw_box_python,
+)
+from pyosv._voting3d.uvw_sampling import (
+    _crop_masked_uvw_box,
+    _select_supported_origin_rectangle,
+    _surface_center_lag,
+    _validate_uvw_sampling_origin,
+)
+from pyosv._voting3d.validation import (
+    _validate_finite_array2,
+    _validate_finite_array3,
+    _validate_finite_vector3,
+    _validate_fraction_float,
+    _validate_int,
+    _validate_matching_arrays3,
+    _validate_matching_finite_arrays3_many,
+    _validate_nonnegative_float,
+    _validate_nonnegative_int,
+    _validate_positive_int,
+    _validate_vector3,
+)
 from pyosv.cells import FaultCell
 from pyosv.dp import (
     _find_surface_3d_masked,
@@ -29,59 +59,6 @@ __all__ = ["OptimalSurfaceVoter"]
 
 
 _SURFACE_VOTING_BOUNDARY_POLICIES = ("reference", "masked_in_bounds")
-
-
-@dataclass(frozen=True, slots=True)
-class _MaskedUVWBoxSamples:
-    """Seed-local samples plus validity and full-box coordinate metadata."""
-
-    costs: np.ndarray
-    valid_lag_mask: np.ndarray
-    w_offset: int
-    v_offset: int
-    full_tangential_shape: tuple[int, int]
-    admissible_lag_count: int
-    in_bounds_lag_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class _TangentialRectangle:
-    """Half-open full-box indices for a supported origin-containing rectangle."""
-
-    w_start: int
-    v_start: int
-    w_stop: int
-    v_stop: int
-
-    @property
-    def shape(self) -> tuple[int, int]:
-        return (self.w_stop - self.w_start, self.v_stop - self.v_start)
-
-    @property
-    def size(self) -> int:
-        nw, nv = self.shape
-        return nw * nv
-
-
-@dataclass(frozen=True, slots=True)
-class _SurfaceVotingDiagnostic:
-    """Compact immutable outcome for one seed's surface-voting attempt."""
-
-    seed_index: tuple[int, int, int]
-    policy: str
-    full_tangential_column_count: int
-    selected_tangential_column_count: int
-    admissible_lag_count: int
-    in_bounds_lag_count: int
-    support_fraction: float
-    surface_center_lag: float | None
-    surface_projection_count: int
-    selected_invalid_sample_count: int
-    center_vote_write_count: int
-    face_center_vote_count: int
-    orientation_source: str | None
-    skipped: bool
-    skip_reason: str | None
 
 
 class OptimalSurfaceVoter:
@@ -502,17 +479,7 @@ class OptimalSurfaceVoter:
     ) -> np.ndarray:
         """Sample ``1 - fx`` in the seed-centered local ``(w, v, u)`` box."""
 
-        fx_array = _validate_array3(fx, "fx")
-        n3, n2, n1 = fx_array.shape
-        i1 = _validate_int(c1, "c1")
-        i2 = _validate_int(c2, "c2")
-        i3 = _validate_int(c3, "c3")
-        if not 0 <= i1 < n1:
-            raise ValueError("c1 must be inside the image bounds")
-        if not 0 <= i2 < n2:
-            raise ValueError("c2 must be inside the image bounds")
-        if not 0 <= i3 < n3:
-            raise ValueError("c3 must be inside the image bounds")
+        i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
 
         if NUMBA_AVAILABLE:
             return _samples_in_uvw_box_numba(
@@ -556,17 +523,7 @@ class OptimalSurfaceVoter:
     ) -> _MaskedUVWBoxSamples:
         """Sample a full UVW box without treating out-of-bounds lags as evidence."""
 
-        fx_array = _validate_array3(fx, "fx")
-        n3, n2, n1 = fx_array.shape
-        i1 = _validate_int(c1, "c1")
-        i2 = _validate_int(c2, "c2")
-        i3 = _validate_int(c3, "c3")
-        if not 0 <= i1 < n1:
-            raise ValueError("c1 must be inside the image bounds")
-        if not 0 <= i2 < n2:
-            raise ValueError("c2 must be inside the image bounds")
-        if not 0 <= i3 < n3:
-            raise ValueError("c3 must be inside the image bounds")
+        i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
 
         sampler = (
             _samples_in_uvw_box_masked_numba
@@ -1083,314 +1040,6 @@ def _normalize_and_power_3d(
     _normalize_unit_range_in_place(x_array)
     enhanced = np.float32(1.0) - np.power(np.float32(1.0) - x_array, power_int)
     return np.clip(enhanced, 0.0, 1.0).astype(np.float32, copy=False)
-
-
-def _samples_in_uvw_box_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> np.ndarray:
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                j1 = min(max(j1, 0), n1 - 1)
-                j2 = min(max(j2, 0), n2 - 1)
-                j3 = min(max(j3, 0), n3 - 1)
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-
-    return costs
-
-
-@njit(cache=True)
-def _samples_in_uvw_box_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> np.ndarray:
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                j1 = min(max(j1, 0), n1 - 1)
-                j2 = min(max(j2, 0), n2 - 1)
-                j3 = min(max(j3, 0), n3 - 1)
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-
-    return costs
-
-
-def _samples_in_uvw_box_masked_python(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Return costs and the admissible, rounded-in-bounds lag mask."""
-
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    valid_lag_mask = np.zeros(costs.shape, dtype=np.bool_)
-    admissible_count = 0
-    in_bounds_count = 0
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                admissible_count += 1
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                if not (0 <= j1 < n1 and 0 <= j2 < n2 and 0 <= j3 < n3):
-                    continue
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-                valid_lag_mask[kw, kv, ku] = True
-                in_bounds_count += 1
-
-    return costs, valid_lag_mask, admissible_count, in_bounds_count
-
-
-@njit(cache=True)
-def _samples_in_uvw_box_masked_numba(
-    c1: int,
-    c2: int,
-    c3: int,
-    ru: int,
-    rv: int,
-    rw: int,
-    normal: np.ndarray,
-    dip: np.ndarray,
-    strike: np.ndarray,
-    fx: np.ndarray,
-    lmins: np.ndarray,
-    lmaxs: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
-    n3, n2, n1 = fx.shape
-    costs = np.ones((2 * rw + 1, 2 * rv + 1, 2 * ru + 1), dtype=np.float32)
-    valid_lag_mask = np.zeros(costs.shape, dtype=np.bool_)
-    admissible_count = 0
-    in_bounds_count = 0
-    for kw in range(costs.shape[0]):
-        iw = kw - rw
-        for kv in range(costs.shape[1]):
-            iv = kv - rv
-            ku_min = lmins[kw, kv] + ru
-            ku_max = lmaxs[kw, kv] + ru
-            for ku in range(ku_min, ku_max + 1):
-                admissible_count += 1
-                iu = ku - ru
-                x1 = np.float32(
-                    float(c1)
-                    + float(iw) * float(strike[0])
-                    + float(iv) * float(dip[0])
-                    + float(iu) * float(normal[0])
-                )
-                x2 = np.float32(
-                    float(c2)
-                    + float(iw) * float(strike[1])
-                    + float(iv) * float(dip[1])
-                    + float(iu) * float(normal[1])
-                )
-                x3 = np.float32(
-                    float(c3)
-                    + float(iw) * float(strike[2])
-                    + float(iv) * float(dip[2])
-                    + float(iu) * float(normal[2])
-                )
-                j1 = math.floor(float(x1) + 0.5)
-                j2 = math.floor(float(x2) + 0.5)
-                j3 = math.floor(float(x3) + 0.5)
-                if not (0 <= j1 < n1 and 0 <= j2 < n2 and 0 <= j3 < n3):
-                    continue
-                costs[kw, kv, ku] = np.float32(1.0) - fx[j3, j2, j1]
-                valid_lag_mask[kw, kv, ku] = True
-                in_bounds_count += 1
-
-    return costs, valid_lag_mask, admissible_count, in_bounds_count
-
-
-def _select_supported_origin_rectangle(
-    supported_columns: np.ndarray,
-    *,
-    origin_w: int,
-    origin_v: int,
-) -> _TangentialRectangle | None:
-    """Choose the deterministic largest all-supported rectangle around the origin."""
-
-    supported = np.asarray(supported_columns, dtype=np.bool_)
-    if supported.ndim != 2:
-        raise ValueError("supported_columns must have shape (nw, nv)")
-    nw, nv = supported.shape
-    if not (0 <= origin_w < nw and 0 <= origin_v < nv):
-        raise ValueError("origin must be inside supported_columns")
-    if not supported[origin_w, origin_v]:
-        return None
-
-    invalid = (~supported).astype(np.int32, copy=False)
-    prefix = np.pad(invalid, ((1, 0), (1, 0)), mode="constant")
-    prefix = np.cumsum(np.cumsum(prefix, axis=0), axis=1)
-    best_key: tuple[int, int, int, int, int, int] | None = None
-    best_rectangle: _TangentialRectangle | None = None
-    for w_start in range(origin_w + 1):
-        for w_stop in range(origin_w + 1, nw + 1):
-            for v_start in range(origin_v + 1):
-                for v_stop in range(origin_v + 1, nv + 1):
-                    invalid_count = (
-                        prefix[w_stop, v_stop]
-                        - prefix[w_start, v_stop]
-                        - prefix[w_stop, v_start]
-                        + prefix[w_start, v_start]
-                    )
-                    if invalid_count != 0:
-                        continue
-                    area = (w_stop - w_start) * (v_stop - v_start)
-                    asymmetry = abs((origin_w - w_start) - (w_stop - 1 - origin_w)) + abs(
-                        (origin_v - v_start) - (v_stop - 1 - origin_v)
-                    )
-                    key = (-area, asymmetry, w_start, v_start, w_stop, v_stop)
-                    if best_key is None or key < best_key:
-                        best_key = key
-                        best_rectangle = _TangentialRectangle(
-                            w_start=w_start,
-                            v_start=v_start,
-                            w_stop=w_stop,
-                            v_stop=v_stop,
-                        )
-    return best_rectangle
-
-
-def _crop_masked_uvw_box(
-    samples: _MaskedUVWBoxSamples,
-    rectangle: _TangentialRectangle,
-) -> _MaskedUVWBoxSamples:
-    nw, nv = samples.full_tangential_shape
-    if not (
-        0 <= rectangle.w_start < rectangle.w_stop <= nw
-        and 0 <= rectangle.v_start < rectangle.v_stop <= nv
-    ):
-        raise ValueError("rectangle must be inside the full tangential box")
-    selection = (
-        slice(rectangle.w_start, rectangle.w_stop),
-        slice(rectangle.v_start, rectangle.v_stop),
-        slice(None),
-    )
-    return _MaskedUVWBoxSamples(
-        costs=samples.costs[selection].copy(),
-        valid_lag_mask=samples.valid_lag_mask[selection].copy(),
-        w_offset=rectangle.w_start,
-        v_offset=rectangle.v_start,
-        full_tangential_shape=samples.full_tangential_shape,
-        admissible_lag_count=samples.admissible_lag_count,
-        in_bounds_lag_count=samples.in_bounds_lag_count,
-    )
-
-
-def _surface_center_lag(surface: np.ndarray) -> float | None:
-    if surface.size == 0:
-        return None
-    return float(surface[surface.shape[0] // 2, surface.shape[1] // 2])
 
 
 def _count_reference_face_center_votes(
@@ -2567,156 +2216,3 @@ def _normalize_unit_range_in_place(x: np.ndarray) -> None:
     if max_value > 0.0:
         x /= max_value
     np.clip(x, 0.0, 1.0, out=x)
-
-
-def _validate_int(value: int, name: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-
-    try:
-        return operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-
-
-def _validate_nonnegative_int(value: int, name: str) -> int:
-    try:
-        value_int = _validate_int(value, name)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a nonnegative integer") from exc
-
-    if value_int < 0:
-        raise ValueError(f"{name} must be a nonnegative integer")
-
-    return value_int
-
-
-def _validate_positive_int(value: int, name: str) -> int:
-    try:
-        value_int = _validate_int(value, name)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-
-    if value_int <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-
-    return value_int
-
-
-def _validate_nonnegative_float(value: float, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise ValueError(f"{name} must be a finite nonnegative number")
-
-    value_float = float(value)
-
-    if not math.isfinite(value_float) or value_float < 0.0:
-        raise ValueError(f"{name} must be a finite nonnegative number")
-
-    return value_float
-
-
-def _validate_fraction_float(value: float, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise ValueError(f"{name} must be a finite number between 0 and 1")
-
-    value_float = float(value)
-
-    if not math.isfinite(value_float) or value_float < 0.0 or value_float > 1.0:
-        raise ValueError(f"{name} must be a finite number between 0 and 1")
-
-    return value_float
-
-
-def _validate_matching_finite_arrays3_many(
-    arrays: tuple[np.ndarray, ...],
-    names: tuple[str, ...],
-) -> tuple[np.ndarray, ...]:
-    validated = _validate_matching_arrays3(arrays, names)
-    finite_arrays: list[np.ndarray] = []
-    for array, name in zip(validated, names):
-        try:
-            with np.errstate(over="ignore", invalid="ignore"):
-                finite_array = array.astype(np.float32, copy=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{name} must contain numeric finite values") from exc
-
-        if not np.isfinite(finite_array).all():
-            raise ValueError(f"{name} must contain only finite values")
-
-        finite_arrays.append(finite_array)
-
-    return tuple(finite_arrays)
-
-
-def _validate_matching_arrays3(
-    arrays: tuple[np.ndarray, ...],
-    names: tuple[str, ...],
-) -> tuple[np.ndarray, ...]:
-    if len(arrays) != len(names):
-        raise ValueError("arrays and names must have the same length")
-    if not arrays:
-        raise ValueError("at least one array is required")
-
-    validated = tuple(_validate_array3(array, name) for array, name in zip(arrays, names))
-    shape = validated[0].shape
-    first_name = names[0]
-    for array, name in zip(validated[1:], names[1:]):
-        if array.shape != shape:
-            raise ValueError(f"{first_name} and {name} shapes must match")
-
-    return validated
-
-
-def _validate_finite_array3(array: np.ndarray, name: str) -> np.ndarray:
-    array = _validate_array3(array, name)
-    try:
-        with np.errstate(over="ignore", invalid="ignore"):
-            array = array.astype(np.float32, copy=False)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must contain numeric finite values") from exc
-
-    if not np.isfinite(array).all():
-        raise ValueError(f"{name} must contain only finite values")
-
-    return array
-
-
-def _validate_finite_array2(array: np.ndarray, name: str) -> np.ndarray:
-    array = np.asarray(array)
-    if array.ndim != 2:
-        raise ValueError(f"{name} must be a 2D array")
-
-    try:
-        with np.errstate(over="ignore", invalid="ignore"):
-            array = array.astype(np.float32, copy=False)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must contain numeric finite values") from exc
-
-    if not np.isfinite(array).all():
-        raise ValueError(f"{name} must contain only finite values")
-
-    return array
-
-
-def _validate_array3(array: np.ndarray, name: str) -> np.ndarray:
-    array = np.asarray(array)
-    if array.ndim != 3:
-        raise ValueError(f"{name} must be a 3D array")
-
-    return array
-
-
-def _validate_vector3(vector: np.ndarray, name: str) -> np.ndarray:
-    vector_array = np.asarray(vector, dtype=np.float32)
-    if vector_array.shape != (3,):
-        raise ValueError(f"{name} must have shape (3,)")
-
-    return vector_array
-
-
-def _validate_finite_vector3(vector: np.ndarray, name: str) -> np.ndarray:
-    vector_array = _validate_vector3(vector, name)
-    if not np.isfinite(vector_array).all():
-        raise ValueError(f"{name} must contain only finite values")
-
-    return vector_array
