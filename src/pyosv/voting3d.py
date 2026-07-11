@@ -26,6 +26,8 @@ from pyosv._voting3d.models import (
     _SurfaceVotingDiagnostic,
     _TangentialRectangle,
 )
+from pyosv._voting3d.config import SurfaceVoterConfig
+from pyosv._voting3d.context import SurfaceVotingContext
 from pyosv._voting3d.normalization import (
     _normalize_and_power_3d,
     _normalize_unit_range_in_place as _normalize_unit_range_in_place,
@@ -48,6 +50,7 @@ from pyosv._voting3d.scoring_python import (
     _surface_vote_average_masked_python as _surface_vote_average_masked_python,
     _surface_vote_average_python as _surface_vote_average_python,
 )
+from pyosv._voting3d.policies import SURFACE_VOTING_POLICY_REGISTRY
 from pyosv._voting3d.thinning import (
     _collapse_candidate_runs_along_axis as _collapse_candidate_runs_along_axis,
     _edge_region_mask_3d,
@@ -100,7 +103,7 @@ from pyosv.dp import (
 __all__ = ["OptimalSurfaceVoter"]
 
 
-_SURFACE_VOTING_BOUNDARY_POLICIES = ("reference", "masked_in_bounds")
+_SURFACE_VOTING_BOUNDARY_POLICIES = tuple(SURFACE_VOTING_POLICY_REGISTRY)
 
 
 class OptimalSurfaceVoter:
@@ -622,32 +625,49 @@ class OptimalSurfaceVoter:
         if not 0 <= c3 < n3:
             raise ValueError("cell.i3 must be inside the image bounds")
 
-        normal = cell.fault_normal()
-        dip = cell.fault_dip_vector()
-        strike = cell.fault_strike_vector()
-        if self.surface_voting_boundary_policy == "masked_in_bounds":
-            return self._surface_voting_masked_in_bounds(
-                cell,
-                ft_array,
-                fe_array,
-                vp_array,
-                vt_array,
-                vm_array,
-                normal,
-                dip,
-                strike,
-            )
-        return self._surface_voting_reference(
-            cell,
-            ft_array,
-            fe_array,
-            vp_array,
-            vt_array,
-            vm_array,
-            normal,
-            dip,
-            strike,
+        context = SurfaceVotingContext(
+            config=SurfaceVoterConfig(
+                ru=self.ru,
+                rv=self.rv,
+                rw=self.rw,
+                lmin=self.lmin,
+                bstrain1=self.bstrain1,
+                bstrain2=self.bstrain2,
+                attribute_smoothing=self.attribute_smoothing,
+                surface_smoothing1=self.surface_smoothing1,
+                surface_smoothing2=self.surface_smoothing2,
+                surface_orientation_smoothing=self.surface_orientation_smoothing,
+                surface_support_min_fraction=self.surface_support_min_fraction,
+                surface_support_exponent=self.surface_support_exponent,
+            ),
+            cell=cell,
+            ft=ft_array,
+            fe=fe_array,
+            vp=vp_array,
+            vt=vt_array,
+            vm=vm_array,
+            normal=cell.fault_normal(),
+            dip=cell.fault_dip_vector(),
+            strike=cell.fault_strike_vector(),
+            sample_reference=self.samples_in_uvw_box,
+            sample_masked=self._samples_in_uvw_box_masked,
+            find_surface=find_surface_3d,
+            find_surface_masked=_find_surface_3d_masked,
+            score_reference=_surface_vote_average,
+            score_masked=_surface_vote_average_masked,
+            accumulate_reference=_accumulate_surface_votes,
+            accumulate_masked=_accumulate_surface_votes_masked,
+            surface_orientation=_surface_strike_and_dip,
+            count_reference_face_votes=_count_reference_face_center_votes,
+            select_supported_rectangle=_select_supported_origin_rectangle,
+            crop_masked_box=_crop_masked_uvw_box,
+            surface_center_lag=_surface_center_lag,
         )
+        policy = SURFACE_VOTING_POLICY_REGISTRY.get(self.surface_voting_boundary_policy)
+        if policy is None:
+            allowed = ", ".join(repr(value) for value in _SURFACE_VOTING_BOUNDARY_POLICIES)
+            raise ValueError(f"policy must be one of: {allowed}")
+        return policy.vote(context)
 
     def _surface_voting_reference(
         self,
