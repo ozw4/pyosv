@@ -12,7 +12,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
 EXAMPLE_SCRIPTS = tuple(sorted(EXAMPLES_DIR.glob("*.py")))
-EXAMPLE_MODULES = tuple(script.stem for script in EXAMPLE_SCRIPTS)
+EXAMPLE_MODULES = tuple(
+    script.stem for script in EXAMPLE_SCRIPTS if script.name != "report_3d_synthetic_quality.py"
+)
 REFERENCE_EXAMPLE_MODULES = ("run_2d_f3d2d", "run_2d_reference")
 REPOSITORY_ROOT_OUTPUTS = ("fv_py.dat", "fvt_py.dat")
 SYNTHETIC_OUTPUTS = (

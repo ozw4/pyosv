@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 from pyosv.evaluation.synthetic_quality.config import (
+    SyntheticScannerConfig,
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
+    SyntheticVotingConfig,
 )
 from pyosv.evaluation.synthetic_quality.diagnostics import (
     _run_voter_thinning_diagnostic,
     _thinning_keep_mask_comparison,
 )
+from pyosv.evaluation.synthetic_quality.pipeline import run_voting_from_attributes
+from pyosv.evaluation.synthetic_quality.runner import run_scanner_pipeline
+from pyosv.evaluation.synthetic_quality.variants import get_variant_spec
 from pyosv.synthetic3d import make_curved_surface_case, make_single_vertical_plane_case
 from pyosv.voting3d import OptimalSurfaceVoter
 
@@ -27,15 +29,6 @@ DIAGNOSTIC_VOLUME_KEYS = {
     "keep_reference_only_thinning_diagnostic",
     "keep_normal_only_thinning_diagnostic",
 }
-
-
-def _load_report_module():
-    script = Path(__file__).resolve().parents[3] / "examples" / "report_3d_synthetic_quality.py"
-    spec = importlib.util.spec_from_file_location("report_3d_synthetic_quality", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.mark.parametrize(
@@ -67,8 +60,7 @@ def test_thinning_diagnostic_is_finite_and_does_not_modify_primary_arrays(case_f
     assert np.isfinite(report["normal"]["pyosv"]["fvt"]["mean"])
 
 
-def test_thinning_diagnostic_opt_out_does_not_invoke_extra_thinning(monkeypatch) -> None:
-    module = _load_report_module()
+def test_thinning_diagnostic_opt_out_does_not_invoke_extra_thinning() -> None:
     case = make_single_vertical_plane_case((9, 9, 9))
     calls = 0
 
@@ -78,24 +70,23 @@ def test_thinning_diagnostic_opt_out_does_not_invoke_extra_thinning(monkeypatch)
         calls += 1
         raise AssertionError("diagnostic thinning must remain opt-in")
 
-    monkeypatch.setattr(module, "_run_voter_thinning_diagnostic", fail_if_called)
-    module._run_voting_from_attributes(
+    run_voting_from_attributes(
         case,
         ft=case.ft_oracle,
         pt=case.pt_oracle,
         tt=case.tt_oracle,
-        voting_config=module.SyntheticVotingConfig(ru=2, rv=2, rw=2),
-        truth_metric_config=module.SyntheticTruthMetricConfig(),
-        skinning_config=module.SyntheticSkinningConfig(enabled=False),
-        variant_spec=module.get_variant_spec("current_default"),
+        voting_config=SyntheticVotingConfig(ru=2, rv=2, rw=2),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant_spec=get_variant_spec("current_default"),
         include_thinning_diagnostic=False,
+        thinning_diagnostic_runner=fail_if_called,
     )
 
     assert calls == 0
 
 
-def test_scanner_diagnostics_are_opt_in_and_leave_primary_volumes_equal(monkeypatch) -> None:
-    module = _load_report_module()
+def test_scanner_diagnostics_are_opt_in_and_leave_primary_volumes_equal() -> None:
     case = make_single_vertical_plane_case((9, 9, 9))
     calls = {"downstream": 0, "stage_loss": 0}
 
@@ -109,24 +100,24 @@ def test_scanner_diagnostics_are_opt_in_and_leave_primary_volumes_equal(monkeypa
         calls["stage_loss"] += 1
         return {"called": True}
 
-    monkeypatch.setattr(module, "_scanner_downstream_diagnostics", downstream)
-    monkeypatch.setattr(module, "_scanner_stage_loss_diagnostics", stage_loss)
     common = {
-        "voting_config": module.SyntheticVotingConfig(ru=2, rv=2, rw=2),
-        "scanner_config": module.SyntheticScannerConfig(backend="fast", scanner_thin_mode="none"),
-        "truth_metric_config": module.SyntheticTruthMetricConfig(),
-        "skinning_config": module.SyntheticSkinningConfig(enabled=False),
-        "variant_spec": module.get_variant_spec("current_default"),
+        "voting_config": SyntheticVotingConfig(ru=2, rv=2, rw=2),
+        "scanner_config": SyntheticScannerConfig(backend="fast", scanner_thin_mode="none"),
+        "truth_metric_config": SyntheticTruthMetricConfig(),
+        "skinning_config": SyntheticSkinningConfig(enabled=False),
+        "variant_spec": get_variant_spec("current_default"),
         "scanner_backend_matrix": False,
         "include_thinning_diagnostic": False,
+        "scanner_downstream_diagnostic_runner": downstream,
+        "scanner_stage_loss_diagnostic_runner": stage_loss,
     }
 
-    plain_report, plain_volumes, _ = module._run_scanner_pipeline(
-        case, include_scanner_downstream_diagnostics=False, **common
-    )
-    diagnostic_report, diagnostic_volumes, _ = module._run_scanner_pipeline(
-        case, include_scanner_downstream_diagnostics=True, **common
-    )
+    plain = run_scanner_pipeline(case, include_scanner_downstream_diagnostics=False, **common)
+    diagnostic = run_scanner_pipeline(case, include_scanner_downstream_diagnostics=True, **common)
+    plain_report = plain.report_payload
+    plain_volumes = plain.artifacts.volumes
+    diagnostic_report = diagnostic.report_payload
+    diagnostic_volumes = diagnostic.artifacts.volumes
 
     assert calls == {"downstream": 1, "stage_loss": 1}
     assert "scanner_downstream" not in plain_report

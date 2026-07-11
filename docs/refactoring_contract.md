@@ -31,3 +31,20 @@ python scripts/check_synthetic_quality_refactor_contract.py --update-fixtures
 
 Fixture updates are appropriate only when the contract itself is deliberately re-baselined, not
 as part of an ordinary refactoring.
+
+## Fixture update procedure
+
+Before proposing a deliberate re-baseline, run the affected unit and integration tests and inspect
+the semantic JSON diff, the byte-level CSV diff, and every artifact hash difference. Record the
+numerical reason for each changed field, obtain review for the contract change, and only then run
+the guarded update command above. Run the checker again without update flags to verify the new
+fixture.
+
+Never update fixtures to make a structural refactor pass. Do not loosen tolerances, round values,
+drop fields or artifacts, change CSV missing-value representation, add skips, or regenerate the
+known 49³ metrics as a substitute for investigating a failure. A numerical contract change and a
+responsibility-only refactor must be separate pull requests.
+
+The 17³ contract is the always-runnable refactoring guard. The committed
+`known_49_boundary_metrics.json` is evidence from an existing 49³ output only; do not launch a new
+49³ full report solely to refresh it during a structural change.

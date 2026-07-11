@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -9,17 +7,6 @@ import numpy as np
 from pyosv.evaluation.synthetic_quality.config import SyntheticTruthMetricConfig
 from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.synthetic_metrics import top_positive_truth_count_mask, top_truth_count_mask
-
-
-REPORT_PATH = Path(__file__).resolve().parents[3] / "examples" / "report_3d_synthetic_quality.py"
-
-
-def _load_report_module():
-    spec = importlib.util.spec_from_file_location("synthetic_quality_report_metrics", REPORT_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_positive_candidate_count_uses_report_epsilon() -> None:
@@ -140,19 +127,3 @@ def test_skin_metric_normalization_does_not_mutate_input() -> None:
 
     assert metrics == {"buffered_overlap_radius3": overlap, "topology": {"skin_count": 1}}
     assert normalized["buffered_overlap_radius2"] is overlap
-
-
-def test_report_compatibility_helpers_match_new_api_exactly() -> None:
-    report = _load_report_module()
-    candidates = np.zeros((5, 5, 5), dtype=bool)
-    candidates[0, 0, 0] = True
-    candidates[2, 2, 2] = True
-
-    assert report._candidate_count(candidates) == quality_metrics.candidate_count(candidates)
-    assert report._edge_candidate_fraction(
-        candidates, edge_margin=2
-    ) == quality_metrics.edge_candidate_fraction(candidates, edge_margin=2)
-    np.testing.assert_array_equal(
-        report._edge_mask(candidates.shape, 2), quality_metrics.edge_mask(candidates.shape, 2)
-    )
-    assert report._delta_or_none(2.0, 0.5) == quality_metrics.delta_or_none(2.0, 0.5)
