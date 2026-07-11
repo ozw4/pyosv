@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from collections.abc import Mapping
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,18 +20,12 @@ from pyosv.evaluation.synthetic_quality.runner import (
     run_case_variant,
 )
 from pyosv.evaluation.synthetic_quality import runner
+from pyosv.cli import synthetic_quality
 from pyosv.synthetic3d import make_single_vertical_plane_case
 
 
 def _load_example_module() -> object:
-    script = Path(__file__).resolve().parents[3] / "examples" / "report_3d_synthetic_quality.py"
-    spec = importlib.util.spec_from_file_location("issue_351_report_3d_synthetic_quality", script)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return synthetic_quality
 
 
 def _assert_nested_arrays_equal(actual: object, expected: object) -> None:

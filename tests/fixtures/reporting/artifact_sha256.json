@@ -1,0 +1,16 @@
+{
+  "plane/ft_oracle.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/fv_py.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/fvt_py.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/pt_oracle.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/skin_mask_py.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/skins.json": "32b1ce86a48c2175c357346062af87de8720a9c2bcf1b5e184680be8fa8f3345",
+  "plane/truth_dip.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/truth_distance.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/truth_fault_mask.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/truth_strike.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/tt_oracle.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/vp_py.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "plane/vt_py.dat": "6a1c0325fe1f67c93a7c1da3368c4fac5f4c1581aa92a82fb56b0c846a71c4aa",
+  "visual_report.md": "30a3dd5834d025c6eef789702f414b904feb44ff9d10ca70942573081371ae61"
+}

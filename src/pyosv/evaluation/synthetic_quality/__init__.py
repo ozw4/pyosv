@@ -1,5 +1,9 @@
 """Reusable configuration for synthetic quality evaluation."""
 
+from __future__ import annotations
+
+from typing import Any
+
 from .config import (
     SyntheticScannerConfig,
     SyntheticSkinningConfig,
@@ -15,6 +19,15 @@ from .models import (
     VotingResult3D,
 )
 
+
+def __getattr__(name: str) -> Any:
+    if name in {"build_report", "run_case"}:
+        from . import application
+
+        return getattr(application, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "SyntheticScannerConfig",
     "SyntheticSkinningConfig",
@@ -26,4 +39,6 @@ __all__ = [
     "SkinningResult3D",
     "ThinningResult3D",
     "VotingResult3D",
+    "build_report",
+    "run_case",
 ]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import importlib.util
 import json
 import math
 import os
@@ -14,6 +13,7 @@ import pytest
 
 import pyosv.experimental.boundary_skinning as boundary_skinning
 import pyosv.experimental.skin_diagnostics as skin_diagnostics
+from pyosv.cli import synthetic_quality
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -352,13 +352,7 @@ EXPECTED_THINNING_DIAGNOSTIC_I3_FIGURES = (
 
 
 def _load_report_module() -> object:
-    spec = importlib.util.spec_from_file_location("report_3d_synthetic_quality", SCRIPT)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return synthetic_quality
 
 
 def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
