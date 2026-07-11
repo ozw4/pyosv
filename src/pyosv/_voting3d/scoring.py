@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from pyosv._accel import NUMBA_AVAILABLE
 from pyosv._voting3d.scoring_numba import (
     _surface_vote_average_masked_numba,
     _surface_vote_average_numba,
@@ -26,8 +25,10 @@ def _surface_vote_average(
     strike: np.ndarray,
     surface: np.ndarray,
     ft: np.ndarray,
+    *,
+    use_numba: bool,
 ) -> tuple[np.float32, int]:
-    if NUMBA_AVAILABLE:
+    if use_numba:
         return _surface_vote_average_numba(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
     return _surface_vote_average_python(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
 
@@ -47,8 +48,10 @@ def _surface_vote_average_masked(
     surface: np.ndarray,
     valid_lag_mask: np.ndarray,
     ft: np.ndarray,
+    *,
+    use_numba: bool,
 ) -> tuple[np.float32, int, int]:
-    if NUMBA_AVAILABLE:
+    if use_numba:
         return _surface_vote_average_masked_numba(
             c1,
             c2,

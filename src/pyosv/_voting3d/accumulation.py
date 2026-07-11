@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from pyosv._accel import NUMBA_AVAILABLE, njit
+from pyosv._accel import njit
 
 
 def _count_reference_face_center_votes(
@@ -478,8 +478,10 @@ def _accumulate_surface_votes(
     vp: np.ndarray,
     vt: np.ndarray,
     vm: np.ndarray,
+    *,
+    use_numba: bool,
 ) -> None:
-    if NUMBA_AVAILABLE:
+    if use_numba:
         _accumulate_surface_votes_numba(
             c1,
             c2,
@@ -543,8 +545,10 @@ def _accumulate_surface_votes_masked(
     vp: np.ndarray,
     vt: np.ndarray,
     vm: np.ndarray,
+    *,
+    use_numba: bool,
 ) -> tuple[int, int, int]:
-    if NUMBA_AVAILABLE:
+    if use_numba:
         return _accumulate_surface_votes_masked_numba(
             c1,
             c2,

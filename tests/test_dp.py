@@ -24,6 +24,18 @@ from pyosv.dp import (
 )
 
 
+def test_legacy_private_validation_helpers_remain_available_from_facade() -> None:
+    expected = {
+        "_validate_direction",
+        "_validate_int",
+        "_validate_nonnegative_float",
+        "_validate_nonnegative_int",
+        "_validate_positive_int",
+    }
+
+    assert not expected.difference(vars(dp))
+
+
 def test_strain_to_bstrain_matches_reference_spacing() -> None:
     assert strain_to_bstrain(0.25) == 4
     assert strain_to_bstrain(1.0) == 1

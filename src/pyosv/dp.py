@@ -70,7 +70,15 @@ from pyosv._dp.smoothing import smooth_fault_attributes_3d as _smooth_fault_attr
 from pyosv._dp.smoothing import smooth_path_1d, smooth_surface_2d
 from pyosv._dp.surface3d import find_surface_3d as _find_surface_3d_impl
 from pyosv._dp.surface3d import update_shift_ranges_3d
-from pyosv._dp.validation import validate_cost_2d, validate_cost_3d
+from pyosv._dp.validation import (
+    validate_cost_2d,
+    validate_cost_3d,
+    validate_direction as _validate_direction,
+    validate_int as _validate_int,
+    validate_nonnegative_float as _validate_nonnegative_float,
+    validate_nonnegative_int as _validate_nonnegative_int,
+    validate_positive_int as _validate_positive_int,
+)
 
 __all__ = [
     "accumulate_2d",

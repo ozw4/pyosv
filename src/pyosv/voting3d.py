@@ -9,12 +9,14 @@ import numpy as np
 
 from pyosv._accel import NUMBA_AVAILABLE
 from pyosv._voting3d.accumulation import (
+    _accumulate_surface_votes as _accumulate_surface_votes_impl,
+    _accumulate_surface_votes_masked as _accumulate_surface_votes_masked_impl,
     _add_surface_vote as _add_surface_vote,
     _add_surface_vote_numba as _add_surface_vote_numba,
-    _accumulate_surface_votes_masked_numba,
-    _accumulate_surface_votes_masked_python,
-    _accumulate_surface_votes_numba,
-    _accumulate_surface_votes_python,
+    _accumulate_surface_votes_masked_numba as _accumulate_surface_votes_masked_numba,
+    _accumulate_surface_votes_masked_python as _accumulate_surface_votes_masked_python,
+    _accumulate_surface_votes_numba as _accumulate_surface_votes_numba,
+    _accumulate_surface_votes_python as _accumulate_surface_votes_python,
     _count_reference_face_center_votes,
     _is_valid_surface_vote_sample as _is_valid_surface_vote_sample,
     _update_orientation_if_stronger as _update_orientation_if_stronger,
@@ -35,12 +37,16 @@ from pyosv._voting3d.orientation import (
     _surface_strike_and_dip,
 )
 from pyosv._voting3d.scoring_numba import (
-    _surface_vote_average_masked_numba,
-    _surface_vote_average_numba,
+    _surface_vote_average_masked_numba as _surface_vote_average_masked_numba,
+    _surface_vote_average_numba as _surface_vote_average_numba,
+)
+from pyosv._voting3d.scoring import (
+    _surface_vote_average as _surface_vote_average_impl,
+    _surface_vote_average_masked as _surface_vote_average_masked_impl,
 )
 from pyosv._voting3d.scoring_python import (
-    _surface_vote_average_masked_python,
-    _surface_vote_average_python,
+    _surface_vote_average_masked_python as _surface_vote_average_masked_python,
+    _surface_vote_average_python as _surface_vote_average_python,
 )
 from pyosv._voting3d.thinning import (
     _collapse_candidate_runs_along_axis as _collapse_candidate_runs_along_axis,
@@ -69,13 +75,17 @@ from pyosv._voting3d.uvw_sampling import (
     _validate_uvw_sampling_origin,
 )
 from pyosv._voting3d.validation import (
+    _validate_array3 as _validate_array3,
+    _validate_finite_array2 as _validate_finite_array2,
     _validate_finite_array3,
+    _validate_finite_vector3 as _validate_finite_vector3,
     _validate_fraction_float,
     _validate_int,
     _validate_matching_arrays3,
     _validate_matching_finite_arrays3_many,
     _validate_nonnegative_float,
     _validate_nonnegative_int,
+    _validate_positive_int as _validate_positive_int,
     _validate_vector3,
 )
 from pyosv.cells import FaultCell
@@ -1057,9 +1067,19 @@ def _surface_vote_average(
     surface: np.ndarray,
     ft: np.ndarray,
 ) -> tuple[np.float32, int]:
-    if NUMBA_AVAILABLE:
-        return _surface_vote_average_numba(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
-    return _surface_vote_average_python(c1, c2, c3, rv, rw, normal, dip, strike, surface, ft)
+    return _surface_vote_average_impl(
+        c1,
+        c2,
+        c3,
+        rv,
+        rw,
+        normal,
+        dip,
+        strike,
+        surface,
+        ft,
+        use_numba=NUMBA_AVAILABLE,
+    )
 
 
 def _surface_vote_average_masked(
@@ -1078,24 +1098,7 @@ def _surface_vote_average_masked(
     valid_lag_mask: np.ndarray,
     ft: np.ndarray,
 ) -> tuple[np.float32, int, int]:
-    if NUMBA_AVAILABLE:
-        return _surface_vote_average_masked_numba(
-            c1,
-            c2,
-            c3,
-            rv,
-            rw,
-            w_offset,
-            v_offset,
-            lmin,
-            normal,
-            dip,
-            strike,
-            surface,
-            valid_lag_mask,
-            ft,
-        )
-    return _surface_vote_average_masked_python(
+    return _surface_vote_average_masked_impl(
         c1,
         c2,
         c3,
@@ -1110,6 +1113,7 @@ def _surface_vote_average_masked(
         surface,
         valid_lag_mask,
         ft,
+        use_numba=NUMBA_AVAILABLE,
     )
 
 
@@ -1132,28 +1136,7 @@ def _accumulate_surface_votes(
     vt: np.ndarray,
     vm: np.ndarray,
 ) -> None:
-    if NUMBA_AVAILABLE:
-        _accumulate_surface_votes_numba(
-            c1,
-            c2,
-            c3,
-            rv,
-            rw,
-            fa,
-            vp_value,
-            vt_value,
-            align_i3,
-            normal,
-            dip,
-            strike,
-            surface,
-            fe,
-            vp,
-            vt,
-            vm,
-        )
-        return
-    _accumulate_surface_votes_python(
+    _accumulate_surface_votes_impl(
         c1,
         c2,
         c3,
@@ -1171,6 +1154,7 @@ def _accumulate_surface_votes(
         vp,
         vt,
         vm,
+        use_numba=NUMBA_AVAILABLE,
     )
 
 
@@ -1197,31 +1181,7 @@ def _accumulate_surface_votes_masked(
     vt: np.ndarray,
     vm: np.ndarray,
 ) -> tuple[int, int, int]:
-    if NUMBA_AVAILABLE:
-        return _accumulate_surface_votes_masked_numba(
-            c1,
-            c2,
-            c3,
-            rv,
-            rw,
-            w_offset,
-            v_offset,
-            lmin,
-            fa,
-            vp_value,
-            vt_value,
-            align_i3,
-            normal,
-            dip,
-            strike,
-            surface,
-            valid_lag_mask,
-            fe,
-            vp,
-            vt,
-            vm,
-        )
-    return _accumulate_surface_votes_masked_python(
+    return _accumulate_surface_votes_masked_impl(
         c1,
         c2,
         c3,
@@ -1243,4 +1203,5 @@ def _accumulate_surface_votes_masked(
         vp,
         vt,
         vm,
+        use_numba=NUMBA_AVAILABLE,
     )
