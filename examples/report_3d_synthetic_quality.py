@@ -65,6 +65,7 @@ from pyosv.evaluation.synthetic_quality.pipeline import (
     run_voting_from_attributes as _package_run_voting_from_attributes,
 )
 from pyosv.evaluation.synthetic_quality.runner import (
+    build_case_report_model as _package_build_case_report_model,
     case_pipeline_reports as _package_case_pipeline_reports,
     case_variant_comparison_alias as _package_case_variant_comparison_alias,
     prepare_case_inputs as _package_prepare_case_inputs,
@@ -99,8 +100,13 @@ from pyosv.evaluation.synthetic_quality.profiles import (
     _effective_voter_thin_mode,
     _validate_workflow_mode,
 )
+from pyosv.evaluation.reporting.json_v1 import (
+    LegacyReportV1Adapter,
+    report_to_json as _report_to_json,
+    write_metrics_json as _write_metrics_json,
+)
+from pyosv.evaluation.reporting.models import Report, ReportConfig
 from pyosv.evaluation.synthetic_quality.variants import (
-    BASELINE_VARIANT,
     DEFAULT_VARIANTS,
     QUALITY_MATRIX_VARIANTS,  # noqa: F401 - compatibility export
     VARIANT_NAMES,
@@ -1203,29 +1209,14 @@ def _build_report_and_volumes(
             variant_reports[variant] = variant_report
             variant_volumes[variant] = volumes
             variant_skins[variant] = skins_output
-        pipelines = _case_pipeline_reports(variant_reports, valid_input_mode)
-        case_report = {
-            "case_id": case.case_id,
-            "shape": [int(size) for size in case.shape],
-            "truth": _truth_report(case, truth_metric_config),
-            "variants": variant_reports,
-            "pipelines": pipelines,
-            "variant_comparison": _case_variant_comparison_alias(pipelines, valid_input_mode),
-        }
-        if BASELINE_VARIANT in variant_reports:
-            case_report.update(
-                {
-                    key: value
-                    for key, value in variant_reports[BASELINE_VARIANT].items()
-                    if key not in {"config", "pipelines"}
-                }
-            )
-            case_report["pipelines"] = pipelines
-            case_report["variant_comparison"] = _case_variant_comparison_alias(
-                pipelines,
-                valid_input_mode,
-            )
-        cases.append(case_report)
+        case_model = _package_build_case_report_model(
+            case_id=case.case_id,
+            shape=case.shape,
+            truth=_truth_report(case, truth_metric_config),
+            variant_reports=variant_reports,
+            input_mode=valid_input_mode,
+        )
+        cases.append(case_model)
         volume_outputs[case_definition.case_id] = variant_volumes
         skin_outputs[case_definition.case_id] = variant_skins
 
@@ -1247,11 +1238,8 @@ def _build_report_and_volumes(
     if include_thinning_diagnostic:
         config["thinning_diagnostic"] = {"enabled": True}
 
-    report = {
-        "format_version": FORMAT_VERSION,
-        "config": config,
-        "cases": cases,
-    }
+    report_model = Report(config=ReportConfig(config), cases=tuple(cases))
+    report = LegacyReportV1Adapter().to_dict(report_model)
     return report, volume_outputs, skin_outputs
 
 
@@ -1294,8 +1282,7 @@ def _delta_or_none(value: float | None, baseline_value: float | None) -> float |
 
 
 def report_to_json(report: Mapping[str, Any], *, pretty: bool = False) -> str:
-    indent = 2 if pretty else None
-    return json.dumps(report, indent=indent, sort_keys=True) + "\n"
+    return _report_to_json(report, pretty=pretty)
 
 
 def write_metrics_json(
@@ -1304,10 +1291,7 @@ def write_metrics_json(
     *,
     pretty: bool = False,
 ) -> Path:
-    output_path = Path(output_dir) / "metrics.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report_to_json(report, pretty=pretty), encoding="utf-8")
-    return output_path
+    return _write_metrics_json(report, output_dir, pretty=pretty)
 
 
 def write_summary_csv(report: Mapping[str, Any], output_dir: str | PathLike[str]) -> Path:

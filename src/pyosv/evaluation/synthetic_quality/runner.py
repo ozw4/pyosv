@@ -40,6 +40,8 @@ from pyosv.evaluation.synthetic_quality.variants import (
     effective_skinning_config,
     get_variant_spec,
 )
+from pyosv.evaluation.reporting.json_v1 import LegacyReportV1Adapter
+from pyosv.evaluation.reporting.models import CaseReport
 from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
 from pyosv.experimental.boundary_thinning import fvt_recenter_target_distance_diagnostics
 from pyosv.synthetic3d import Synthetic3DCase
@@ -385,6 +387,38 @@ def case_variant_comparison_alias(
     return dict(pipelines[active]["variant_comparison"])
 
 
+def build_case_report_model(
+    *,
+    case_id: str,
+    shape: Sequence[int],
+    truth: Mapping[str, Any],
+    variant_reports: Mapping[str, Mapping[str, Any]],
+    input_mode: str,
+) -> CaseReport:
+    """Build the typed case-level report while retaining legacy baseline aliases."""
+
+    pipelines = case_pipeline_reports(variant_reports, input_mode)
+    payload: dict[str, Any] = {
+        "case_id": case_id,
+        "shape": [int(size) for size in shape],
+        "truth": truth,
+        "variants": variant_reports,
+        "pipelines": pipelines,
+        "variant_comparison": case_variant_comparison_alias(pipelines, input_mode),
+    }
+    if BASELINE_VARIANT in variant_reports:
+        payload.update(
+            {
+                key: value
+                for key, value in variant_reports[BASELINE_VARIANT].items()
+                if key not in {"config", "pipelines"}
+            }
+        )
+        payload["pipelines"] = pipelines
+        payload["variant_comparison"] = case_variant_comparison_alias(pipelines, input_mode)
+    return CaseReport.from_dict(payload)
+
+
 def run_case(
     case_definition: SyntheticQualityCaseDefinition,
     *,
@@ -437,17 +471,15 @@ def run_case(
         scanner_stage_loss_diagnostic_runner=scanner_stage_loss_diagnostic_runner,
     )
     variant_report = evaluation.report_payload
-    report: dict[str, Any] = {
-        "case_id": case.case_id,
-        "shape": [int(size) for size in case.shape],
-        "truth": quality_metrics.truth_report(case, truth_metric_config),
-        "variants": {variant: variant_report},
-    }
-    if variant == BASELINE_VARIANT:
-        report.update({k: v for k, v in variant_report.items() if k != "pipelines"})
-    pipelines = case_pipeline_reports({variant: variant_report}, input_mode)
-    report["pipelines"] = pipelines
-    report["variant_comparison"] = case_variant_comparison_alias(pipelines, input_mode)
+    report_model = build_case_report_model(
+        case_id=case.case_id,
+        shape=case.shape,
+        truth=quality_metrics.truth_report(case, truth_metric_config),
+        variant_reports={variant: variant_report},
+        input_mode=input_mode,
+    )
+    # PipelineEvaluation remains the example-facing compatibility API.
+    report = LegacyReportV1Adapter().case_to_dict(report_model)
     return PipelineEvaluation(report, evaluation.artifacts)
 
 
