@@ -2545,6 +2545,38 @@ def test_set_surface_voting_boundary_policy_accepts_only_supported_values() -> N
     assert voter.surface_voting_boundary_policy == "reference"
 
 
+@pytest.mark.parametrize(
+    ("policy", "hook_name"),
+    [
+        ("reference", "_surface_voting_reference"),
+        ("masked_in_bounds", "_surface_voting_masked_in_bounds"),
+    ],
+)
+def test_surface_voting_routes_through_compatibility_policy_hook(
+    policy: str,
+    hook_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=0, rw=0)
+    voter.set_surface_voting_boundary_policy(policy)
+    cell = FaultCell(1, 1, 1, 1.0, 0.0, 0.0)
+    arrays = tuple(np.zeros((3, 3, 3), dtype=np.float32) for _ in range(5))
+    marker = object()
+    calls: list[tuple[object, ...]] = []
+
+    def compatibility_hook(*args: object) -> object:
+        calls.append(args)
+        return marker
+
+    monkeypatch.setattr(voter, hook_name, compatibility_hook)
+
+    result = voter._surface_voting(cell, *arrays)
+
+    assert result is marker
+    assert len(calls) == 1
+    assert calls[0][0] is cell
+
+
 @pytest.mark.parametrize("policy", ["", "Reference", "masked", None, 1, True])
 def test_set_surface_voting_boundary_policy_rejects_invalid_values(policy: object) -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=1, rw=1)
