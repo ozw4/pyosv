@@ -65,8 +65,15 @@ def summarize_scanner_boundary_stages(
     transition_rows: list[dict[str, Any]] = []
     penalty_rows: list[dict[str, Any]] = []
     introduced_rows: list[dict[str, Any]] = []
+    applicable_transitions: dict[str, bool] = {}
     for transition_name in transition_order:
         transition = _required_mapping(transitions, transition_name, "diagnostic transitions")
+        applicable = transition.get("applicable", True)
+        if not isinstance(applicable, bool):
+            raise ValueError(f"transition {transition_name!r} applicable must be bool")
+        applicable_transitions[transition_name] = applicable
+        if not applicable:
+            continue
         regions = _required_mapping(transition, "regions", f"transition {transition_name!r}")
         boundary = _required_mapping(
             regions, "boundary_shell", f"transition {transition_name!r} regions"
@@ -115,6 +122,8 @@ def summarize_scanner_boundary_stages(
 
     recall_rows: list[dict[str, Any]] = []
     for transition_name in transition_order:
+        if not applicable_transitions[transition_name]:
+            continue
         stage_pair = _transition_stage_pair(transition_name, stage_order)
         if stage_pair is None:
             continue

@@ -48,6 +48,18 @@ def test_scanner_builder_has_stable_stage_transition_and_volume_schema() -> None
     ]
     assert list(report["stages"]) == report["stage_order"]
     assert list(report["transitions"]) == report["transition_order"]
+    skin_stages = {"primary_skin", "fallback_skin", "final_skin"}
+    for (source, target), transition in zip(
+        (tuple(name.split("_to_", maxsplit=1)) for name in report["transition_order"]),
+        report["transitions"].values(),
+        strict=True,
+    ):
+        if {source, target} & skin_stages:
+            assert transition["applicable"] is False
+            assert transition["not_applicable_reason"] == "skinning_disabled"
+        else:
+            assert transition["applicable"] is True
+            assert transition["not_applicable_reason"] is None
     assert len(volumes) == 10
     for volume in volumes.values():
         assert volume.shape == case.shape
@@ -97,6 +109,56 @@ def test_scanner_builder_reports_primary_fallback_and_final_masks(
     np.testing.assert_array_equal(volumes["scanner_boundary_stage_primary_skin"], primary)
     np.testing.assert_array_equal(volumes["scanner_boundary_stage_fallback_skin"], fallback)
     np.testing.assert_array_equal(volumes["scanner_boundary_stage_final_skin"], final)
+
+    fallback_transitions = {
+        "fvt_positive_to_fallback_skin",
+        "primary_skin_to_fallback_skin",
+    }
+    for name, transition in report["transitions"].items():
+        expected = fallback_used or name not in fallback_transitions
+        assert transition["applicable"] is expected
+        assert transition["not_applicable_reason"] == (None if expected else "fallback_not_used")
+
+
+@pytest.mark.parametrize("fallback_enabled", (False, True))
+def test_scanner_builder_marks_unused_fallback_transitions_not_applicable(
+    fallback_enabled: bool,
+) -> None:
+    case = make_single_vertical_plane_case((5, 5, 5))
+    empty = np.zeros(case.shape, dtype=bool)
+    trace = PipelineStageTrace3D(
+        seed_candidate_mask=empty,
+        seed_selected_mask=empty,
+        fv_positive_mask=empty,
+        fvt_positive_mask=empty,
+        primary_skin_mask=empty,
+        fallback_skin_mask=empty,
+        final_skin_mask=empty,
+        skinning_enabled=True,
+        fallback_used=False,
+    )
+
+    report, _ = build_scanner_boundary_stage_diagnostics(
+        case=case,
+        scanner_volumes={"scanner_ft": empty, "scanner_fet": empty},
+        stage_trace=trace,
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_diagnostics={"fallback_enabled": fallback_enabled},
+    )
+
+    for name in (
+        "fvt_positive_to_fallback_skin",
+        "primary_skin_to_fallback_skin",
+    ):
+        assert report["transitions"][name]["applicable"] is False
+        assert report["transitions"][name]["not_applicable_reason"] == "fallback_not_used"
+    for name in (
+        "fvt_positive_to_primary_skin",
+        "primary_skin_to_final_skin",
+        "fvt_positive_to_final_skin",
+    ):
+        assert report["transitions"][name]["applicable"] is True
+        assert report["transitions"][name]["not_applicable_reason"] is None
 
 
 def _metrics(
