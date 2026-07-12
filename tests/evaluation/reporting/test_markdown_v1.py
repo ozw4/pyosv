@@ -6,6 +6,7 @@ from pathlib import Path
 
 from pyosv.evaluation.reporting.markdown_v1 import (
     _figure_path,
+    _format_markdown_metric,
     visual_report_markdown,
     write_visual_report_markdown,
 )
@@ -27,6 +28,52 @@ def _pipeline_report() -> dict[str, object]:
             "skin": None,
         },
         "skinning": {"enabled": False},
+    }
+
+
+def _stage_diagnostic() -> dict[str, object]:
+    def stage(boundary: float | None, interior: float | None) -> dict[str, object]:
+        return {
+            "candidate_count": 7,
+            "regions": {
+                "boundary_shell": {"truth_recall": boundary},
+                "interior": {"truth_recall": interior},
+            },
+            "components": {"component_count": 2, "largest_component_fraction": 0.75},
+            "edge_distance_profile": {
+                "0": {"truth_recall": None},
+                "1": {"truth_recall": 0.5},
+            },
+        }
+
+    def transition(boundary: float, interior: float) -> dict[str, object]:
+        return {
+            "regions": {
+                "boundary_shell": {
+                    "retained_source_fraction": boundary,
+                    "introduced_target_fraction": 0.3,
+                },
+                "interior": {"retained_source_fraction": interior},
+            },
+            "target_to_source_distance_p95": 1.5,
+            "normal_shift": None,
+            "tangential_shift_magnitude": 2.5,
+        }
+
+    return {
+        "stage_order": ["stage_second", "stage_first"],
+        "transition_order": ["transition_second", "transition_first"],
+        "stages": {"stage_first": stage(0.11, 0.12), "stage_second": stage(0.21, 0.22)},
+        "transitions": {
+            "transition_first": transition(0.31, 0.32),
+            "transition_second": transition(0.41, 0.42),
+        },
+        "skinning": {
+            "enabled": True,
+            "fallback_enabled": True,
+            "fallback_used": False,
+            "fallback_reason": None,
+        },
     }
 
 
@@ -71,3 +118,26 @@ def test_figure_path_preserves_variant_and_pipeline_layout() -> None:
     assert path.as_posix() == (
         "geometry/plane/boundary_aware_voter_v1/scanner/figures/truth_vs_fvt_overlay_i3_center.png"
     )
+
+
+def test_visual_report_markdown_renders_ordered_stage_diagnostics() -> None:
+    pipeline = _pipeline_report()
+    pipeline["scanner_boundary_stage_diagnostics"] = _stage_diagnostic()
+    report = {
+        "config": {"input_mode": "oracle"},
+        "cases": [{"case_id": "plane", "variants": {"current_default": pipeline}}],
+    }
+    markdown = visual_report_markdown(report)
+    assert "##### scanner boundary stage diagnostics" in markdown
+    assert markdown.index("| stage_second |") < markdown.index("| stage_first |")
+    assert markdown.index("| transition_second |") < markdown.index("| transition_first |")
+    assert "| stage_second | 7 | 0.21 | 0.22 | 2 | 0.75 | n/a | 0.5 |" in markdown
+    assert "| transition_second | 0.41 | 0.42 | 0.3 | 1.5 | n/a | 2.5 |" in markdown
+    assert "- fallback enabled: true" in markdown
+    assert "- fallback used: false" in markdown
+    assert "- fallback reason: n/a" in markdown
+
+
+def test_existing_markdown_metric_formatting_is_unchanged() -> None:
+    assert _format_markdown_metric(None) == "None"
+    assert _format_markdown_metric(True) == "1"

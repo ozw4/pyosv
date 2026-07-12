@@ -1406,6 +1406,31 @@ records, or a disabled zero-count object when `--skip-skinning` is used. With
 more than one variant, volumes, `skins.json`, and figures are written under
 `case_id/variant/`.
 
+With `--scanner-boundary-stage-diagnostics`, `--save-volumes` additionally
+writes 0/1 float32 masks under
+`case_id[/variant][/pipeline]/scanner_boundary_stage_diagnostics/`:
+
+```text
+scanner_ft_positive.dat
+scanner_fet_positive.dat
+seed_candidate.dat
+seed_selected.dat
+fv_positive.dat
+fvt_positive.dat
+primary_skin.dat
+fallback_skin.dat
+final_skin.dat
+boundary_shell.dat
+```
+
+The optional Markdown diagnostic section follows the reported stage and
+transition order. Its stage table shows truth recall at the boundary, in the
+interior, and at exact edge distances alongside component fragmentation. Its
+transition table distinguishes the fraction of source voxels retained near
+the boundary from the fraction of target voxels newly introduced there, and
+also shows distance and normal/tangential shift metrics. `fallback_skin.dat`
+is nonzero only when the fallback result is adopted.
+
 For `--input-mode scanner`, the same case or variant directory also includes
 scanner artifacts:
 

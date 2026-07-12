@@ -23,6 +23,14 @@ def _volumes(*, scanner: bool = False) -> dict[str, np.ndarray]:
     return result
 
 
+def _stage_diagnostic_volumes() -> dict[str, np.ndarray]:
+    mask = np.array([0, 1, 0, 1, 1, 0, 0, 1], dtype=np.float32).reshape(2, 2, 2)
+    return {
+        source_name: mask.copy()
+        for source_name, _ in artifacts.SCANNER_BOUNDARY_STAGE_DIAGNOSTIC_VOLUME_NAMES
+    }
+
+
 def test_write_case_volumes_preserves_single_and_multiple_variant_layout(tmp_path: Path) -> None:
     single = {"geometry/plane": {"current_default": _volumes()}}
     artifacts.write_case_volumes(single, tmp_path / "single")
@@ -66,6 +74,56 @@ def test_write_case_volumes_preserves_both_pipeline_layout(tmp_path: Path) -> No
         *(f"plane/scanner/{output_name}.dat" for _, output_name in artifacts.SCANNER_VOLUME_NAMES),
     }
     assert {path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*.dat")} == expected
+
+
+def test_write_case_volumes_writes_scanner_boundary_stage_diagnostics(tmp_path: Path) -> None:
+    from pyosv.io import read_dat
+
+    volumes = _volumes(scanner=True)
+    volumes.update(_stage_diagnostic_volumes())
+    paths = artifacts.write_case_volumes({"plane": {"current_default": volumes}}, tmp_path)
+    diagnostic_dir = tmp_path / "plane" / "scanner_boundary_stage_diagnostics"
+    expected_names = {
+        f"{output_name}.dat"
+        for _, output_name in artifacts.SCANNER_BOUNDARY_STAGE_DIAGNOSTIC_VOLUME_NAMES
+    }
+    assert {path.name for path in paths if path.parent == diagnostic_dir} == expected_names
+    actual = read_dat(diagnostic_dir / "seed_selected.dat", (2, 2, 2))
+    np.testing.assert_array_equal(
+        actual,
+        volumes["scanner_boundary_stage_seed_selected"],
+    )
+    assert actual.dtype == np.float32
+    assert set(np.unique(actual)) <= {0.0, 1.0}
+
+
+def test_write_case_volumes_skips_absent_stage_diagnostics(tmp_path: Path) -> None:
+    artifacts.write_case_volumes({"plane": {"current_default": _volumes(scanner=True)}}, tmp_path)
+    assert not (tmp_path / "plane" / "scanner_boundary_stage_diagnostics").exists()
+
+
+def test_write_case_volumes_rejects_incomplete_stage_diagnostics(tmp_path: Path) -> None:
+    volumes = _volumes(scanner=True)
+    volumes["scanner_boundary_stage_seed_candidate"] = np.zeros((2, 2, 2), dtype=np.float32)
+    with pytest.raises(KeyError, match="incomplete scanner boundary stage diagnostic volumes"):
+        artifacts.write_case_volumes({"plane": {"current_default": volumes}}, tmp_path)
+
+
+def test_write_case_volumes_writes_stage_diagnostics_only_for_scanner_pipeline(
+    tmp_path: Path,
+) -> None:
+    scanner = _volumes(scanner=True)
+    scanner.update(_stage_diagnostic_volumes())
+    outputs = {
+        "plane": {
+            "current_default": {
+                artifacts.PIPELINE_OUTPUTS_KEY: {"oracle": _volumes(), "scanner": scanner}
+            }
+        }
+    }
+    artifacts.write_case_volumes(outputs, tmp_path)
+    assert not (tmp_path / "plane" / "oracle" / "scanner_boundary_stage_diagnostics").exists()
+    assert (tmp_path / "plane" / "scanner" / "scanner_boundary_stage_diagnostics").is_dir()
 
 
 def test_write_case_skins_json_preserves_payload_and_does_not_mutate_it(tmp_path: Path) -> None:
