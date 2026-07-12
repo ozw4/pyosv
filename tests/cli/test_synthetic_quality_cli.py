@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from pyosv.cli import synthetic_quality
 from pyosv.evaluation.synthetic_quality import build_report, run_case
 
@@ -31,6 +33,7 @@ def test_package_cli_help() -> None:
 
     assert result.returncode == 0
     assert "--output-dir" in result.stdout
+    assert "--scanner-boundary-stage-diagnostics" in result.stdout
 
 
 def test_example_wrapper_help() -> None:
@@ -51,3 +54,27 @@ def test_explicit_long_option_accepts_separate_and_equals_forms() -> None:
 def test_domain_report_apis_are_exported_from_package() -> None:
     assert callable(build_report)
     assert callable(run_case)
+
+
+def test_main_forwards_scanner_boundary_stage_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_example(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(synthetic_quality, "run_example", fake_run_example)
+
+    result = synthetic_quality.main(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--scanner-boundary-stage-diagnostics",
+        ]
+    )
+
+    assert result == 0
+    assert captured["include_scanner_boundary_stage_diagnostics"] is True

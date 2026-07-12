@@ -808,6 +808,44 @@ the same case, variant, scanner angle/sigma/thinning config, and downstream
 workflow. Oracle-only mode treats the flag as a no-op and records
 `scanner_backend_matrix: false` in the report config.
 
+`--scanner-boundary-stage-diagnostics` is an independent opt-in for scanner
+and both input modes. It adds
+`scanner_boundary_stage_diagnostics` only to scanner pipeline variants; it
+does not enable or replace the existing `scanner_stage_loss` diagnostics from
+`--scanner-downstream-diagnostics`. In oracle mode the requested diagnostic is
+recorded as disabled in `config.scanner_boundary_stage_diagnostics.enabled`
+and no variant diagnostic is produced. This detailed diagnostic is intended
+for cause isolation, not as a promotion gate, and it is not added to
+`summary.csv`.
+
+The diagnostic records masks in this fixed stage order:
+
+```text
+scanner_ft_positive -> scanner_fet_positive -> seed_candidate -> seed_selected
+-> fv_positive -> fvt_positive -> primary_skin -> fallback_skin -> final_skin
+```
+
+`scanner_ft_positive` is the positive raw scanner likelihood and
+`scanner_fet_positive` is the positive scanner-thinned likelihood passed to
+the voter. `seed_candidate` applies the configured seed threshold, while
+`seed_selected` contains the actual seeds passed to voting. `fv_positive` and
+`fvt_positive` are respectively the positive pre-thinning vote and the final
+post-thinning/post-policy input to skinning. `primary_skin` is captured before
+fallback evaluation. `fallback_skin` is non-empty only when fallback replaces
+the primary result, and then equals `final_skin`; otherwise `final_skin` is the
+primary result. When skinning is disabled, all three skin stages are empty.
+
+Transitions report source retention, target introduction, bidirectional
+voxel-center Euclidean distances, and centroid/normal shifts. Matching uses
+`config.match_radius`, equal to the synthetic truth metric `buffer_radius`.
+Boundary and interior metrics use a boundary shell containing voxels within
+`config.edge_margin` (currently 2) voxels of any volume face. Stage profiles
+also report exact distance-to-face bins through 3 voxels, 18-neighbor
+(`edge`) connected components, and comparisons with the configured truth
+surface. The fixed transitions cover every adjacent stage plus
+`fvt_positive_to_final_skin`; fallback-specific transitions remain present
+with empty-mask metrics when fallback is unused.
+
 With optional visual outputs enabled, each case also gets a case directory. For
 the `minimal` case set this is:
 

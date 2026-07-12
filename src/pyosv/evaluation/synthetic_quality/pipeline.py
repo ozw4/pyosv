@@ -19,6 +19,7 @@ from pyosv.evaluation.synthetic_quality.models import (
     OrientationField3D,
     PipelineArtifacts,
     PipelineEvaluation,
+    PipelineStageTrace3D,
     SkinningResult3D,
     ThinningResult3D,
     VotingResult3D,
@@ -138,6 +139,7 @@ def run_voting_from_attributes(
     skinning_config: SyntheticSkinningConfig,
     variant_spec: VariantSpec,
     include_thinning_diagnostic: bool = False,
+    capture_stage_trace: bool = False,
     scanner_target_positive_mask: np.ndarray | None = None,
     fvt_recenter_target: np.ndarray | None = None,
     fvt_recenter_target_source: str | None = None,
@@ -199,6 +201,13 @@ def run_voting_from_attributes(
             pt=pt,
             tt=tt,
         )
+    seed_candidate_mask: np.ndarray | None = None
+    seed_selected_mask: np.ndarray | None = None
+    if capture_stage_trace:
+        seed_candidate_mask = np.asarray(ft) > np.float32(voting_config.seed_threshold)
+        seed_selected_mask = np.zeros(seed_candidate_mask.shape, dtype=bool)
+        for seed in seeds:
+            seed_selected_mask[seed.i3, seed.i2, seed.i1] = True
     fv, vp, vt = voter.apply_voting_from_seeds(
         seeds,
         ft=ft,
@@ -435,6 +444,7 @@ def run_voting_from_attributes(
             skinning_config=skinning_config,
             diagnostics=skin_diagnostics,
         )
+        primary_skin_mask = skin_mask_from_skins(skins, case.shape) if capture_stage_trace else None
         add_primary_skin_diagnostics(
             skin_diagnostics,
             skins,
@@ -489,6 +499,23 @@ def run_voting_from_attributes(
 
     SkinningResult3D(skins=skins, mask=skin_mask, diagnostics=skin_diagnostics)
 
+    stage_trace = None
+    if capture_stage_trace:
+        empty_skin_mask = np.zeros(case.shape, dtype=bool)
+        fallback_used = bool(skin_diagnostics.get("fallback_used", False))
+        final_skin_mask = skin_mask if skinning_config.enabled else empty_skin_mask
+        stage_trace = PipelineStageTrace3D(
+            seed_candidate_mask=seed_candidate_mask,
+            seed_selected_mask=seed_selected_mask,
+            fv_positive_mask=_positive_candidate_mask(fv),
+            fvt_positive_mask=_positive_candidate_mask(fvt),
+            primary_skin_mask=(primary_skin_mask if skinning_config.enabled else empty_skin_mask),
+            fallback_skin_mask=final_skin_mask if fallback_used else empty_skin_mask,
+            final_skin_mask=final_skin_mask,
+            skinning_enabled=skinning_config.enabled,
+            fallback_used=fallback_used,
+        )
+
     volumes = {
         "truth_fault_mask": case.truth_fault_mask.astype(np.float32),
         "truth_distance": case.truth_distance,
@@ -506,5 +533,9 @@ def run_voting_from_attributes(
     volumes.update(diagnostic_volumes)
     return PipelineEvaluation(
         report_payload=report,
-        artifacts=PipelineArtifacts(volumes=volumes, skins_payload=skins_output),
+        artifacts=PipelineArtifacts(
+            volumes=volumes,
+            skins_payload=skins_output,
+            stage_trace=stage_trace,
+        ),
     )
