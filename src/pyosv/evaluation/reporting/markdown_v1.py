@@ -122,6 +122,12 @@ def _visual_pipeline_section(
     )
     if include_scanner:
         lines.extend(_scanner_markdown_metrics(pipeline_report))
+    if "scanner_boundary_stage_diagnostics" in pipeline_report:
+        lines.extend(
+            _scanner_boundary_stage_diagnostics_markdown(
+                pipeline_report["scanner_boundary_stage_diagnostics"]
+            )
+        )
     if "thinning_diagnostic" in pipeline_report:
         lines.extend(
             _thinning_diagnostic_markdown(
@@ -257,6 +263,92 @@ def _scanner_markdown_metrics(pipeline_report: Mapping[str, Any]) -> list[str]:
     ]
 
 
+def _scanner_boundary_stage_diagnostics_markdown(
+    diagnostic: Mapping[str, Any],
+) -> list[str]:
+    skinning = diagnostic["skinning"]
+    stage_headers = (
+        "stage",
+        "candidate count",
+        "boundary truth recall",
+        "interior truth recall",
+        "component count",
+        "largest component fraction",
+        "edge distance 0 truth recall",
+        "edge distance 1 truth recall",
+    )
+    transition_headers = (
+        "transition",
+        "boundary retained source fraction",
+        "interior retained source fraction",
+        "boundary introduced target fraction",
+        "target-to-source distance p95",
+        "normal shift",
+        "tangential shift magnitude",
+    )
+    lines = [
+        "",
+        "##### scanner boundary stage diagnostics",
+        "",
+        f"- skinning enabled: {_format_stage_diagnostic_metric(skinning['enabled'])}",
+        f"- fallback enabled: {_format_stage_diagnostic_metric(skinning['fallback_enabled'])}",
+        f"- fallback used: {_format_stage_diagnostic_metric(skinning['fallback_used'])}",
+        f"- fallback reason: {_format_stage_diagnostic_metric(skinning['fallback_reason'])}",
+        "",
+        _markdown_table_row(stage_headers),
+        _markdown_table_row(("---",) * len(stage_headers)),
+    ]
+    for stage_name in diagnostic["stage_order"]:
+        stage = diagnostic["stages"][stage_name]
+        lines.append(
+            _markdown_table_row(
+                (
+                    stage_name,
+                    stage["candidate_count"],
+                    _stage_region_truth_recall(stage, "boundary_shell"),
+                    _stage_region_truth_recall(stage, "interior"),
+                    stage["components"]["component_count"],
+                    stage["components"]["largest_component_fraction"],
+                    stage["edge_distance_profile"]["0"]["truth_recall"],
+                    stage["edge_distance_profile"]["1"]["truth_recall"],
+                )
+            )
+        )
+    lines.extend(
+        [
+            "",
+            _markdown_table_row(transition_headers),
+            _markdown_table_row(("---",) * len(transition_headers)),
+        ]
+    )
+    for transition_name in diagnostic["transition_order"]:
+        transition = diagnostic["transitions"][transition_name]
+        lines.append(
+            _markdown_table_row(
+                (
+                    transition_name,
+                    transition["regions"]["boundary_shell"]["retained_source_fraction"],
+                    transition["regions"]["interior"]["retained_source_fraction"],
+                    transition["regions"]["boundary_shell"]["introduced_target_fraction"],
+                    transition["target_to_source_distance_p95"],
+                    transition["normal_shift"],
+                    transition["tangential_shift_magnitude"],
+                )
+            )
+        )
+    return lines
+
+
+def _stage_region_truth_recall(stage: Mapping[str, Any], region_name: str) -> object:
+    region = stage["regions"][region_name]
+    truth = region.get("truth", region)
+    return truth["truth_recall"]
+
+
+def _markdown_table_row(values: tuple[object, ...]) -> str:
+    return "| " + " | ".join(_format_stage_diagnostic_metric(value) for value in values) + " |"
+
+
 def _pipeline_comparison_table(
     *,
     oracle_report: Mapping[str, Any],
@@ -352,3 +444,11 @@ def _format_markdown_metric(value: object) -> str:
     if isinstance(value, int | float | np.floating | np.integer):
         return f"{float(value):.6g}"
     return str(value)
+
+
+def _format_stage_diagnostic_metric(value: object) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, bool | np.bool_):
+        return str(bool(value)).lower()
+    return _format_markdown_metric(value)

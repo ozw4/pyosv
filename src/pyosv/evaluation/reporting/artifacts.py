@@ -51,6 +51,18 @@ THINNING_DIAGNOSTIC_VOLUME_NAMES = (
     ("keep_reference_only_thinning_diagnostic", "keep_reference_only"),
     ("keep_normal_only_thinning_diagnostic", "keep_normal_only"),
 )
+SCANNER_BOUNDARY_STAGE_DIAGNOSTIC_VOLUME_NAMES = (
+    ("scanner_boundary_stage_scanner_ft_positive", "scanner_ft_positive"),
+    ("scanner_boundary_stage_scanner_fet_positive", "scanner_fet_positive"),
+    ("scanner_boundary_stage_seed_candidate", "seed_candidate"),
+    ("scanner_boundary_stage_seed_selected", "seed_selected"),
+    ("scanner_boundary_stage_fv_positive", "fv_positive"),
+    ("scanner_boundary_stage_fvt_positive", "fvt_positive"),
+    ("scanner_boundary_stage_primary_skin", "primary_skin"),
+    ("scanner_boundary_stage_fallback_skin", "fallback_skin"),
+    ("scanner_boundary_stage_final_skin", "final_skin"),
+    ("scanner_boundary_stage_boundary_shell", "boundary_shell"),
+)
 PIPELINE_OUTPUTS_KEY = "__pipelines__"
 PIPELINE_NAMES = ("oracle", "scanner")
 
@@ -69,7 +81,14 @@ def write_case_volumes(
             output_dir_for_variant = _variant_output_dir(case_dir, variant, len(variants) == 1)
             for pipeline, pipeline_volumes in _iter_pipeline_volume_outputs(volumes):
                 volume_dir = _pipeline_output_dir(output_dir_for_variant, pipeline)
-                written.extend(_write_pipeline_volumes(volume_dir, pipeline_volumes, write_dat))
+                written.extend(
+                    _write_pipeline_volumes(
+                        volume_dir,
+                        pipeline_volumes,
+                        write_dat,
+                        pipeline=pipeline,
+                    )
+                )
     return written
 
 
@@ -93,6 +112,8 @@ def _write_pipeline_volumes(
     output_dir: Path,
     volumes: Mapping[str, np.ndarray],
     write_dat: Callable[[str | PathLike[str], np.ndarray], Path],
+    *,
+    pipeline: str | None,
 ) -> list[Path]:
     written = []
     for name in VOLUME_NAMES:
@@ -101,6 +122,10 @@ def _write_pipeline_volumes(
         if source_name in volumes:
             written.append(write_dat(output_dir / f"{output_name}.dat", volumes[source_name]))
     written.extend(_write_thinning_diagnostic_volumes(output_dir, volumes, write_dat))
+    if pipeline != "oracle":
+        written.extend(
+            _write_scanner_boundary_stage_diagnostic_volumes(output_dir, volumes, write_dat)
+        )
     return written
 
 
@@ -116,6 +141,28 @@ def _write_thinning_diagnostic_volumes(
     return [
         write_dat(diagnostic_dir / f"{output_name}.dat", volumes[source_name])
         for source_name, output_name in THINNING_DIAGNOSTIC_VOLUME_NAMES
+    ]
+
+
+def _write_scanner_boundary_stage_diagnostic_volumes(
+    output_dir: Path,
+    volumes: Mapping[str, np.ndarray],
+    write_dat: Callable[[str | PathLike[str], np.ndarray], Path],
+) -> list[Path]:
+    source_names = tuple(name for name, _ in SCANNER_BOUNDARY_STAGE_DIAGNOSTIC_VOLUME_NAMES)
+    present = tuple(name for name in source_names if name in volumes)
+    if not present:
+        return []
+    missing = tuple(name for name in source_names if name not in volumes)
+    if missing:
+        raise KeyError(
+            "incomplete scanner boundary stage diagnostic volumes; missing: " + ", ".join(missing)
+        )
+
+    diagnostic_dir = output_dir / "scanner_boundary_stage_diagnostics"
+    return [
+        write_dat(diagnostic_dir / f"{output_name}.dat", volumes[source_name])
+        for source_name, output_name in SCANNER_BOUNDARY_STAGE_DIAGNOSTIC_VOLUME_NAMES
     ]
 
 
