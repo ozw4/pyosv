@@ -878,7 +878,13 @@ also report exact distance-to-face bins through 3 voxels, 18-neighbor
 (`edge`) connected components, and comparisons with the configured truth
 surface. The fixed transitions cover every adjacent stage plus
 `fvt_positive_to_final_skin`; fallback-specific transitions remain present
-with empty-mask metrics when fallback is unused.
+with empty-mask metrics when fallback is unused. Each transition includes an
+`applicable` boolean and a nullable `not_applicable_reason`. Skin-stage
+transitions are recorded as non-applicable when skinning is disabled, and
+fallback-specific transitions are non-applicable when fallback is unused.
+These transitions remain in the detailed diagnostic but are excluded from the
+screening summary rankings and primary aggregates. Older reports without an
+`applicable` field are treated as applicable.
 
 With optional visual outputs enabled, each case also gets a case directory. For
 the `minimal` case set this is:

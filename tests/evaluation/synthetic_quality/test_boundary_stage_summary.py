@@ -146,6 +146,43 @@ def test_summary_uses_explicit_order_ties_and_excludes_none() -> None:
     json.dumps(summary, allow_nan=False)
 
 
+def test_summary_excludes_non_applicable_transition_from_all_selections() -> None:
+    diagnostic = _diagnostic()
+    excluded = diagnostic["transitions"]["raw_to_thin"]
+    excluded["applicable"] = False
+    excluded["not_applicable_reason"] = "test"
+    excluded["regions"]["boundary_shell"].update(
+        retained_source_fraction=0.0,
+        introduced_target_fraction=1.0,
+    )
+    excluded["regions"]["interior"]["retained_source_fraction"] = 1.0
+    diagnostic["stages"]["raw"]["regions"]["boundary_shell"]["truth_recall"] = 1.0
+    diagnostic["stages"]["thin"]["regions"]["boundary_shell"]["truth_recall"] = 0.0
+
+    summary = summarize_scanner_boundary_stages(diagnostic, retention_threshold=0.8)
+
+    assert summary["first_boundary_retention_below_threshold"]["transition"] == "thin_to_seed"
+    assert summary["lowest_boundary_retention"]["transition"] == "seed_to_final"
+    assert summary["largest_boundary_vs_interior_retention_penalty"]["transition"] == (
+        "seed_to_final"
+    )
+    assert summary["highest_boundary_introduced_fraction"]["transition"] == "thin_to_seed"
+    assert summary["largest_boundary_truth_recall_drop"]["source_stage"] == "thin"
+    assert all(
+        row["transition"] != "raw_to_thin"
+        for row in summary["ranked_transitions_by_boundary_retention"]
+    )
+
+
+@pytest.mark.parametrize("applicable", (None, 0, 1, "false"))
+def test_summary_rejects_non_bool_applicable(applicable: object) -> None:
+    diagnostic = _diagnostic()
+    diagnostic["transitions"]["raw_to_thin"]["applicable"] = applicable
+
+    with pytest.raises(ValueError, match="raw_to_thin.*applicable must be bool"):
+        summarize_scanner_boundary_stages(diagnostic, retention_threshold=0.8)
+
+
 @pytest.mark.parametrize("threshold", (-0.1, 1.1, float("nan"), float("inf"), True))
 def test_summary_rejects_invalid_threshold(threshold: float) -> None:
     with pytest.raises(ValueError):
@@ -203,3 +240,21 @@ def test_small_serialized_scanner_report_summary_is_json_safe_and_ordered(tmp_pa
         row["transition"] for row in summary["ranked_transitions_by_boundary_retention"]
     ]
     assert all(name in diagnostic["transition_order"] for name in ranked_names)
+    excluded = {
+        "fvt_positive_to_primary_skin",
+        "primary_skin_to_final_skin",
+        "fvt_positive_to_final_skin",
+        "fvt_positive_to_fallback_skin",
+        "primary_skin_to_fallback_skin",
+    }
+    assert excluded.isdisjoint(ranked_names)
+    for key in (
+        "first_boundary_retention_below_threshold",
+        "lowest_boundary_retention",
+        "largest_boundary_vs_interior_retention_penalty",
+        "highest_boundary_introduced_fraction",
+    ):
+        row = summary[key]
+        assert row is None or row["transition"] not in excluded
+    recall = summary["largest_boundary_truth_recall_drop"]
+    assert recall is None or f"{recall['source_stage']}_to_{recall['target_stage']}" not in excluded

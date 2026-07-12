@@ -46,6 +46,8 @@ TRANSITION_PAIRS = (
     ("fvt_positive", "fallback_skin"),
     ("primary_skin", "fallback_skin"),
 )
+SKIN_STAGE_NAMES = {"primary_skin", "fallback_skin", "final_skin"}
+FALLBACK_STAGE_NAME = "fallback_skin"
 
 
 def build_scanner_boundary_stage_diagnostics(
@@ -111,6 +113,14 @@ def build_scanner_boundary_stage_diagnostics(
                 truth_reference_mask=truth_surface_mask,
             )
         )
+        applicable, not_applicable_reason = _transition_applicability(
+            source_name,
+            target_name,
+            skinning_enabled=bool(stage_trace.skinning_enabled),
+            fallback_used=bool(stage_trace.fallback_used),
+        )
+        correspondence["applicable"] = applicable
+        correspondence["not_applicable_reason"] = not_applicable_reason
         transitions[key] = correspondence
 
     skinning = {} if skinning_diagnostics is None else skinning_diagnostics
@@ -140,6 +150,21 @@ def build_scanner_boundary_stage_diagnostics(
         np.float32
     )
     return report, volumes
+
+
+def _transition_applicability(
+    source_name: str,
+    target_name: str,
+    *,
+    skinning_enabled: bool,
+    fallback_used: bool,
+) -> tuple[bool, str | None]:
+    stages = {source_name, target_name}
+    if not skinning_enabled and stages & SKIN_STAGE_NAMES:
+        return False, "skinning_disabled"
+    if skinning_enabled and not fallback_used and FALLBACK_STAGE_NAME in stages:
+        return False, "fallback_not_used"
+    return True, None
 
 
 def volume_edge_distance_map(shape: tuple[int, int, int]) -> np.ndarray:
