@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from pyosv.evaluation.reporting.markdown_v1 import (
@@ -105,6 +106,22 @@ def test_write_visual_report_markdown_writes_exact_rendering(tmp_path: Path) -> 
     assert path.read_text(encoding="utf-8") == visual_report_markdown(report)
     expected = json.loads(_SHA256_FIXTURE.read_text(encoding="utf-8"))
     assert hashlib.sha256(path.read_bytes()).hexdigest() == expected["visual_report.md"]
+    assert path.read_text(encoding="utf-8") == (
+        "# Controlled Synthetic Quality Report\n"
+        "\n"
+        "## plane\n"
+        "\n"
+        "### current_default\n"
+        "\n"
+        "- buffered_f1_r2: 0.75\n"
+        "- distance_p95: 1.25\n"
+        "- strike_median_error: 2.5\n"
+        "- dip_median_error: 3.5\n"
+        "\n"
+        "![fvt overlay](plane/figures/truth_vs_fvt_overlay_i3_center.png)\n"
+        "\n"
+        "- skinning disabled\n"
+    )
 
 
 def test_figure_path_preserves_variant_and_pipeline_layout() -> None:
@@ -136,6 +153,23 @@ def test_visual_report_markdown_renders_ordered_stage_diagnostics() -> None:
     assert "- fallback enabled: true" in markdown
     assert "- fallback used: false" in markdown
     assert "- fallback reason: n/a" in markdown
+
+
+def test_visual_report_markdown_renders_nested_region_truth_recall() -> None:
+    pipeline = _pipeline_report()
+    diagnostic = deepcopy(_stage_diagnostic())
+    for stage in diagnostic["stages"].values():
+        for region in stage["regions"].values():
+            region["truth"] = {"truth_recall": region.pop("truth_recall")}
+    pipeline["scanner_boundary_stage_diagnostics"] = diagnostic
+    report = {
+        "config": {"input_mode": "oracle"},
+        "cases": [{"case_id": "plane", "variants": {"current_default": pipeline}}],
+    }
+
+    markdown = visual_report_markdown(report)
+
+    assert "| stage_second | 7 | 0.21 | 0.22 | 2 | 0.75 | n/a | 0.5 |" in markdown
 
 
 def test_existing_markdown_metric_formatting_is_unchanged() -> None:

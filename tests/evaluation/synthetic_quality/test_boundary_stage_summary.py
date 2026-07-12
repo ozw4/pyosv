@@ -14,6 +14,7 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticScannerConfig,
     SyntheticSkinningConfig,
 )
+from pyosv.evaluation.reporting.json_v1 import write_metrics_json
 
 
 def _diagnostic() -> dict[str, object]:
@@ -170,7 +171,7 @@ def test_markdown_is_deterministic_and_uses_na_for_undefined() -> None:
     )
 
 
-def test_small_scanner_report_summary_is_json_safe_and_ordered() -> None:
+def test_small_serialized_scanner_report_summary_is_json_safe_and_ordered(tmp_path) -> None:
     report = build_report(
         case_set="minimal",
         shape=(9, 9, 9),
@@ -189,9 +190,11 @@ def test_small_scanner_report_summary_is_json_safe_and_ordered() -> None:
         skinning_config=SyntheticSkinningConfig(enabled=False),
         include_scanner_boundary_stage_diagnostics=True,
     )
+    metrics_path = write_metrics_json(report, tmp_path)
+    serialized_report = json.loads(metrics_path.read_text(encoding="utf-8"))
 
     diagnostic = select_scanner_boundary_stage_diagnostics(
-        report, case_id="single_vertical_plane", variant="current_default"
+        serialized_report, case_id="single_vertical_plane", variant="current_default"
     )
     summary = summarize_scanner_boundary_stages(diagnostic, retention_threshold=0.8)
 

@@ -305,8 +305,8 @@ def _scanner_boundary_stage_diagnostics_markdown(
                 (
                     stage_name,
                     stage["candidate_count"],
-                    stage["regions"]["boundary_shell"]["truth_recall"],
-                    stage["regions"]["interior"]["truth_recall"],
+                    _stage_region_truth_recall(stage, "boundary_shell"),
+                    _stage_region_truth_recall(stage, "interior"),
                     stage["components"]["component_count"],
                     stage["components"]["largest_component_fraction"],
                     stage["edge_distance_profile"]["0"]["truth_recall"],
@@ -337,6 +337,12 @@ def _scanner_boundary_stage_diagnostics_markdown(
             )
         )
     return lines
+
+
+def _stage_region_truth_recall(stage: Mapping[str, Any], region_name: str) -> object:
+    region = stage["regions"][region_name]
+    truth = region.get("truth", region)
+    return truth["truth_recall"]
 
 
 def _markdown_table_row(values: tuple[object, ...]) -> str:
