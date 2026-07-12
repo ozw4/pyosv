@@ -818,6 +818,40 @@ and no variant diagnostic is produced. This detailed diagnostic is intended
 for cause isolation, not as a promotion gate, and it is not added to
 `summary.csv`.
 
+For the 49^3 boundary-stage investigation, reproduce the detailed report and
+then generate a deterministic screening summary with:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --input-mode scanner \
+  --workflow-mode quality \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --variants current_default,boundary_aware_voter_v1,boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
+  --scanner-boundary-stage-diagnostics \
+  --save-volumes \
+  --write-markdown-index \
+  --pretty \
+  --output-dir outputs/3d/synthetic_quality/boundary_stage_49
+
+PYTHONPATH=src python scripts/summarize_scanner_boundary_stages.py \
+  outputs/3d/synthetic_quality/boundary_stage_49/metrics.json \
+  --case-id boundary_plane \
+  --variant current_default \
+  --retention-threshold 0.80 \
+  --output-json outputs/3d/synthetic_quality/boundary_stage_49/stage_summary.json \
+  --output-markdown outputs/3d/synthetic_quality/boundary_stage_49/stage_summary.md
+```
+
+These commands are reproduction instructions, not evidence that the 49^3 run
+was executed in a PR. The `0.80` retention threshold is an investigation-only
+screening value, not a promotion gate. The summary ranks observed transitions
+to narrow the investigation; it does not establish a root cause. Final
+decisions still use the existing scanner-boundary promotion gate together with
+the non-boundary regression checks.
+
 The diagnostic records masks in this fixed stage order:
 
 ```text
