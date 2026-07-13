@@ -132,6 +132,86 @@ This recommendation is for quality reports only. The report default remains
 `--scanner-backend reference-like` so reference-oriented scanner behavior is not
 changed automatically.
 
+### Scanner thinning policy comparison
+
+Evaluate normal scanner thinning as a policy candidate by generating two
+separate reports for the same `current_default` variant. The reference-thinning
+report is the baseline:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode both \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-thin-mode reference \
+  --scanner-downstream-diagnostics \
+  --scanner-boundary-stage-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_thin_reference_49 \
+  --pretty
+```
+
+The normal-thinning report is the candidate:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode both \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-thin-mode normal \
+  --scanner-downstream-diagnostics \
+  --scanner-boundary-stage-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_thin_normal_49 \
+  --pretty
+```
+
+Apply the existing scanner-boundary gate with the scanner-policy comparison
+profile:
+
+```bash
+PYTHONPATH=src python scripts/compare_quality_reports.py \
+  outputs/3d/synthetic_quality/scanner_thin_reference_49/summary.csv \
+  outputs/3d/synthetic_quality/scanner_thin_normal_49/summary.csv \
+  --baseline-metrics outputs/3d/synthetic_quality/scanner_thin_reference_49/metrics.json \
+  --candidate-metrics outputs/3d/synthetic_quality/scanner_thin_normal_49/metrics.json \
+  --baseline-variant current_default \
+  --candidate-variant current_default \
+  --comparison-profile scanner-thinning-policy-v1 \
+  --promotion-gate scanner-boundary \
+  --strict-missing-rows \
+  --fail-on-gate-failure \
+  --output-json outputs/3d/synthetic_quality/scanner_thin_normal_49/promotion_gate.json \
+  --output-markdown outputs/3d/synthetic_quality/scanner_thin_normal_49/promotion_gate.md
+```
+
+This is a comparison of one variant across two reports, not a comparison of
+two voter/skinner variants. The contract identifies the baseline as
+`quality_scanner_reference_v1` and the candidate as
+`quality_scanner_thin_normal_v1`. Scanner thinning mode is therefore not part
+of the summary-row match key. Instead, the comparison reads both `metrics.json`
+files and enforces a run-config contract: the only permitted difference is
+`config.scanner.scanner_thin_mode`, directed from `reference` in the baseline
+to `normal` in the candidate. All other run configuration, including the
+requested `remove_edge_effects=true`, must match.
+
+Edge cleanup applies only to reference thinning. The comparison artifact
+therefore records the baseline's requested and effective edge removal as
+`true`, while normal thinning records requested edge removal as `true` and
+`effective_remove_edge_effects=null` to mean not applicable. A passing gate is
+an evaluation result for the normal-thinning policy candidate; it does not
+change any quality, reference, diagnostic, or scanner API default.
+
+These 49^3 commands are the formal reproduction procedure. The generated
+comparison artifact, rather than the command listing itself, is the evidence
+for a measured contract and gate result.
+
 For the 49^3 scanner-boundary promotion benchmark, run the current default and
 the opt-in diagnostic candidates with downstream diagnostics enabled:
 

@@ -5,9 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .gates import evaluate_gate
+from .gates import add_required_coverage, evaluate_gate
 from .rows import MatchKey, MetricValue, SummaryRow, key_dict, numeric, read_summary_rows
+from .scanner_policy import (
+    SCANNER_THINNING_POLICY_PROFILE,
+    build_scanner_policy_contract,
+    load_metrics_report,
+)
 from .specifications import HIGHER_IS_BETTER, LOWER_IS_BETTER, MATCH_KEY_FIELDS, METRIC_COLUMNS
+
+
+VARIANT_COMPARISON_PROFILE = "variant"
+COMPARISON_PROFILES = (VARIANT_COMPARISON_PROFILE, SCANNER_THINNING_POLICY_PROFILE)
 
 
 def metric_delta(baseline: MetricValue, candidate: MetricValue) -> float | None:
@@ -76,7 +85,28 @@ def compare_reports(
     candidate_variant: str,
     promotion_gate: str = "none",
     strict_missing_rows: bool = False,
+    *,
+    comparison_profile: str = VARIANT_COMPARISON_PROFILE,
+    baseline_metrics: Path | None = None,
+    candidate_metrics: Path | None = None,
 ) -> dict[str, Any]:
+    if comparison_profile not in COMPARISON_PROFILES:
+        raise ValueError(f"unknown comparison profile: {comparison_profile}")
+    scanner_policy_contract = None
+    if comparison_profile == SCANNER_THINNING_POLICY_PROFILE:
+        if baseline_metrics is None:
+            raise ValueError(f"{SCANNER_THINNING_POLICY_PROFILE} requires a baseline metrics path")
+        if candidate_metrics is None:
+            raise ValueError(f"{SCANNER_THINNING_POLICY_PROFILE} requires a candidate metrics path")
+        baseline_metrics_report = load_metrics_report(baseline_metrics, context="baseline")
+        candidate_metrics_report = load_metrics_report(candidate_metrics, context="candidate")
+        scanner_policy_contract = build_scanner_policy_contract(
+            baseline_metrics_report,
+            candidate_metrics_report,
+            baseline_variant,
+            candidate_variant,
+        )
+
     baseline_rows = read_summary_rows(baseline_summary, baseline_variant)
     candidate_rows = read_summary_rows(candidate_summary, candidate_variant)
     baseline_keys, candidate_keys = set(baseline_rows), set(candidate_rows)
@@ -91,19 +121,42 @@ def compare_reports(
         tuple(comparison["key"][field] for field in MATCH_KEY_FIELDS): comparison
         for comparison in comparisons
     }
-    return {
+    promotion_gate_result = evaluate_gate(promotion_gate, candidate_rows, comparison_by_key)
+    config = {
+        "baseline_summary": str(baseline_summary),
+        "candidate_summary": str(candidate_summary),
+        "baseline_variant": baseline_variant,
+        "candidate_variant": candidate_variant,
+        "promotion_gate": promotion_gate,
+        "strict_missing_rows": strict_missing_rows,
+    }
+    report = {
         "format_version": 1,
-        "config": {
-            "baseline_summary": str(baseline_summary),
-            "candidate_summary": str(candidate_summary),
-            "baseline_variant": baseline_variant,
-            "candidate_variant": candidate_variant,
-            "promotion_gate": promotion_gate,
-            "strict_missing_rows": strict_missing_rows,
-        },
+        "config": config,
         "row_count": len(comparisons),
         "missing_baseline_rows": [key_dict(key) for key in sorted(candidate_keys - baseline_keys)],
         "missing_candidate_rows": [key_dict(key) for key in sorted(baseline_keys - candidate_keys)],
         "comparisons": comparisons,
-        "promotion_gate": evaluate_gate(promotion_gate, candidate_rows, comparison_by_key),
+        "promotion_gate": promotion_gate_result,
     }
+    if scanner_policy_contract is None:
+        return report
+
+    config.update(
+        {
+            "comparison_profile": comparison_profile,
+            "baseline_metrics": str(baseline_metrics),
+            "candidate_metrics": str(candidate_metrics),
+        }
+    )
+    contract_reasons = [
+        f"scanner policy contract: {reason}" for reason in scanner_policy_contract["reasons"]
+    ]
+    promotion_gate_result["scanner_policy_contract"] = scanner_policy_contract
+    promotion_gate_result["reasons"] = [
+        *promotion_gate_result["reasons"],
+        *contract_reasons,
+    ]
+    promotion_gate_result["passed"] = not promotion_gate_result["reasons"]
+    report["scanner_policy_contract"] = scanner_policy_contract
+    return add_required_coverage(report)

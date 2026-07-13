@@ -246,6 +246,8 @@ def _topology_regressions(
 def add_required_coverage(report: dict[str, Any]) -> dict[str, Any]:
     if report["config"]["promotion_gate"] != SCANNER_BOUNDARY_GATE.name:
         return report
+    if "coverage" in report["promotion_gate"]:
+        return report
     comparisons = report["comparisons"]
     checks = []
     for coverage_spec in SCANNER_BOUNDARY_GATE.coverage:
@@ -306,22 +308,33 @@ def build_promotion_report(
     candidate_variants: tuple[str, ...] = DEFAULT_CANDIDATES,
     promotion_gate: str = "scanner-boundary",
     strict_missing_rows: bool = False,
+    *,
+    comparison_profile: str = "variant",
+    baseline_metrics: Path | None = None,
+    candidate_metrics: Path | None = None,
 ) -> dict[str, Any]:
-    from .comparison import compare_reports
+    from .comparison import VARIANT_COMPARISON_PROFILE, compare_reports
 
-    reports = [
-        add_required_coverage(
-            compare_reports(
-                baseline_summary,
-                candidate_summary,
-                baseline_variant,
-                variant,
-                promotion_gate,
-                strict_missing_rows,
-            )
+    reports = []
+    for variant in candidate_variants:
+        comparison_args = (
+            baseline_summary,
+            candidate_summary,
+            baseline_variant,
+            variant,
+            promotion_gate,
+            strict_missing_rows,
         )
-        for variant in candidate_variants
-    ]
+        if comparison_profile == VARIANT_COMPARISON_PROFILE:
+            comparison_report = compare_reports(*comparison_args)
+        else:
+            comparison_report = compare_reports(
+                *comparison_args,
+                comparison_profile=comparison_profile,
+                baseline_metrics=baseline_metrics,
+                candidate_metrics=candidate_metrics,
+            )
+        reports.append(add_required_coverage(comparison_report))
     candidates = {
         report["config"]["candidate_variant"]: report["promotion_gate"] for report in reports
     }
@@ -338,16 +351,17 @@ def build_promotion_report(
     ]
     if strict_missing_rows:
         reasons.extend(f"{variant}: missing matched rows" for variant in sorted(missing_rows))
-    return {
+    config = {
+        "baseline_summary": str(baseline_summary),
+        "candidate_summary": str(candidate_summary),
+        "baseline_variant": baseline_variant,
+        "candidate_variants": list(candidate_variants),
+        "promotion_gate": promotion_gate,
+        "strict_missing_rows": strict_missing_rows,
+    }
+    report = {
         "format_version": 1,
-        "config": {
-            "baseline_summary": str(baseline_summary),
-            "candidate_summary": str(candidate_summary),
-            "baseline_variant": baseline_variant,
-            "candidate_variants": list(candidate_variants),
-            "promotion_gate": promotion_gate,
-            "strict_missing_rows": strict_missing_rows,
-        },
+        "config": config,
         "promotion_gate": {
             "name": promotion_gate,
             "passed": not reasons,
@@ -358,3 +372,16 @@ def build_promotion_report(
         },
         "candidate_reports": reports,
     }
+    if comparison_profile == VARIANT_COMPARISON_PROFILE:
+        return report
+
+    config.update(
+        {
+            "comparison_profile": comparison_profile,
+            "baseline_metrics": str(baseline_metrics),
+            "candidate_metrics": str(candidate_metrics),
+        }
+    )
+    if len(reports) == 1:
+        report["scanner_policy_contract"] = reports[0]["scanner_policy_contract"]
+    return report

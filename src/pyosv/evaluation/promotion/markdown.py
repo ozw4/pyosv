@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -26,6 +27,9 @@ def comparison_markdown(report: dict[str, Any]) -> str:
         f"- promotion gate: `{gate['name']}` {'pass' if gate['passed'] else 'fail'}",
         "",
     ]
+    contract = report.get("scanner_policy_contract")
+    if contract is not None:
+        lines.extend(_scanner_policy_contract_lines(contract))
     boundary = gate["boundary_plane"]
     if boundary is not None:
         lines.extend(
@@ -86,6 +90,61 @@ def _boundary_metric(boundary: dict[str, Any] | None, name: str) -> str:
     return _value(boundary["metrics"][name]["candidate"])
 
 
+def _contract_value(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _scanner_policy_contract_lines(contract: dict[str, Any]) -> list[str]:
+    baseline = contract["baseline"]
+    candidate = contract["candidate"]
+    lines = [
+        "## Scanner Policy Contract",
+        "",
+        f"Contract result: {'pass' if contract['passed'] else 'fail'}",
+        "",
+        f"- baseline policy ID: `{baseline['policy_id']}`",
+        f"- candidate policy ID: `{candidate['policy_id']}`",
+        f"- baseline scanner thin mode: `{baseline['scanner_thin_mode']}`",
+        f"- candidate scanner thin mode: `{candidate['scanner_thin_mode']}`",
+        "- baseline remove_edge_effects: "
+        f"requested={_contract_value(baseline['requested_remove_edge_effects'])}, "
+        f"effective={_contract_value(baseline['effective_remove_edge_effects'])}",
+        "- candidate remove_edge_effects: "
+        f"requested={_contract_value(candidate['requested_remove_edge_effects'])}, "
+        f"effective={_contract_value(candidate['effective_remove_edge_effects'])}",
+        "- allowed config difference paths: "
+        + _list(sorted(contract["allowed_config_difference_paths"])),
+        "",
+        "### Allowed Config Differences",
+        "",
+    ]
+    lines.extend(_config_difference_lines(contract["allowed_config_differences"]))
+    lines.extend(["", "### Disallowed Config Differences", ""])
+    lines.extend(_config_difference_lines(contract["disallowed_config_differences"]))
+    lines.extend(["", "### Contract Failure Reasons", ""])
+    lines.extend(
+        (f"- {reason}" for reason in contract["reasons"]) if contract["reasons"] else ["None."]
+    )
+    lines.append("")
+    return lines
+
+
+def _config_difference_lines(differences: list[dict[str, Any]]) -> list[str]:
+    if not differences:
+        return ["None."]
+    lines = [
+        "| path | baseline | candidate |",
+        "|---|---|---|",
+    ]
+    for difference in sorted(differences, key=lambda item: item["path"]):
+        lines.append(
+            f"| `{difference['path']}` | "
+            f"`{_contract_value(difference['baseline'])}` | "
+            f"`{_contract_value(difference['candidate'])}` |"
+        )
+    return lines
+
+
 def promotion_markdown(report: dict[str, Any]) -> str:
     gate = report["promotion_gate"]
     lines = [
@@ -108,6 +167,10 @@ def promotion_markdown(report: dict[str, Any]) -> str:
             f"{_boundary_metric(boundary, 'skin_count')} | "
             f"{_boundary_metric(boundary, 'skin_cell_to_fvt_positive_candidate_ratio')} |"
         )
+    contract = report.get("scanner_policy_contract")
+    if contract is not None:
+        lines.append("")
+        lines.extend(_scanner_policy_contract_lines(contract))
     lines.extend(["", "## Reasons", ""])
     lines.extend((f"- {reason}" for reason in gate["reasons"]) if gate["reasons"] else ["None."])
     lines.extend(["", "## Coverage", ""])

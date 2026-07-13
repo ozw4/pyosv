@@ -11,8 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pyosv.evaluation.promotion import compare_reports
 from pyosv.evaluation.promotion.markdown import comparison_markdown
 
+COMPARISON_PROFILES = ("variant", "scanner-thinning-policy-v1")
+SCANNER_POLICY_PROFILE = "scanner-thinning-policy-v1"
 
-def _parse_args() -> argparse.Namespace:
+
+def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compare baseline and candidate synthetic quality summary.csv reports."
     )
@@ -25,19 +28,45 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--promotion-gate", choices=("none", "scanner-boundary"), default="none")
     parser.add_argument("--fail-on-gate-failure", action="store_true")
     parser.add_argument("--strict-missing-rows", action="store_true")
-    return parser.parse_args()
+    parser.add_argument("--comparison-profile", choices=COMPARISON_PROFILES, default="variant")
+    parser.add_argument("--baseline-metrics", type=Path)
+    parser.add_argument("--candidate-metrics", type=Path)
+    return parser
+
+
+def _metrics_paths(args: argparse.Namespace) -> tuple[Path | None, Path | None]:
+    if args.comparison_profile != SCANNER_POLICY_PROFILE:
+        return args.baseline_metrics, args.candidate_metrics
+    return (
+        args.baseline_metrics or args.baseline_summary.with_name("metrics.json"),
+        args.candidate_metrics or args.candidate_summary.with_name("metrics.json"),
+    )
 
 
 def main() -> int:
-    args = _parse_args()
-    report = compare_reports(
-        args.baseline_summary,
-        args.candidate_summary,
-        args.baseline_variant,
-        args.candidate_variant or args.baseline_variant,
-        args.promotion_gate,
-        args.strict_missing_rows,
-    )
+    parser = _argument_parser()
+    args = parser.parse_args()
+    baseline_metrics, candidate_metrics = _metrics_paths(args)
+    try:
+        positional_args = (
+            args.baseline_summary,
+            args.candidate_summary,
+            args.baseline_variant,
+            args.candidate_variant or args.baseline_variant,
+            args.promotion_gate,
+            args.strict_missing_rows,
+        )
+        if args.comparison_profile == SCANNER_POLICY_PROFILE:
+            report = compare_reports(
+                *positional_args,
+                comparison_profile=args.comparison_profile,
+                baseline_metrics=baseline_metrics,
+                candidate_metrics=candidate_metrics,
+            )
+        else:
+            report = compare_reports(*positional_args)
+    except ValueError as exc:
+        parser.error(str(exc))
     output_json = args.output_json or args.candidate_summary.with_name("quality_delta.json")
     output_json.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.output_markdown is not None:

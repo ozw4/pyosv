@@ -117,6 +117,88 @@ candidate variants may be selected from the same CSV. JSON remains
 `comparison_markdown` and `promotion_markdown` in
 `pyosv.evaluation.promotion.markdown`.
 
+#### Scanner thinning policy comparison
+
+`scanner-thinning-policy-v1` evaluates scanner thinning as a policy above the
+variant layer. Generate its reference-thinning baseline and normal-thinning
+candidate as separate reports containing the same `current_default` variant.
+
+Baseline:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode both \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-thin-mode reference \
+  --scanner-downstream-diagnostics \
+  --scanner-boundary-stage-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_thin_reference_49 \
+  --pretty
+```
+
+Candidate:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode both \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-thin-mode normal \
+  --scanner-downstream-diagnostics \
+  --scanner-boundary-stage-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_thin_normal_49 \
+  --pretty
+```
+
+Comparison:
+
+```bash
+PYTHONPATH=src python scripts/compare_quality_reports.py \
+  outputs/3d/synthetic_quality/scanner_thin_reference_49/summary.csv \
+  outputs/3d/synthetic_quality/scanner_thin_normal_49/summary.csv \
+  --baseline-metrics outputs/3d/synthetic_quality/scanner_thin_reference_49/metrics.json \
+  --candidate-metrics outputs/3d/synthetic_quality/scanner_thin_normal_49/metrics.json \
+  --baseline-variant current_default \
+  --candidate-variant current_default \
+  --comparison-profile scanner-thinning-policy-v1 \
+  --promotion-gate scanner-boundary \
+  --strict-missing-rows \
+  --fail-on-gate-failure \
+  --output-json outputs/3d/synthetic_quality/scanner_thin_normal_49/promotion_gate.json \
+  --output-markdown outputs/3d/synthetic_quality/scanner_thin_normal_49/promotion_gate.md
+```
+
+Both reports select `current_default`. The contract identifies the baseline as
+`quality_scanner_reference_v1` and the candidate as
+`quality_scanner_thin_normal_v1`; these are scanner policy IDs, not variants.
+The row match key deliberately omits scanner mode so corresponding rows remain
+comparable. The profile instead validates the complete saved run configs and
+permits only
+`config.scanner.scanner_thin_mode` to differ, with the baseline fixed to
+`reference` and the candidate fixed to `normal`. Any other config difference
+fails the policy contract and therefore the promotion gate.
+
+Both commands leave requested edge-effect removal enabled. Reference thinning
+applies it, so its effective value is `true`. Normal thinning does not use edge
+cleanup, so the comparison artifact records
+`effective_remove_edge_effects=null` rather than `false`; `null` means not
+applicable, not explicitly disabled. A gate pass evaluates the normal-thinning
+policy candidate only and does not promote it or change any workflow or public
+scanner default.
+
+These 49^3 commands are formal reproduction instructions. The generated
+comparison artifact, rather than the command listing itself, is the evidence
+for a measured contract and gate result.
+
 The controlled synthetic oracle path is:
 
 ```text
