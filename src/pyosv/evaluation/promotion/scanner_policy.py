@@ -7,11 +7,16 @@ synthetic-quality variants or fields in the synthetic-quality report schema.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import math
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from pyosv.evaluation.reporting import SUMMARY_CSV_V1_FIELDS, summary_csv_text
 
 
 SCANNER_THINNING_POLICY_PROFILE = "scanner-thinning-policy-v1"
@@ -121,7 +126,92 @@ def validate_metrics_report(report: object, *, context: str = "metrics report") 
     if not isinstance(scanner, Mapping):
         raise ValueError(f"{context} config.scanner must be a mapping")
     _reject_non_finite(config, path="config", context=context)
+    variants = config.get("variants", _MISSING_VALUE)
+    if not isinstance(variants, list):
+        raise ValueError(f"{context} config.variants must be a JSON array")
+    if any(not isinstance(variant, str) or not variant for variant in variants):
+        raise ValueError(f"{context} config.variants entries must be non-empty strings")
     return dict(report)
+
+
+def validate_summary_matches_metrics(
+    summary_path: str | Path,
+    metrics_report: Mapping[str, Any],
+    *,
+    metrics_path: str | Path,
+    context: str,
+) -> None:
+    """Require a summary CSV to be the canonical v1 rendering of its metrics report."""
+
+    summary = Path(summary_path)
+    metrics = Path(metrics_path)
+    try:
+        canonical_text = summary_csv_text(metrics_report)
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"{context} metrics JSON {metrics} cannot produce canonical summary.csv: {error}"
+        ) from error
+
+    expected_header = list(SUMMARY_CSV_V1_FIELDS)
+    try:
+        _, canonical_rows = _read_csv_rows(
+            io.StringIO(canonical_text, newline=""),
+            source=f"canonical summary from {context} metrics JSON {metrics}",
+            expected_header=expected_header,
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"{context} metrics JSON {metrics} cannot produce canonical summary.csv: {error}"
+        ) from error
+
+    try:
+        with summary.open("r", encoding="utf-8", newline="") as stream:
+            _, actual_rows = _read_csv_rows(
+                stream,
+                source=(
+                    f"{context} summary CSV {summary} does not match "
+                    f"{context} metrics JSON {metrics}"
+                ),
+                expected_header=expected_header,
+            )
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"could not read {context} summary CSV {summary}: {error}") from error
+    canonical_counter = Counter(canonical_rows)
+    actual_counter = Counter(actual_rows)
+    missing_count = sum((canonical_counter - actual_counter).values())
+    unexpected_count = sum((actual_counter - canonical_counter).values())
+    if missing_count or unexpected_count:
+        raise ValueError(
+            f"{context} summary CSV {summary} does not match {context} metrics JSON "
+            f"{metrics}: missing canonical rows={missing_count}, "
+            f"unexpected rows={unexpected_count}"
+        )
+
+
+def _read_csv_rows(
+    stream: Any,
+    *,
+    source: str,
+    expected_header: list[str],
+) -> tuple[list[str], list[tuple[str, ...]]]:
+    try:
+        reader = csv.reader(stream)
+        header = next(reader, None)
+        if header is None:
+            raise ValueError(f"{source} is empty")
+        if header != expected_header:
+            raise ValueError(f"{source}: header does not match summary CSV v1 schema")
+        rows: list[tuple[str, ...]] = []
+        expected_width = len(SUMMARY_CSV_V1_FIELDS)
+        for line_number, row in enumerate(reader, start=2):
+            if len(row) != expected_width:
+                raise ValueError(
+                    f"{source} row {line_number} has {len(row)} columns; expected {expected_width}"
+                )
+            rows.append(tuple(row))
+    except csv.Error as error:
+        raise ValueError(f"invalid CSV in {source}: {error}") from error
+    return header, rows
 
 
 def recursive_config_differences(
@@ -191,6 +281,14 @@ def build_scanner_policy_contract(
     if candidate_variant != "current_default":
         reasons.append(
             f"candidate selected variant must be 'current_default': got {candidate_variant!r}"
+        )
+    if baseline_variant not in baseline_config["variants"]:
+        reasons.append(
+            f"baseline selected variant {baseline_variant!r} is not present in config.variants"
+        )
+    if candidate_variant not in candidate_config["variants"]:
+        reasons.append(
+            f"candidate selected variant {candidate_variant!r} is not present in config.variants"
         )
     reasons.extend(_mismatch_reason("baseline", item) for item in baseline_mismatches)
     reasons.extend(_mismatch_reason("candidate", item) for item in candidate_mismatches)

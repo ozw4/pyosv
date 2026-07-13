@@ -98,8 +98,8 @@ scope, and public/private module boundary are documented in
 
 `pyosv.evaluation.reporting` exposes the immutable `Report`, `ReportConfig`,
 `CaseReport`, `PipelineReport`, `VariantReport`, and `VariantComparison` models,
-along with `report_to_json`, `write_metrics_json`, `write_summary_csv`, and the
-declarative `SUMMARY_CSV_V1_FIELDS` field order. Artifact writers live in
+along with `report_to_json`, `write_metrics_json`, `summary_csv_text`,
+`write_summary_csv`, and the declarative `SUMMARY_CSV_V1_FIELDS` field order. Artifact writers live in
 `pyosv.evaluation.reporting.artifacts`, and visual-report Markdown generation
 lives in `pyosv.evaluation.reporting.markdown_v1`. These APIs preserve the v1
 JSON/CSV schema and the existing output tree; they do not introduce a new
@@ -186,6 +186,15 @@ permits only
 `config.scanner.scanner_thin_mode` to differ, with the baseline fixed to
 `reference` and the candidate fixed to `normal`. Any other config difference
 fails the policy contract and therefore the promotion gate.
+
+Before row comparison, this profile also renders each `metrics.json` through
+the canonical summary CSV v1 serializer and requires its paired `summary.csv`
+to have the exact schema header and the same complete rows. Every cell and row
+multiplicity must match; only data-row order may differ. The selected variant
+must also be declared in that report's `config.variants`. A mismatched pair is
+invalid evidence and stops comparison without producing a gate report. The
+default `variant` profile remains a summary-only comparison and does not read
+optional metrics paths.
 
 Both commands leave requested edge-effect removal enabled. Reference thinning
 applies it, so its effective value is `true`. Normal thinning does not use edge

@@ -201,6 +201,15 @@ files and enforces a run-config contract: the only permitted difference is
 to `normal` in the candidate. All other run configuration, including the
 requested `remove_edge_effects=true`, must match.
 
+Each baseline/candidate `summary.csv` must come from its paired `metrics.json`.
+For this profile the comparison regenerates the canonical summary CSV v1 in
+memory and requires the exact header and all cell values to match, treating
+data rows as a multiset so row order is ignored but missing, extra, and
+duplicate rows are rejected. It also requires the selected variant to appear
+in each report's `config.variants`. Evidence mismatch is an input error, so no
+numeric gate report is written. This validation does not apply to the default
+`variant` comparison profile.
+
 Edge cleanup applies only to reference thinning. The comparison artifact
 therefore records the baseline's requested and effective edge removal as
 `true`, while normal thinning records requested edge removal as `true` and
