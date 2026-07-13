@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pyosv.evaluation.reporting.csv_v1 import (
     _summary_csv_skin_fallback_v5_guardrail_row,
+    summary_csv_text,
     write_summary_csv,
 )
 from pyosv.evaluation.reporting.models import Report
@@ -32,6 +33,7 @@ def test_serializer_reproduces_committed_17_cube_fixture_byte_for_byte(tmp_path:
     output = write_summary_csv(_fixture_payload(), tmp_path)
 
     assert output.read_bytes() == SUMMARY_FIXTURE.read_bytes()
+    assert summary_csv_text(_fixture_payload()).encode() == SUMMARY_FIXTURE.read_bytes()
 
 
 def test_serializer_accepts_typed_report_and_preserves_multiple_pipeline_rows(
@@ -40,6 +42,20 @@ def test_serializer_accepts_typed_report_and_preserves_multiple_pipeline_rows(
     output = write_summary_csv(Report.from_dict(_fixture_payload()), tmp_path)
 
     assert output.read_bytes() == SUMMARY_FIXTURE.read_bytes()
+    assert summary_csv_text(Report.from_dict(_fixture_payload())).encode() == output.read_bytes()
+
+
+def test_memory_serializer_emits_every_variant_row() -> None:
+    payload = _fixture_payload()
+    rows = list(csv.DictReader(summary_csv_text(payload).splitlines()))
+
+    expected = sum(
+        len(pipeline["variants"])
+        for case in payload["cases"]
+        for pipeline in case["pipelines"].values()
+    )
+    assert len(rows) == expected
+    assert {row["variant"] for row in rows} == set(payload["config"]["variants"])
 
 
 def test_single_variant_and_disabled_skinning_have_only_schema_columns(tmp_path: Path) -> None:

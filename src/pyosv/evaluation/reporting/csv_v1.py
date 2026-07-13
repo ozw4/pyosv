@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import csv
+import io
 from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from pyosv.evaluation.reporting.json_v1 import LegacyReportV1Adapter
 from pyosv.evaluation.reporting.models import Report
@@ -58,143 +59,149 @@ CSV_VARIANT_COMPARISON_FIELDS = (
 def write_summary_csv(report: Report | Mapping[str, Any], output_dir: str | PathLike[str]) -> Path:
     """Write the legacy summary CSV v1 representation."""
 
-    if isinstance(report, Report):
-        report = LegacyReportV1Adapter().to_dict(report)
     output_path = Path(output_dir) / "summary.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=SUMMARY_CSV_V1_FIELDS,
-        )
-        writer.writeheader()
-        config = report.get("config", {})
-        input_mode = str(config.get("input_mode", "oracle"))
-        workflow_mode = str(config.get("workflow_mode", "reference"))
-        for case in report["cases"]:
-            n3, n2, n1 = case["shape"]
-            for pipeline, pipeline_report in _iter_pipeline_reports(case["pipelines"]):
-                variant_comparison = pipeline_report["variant_comparison"]
-                baseline_variant = variant_comparison["baseline_variant"]
-                comparison_variants = variant_comparison["variants"]
-                for variant, variant_report in pipeline_report["variants"].items():
-                    pyosv = variant_report["pyosv"]
-                    fv = pyosv["fv"]
-                    fvt = pyosv["fvt"]
-                    quality = variant_report["quality"]
-                    fv_quality = quality["fv_top_truth_count"]
-                    fvt_quality = quality["fvt_top_truth_count"]
-                    fv_positive_quality = quality["fv_positive_top_truth_count"]
-                    fvt_positive_quality = quality["fvt_positive_top_truth_count"]
-                    edge_false_positive = quality["edge_false_positive"]
-                    skinning = variant_report["skinning"]
-                    skin_quality = quality["skin"]
-                    skin_summary = _summary_csv_skin_row(
-                        enabled=bool(skinning["enabled"]),
-                        quality=skin_quality,
-                        diagnostics=skinning.get("diagnostics"),
-                    )
-                    comparison_row = _summary_csv_comparison_row(
-                        comparison_variants.get(variant, {}),
-                    )
-                    scanner_row = _summary_csv_scanner_row(
-                        variant_report=variant_report,
-                        input_mode=input_mode,
-                    )
-                    scanner_matrix_row = _summary_csv_scanner_backend_matrix_row(
-                        variant_report=variant_report,
-                    )
-                    scanner_downstream_row = _summary_csv_scanner_downstream_row(
-                        variant_report=variant_report,
-                    )
-                    scanner_stage_loss_row = _summary_csv_scanner_stage_loss_row(
-                        variant_report=variant_report,
-                    )
-                    fvt_recenter_row = _summary_csv_fvt_recenter_row(
-                        variant_report=variant_report,
-                    )
-                    boundary_edge_thin_row = _summary_csv_boundary_edge_thin_row(
-                        variant_report=variant_report,
-                    )
-                    boundary_seed_retention_row = _summary_csv_boundary_seed_retention_row(
-                        variant_report=variant_report,
-                    )
-                    thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
-                        variant_report.get("thinning_diagnostic"),
-                    )
-                    voting_row = _summary_csv_voting_row(variant_report=variant_report)
-                    writer.writerow(
-                        {
-                            "case_id": case["case_id"],
-                            "pipeline": pipeline,
-                            "variant": variant,
-                            "baseline_variant": baseline_variant,
-                            "input_mode": input_mode,
-                            "workflow_mode": workflow_mode,
-                            "shape_n3": n3,
-                            "shape_n2": n2,
-                            "shape_n1": n1,
-                            **voting_row,
-                            "fv_max": fv["max"],
-                            "fv_mean": fv["mean"],
-                            "fv_nonzero_fraction": fv["nonzero_fraction"],
-                            "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"][
-                                "buffered_f1"
-                            ],
-                            "fv_distance_p95": fv_quality["surface_distance"][
-                                "candidate_to_truth_p95"
-                            ],
-                            "fv_edge_false_positive_fraction": edge_false_positive[
-                                "fv_top_truth_count"
-                            ]["edge_false_positive_fraction_of_candidates"],
-                            "fv_positive_candidate_count": fv_positive_quality[
-                                "buffered_overlap_radius2"
-                            ]["candidate_count"],
-                            "fv_strike_median_error": fv_quality["orientation_error"][
-                                "strike_median"
-                            ],
-                            "fv_dip_median_error": fv_quality["orientation_error"]["dip_median"],
-                            "fvt_max": fvt["max"],
-                            "fvt_mean": fvt["mean"],
-                            "fvt_nonzero_fraction": fvt["nonzero_fraction"],
-                            "fvt_buffered_f1_r2": fvt_quality["buffered_overlap_radius2"][
-                                "buffered_f1"
-                            ],
-                            "fvt_distance_p95": fvt_quality["surface_distance"][
-                                "candidate_to_truth_p95"
-                            ],
-                            "fvt_edge_false_positive_fraction": edge_false_positive[
-                                "fvt_top_truth_count"
-                            ]["edge_false_positive_fraction_of_candidates"],
-                            "fvt_positive_candidate_count": fvt_positive_quality[
-                                "buffered_overlap_radius2"
-                            ]["candidate_count"],
-                            "fvt_positive_buffered_f1_r2": fvt_positive_quality[
-                                "buffered_overlap_radius2"
-                            ]["buffered_f1"],
-                            "fvt_positive_distance_p95": fvt_positive_quality["surface_distance"][
-                                "candidate_to_truth_p95"
-                            ],
-                            "fvt_positive_edge_false_positive_fraction": edge_false_positive[
-                                "fvt_positive_top_truth_count"
-                            ]["edge_false_positive_fraction_of_candidates"],
-                            "fvt_strike_median_error": fvt_quality["orientation_error"][
-                                "strike_median"
-                            ],
-                            "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
-                            **skin_summary,
-                            **scanner_row,
-                            **scanner_matrix_row,
-                            **scanner_downstream_row,
-                            **scanner_stage_loss_row,
-                            **fvt_recenter_row,
-                            **boundary_edge_thin_row,
-                            **boundary_seed_retention_row,
-                            **thinning_diagnostic_row,
-                            **comparison_row,
-                        }
-                    )
+        _write_summary_csv_stream(report, file)
     return output_path
+
+
+def summary_csv_text(report: Report | Mapping[str, Any]) -> str:
+    """Render the legacy summary CSV v1 representation in memory."""
+
+    stream = io.StringIO(newline="")
+    _write_summary_csv_stream(report, stream)
+    return stream.getvalue()
+
+
+def _write_summary_csv_stream(
+    report: Report | Mapping[str, Any],
+    stream: TextIO,
+) -> None:
+    if isinstance(report, Report):
+        report = LegacyReportV1Adapter().to_dict(report)
+    writer = csv.DictWriter(stream, fieldnames=SUMMARY_CSV_V1_FIELDS)
+    writer.writeheader()
+    config = report.get("config", {})
+    input_mode = str(config.get("input_mode", "oracle"))
+    workflow_mode = str(config.get("workflow_mode", "reference"))
+    for case in report["cases"]:
+        n3, n2, n1 = case["shape"]
+        for pipeline, pipeline_report in _iter_pipeline_reports(case["pipelines"]):
+            variant_comparison = pipeline_report["variant_comparison"]
+            baseline_variant = variant_comparison["baseline_variant"]
+            comparison_variants = variant_comparison["variants"]
+            for variant, variant_report in pipeline_report["variants"].items():
+                pyosv = variant_report["pyosv"]
+                fv = pyosv["fv"]
+                fvt = pyosv["fvt"]
+                quality = variant_report["quality"]
+                fv_quality = quality["fv_top_truth_count"]
+                fvt_quality = quality["fvt_top_truth_count"]
+                fv_positive_quality = quality["fv_positive_top_truth_count"]
+                fvt_positive_quality = quality["fvt_positive_top_truth_count"]
+                edge_false_positive = quality["edge_false_positive"]
+                skinning = variant_report["skinning"]
+                skin_quality = quality["skin"]
+                skin_summary = _summary_csv_skin_row(
+                    enabled=bool(skinning["enabled"]),
+                    quality=skin_quality,
+                    diagnostics=skinning.get("diagnostics"),
+                )
+                comparison_row = _summary_csv_comparison_row(
+                    comparison_variants.get(variant, {}),
+                )
+                scanner_row = _summary_csv_scanner_row(
+                    variant_report=variant_report,
+                    input_mode=input_mode,
+                )
+                scanner_matrix_row = _summary_csv_scanner_backend_matrix_row(
+                    variant_report=variant_report,
+                )
+                scanner_downstream_row = _summary_csv_scanner_downstream_row(
+                    variant_report=variant_report,
+                )
+                scanner_stage_loss_row = _summary_csv_scanner_stage_loss_row(
+                    variant_report=variant_report,
+                )
+                fvt_recenter_row = _summary_csv_fvt_recenter_row(
+                    variant_report=variant_report,
+                )
+                boundary_edge_thin_row = _summary_csv_boundary_edge_thin_row(
+                    variant_report=variant_report,
+                )
+                boundary_seed_retention_row = _summary_csv_boundary_seed_retention_row(
+                    variant_report=variant_report,
+                )
+                thinning_diagnostic_row = _summary_csv_thinning_diagnostic_row(
+                    variant_report.get("thinning_diagnostic"),
+                )
+                voting_row = _summary_csv_voting_row(variant_report=variant_report)
+                writer.writerow(
+                    {
+                        "case_id": case["case_id"],
+                        "pipeline": pipeline,
+                        "variant": variant,
+                        "baseline_variant": baseline_variant,
+                        "input_mode": input_mode,
+                        "workflow_mode": workflow_mode,
+                        "shape_n3": n3,
+                        "shape_n2": n2,
+                        "shape_n1": n1,
+                        **voting_row,
+                        "fv_max": fv["max"],
+                        "fv_mean": fv["mean"],
+                        "fv_nonzero_fraction": fv["nonzero_fraction"],
+                        "fv_buffered_f1_r2": fv_quality["buffered_overlap_radius2"]["buffered_f1"],
+                        "fv_distance_p95": fv_quality["surface_distance"]["candidate_to_truth_p95"],
+                        "fv_edge_false_positive_fraction": edge_false_positive[
+                            "fv_top_truth_count"
+                        ]["edge_false_positive_fraction_of_candidates"],
+                        "fv_positive_candidate_count": fv_positive_quality[
+                            "buffered_overlap_radius2"
+                        ]["candidate_count"],
+                        "fv_strike_median_error": fv_quality["orientation_error"]["strike_median"],
+                        "fv_dip_median_error": fv_quality["orientation_error"]["dip_median"],
+                        "fvt_max": fvt["max"],
+                        "fvt_mean": fvt["mean"],
+                        "fvt_nonzero_fraction": fvt["nonzero_fraction"],
+                        "fvt_buffered_f1_r2": fvt_quality["buffered_overlap_radius2"][
+                            "buffered_f1"
+                        ],
+                        "fvt_distance_p95": fvt_quality["surface_distance"][
+                            "candidate_to_truth_p95"
+                        ],
+                        "fvt_edge_false_positive_fraction": edge_false_positive[
+                            "fvt_top_truth_count"
+                        ]["edge_false_positive_fraction_of_candidates"],
+                        "fvt_positive_candidate_count": fvt_positive_quality[
+                            "buffered_overlap_radius2"
+                        ]["candidate_count"],
+                        "fvt_positive_buffered_f1_r2": fvt_positive_quality[
+                            "buffered_overlap_radius2"
+                        ]["buffered_f1"],
+                        "fvt_positive_distance_p95": fvt_positive_quality["surface_distance"][
+                            "candidate_to_truth_p95"
+                        ],
+                        "fvt_positive_edge_false_positive_fraction": edge_false_positive[
+                            "fvt_positive_top_truth_count"
+                        ]["edge_false_positive_fraction_of_candidates"],
+                        "fvt_strike_median_error": fvt_quality["orientation_error"][
+                            "strike_median"
+                        ],
+                        "fvt_dip_median_error": fvt_quality["orientation_error"]["dip_median"],
+                        **skin_summary,
+                        **scanner_row,
+                        **scanner_matrix_row,
+                        **scanner_downstream_row,
+                        **scanner_stage_loss_row,
+                        **fvt_recenter_row,
+                        **boundary_edge_thin_row,
+                        **boundary_seed_retention_row,
+                        **thinning_diagnostic_row,
+                        **comparison_row,
+                    }
+                )
 
 
 def _summary_csv_voting_row(*, variant_report: Mapping[str, Any]) -> dict[str, str | float | int]:

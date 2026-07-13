@@ -11,6 +11,7 @@ from .scanner_policy import (
     SCANNER_THINNING_POLICY_PROFILE,
     build_scanner_policy_contract,
     load_metrics_report,
+    validate_summary_matches_metrics,
 )
 from .specifications import HIGHER_IS_BETTER, LOWER_IS_BETTER, MATCH_KEY_FIELDS, METRIC_COLUMNS
 
@@ -100,6 +101,18 @@ def compare_reports(
             raise ValueError(f"{SCANNER_THINNING_POLICY_PROFILE} requires a candidate metrics path")
         baseline_metrics_report = load_metrics_report(baseline_metrics, context="baseline")
         candidate_metrics_report = load_metrics_report(candidate_metrics, context="candidate")
+        validate_summary_matches_metrics(
+            baseline_summary,
+            baseline_metrics_report,
+            metrics_path=baseline_metrics,
+            context="baseline",
+        )
+        validate_summary_matches_metrics(
+            candidate_summary,
+            candidate_metrics_report,
+            metrics_path=candidate_metrics,
+            context="candidate",
+        )
         scanner_policy_contract = build_scanner_policy_contract(
             baseline_metrics_report,
             candidate_metrics_report,

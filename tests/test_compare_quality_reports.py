@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from pyosv.evaluation.reporting import write_summary_csv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPARE_SCRIPT = REPO_ROOT / "scripts" / "compare_quality_reports.py"
@@ -14,6 +14,9 @@ GATE_SCRIPT = REPO_ROOT / "scripts" / "check_synthetic_quality_promotion_gate.py
 FIXTURE = Path("tests/fixtures/synthetic_quality_refactor/known_49_quality_summary.csv")
 HASH_FIXTURE = REPO_ROOT / (
     "tests/fixtures/synthetic_quality_refactor/known_49_promotion_artifact_sha256.json"
+)
+METRICS_FIXTURE = REPO_ROOT / (
+    "tests/fixtures/synthetic_quality_refactor/17_quality_ref2_metrics.json"
 )
 
 
@@ -26,69 +29,42 @@ def _expected_hashes() -> dict[str, str]:
 
 
 def _policy_metrics(scanner_thin_mode: str) -> dict[str, object]:
-    return {
-        "format_version": 1,
-        "config": {
-            "case_set": "extended",
-            "input_mode": "both",
-            "workflow_mode": "quality",
-            "shape": [49, 49, 49],
-            "variants": ["current_default"],
-            "variant_preset": "default",
-            "scanner": {
-                "backend": "quality",
-                "phi_min": 0.0,
-                "phi_max": 180.0,
-                "theta_min": 45.0,
-                "theta_max": 90.0,
-                "sigma1": 2.0,
-                "sigma2": 2.0,
-                "refinement_factor": 2,
-                "scanner_thin_mode": scanner_thin_mode,
-                "remove_edge_effects": True,
-                "input": {
-                    "background": 1.0,
-                    "fault_contrast": 0.85,
-                    "noise_sigma": 0.0,
-                    "seed": 20260706,
-                    "clip_min": 0.0,
-                    "clip_max": 1.0,
-                },
-            },
-            "voting": {"voter_thin_mode": "hybrid_v2"},
-            "skinning": {"method": "quality"},
-            "truth_metrics": {"buffer_radius": 2.0},
-            "scanner_downstream_diagnostics": True,
-            "scanner_boundary_stage_diagnostics": True,
-        },
-    }
+    report = json.loads(METRICS_FIXTURE.read_text(encoding="utf-8"))
+    report["config"]["shape"] = [49, 49, 49]
+    for case in report["cases"]:
+        case["shape"] = [49, 49, 49]
+        for variant in case["pipelines"]["scanner"]["variants"].values():
+            quality = variant["quality"]
+            fvt_count = quality["fvt_positive_top_truth_count"]["buffered_overlap_radius2"][
+                "candidate_count"
+            ]
+            quality["skin"]["buffered_overlap_radius2"]["buffered_f1"] = 0.95
+            quality["skin"]["topology"]["cell_count"] = fvt_count
+    _replace_scanner_mode(report, scanner_thin_mode)
+    return report
+
+
+def _replace_scanner_mode(value: object, scanner_thin_mode: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "scanner_thin_mode":
+                value[key] = scanner_thin_mode
+            else:
+                _replace_scanner_mode(child, scanner_thin_mode)
+    elif isinstance(value, list):
+        for child in value:
+            _replace_scanner_mode(child, scanner_thin_mode)
 
 
 def _write_policy_inputs(tmp_path: Path) -> tuple[Path, Path]:
     baseline_dir = tmp_path / "baseline"
     candidate_dir = tmp_path / "candidate"
-    baseline_dir.mkdir()
-    candidate_dir.mkdir()
-    baseline_summary = baseline_dir / "summary.csv"
-    candidate_summary = candidate_dir / "summary.csv"
-    shutil.copyfile(FIXTURE, baseline_summary)
-    with FIXTURE.open(newline="", encoding="utf-8") as stream:
-        reader = csv.DictReader(stream)
-        fieldnames = reader.fieldnames
-        assert fieldnames is not None
-        candidate_rows = list(reader)
-    for row in candidate_rows:
-        row["scanner_thin_mode"] = "normal"
-    with candidate_summary.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(candidate_rows)
-    (baseline_dir / "metrics.json").write_text(
-        json.dumps(_policy_metrics("reference")), encoding="utf-8"
-    )
-    (candidate_dir / "metrics.json").write_text(
-        json.dumps(_policy_metrics("normal")), encoding="utf-8"
-    )
+    baseline_report = _policy_metrics("reference")
+    candidate_report = _policy_metrics("normal")
+    baseline_summary = write_summary_csv(baseline_report, baseline_dir)
+    candidate_summary = write_summary_csv(candidate_report, candidate_dir)
+    (baseline_dir / "metrics.json").write_text(json.dumps(baseline_report), encoding="utf-8")
+    (candidate_dir / "metrics.json").write_text(json.dumps(candidate_report), encoding="utf-8")
     return baseline_summary, candidate_summary
 
 
@@ -240,6 +216,38 @@ def test_scanner_policy_compare_cli_reports_metrics_errors_without_traceback(
     assert "Traceback" not in result.stderr
 
 
+def test_scanner_policy_compare_cli_rejects_mismatched_evidence(tmp_path: Path) -> None:
+    baseline_summary, candidate_summary = _write_policy_inputs(tmp_path)
+    output_json = tmp_path / "must-not-exist.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPARE_SCRIPT),
+            str(candidate_summary),
+            str(candidate_summary),
+            "--comparison-profile",
+            "scanner-thinning-policy-v1",
+            "--baseline-metrics",
+            str(baseline_summary.with_name("metrics.json")),
+            "--candidate-metrics",
+            str(candidate_summary.with_name("metrics.json")),
+            "--output-json",
+            str(output_json),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "baseline" in result.stderr
+    assert "summary" in result.stderr
+    assert "metrics" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output_json.exists()
+
+
 def test_scanner_policy_aggregate_cli_accepts_one_current_default_candidate(
     tmp_path: Path,
 ) -> None:
@@ -266,6 +274,40 @@ def test_scanner_policy_aggregate_cli_accepts_one_current_default_candidate(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_scanner_policy_aggregate_cli_rejects_mismatched_evidence(tmp_path: Path) -> None:
+    baseline_summary, candidate_summary = _write_policy_inputs(tmp_path)
+    output_json = tmp_path / "must-not-exist.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--baseline-summary",
+            str(candidate_summary),
+            "--candidate-summary",
+            str(candidate_summary),
+            "--candidate-variant",
+            "current_default",
+            "--comparison-profile",
+            "scanner-thinning-policy-v1",
+            "--baseline-metrics",
+            str(baseline_summary.with_name("metrics.json")),
+            "--candidate-metrics",
+            str(candidate_summary.with_name("metrics.json")),
+            "--output-json",
+            str(output_json),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "baseline" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output_json.exists()
 
 
 def test_scanner_policy_aggregate_cli_rejects_multiple_candidates(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 """Typed evaluation reports and serialization adapters."""
 
-from .csv_v1 import write_summary_csv
+from .csv_v1 import summary_csv_text, write_summary_csv
 from .json_v1 import LegacyReportV1Adapter, report_to_json, write_metrics_json
 from .models import (
     ArtifactReference,
@@ -24,6 +24,7 @@ __all__ = [
     "VariantComparison",
     "VariantReport",
     "report_to_json",
+    "summary_csv_text",
     "write_metrics_json",
     "write_summary_csv",
 ]

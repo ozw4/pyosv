@@ -12,104 +12,46 @@ import pytest
 from pyosv.evaluation.promotion.comparison import compare_reports
 from pyosv.evaluation.promotion.gates import add_required_coverage, build_promotion_report
 from pyosv.evaluation.promotion.markdown import comparison_markdown, promotion_markdown
+from pyosv.evaluation.reporting import write_summary_csv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPARE_SCRIPT = REPO_ROOT / "scripts" / "compare_quality_reports.py"
-CASE_IDS = (
-    "single_vertical_plane",
-    "single_dipping_plane",
-    "curved_surface",
-    "parallel_planes",
-    "crossing_planes",
-    "boundary_plane",
-    "weak_noisy_plane",
+METRICS_FIXTURE = REPO_ROOT / (
+    "tests/fixtures/synthetic_quality_refactor/17_quality_ref2_metrics.json"
 )
 
 
 def _metrics(scanner_thin_mode: str) -> dict[str, object]:
-    return {
-        "format_version": 1,
-        "config": {
-            "case_set": "extended",
-            "input_mode": "both",
-            "workflow_mode": "quality",
-            "shape": [49, 49, 49],
-            "variants": ["current_default"],
-            "variant_preset": "default",
-            "voting": {"voter_thin_mode": "hybrid_v2", "seed_distance": 3},
-            "truth_metrics": {"buffer_radius": 2.0},
-            "skinning": {"method": "quality", "growth_source": "pre_thin"},
-            "scanner_backend_matrix": False,
-            "scanner_downstream_diagnostics": True,
-            "scanner_boundary_stage_diagnostics": {"enabled": True},
-            "scanner": {
-                "backend": "quality",
-                "phi_min": 0.0,
-                "phi_max": 180.0,
-                "theta_min": 45.0,
-                "theta_max": 90.0,
-                "sigma1": 2.0,
-                "sigma2": 2.0,
-                "refinement_factor": 2,
-                "scanner_thin_mode": scanner_thin_mode,
-                "remove_edge_effects": True,
-                "input": {
-                    "background": 1.0,
-                    "fault_contrast": 0.85,
-                    "noise_sigma": 0.0,
-                    "seed": 20260706,
-                    "clip_min": 0.0,
-                    "clip_max": 1.0,
-                },
-            },
-        },
-    }
+    report = json.loads(METRICS_FIXTURE.read_text(encoding="utf-8"))
+    report["config"]["shape"] = [49, 49, 49]
+    for case in report["cases"]:
+        case["shape"] = [49, 49, 49]
+        for variant in case["pipelines"]["scanner"]["variants"].values():
+            quality = variant["quality"]
+            fvt_count = quality["fvt_positive_top_truth_count"]["buffered_overlap_radius2"][
+                "candidate_count"
+            ]
+            quality["skin"]["buffered_overlap_radius2"]["buffered_f1"] = 0.95
+            quality["skin"]["topology"]["cell_count"] = fvt_count
+    _replace_scanner_mode(report, scanner_thin_mode)
+    return report
+
+
+def _replace_scanner_mode(value: object, scanner_thin_mode: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "scanner_thin_mode":
+                value[key] = scanner_thin_mode
+            else:
+                _replace_scanner_mode(child, scanner_thin_mode)
+    elif isinstance(value, list):
+        for child in value:
+            _replace_scanner_mode(child, scanner_thin_mode)
 
 
 def _write_metrics(path: Path, report: dict[str, object]) -> None:
     path.write_text(json.dumps(report), encoding="utf-8")
-
-
-def _summary_rows(scanner_thin_mode: str, variants: tuple[str, ...]) -> list[dict[str, object]]:
-    rows = []
-    for variant in variants:
-        for pipeline in ("scanner", "oracle"):
-            for case_id in CASE_IDS:
-                rows.append(
-                    {
-                        "case_id": case_id,
-                        "pipeline": pipeline,
-                        "variant": variant,
-                        "input_mode": "synthetic" if pipeline == "scanner" else "oracle",
-                        "workflow_mode": "quality",
-                        "scanner_backend": "quality" if pipeline == "scanner" else "",
-                        "scanner_refinement_factor": 2 if pipeline == "scanner" else "",
-                        "scanner_thin_mode": scanner_thin_mode,
-                        "shape_n3": 49,
-                        "shape_n2": 49,
-                        "shape_n1": 49,
-                        "skin_buffered_f1_r2": 0.95,
-                        "skin_count": 2,
-                        "skin_cell_count": 100,
-                        "fvt_positive_candidate_count": 100,
-                        "fvt_positive_buffered_f1_r2": 0.95,
-                        "fvt_positive_distance_p95": 1.0,
-                        "skin_distance_p95": 1.0,
-                        "skin_fallback_replaced_primary": False,
-                        "skin_over_merge_count": 0,
-                        "skin_over_split_count": 0,
-                    }
-                )
-    return rows
-
-
-def _write_summary(path: Path, scanner_thin_mode: str, *variants: str) -> None:
-    rows = _summary_rows(scanner_thin_mode, tuple(variants))
-    with path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=tuple(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _policy_inputs(
@@ -117,16 +59,13 @@ def _policy_inputs(
     *,
     baseline_mode: str = "reference",
     candidate_mode: str = "normal",
-    variants: tuple[str, ...] = ("current_default", "other"),
 ) -> tuple[Path, Path, Path, Path, dict[str, object], dict[str, object]]:
-    baseline_summary = tmp_path / "baseline.csv"
-    candidate_summary = tmp_path / "candidate.csv"
-    baseline_metrics = tmp_path / "baseline_metrics.json"
-    candidate_metrics = tmp_path / "candidate_metrics.json"
     baseline_report = _metrics(baseline_mode)
     candidate_report = _metrics(candidate_mode)
-    _write_summary(baseline_summary, baseline_mode, *variants)
-    _write_summary(candidate_summary, candidate_mode, *variants)
+    baseline_summary = write_summary_csv(baseline_report, tmp_path / "baseline")
+    candidate_summary = write_summary_csv(candidate_report, tmp_path / "candidate")
+    baseline_metrics = baseline_summary.with_name("metrics.json")
+    candidate_metrics = candidate_summary.with_name("metrics.json")
     _write_metrics(baseline_metrics, baseline_report)
     _write_metrics(candidate_metrics, candidate_report)
     return (
@@ -157,6 +96,19 @@ def _compare(
         baseline_metrics=baseline_metrics,
         candidate_metrics=candidate_metrics,
     )
+
+
+def _csv_contents(path: Path) -> tuple[list[str], list[list[str]]]:
+    with path.open("r", encoding="utf-8", newline="") as stream:
+        rows = list(csv.reader(stream))
+    return rows[0], rows[1:]
+
+
+def _write_csv_contents(path: Path, header: list[str], rows: list[list[str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(header)
+        writer.writerows(rows)
 
 
 def test_valid_scanner_policy_comparison_matches_rows_and_passes_gate(tmp_path: Path) -> None:
@@ -210,6 +162,148 @@ def test_scanner_policy_comparison_requires_both_metrics_paths(tmp_path: Path) -
             comparison_profile="scanner-thinning-policy-v1",
             baseline_metrics=paths[2],
         )
+
+
+def test_summary_metrics_pair_mismatch_is_rejected_before_comparison(tmp_path: Path) -> None:
+    paths = _policy_inputs(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match=r"baseline summary CSV .* does not match baseline metrics JSON .*missing canonical",
+    ):
+        compare_reports(
+            paths[1],
+            paths[1],
+            "current_default",
+            "current_default",
+            comparison_profile="scanner-thinning-policy-v1",
+            baseline_metrics=paths[2],
+            candidate_metrics=paths[3],
+        )
+    with pytest.raises(ValueError, match=r"baseline summary CSV .*baseline metrics JSON"):
+        compare_reports(
+            paths[0],
+            paths[1],
+            "current_default",
+            "current_default",
+            comparison_profile="scanner-thinning-policy-v1",
+            baseline_metrics=paths[3],
+            candidate_metrics=paths[3],
+        )
+
+
+@pytest.mark.parametrize("column", ("scanner_thin_mode", "skin_buffered_f1_r2"))
+def test_summary_cell_mutation_is_rejected(tmp_path: Path, column: str) -> None:
+    paths = _policy_inputs(tmp_path)
+    header, rows = _csv_contents(paths[1])
+    index = header.index(column)
+    rows[0][index] = "tampered"
+    _write_csv_contents(paths[1], header, rows)
+
+    with pytest.raises(
+        ValueError,
+        match=r"candidate summary CSV .*missing canonical rows=1, unexpected rows=1",
+    ):
+        _compare(paths)
+
+
+def test_summary_data_row_order_is_ignored(tmp_path: Path) -> None:
+    paths = _policy_inputs(tmp_path)
+    header, rows = _csv_contents(paths[1])
+    _write_csv_contents(paths[1], header, list(reversed(rows)))
+
+    assert _compare(paths)["scanner_policy_contract"]["passed"] is True
+
+
+@pytest.mark.parametrize(
+    ("mutation", "missing", "unexpected"),
+    (("delete", 1, 0), ("duplicate", 0, 1)),
+)
+def test_summary_row_multiplicity_is_enforced(
+    tmp_path: Path,
+    mutation: str,
+    missing: int,
+    unexpected: int,
+) -> None:
+    paths = _policy_inputs(tmp_path)
+    header, rows = _csv_contents(paths[1])
+    if mutation == "delete":
+        rows.pop()
+    else:
+        rows.append(rows[0])
+    _write_csv_contents(paths[1], header, rows)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"missing canonical rows={missing}, unexpected rows={unexpected}",
+    ):
+        _compare(paths)
+
+
+@pytest.mark.parametrize("mutation", ("delete", "reorder"))
+def test_summary_header_must_match_schema(tmp_path: Path, mutation: str) -> None:
+    paths = _policy_inputs(tmp_path)
+    header, rows = _csv_contents(paths[1])
+    if mutation == "delete":
+        header.pop()
+    else:
+        header[0], header[1] = header[1], header[0]
+    _write_csv_contents(paths[1], header, rows)
+
+    with pytest.raises(ValueError, match=r"candidate summary CSV .*header does not match"):
+        _compare(paths)
+
+
+def test_summary_row_width_is_validated(tmp_path: Path) -> None:
+    paths = _policy_inputs(tmp_path)
+    header, rows = _csv_contents(paths[1])
+    rows[0].pop()
+    _write_csv_contents(paths[1], header, rows)
+
+    with pytest.raises(ValueError, match=r"candidate summary CSV .*row 2 has .* columns"):
+        _compare(paths)
+
+
+def test_incomplete_metrics_has_canonical_summary_error(tmp_path: Path) -> None:
+    paths = _policy_inputs(tmp_path)
+    candidate = copy.deepcopy(paths[5])
+    candidate.pop("cases")
+    _write_metrics(paths[3], candidate)
+
+    with pytest.raises(
+        ValueError,
+        match=r"candidate metrics JSON .*cannot produce canonical summary.csv",
+    ):
+        _compare(paths)
+
+
+def test_selected_variant_must_be_declared_by_metrics_config(tmp_path: Path) -> None:
+    paths = _policy_inputs(tmp_path)
+    candidate = copy.deepcopy(paths[5])
+    candidate["config"]["variants"] = ["boundary_aware_voter_v1"]
+    _write_metrics(paths[3], candidate)
+
+    report = _compare(paths)
+
+    assert report["scanner_policy_contract"]["passed"] is False
+    assert report["promotion_gate"]["passed"] is False
+    assert any(
+        "candidate selected variant 'current_default' is not present in config.variants" in reason
+        for reason in report["scanner_policy_contract"]["reasons"]
+    )
+
+
+@pytest.mark.parametrize("variants", ("current_default", [""], [1]))
+def test_metrics_config_variants_must_be_nonempty_string_array(
+    tmp_path: Path, variants: object
+) -> None:
+    paths = _policy_inputs(tmp_path)
+    candidate = copy.deepcopy(paths[5])
+    candidate["config"]["variants"] = variants
+    _write_metrics(paths[3], candidate)
+
+    with pytest.raises(ValueError, match=r"candidate metrics JSON .*config.variants"):
+        _compare(paths)
 
 
 def test_variant_profile_does_not_read_optional_metrics_paths(tmp_path: Path) -> None:
