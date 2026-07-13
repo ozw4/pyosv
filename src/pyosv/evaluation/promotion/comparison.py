@@ -8,16 +8,22 @@ from typing import Any
 from .gates import add_required_coverage, evaluate_gate
 from .rows import MatchKey, MetricValue, SummaryRow, key_dict, numeric, read_summary_rows
 from .scanner_policy import (
-    SCANNER_THINNING_POLICY_PROFILE,
+    SCANNER_POLICY_PROFILES,
     build_scanner_policy_contract,
     load_metrics_report,
     validate_summary_matches_metrics,
 )
-from .specifications import HIGHER_IS_BETTER, LOWER_IS_BETTER, MATCH_KEY_FIELDS, METRIC_COLUMNS
+from .specifications import (
+    HIGHER_IS_BETTER,
+    LOWER_IS_BETTER,
+    MATCH_KEY_FIELDS,
+    METRIC_COLUMNS,
+    SCANNER_BOUNDARY_REFERENCE_LIKE_GATE,
+)
 
 
 VARIANT_COMPARISON_PROFILE = "variant"
-COMPARISON_PROFILES = (VARIANT_COMPARISON_PROFILE, SCANNER_THINNING_POLICY_PROFILE)
+COMPARISON_PROFILES = (VARIANT_COMPARISON_PROFILE, *SCANNER_POLICY_PROFILES)
 
 
 def metric_delta(baseline: MetricValue, candidate: MetricValue) -> float | None:
@@ -94,11 +100,11 @@ def compare_reports(
     if comparison_profile not in COMPARISON_PROFILES:
         raise ValueError(f"unknown comparison profile: {comparison_profile}")
     scanner_policy_contract = None
-    if comparison_profile == SCANNER_THINNING_POLICY_PROFILE:
+    if comparison_profile in SCANNER_POLICY_PROFILES:
         if baseline_metrics is None:
-            raise ValueError(f"{SCANNER_THINNING_POLICY_PROFILE} requires a baseline metrics path")
+            raise ValueError(f"{comparison_profile} requires a baseline metrics path")
         if candidate_metrics is None:
-            raise ValueError(f"{SCANNER_THINNING_POLICY_PROFILE} requires a candidate metrics path")
+            raise ValueError(f"{comparison_profile} requires a candidate metrics path")
         baseline_metrics_report = load_metrics_report(baseline_metrics, context="baseline")
         candidate_metrics_report = load_metrics_report(candidate_metrics, context="candidate")
         validate_summary_matches_metrics(
@@ -118,6 +124,7 @@ def compare_reports(
             candidate_metrics_report,
             baseline_variant,
             candidate_variant,
+            comparison_profile=comparison_profile,
         )
 
     baseline_rows = read_summary_rows(baseline_summary, baseline_variant)
@@ -152,6 +159,22 @@ def compare_reports(
         "comparisons": comparisons,
         "promotion_gate": promotion_gate_result,
     }
+    if promotion_gate == SCANNER_BOUNDARY_REFERENCE_LIKE_GATE.name:
+        missing_reasons = []
+        if report["missing_baseline_rows"]:
+            missing_reasons.append(
+                "scanner-boundary-reference-like requires zero missing baseline rows"
+            )
+        if report["missing_candidate_rows"]:
+            missing_reasons.append(
+                "scanner-boundary-reference-like requires zero missing candidate rows"
+            )
+        if missing_reasons:
+            promotion_gate_result["reasons"] = [
+                *promotion_gate_result["reasons"],
+                *missing_reasons,
+            ]
+            promotion_gate_result["passed"] = False
     if scanner_policy_contract is None:
         return report
 

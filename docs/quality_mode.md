@@ -221,6 +221,95 @@ These 49^3 commands are the formal reproduction procedure. The generated
 comparison artifact, rather than the command listing itself, is the evidence
 for a measured contract and gate result.
 
+### Reference-like backend scanner thinning policy comparison
+
+The separate `quality-workflow-scanner-thinning-v1` profile evaluates normal
+scanner thinning on the current quality-workflow default backend without
+changing `scanner-thinning-policy-v1`. Its baseline policy is
+`quality_reference_like_scanner_thin_reference_v1`; its candidate policy is
+`quality_reference_like_scanner_thin_normal_v1`.
+
+Generate the reference-thinning baseline:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode both \
+  --scanner-backend reference-like \
+  --scanner-thin-mode reference \
+  --scanner-downstream-diagnostics \
+  --scanner-boundary-stage-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49 \
+  --pretty
+```
+
+Generate the normal-thinning candidate:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode both \
+  --scanner-backend reference-like \
+  --scanner-thin-mode normal \
+  --scanner-downstream-diagnostics \
+  --scanner-boundary-stage-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49 \
+  --pretty
+```
+
+Compare the two paired reports:
+
+```bash
+PYTHONPATH=src python scripts/compare_quality_reports.py \
+  outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49/summary.csv \
+  outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/summary.csv \
+  --baseline-metrics outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49/metrics.json \
+  --candidate-metrics outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/metrics.json \
+  --baseline-variant current_default \
+  --candidate-variant current_default \
+  --comparison-profile quality-workflow-scanner-thinning-v1 \
+  --promotion-gate scanner-boundary-reference-like \
+  --strict-missing-rows \
+  --fail-on-gate-failure \
+  --output-json outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/promotion_gate.json \
+  --output-markdown outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/promotion_gate.md
+```
+
+This is the same `current_default` variant in two separately generated
+reports. Scanner thinning mode is not added to the row match key. Instead,
+the canonical summary/metrics pairing check validates each evidence pair, and
+the config contract fixes the extended 49^3 quality run, reference-like
+backend, variant list, scanner settings and input, voting, skinning, truth
+metrics, and diagnostics. The only permitted config difference is
+`config.scanner.scanner_thin_mode`, directed from `reference` to `normal`.
+
+Both commands retain requested edge cleanup. The baseline therefore records
+`requested_remove_edge_effects=true` and
+`effective_remove_edge_effects=true`. Normal thinning does not apply edge
+cleanup, so the candidate records `requested_remove_edge_effects=true` and
+`effective_remove_edge_effects=null` rather than `false`.
+
+`scanner-boundary-reference-like` uses the same numeric limits as the existing
+scanner-boundary gate. Boundary skin F1 must be at least 0.90, skin count at
+most 3, the skin/FVT-positive cell ratio within [0.75, 1.25], FVT-positive F1
+at least 0.90, and FVT-positive distance p95 at most 2.0. Non-boundary skin
+and FVT-positive F1 deltas must be at least -0.02, and both distance-p95 deltas
+must be at most 2.0. Oracle metrics must remain unchanged; false fallback
+replacements and parallel/crossing over-merge or over-split counts must not
+increase. The gate also requires all 14 rows, no missing rows, canonical
+summary/metrics pairing, and a passing policy contract.
+
+These commands define the formal 49^3 evaluation; their presence does not
+claim the run was performed. A pass evaluates the policy candidate only. It
+does not change the quality, reference, or diagnostic workflow defaults or
+the public `FaultOrientScanner3.thin()` default.
+
 For the 49^3 scanner-boundary promotion benchmark, run the current default and
 the opt-in diagnostic candidates with downstream diagnostics enabled:
 

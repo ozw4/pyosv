@@ -117,6 +117,9 @@ class GateSpec:
     changed_fvt_f1_min: float
     changed_fvt_distance_max: float
     coverage: tuple[CoverageSpec, ...]
+    always_check_boundary_fvt: bool = False
+    require_unchanged_oracle_metrics: bool = False
+    allow_materially_improved_false_fallback: bool = True
 
 
 SCANNER_BOUNDARY_GATE = GateSpec(
@@ -145,6 +148,49 @@ SCANNER_BOUNDARY_GATE = GateSpec(
         CoverageSpec("topology_scanner_quality_ref2_49", "scanner", TOPOLOGY_CASES),
     ),
 )
+
+SCANNER_BOUNDARY_REFERENCE_LIKE_GATE = GateSpec(
+    name="scanner-boundary-reference-like",
+    required_shape=("49", "49", "49"),
+    scanner_backend="reference-like",
+    scanner_refinement_factor="2",
+    boundary_skin_f1_min=0.90,
+    boundary_skin_count_max=3,
+    boundary_ratio_range=(0.75, 1.25),
+    changed_fvt_f1_min=0.90,
+    changed_fvt_distance_max=2.0,
+    coverage=(
+        CoverageSpec(
+            "boundary_plane_scanner_reference_like_ref2_49",
+            "scanner",
+            ("boundary_plane",),
+        ),
+        CoverageSpec(
+            "non_boundary_scanner_reference_like_ref2_49",
+            "scanner",
+            tuple(case_id for case_id in EXTENDED_CASES if case_id != "boundary_plane"),
+        ),
+        CoverageSpec("oracle_49", "oracle", EXTENDED_CASES),
+        CoverageSpec(
+            "false_fallback_replacement_scanner_reference_like_ref2_49",
+            "scanner",
+            FALSE_FALLBACK_CASES,
+        ),
+        CoverageSpec(
+            "topology_scanner_reference_like_ref2_49",
+            "scanner",
+            TOPOLOGY_CASES,
+        ),
+    ),
+    always_check_boundary_fvt=True,
+    require_unchanged_oracle_metrics=True,
+    allow_materially_improved_false_fallback=False,
+)
+
+PROMOTION_GATES = {
+    SCANNER_BOUNDARY_GATE.name: SCANNER_BOUNDARY_GATE,
+    SCANNER_BOUNDARY_REFERENCE_LIKE_GATE.name: SCANNER_BOUNDARY_REFERENCE_LIKE_GATE,
+}
 
 DEFAULT_CANDIDATES = (
     "boundary_edge_thin_v1",

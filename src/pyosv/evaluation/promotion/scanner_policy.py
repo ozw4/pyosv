@@ -22,6 +22,13 @@ from pyosv.evaluation.reporting import SUMMARY_CSV_V1_FIELDS, summary_csv_text
 SCANNER_THINNING_POLICY_PROFILE = "scanner-thinning-policy-v1"
 REFERENCE_SCANNER_POLICY_ID = "quality_scanner_reference_v1"
 NORMAL_SCANNER_POLICY_ID = "quality_scanner_thin_normal_v1"
+QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE = "quality-workflow-scanner-thinning-v1"
+REFERENCE_LIKE_REFERENCE_SCANNER_POLICY_ID = "quality_reference_like_scanner_thin_reference_v1"
+REFERENCE_LIKE_NORMAL_SCANNER_POLICY_ID = "quality_reference_like_scanner_thin_normal_v1"
+SCANNER_POLICY_PROFILES = (
+    SCANNER_THINNING_POLICY_PROFILE,
+    QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+)
 ALLOWED_CONFIG_DIFFERENCE_PATHS = ("config.scanner.scanner_thin_mode",)
 
 _MISSING_VALUE = "<missing>"
@@ -48,6 +55,32 @@ _COMMON_POLICY_CONDITIONS: tuple[tuple[str, Any], ...] = (
     ("config.scanner.input.clip_max", 1.0),
 )
 
+_REFERENCE_LIKE_POLICY_CONDITIONS: tuple[tuple[str, Any], ...] = (
+    ("config.case_set", "extended"),
+    ("config.input_mode", "both"),
+    ("config.workflow_mode", "quality"),
+    ("config.shape", [49, 49, 49]),
+    ("config.variants", ["current_default"]),
+    ("config.scanner.backend", "reference-like"),
+    ("config.scanner.remove_edge_effects", True),
+)
+
+
+def _profile_spec(comparison_profile: str) -> dict[str, Any]:
+    if comparison_profile == SCANNER_THINNING_POLICY_PROFILE:
+        return {
+            "common_conditions": _COMMON_POLICY_CONDITIONS,
+            "reference_policy_id": REFERENCE_SCANNER_POLICY_ID,
+            "normal_policy_id": NORMAL_SCANNER_POLICY_ID,
+        }
+    if comparison_profile == QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE:
+        return {
+            "common_conditions": _REFERENCE_LIKE_POLICY_CONDITIONS,
+            "reference_policy_id": REFERENCE_LIKE_REFERENCE_SCANNER_POLICY_ID,
+            "normal_policy_id": REFERENCE_LIKE_NORMAL_SCANNER_POLICY_ID,
+        }
+    raise ValueError(f"unknown scanner policy comparison profile: {comparison_profile}")
+
 
 def effective_remove_edge_effects(
     scanner_thin_mode: str, requested_remove_edge_effects: bool
@@ -65,7 +98,11 @@ def effective_remove_edge_effects(
     return None
 
 
-def identify_scanner_policy(config: Mapping[str, Any]) -> str | None:
+def identify_scanner_policy(
+    config: Mapping[str, Any],
+    *,
+    comparison_profile: str = SCANNER_THINNING_POLICY_PROFILE,
+) -> str | None:
     """Derive a formal scanner policy ID from a saved report config.
 
     A policy is identified only when every common 49^3 quality-run condition and
@@ -74,15 +111,16 @@ def identify_scanner_policy(config: Mapping[str, Any]) -> str | None:
     of the expected floating-point values (or vice versa).
     """
 
+    spec = _profile_spec(comparison_profile)
     if not isinstance(config, Mapping):
         return None
-    if _condition_mismatches(config, _COMMON_POLICY_CONDITIONS):
+    if _condition_mismatches(config, spec["common_conditions"]):
         return None
     scanner_mode = _value_at_path(config, "config.scanner.scanner_thin_mode")
     if _strict_equal(scanner_mode, "reference"):
-        return REFERENCE_SCANNER_POLICY_ID
+        return spec["reference_policy_id"]
     if _strict_equal(scanner_mode, "normal"):
-        return NORMAL_SCANNER_POLICY_ID
+        return spec["normal_policy_id"]
     return None
 
 
@@ -244,9 +282,12 @@ def build_scanner_policy_contract(
     candidate_metrics: Mapping[str, Any],
     baseline_variant: str,
     candidate_variant: str,
+    *,
+    comparison_profile: str = SCANNER_THINNING_POLICY_PROFILE,
 ) -> dict[str, Any]:
     """Build the scanner-thinning policy contract for a report comparison."""
 
+    spec = _profile_spec(comparison_profile)
     baseline_report = validate_metrics_report(baseline_metrics, context="baseline metrics report")
     candidate_report = validate_metrics_report(
         candidate_metrics, context="candidate metrics report"
@@ -258,11 +299,11 @@ def build_scanner_policy_contract(
     allowed_differences = [item for item in differences if item["allowed"]]
     disallowed_differences = [item for item in differences if not item["allowed"]]
     baseline_conditions = (
-        *_COMMON_POLICY_CONDITIONS,
+        *spec["common_conditions"],
         ("config.scanner.scanner_thin_mode", "reference"),
     )
     candidate_conditions = (
-        *_COMMON_POLICY_CONDITIONS,
+        *spec["common_conditions"],
         ("config.scanner.scanner_thin_mode", "normal"),
     )
     baseline_mismatches = _condition_mismatches(baseline_config, baseline_conditions)
@@ -298,10 +339,10 @@ def build_scanner_policy_contract(
     )
 
     return {
-        "name": SCANNER_THINNING_POLICY_PROFILE,
+        "name": comparison_profile,
         "passed": not reasons,
-        "baseline": _policy_summary(baseline_config),
-        "candidate": _policy_summary(candidate_config),
+        "baseline": _policy_summary(baseline_config, comparison_profile=comparison_profile),
+        "candidate": _policy_summary(candidate_config, comparison_profile=comparison_profile),
         "allowed_config_difference_paths": list(ALLOWED_CONFIG_DIFFERENCE_PATHS),
         "observed_config_differences": differences,
         "allowed_config_differences": allowed_differences,
@@ -310,14 +351,18 @@ def build_scanner_policy_contract(
     }
 
 
-def _policy_summary(config: Mapping[str, Any]) -> dict[str, Any]:
+def _policy_summary(
+    config: Mapping[str, Any],
+    *,
+    comparison_profile: str = SCANNER_THINNING_POLICY_PROFILE,
+) -> dict[str, Any]:
     scanner_mode = _value_at_path(config, "config.scanner.scanner_thin_mode")
     requested = _value_at_path(config, "config.scanner.remove_edge_effects")
     effective = None
     if isinstance(scanner_mode, str) and isinstance(requested, bool):
         effective = effective_remove_edge_effects(scanner_mode, requested)
     return {
-        "policy_id": identify_scanner_policy(config),
+        "policy_id": identify_scanner_policy(config, comparison_profile=comparison_profile),
         "scanner_thin_mode": None if scanner_mode == _MISSING_VALUE else scanner_mode,
         "requested_remove_edge_effects": None if requested == _MISSING_VALUE else requested,
         "effective_remove_edge_effects": effective,

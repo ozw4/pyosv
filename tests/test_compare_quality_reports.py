@@ -68,6 +68,49 @@ def _write_policy_inputs(tmp_path: Path) -> tuple[Path, Path]:
     return baseline_summary, candidate_summary
 
 
+def _reference_like_policy_metrics(scanner_thin_mode: str) -> dict[str, object]:
+    report = _policy_metrics(scanner_thin_mode)
+    _replace_scanner_backend(report)
+    report["config"]["variants"] = ["current_default"]
+    for case in report["cases"]:
+        case["variants"] = {"current_default": case["variants"]["current_default"]}
+        for pipeline in case["pipelines"].values():
+            pipeline["variants"] = {"current_default": pipeline["variants"]["current_default"]}
+            comparisons = pipeline["variant_comparison"]["variants"]
+            pipeline["variant_comparison"]["variants"] = {
+                "current_default": comparisons.get("current_default", {})
+            }
+        scanner_quality = case["pipelines"]["scanner"]["variants"]["current_default"]["quality"]
+        fvt_quality = scanner_quality["fvt_positive_top_truth_count"]
+        fvt_quality["buffered_overlap_radius2"]["buffered_f1"] = 0.95
+        fvt_quality["surface_distance"]["candidate_to_truth_p95"] = 1.0
+    return report
+
+
+def _replace_scanner_backend(value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "backend" and child == "quality":
+                value[key] = "reference-like"
+            else:
+                _replace_scanner_backend(child)
+    elif isinstance(value, list):
+        for child in value:
+            _replace_scanner_backend(child)
+
+
+def _write_reference_like_policy_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    baseline_dir = tmp_path / "baseline"
+    candidate_dir = tmp_path / "candidate"
+    baseline_report = _reference_like_policy_metrics("reference")
+    candidate_report = _reference_like_policy_metrics("normal")
+    baseline_summary = write_summary_csv(baseline_report, baseline_dir)
+    candidate_summary = write_summary_csv(candidate_report, candidate_dir)
+    (baseline_dir / "metrics.json").write_text(json.dumps(baseline_report), encoding="utf-8")
+    (candidate_dir / "metrics.json").write_text(json.dumps(candidate_report), encoding="utf-8")
+    return baseline_summary, candidate_summary
+
+
 def test_compare_quality_reports_cli_preserves_json_and_markdown_contract(tmp_path: Path) -> None:
     output_json = tmp_path / "quality_delta.json"
     output_markdown = tmp_path / "quality_delta.md"
@@ -155,6 +198,7 @@ def test_scanner_policy_compare_cli_infers_metrics_paths(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     report = json.loads(output_json.read_text(encoding="utf-8"))
     assert report["scanner_policy_contract"]["passed"] is True
+    assert report["promotion_gate"]["passed"] is True
 
 
 def test_scanner_policy_compare_cli_explicit_metrics_paths_take_precedence(
@@ -189,6 +233,138 @@ def test_scanner_policy_compare_cli_explicit_metrics_paths_take_precedence(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_reference_like_policy_compare_cli_infers_metrics_paths(tmp_path: Path) -> None:
+    baseline_summary, candidate_summary = _write_reference_like_policy_inputs(tmp_path)
+    output_json = tmp_path / "quality_delta.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPARE_SCRIPT),
+            str(baseline_summary),
+            str(candidate_summary),
+            "--comparison-profile",
+            "quality-workflow-scanner-thinning-v1",
+            "--promotion-gate",
+            "scanner-boundary-reference-like",
+            "--strict-missing-rows",
+            "--output-json",
+            str(output_json),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(output_json.read_text(encoding="utf-8"))
+    contract = report["scanner_policy_contract"]
+    assert report["row_count"] == 14
+    assert report["missing_baseline_rows"] == []
+    assert report["missing_candidate_rows"] == []
+    assert contract["passed"] is True
+    assert contract["baseline"] == {
+        "policy_id": "quality_reference_like_scanner_thin_reference_v1",
+        "scanner_thin_mode": "reference",
+        "requested_remove_edge_effects": True,
+        "effective_remove_edge_effects": True,
+    }
+    assert contract["candidate"] == {
+        "policy_id": "quality_reference_like_scanner_thin_normal_v1",
+        "scanner_thin_mode": "normal",
+        "requested_remove_edge_effects": True,
+        "effective_remove_edge_effects": None,
+    }
+    assert contract["observed_config_differences"] == [
+        {
+            "path": "config.scanner.scanner_thin_mode",
+            "baseline": "reference",
+            "candidate": "normal",
+            "allowed": True,
+        }
+    ]
+    assert report["promotion_gate"]["coverage"]["passed"] is True
+    assert report["promotion_gate"]["passed"] is True
+
+
+def test_reference_like_policy_compare_cli_explicit_metrics_paths_take_precedence(
+    tmp_path: Path,
+) -> None:
+    baseline_summary, candidate_summary = _write_reference_like_policy_inputs(tmp_path)
+    baseline_summary.with_name("metrics.json").write_text("not json", encoding="utf-8")
+    candidate_summary.with_name("metrics.json").write_text("not json", encoding="utf-8")
+    explicit_baseline = tmp_path / "baseline_metrics.json"
+    explicit_candidate = tmp_path / "candidate_metrics.json"
+    explicit_baseline.write_text(
+        json.dumps(_reference_like_policy_metrics("reference")), encoding="utf-8"
+    )
+    explicit_candidate.write_text(
+        json.dumps(_reference_like_policy_metrics("normal")), encoding="utf-8"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPARE_SCRIPT),
+            str(baseline_summary),
+            str(candidate_summary),
+            "--comparison-profile",
+            "quality-workflow-scanner-thinning-v1",
+            "--baseline-metrics",
+            str(explicit_baseline),
+            "--candidate-metrics",
+            str(explicit_candidate),
+            "--output-json",
+            str(tmp_path / "quality_delta.json"),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_reference_like_gate_rejects_missing_matched_rows(tmp_path: Path) -> None:
+    baseline_summary, candidate_summary = _write_reference_like_policy_inputs(tmp_path)
+    candidate_metrics = candidate_summary.with_name("metrics.json")
+    candidate_report = json.loads(candidate_metrics.read_text(encoding="utf-8"))
+    candidate_report["cases"].pop()
+    write_summary_csv(candidate_report, candidate_summary.parent)
+    candidate_metrics.write_text(json.dumps(candidate_report), encoding="utf-8")
+    output_json = tmp_path / "quality_delta.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPARE_SCRIPT),
+            str(baseline_summary),
+            str(candidate_summary),
+            "--comparison-profile",
+            "quality-workflow-scanner-thinning-v1",
+            "--promotion-gate",
+            "scanner-boundary-reference-like",
+            "--strict-missing-rows",
+            "--fail-on-gate-failure",
+            "--output-json",
+            str(output_json),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2, result.stderr
+    report = json.loads(output_json.read_text(encoding="utf-8"))
+    assert len(report["missing_candidate_rows"]) == 2
+    assert report["promotion_gate"]["passed"] is False
+    assert (
+        "scanner-boundary-reference-like requires zero missing candidate rows"
+        in report["promotion_gate"]["reasons"]
+    )
 
 
 def test_scanner_policy_compare_cli_reports_metrics_errors_without_traceback(
@@ -274,6 +450,96 @@ def test_scanner_policy_aggregate_cli_accepts_one_current_default_candidate(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_reference_like_policy_aggregate_cli_accepts_one_current_default_candidate(
+    tmp_path: Path,
+) -> None:
+    baseline_summary, candidate_summary = _write_reference_like_policy_inputs(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--baseline-summary",
+            str(baseline_summary),
+            "--candidate-summary",
+            str(candidate_summary),
+            "--candidate-variant",
+            "current_default",
+            "--comparison-profile",
+            "quality-workflow-scanner-thinning-v1",
+            "--promotion-gate",
+            "scanner-boundary-reference-like",
+            "--output-json",
+            str(tmp_path / "promotion_gate.json"),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_reference_like_policy_aggregate_cli_rejects_multiple_candidates(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--baseline-summary",
+            str(tmp_path / "baseline.csv"),
+            "--candidate-summary",
+            str(tmp_path / "candidate.csv"),
+            "--candidate-variants",
+            "current_default,current_default",
+            "--comparison-profile",
+            "quality-workflow-scanner-thinning-v1",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "exactly one candidate variant" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_reference_like_policy_aggregate_cli_rejects_non_default_variants(
+    tmp_path: Path,
+) -> None:
+    for option, value, expected in (
+        ("--baseline-variant", "boundary_aware_voter_v1", "--baseline-variant"),
+        ("--candidate-variant", "boundary_aware_voter_v1", "candidate variant"),
+    ):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(GATE_SCRIPT),
+                "--baseline-summary",
+                str(tmp_path / "baseline.csv"),
+                "--candidate-summary",
+                str(tmp_path / "candidate.csv"),
+                "--candidate-variant",
+                "current_default",
+                option,
+                value,
+                "--comparison-profile",
+                "quality-workflow-scanner-thinning-v1",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert expected in result.stderr
+        assert "Traceback" not in result.stderr
 
 
 def test_scanner_policy_aggregate_cli_rejects_mismatched_evidence(tmp_path: Path) -> None:

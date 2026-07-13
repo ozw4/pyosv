@@ -9,7 +9,11 @@ import pytest
 from pyosv.evaluation.promotion.scanner_policy import (
     ALLOWED_CONFIG_DIFFERENCE_PATHS,
     NORMAL_SCANNER_POLICY_ID,
+    QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
     REFERENCE_SCANNER_POLICY_ID,
+    REFERENCE_LIKE_NORMAL_SCANNER_POLICY_ID,
+    REFERENCE_LIKE_REFERENCE_SCANNER_POLICY_ID,
+    SCANNER_POLICY_PROFILES,
     SCANNER_THINNING_POLICY_PROFILE,
     build_scanner_policy_contract,
     effective_remove_edge_effects,
@@ -59,6 +63,18 @@ def _metrics(mode: str = "reference") -> dict[str, object]:
     return {"format_version": 1, "config": _config(mode), "cases": []}
 
 
+def _reference_like_config(mode: str = "reference") -> dict[str, object]:
+    config = _config(mode)
+    scanner = config["scanner"]
+    assert isinstance(scanner, dict)
+    scanner["backend"] = "reference-like"
+    return config
+
+
+def _reference_like_metrics(mode: str = "reference") -> dict[str, object]:
+    return {"format_version": 1, "config": _reference_like_config(mode), "cases": []}
+
+
 def _set_path(config: dict[str, object], path: str, value: object) -> None:
     target: dict[str, object] = config
     parts = path.split(".")
@@ -70,6 +86,70 @@ def _set_path(config: dict[str, object], path: str, value: object) -> None:
 def test_identifies_exact_reference_and_normal_policies() -> None:
     assert identify_scanner_policy(_config("reference")) == REFERENCE_SCANNER_POLICY_ID
     assert identify_scanner_policy(_config("normal")) == NORMAL_SCANNER_POLICY_ID
+
+
+def test_identifies_reference_like_policies_for_quality_workflow_profile() -> None:
+    assert SCANNER_POLICY_PROFILES == (
+        SCANNER_THINNING_POLICY_PROFILE,
+        QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+    )
+    assert (
+        identify_scanner_policy(
+            _reference_like_config("reference"),
+            comparison_profile=QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+        )
+        == REFERENCE_LIKE_REFERENCE_SCANNER_POLICY_ID
+    )
+    assert (
+        identify_scanner_policy(
+            _reference_like_config("normal"),
+            comparison_profile=QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+        )
+        == REFERENCE_LIKE_NORMAL_SCANNER_POLICY_ID
+    )
+
+
+def test_policy_identification_default_keeps_existing_quality_backend_contract() -> None:
+    assert identify_scanner_policy(_reference_like_config()) is None
+    assert (
+        identify_scanner_policy(
+            _config(),
+            comparison_profile=QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("case_set", "geometry"),
+        ("input_mode", "scanner"),
+        ("workflow_mode", "reference"),
+        ("shape", [21, 21, 21]),
+        ("variants", ["current_default", "voter_thin_normal"]),
+        ("scanner.backend", "quality"),
+        ("scanner.remove_edge_effects", False),
+        ("scanner.remove_edge_effects", 1),
+    ],
+)
+def test_reference_like_policy_identification_rejects_contract_values(
+    path: str, value: object
+) -> None:
+    config = _reference_like_config()
+    _set_path(config, path, value)
+    assert (
+        identify_scanner_policy(
+            config,
+            comparison_profile=QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+        )
+        is None
+    )
+
+
+def test_policy_identification_rejects_unknown_profile() -> None:
+    with pytest.raises(ValueError, match="unknown scanner policy comparison profile"):
+        identify_scanner_policy(_config(), comparison_profile="unknown")
 
 
 @pytest.mark.parametrize(
@@ -242,6 +322,88 @@ def test_valid_scanner_policy_contract() -> None:
     assert contract["allowed_config_differences"] == contract["observed_config_differences"]
     assert contract["disallowed_config_differences"] == []
     assert contract["reasons"] == []
+
+
+def test_valid_reference_like_scanner_policy_contract() -> None:
+    contract = build_scanner_policy_contract(
+        _reference_like_metrics("reference"),
+        _reference_like_metrics("normal"),
+        "current_default",
+        "current_default",
+        comparison_profile=QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+    )
+    assert contract["name"] == QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE
+    assert contract["passed"] is True
+    assert contract["baseline"] == {
+        "policy_id": REFERENCE_LIKE_REFERENCE_SCANNER_POLICY_ID,
+        "scanner_thin_mode": "reference",
+        "requested_remove_edge_effects": True,
+        "effective_remove_edge_effects": True,
+    }
+    assert contract["candidate"] == {
+        "policy_id": REFERENCE_LIKE_NORMAL_SCANNER_POLICY_ID,
+        "scanner_thin_mode": "normal",
+        "requested_remove_edge_effects": True,
+        "effective_remove_edge_effects": None,
+    }
+    assert contract["observed_config_differences"] == [
+        {
+            "path": "config.scanner.scanner_thin_mode",
+            "baseline": "reference",
+            "candidate": "normal",
+            "allowed": True,
+        }
+    ]
+    assert contract["reasons"] == []
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("scanner.phi_min", 5.0),
+        ("scanner.sigma1", 3.0),
+        ("scanner.refinement_factor", 3),
+        ("scanner.input.seed", 1),
+        ("voting.voter_thin_mode", "normal"),
+        ("skinning.method", "reference"),
+        ("truth_metrics.buffer_radius", 3.0),
+        ("scanner_downstream_diagnostics", False),
+    ],
+)
+def test_reference_like_contract_rejects_every_other_config_difference(
+    path: str, value: object
+) -> None:
+    baseline = _reference_like_metrics("reference")
+    candidate = _reference_like_metrics("normal")
+    _set_path(candidate["config"], path, value)  # type: ignore[arg-type]
+    contract = build_scanner_policy_contract(
+        baseline,
+        candidate,
+        "current_default",
+        "current_default",
+        comparison_profile=QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+    )
+    assert contract["passed"] is False
+    assert [difference["path"] for difference in contract["disallowed_config_differences"]] == [
+        f"config.{path}"
+    ]
+    assert any(f"config.{path}" in reason for reason in contract["reasons"])
+
+
+def test_reference_like_contract_requires_exact_current_default_variant_list() -> None:
+    candidate = _reference_like_metrics("normal")
+    candidate_config = candidate["config"]
+    assert isinstance(candidate_config, dict)
+    candidate_config["variants"] = ["current_default", "voter_thin_normal"]
+    contract = build_scanner_policy_contract(
+        _reference_like_metrics("reference"),
+        candidate,
+        "current_default",
+        "current_default",
+        comparison_profile=QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
+    )
+    assert contract["passed"] is False
+    assert any("config.variants" in reason for reason in contract["reasons"])
 
 
 @pytest.mark.parametrize(

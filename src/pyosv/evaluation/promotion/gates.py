@@ -9,7 +9,8 @@ from .rows import MatchKey, SummaryRow, key_dict, numeric
 from .specifications import (
     DEFAULT_CANDIDATES,
     MATERIAL_REGRESSION_THRESHOLDS,
-    SCANNER_BOUNDARY_GATE,
+    METRIC_COLUMNS,
+    PROMOTION_GATES,
     TOPOLOGY_CASES,
     GateSpec,
 )
@@ -31,9 +32,10 @@ def evaluate_gate(
             "topology_regressions": [],
             "reasons": [],
         }
-    if name != SCANNER_BOUNDARY_GATE.name:
+    spec = PROMOTION_GATES.get(name)
+    if spec is None:
         raise ValueError(f"unknown promotion gate: {name}")
-    return _scanner_boundary_gate(candidate_rows, comparison_by_key, SCANNER_BOUNDARY_GATE)
+    return _scanner_boundary_gate(candidate_rows, comparison_by_key, spec)
 
 
 def _scanner_boundary_gate(
@@ -46,16 +48,17 @@ def _scanner_boundary_gate(
         key
         for key in sorted(candidate_rows)
         if key_dict(key)["case_id"] == "boundary_plane"
-        and _is_scanner_quality_refinement_2_49(key_dict(key), spec)
+        and _is_scanner_gate_row(key_dict(key), spec)
     ]
     boundary_comparison = None
+    scanner_description = _scanner_gate_description(spec)
     if not boundary_keys:
-        reasons.append("missing boundary_plane scanner quality refinement-2 49^3 candidate row")
+        reasons.append(f"missing boundary_plane {scanner_description} candidate row")
     else:
         boundary_comparison = comparison_by_key.get(boundary_keys[0])
         if boundary_comparison is None:
             reasons.append(
-                "missing matching baseline row for boundary_plane scanner quality refinement-2 49^3"
+                f"missing matching baseline row for boundary_plane {scanner_description}"
             )
     boundary_result = None
     if boundary_comparison is not None:
@@ -66,9 +69,7 @@ def _scanner_boundary_gate(
     non_boundary = _material_regressions(
         comparisons, pipeline="scanner", exclude_boundary=True, spec=spec
     )
-    oracle = _material_regressions(
-        comparisons, pipeline="oracle", exclude_boundary=False, spec=spec
-    )
+    oracle = _oracle_regressions(comparisons, spec)
     false_fallback = _false_fallback_replacements(comparisons, spec)
     topology = _topology_regressions(comparisons, spec)
     reasons.extend(f"non-boundary scanner regression: {item['metric']}" for item in non_boundary)
@@ -97,7 +98,15 @@ def _shape_matches(key: dict[str, str], spec: GateSpec) -> bool:
     return tuple(key[f"shape_n{axis}"] for axis in (3, 2, 1)) == spec.required_shape
 
 
-def _is_scanner_quality_refinement_2_49(key: dict[str, str], spec: GateSpec) -> bool:
+def _scanner_gate_description(spec: GateSpec) -> str:
+    if len(set(spec.required_shape)) == 1:
+        shape = f"{spec.required_shape[0]}^3"
+    else:
+        shape = "x".join(spec.required_shape)
+    return f"scanner {spec.scanner_backend} refinement-{spec.scanner_refinement_factor} {shape}"
+
+
+def _is_scanner_gate_row(key: dict[str, str], spec: GateSpec) -> bool:
     return (
         key["pipeline"] == "scanner"
         and key["workflow_mode"] == "quality"
@@ -122,13 +131,14 @@ def _boundary_plane_result(comparison: dict[str, Any], spec: GateSpec) -> dict[s
     if candidate_ratio is None or not ratio_min <= candidate_ratio <= ratio_max:
         reasons.append("skin_cell_to_fvt_positive_candidate_ratio outside [0.75, 1.25]")
     fvt_changed = _fvt_changed(metrics)
-    if fvt_changed:
+    if fvt_changed or spec.always_check_boundary_fvt:
         fvt_f1 = numeric(metrics["fvt_positive_buffered_f1_r2"]["candidate"])
         fvt_distance = numeric(metrics["fvt_positive_distance_p95"]["candidate"])
+        reason_suffix = "" if spec.always_check_boundary_fvt else " after FVT change"
         if fvt_f1 is None or fvt_f1 < spec.changed_fvt_f1_min:
-            reasons.append("fvt_positive_buffered_f1_r2 below 0.90 after FVT change")
+            reasons.append(f"fvt_positive_buffered_f1_r2 below 0.90{reason_suffix}")
         if fvt_distance is None or fvt_distance > spec.changed_fvt_distance_max:
-            reasons.append("fvt_positive_distance_p95 above 2.0 after FVT change")
+            reasons.append(f"fvt_positive_distance_p95 above 2.0{reason_suffix}")
     return {
         "key": comparison["key"],
         "passed": not reasons,
@@ -154,6 +164,43 @@ def _fvt_changed(metrics: dict[str, dict[str, Any]]) -> bool:
     return count_delta is not None and count_delta != 0
 
 
+def _oracle_regressions(
+    comparisons: Iterable[dict[str, Any]], spec: GateSpec
+) -> list[dict[str, Any]]:
+    if not spec.require_unchanged_oracle_metrics:
+        return _material_regressions(
+            comparisons,
+            pipeline="oracle",
+            exclude_boundary=False,
+            spec=spec,
+        )
+
+    regressions = []
+    for comparison in comparisons:
+        key = comparison["key"]
+        if key["pipeline"] != "oracle" or not _shape_matches(key, spec):
+            continue
+        for metric in METRIC_COLUMNS:
+            values = comparison["metrics"][metric]
+            baseline = numeric(values["baseline"])
+            candidate = numeric(values["candidate"])
+            if baseline is None and candidate is None:
+                continue
+            if baseline is not None and candidate is not None and baseline == candidate:
+                continue
+            regressions.append(
+                {
+                    "key": key,
+                    "metric": metric,
+                    "baseline": values["baseline"],
+                    "candidate": values["candidate"],
+                    "delta": values["delta"],
+                    "threshold": 0,
+                }
+            )
+    return regressions
+
+
 def _material_regressions(
     comparisons: Iterable[dict[str, Any]],
     *,
@@ -165,7 +212,7 @@ def _material_regressions(
     for comparison in comparisons:
         key = comparison["key"]
         if pipeline == "scanner":
-            if not _is_scanner_quality_refinement_2_49(key, spec):
+            if not _is_scanner_gate_row(key, spec):
                 continue
         elif key["pipeline"] != pipeline or not _shape_matches(key, spec):
             continue
@@ -207,11 +254,13 @@ def _false_fallback_replacements(
     for comparison in comparisons:
         key, metrics = comparison["key"], comparison["metrics"]
         if (
-            not _is_scanner_quality_refinement_2_49(key, spec)
+            not _is_scanner_gate_row(key, spec)
             or key["case_id"] in {"boundary_plane", *TOPOLOGY_CASES}
             or metrics["skin_fallback_replaced_primary"]["candidate"] is not True
             or metrics["skin_fallback_replaced_primary"]["baseline"] is True
-            or _has_material_improvement(metrics)
+            or (
+                spec.allow_materially_improved_false_fallback and _has_material_improvement(metrics)
+            )
         ):
             continue
         replacements.append(
@@ -230,10 +279,7 @@ def _topology_regressions(
     regressions = []
     for comparison in comparisons:
         key = comparison["key"]
-        if (
-            not _is_scanner_quality_refinement_2_49(key, spec)
-            or key["case_id"] not in TOPOLOGY_CASES
-        ):
+        if not _is_scanner_gate_row(key, spec) or key["case_id"] not in TOPOLOGY_CASES:
             continue
         for metric in ("skin_over_merge_count", "skin_over_split_count"):
             values = comparison["metrics"][metric]
@@ -244,17 +290,18 @@ def _topology_regressions(
 
 
 def add_required_coverage(report: dict[str, Any]) -> dict[str, Any]:
-    if report["config"]["promotion_gate"] != SCANNER_BOUNDARY_GATE.name:
+    spec = PROMOTION_GATES.get(report["config"]["promotion_gate"])
+    if spec is None:
         return report
     if "coverage" in report["promotion_gate"]:
         return report
     comparisons = report["comparisons"]
     checks = []
-    for coverage_spec in SCANNER_BOUNDARY_GATE.coverage:
+    for coverage_spec in spec.coverage:
         matched = {
             item["key"]["case_id"]
             for item in comparisons
-            if _matches_coverage(item, coverage_spec.pipeline)
+            if _matches_coverage(item, coverage_spec.pipeline, spec)
         }
         missing = [case_id for case_id in coverage_spec.case_ids if case_id not in matched]
         checks.append(
@@ -262,14 +309,10 @@ def add_required_coverage(report: dict[str, Any]) -> dict[str, Any]:
                 "name": coverage_spec.name,
                 "pipeline": coverage_spec.pipeline,
                 "scanner_backend": (
-                    SCANNER_BOUNDARY_GATE.scanner_backend
-                    if coverage_spec.pipeline == "scanner"
-                    else None
+                    spec.scanner_backend if coverage_spec.pipeline == "scanner" else None
                 ),
                 "scanner_refinement_factor": (
-                    SCANNER_BOUNDARY_GATE.scanner_refinement_factor
-                    if coverage_spec.pipeline == "scanner"
-                    else None
+                    spec.scanner_refinement_factor if coverage_spec.pipeline == "scanner" else None
                 ),
                 "required_case_ids": list(coverage_spec.case_ids),
                 "matched_case_ids": [x for x in coverage_spec.case_ids if x in matched],
@@ -290,15 +333,15 @@ def add_required_coverage(report: dict[str, Any]) -> dict[str, Any]:
     return {**report, "promotion_gate": gate}
 
 
-def _matches_coverage(comparison: dict[str, Any], pipeline: str) -> bool:
+def _matches_coverage(comparison: dict[str, Any], pipeline: str, spec: GateSpec) -> bool:
     key = comparison["key"]
     if (
         key["pipeline"] != pipeline
         or key["workflow_mode"] != "quality"
-        or not _shape_matches(key, SCANNER_BOUNDARY_GATE)
+        or not _shape_matches(key, spec)
     ):
         return False
-    return pipeline != "scanner" or _is_scanner_quality_refinement_2_49(key, SCANNER_BOUNDARY_GATE)
+    return pipeline != "scanner" or _is_scanner_gate_row(key, spec)
 
 
 def build_promotion_report(

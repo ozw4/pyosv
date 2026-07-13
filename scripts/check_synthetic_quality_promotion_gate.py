@@ -12,8 +12,13 @@ from pyosv.evaluation.promotion import build_promotion_report
 from pyosv.evaluation.promotion.markdown import promotion_markdown
 from pyosv.evaluation.promotion.specifications import DEFAULT_CANDIDATES
 
-COMPARISON_PROFILES = ("variant", "scanner-thinning-policy-v1")
-SCANNER_POLICY_PROFILE = "scanner-thinning-policy-v1"
+COMPARISON_PROFILES = (
+    "variant",
+    "scanner-thinning-policy-v1",
+    "quality-workflow-scanner-thinning-v1",
+)
+SCANNER_POLICY_PROFILES = frozenset(COMPARISON_PROFILES[1:])
+PROMOTION_GATES = ("scanner-boundary", "scanner-boundary-reference-like")
 
 
 def _csv_list(text: str) -> tuple[str, ...]:
@@ -34,9 +39,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-variants", type=_csv_list)
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--output-markdown", type=Path)
-    parser.add_argument(
-        "--promotion-gate", choices=("scanner-boundary",), default="scanner-boundary"
-    )
+    parser.add_argument("--promotion-gate", choices=PROMOTION_GATES, default="scanner-boundary")
     parser.add_argument("--strict-missing-rows", action="store_true")
     parser.add_argument("--fail-on-gate-failure", action="store_true")
     parser.add_argument("--comparison-profile", choices=COMPARISON_PROFILES, default="variant")
@@ -46,7 +49,7 @@ def _argument_parser() -> argparse.ArgumentParser:
 
 
 def _metrics_paths(args: argparse.Namespace) -> tuple[Path | None, Path | None]:
-    if args.comparison_profile != SCANNER_POLICY_PROFILE:
+    if args.comparison_profile not in SCANNER_POLICY_PROFILES:
         return args.baseline_metrics, args.candidate_metrics
     return (
         args.baseline_metrics or args.baseline_summary.with_name("metrics.json"),
@@ -64,13 +67,13 @@ def main() -> int:
         if args.candidate_variant
         else args.candidate_variants or DEFAULT_CANDIDATES
     )
-    if args.comparison_profile == SCANNER_POLICY_PROFILE:
+    if args.comparison_profile in SCANNER_POLICY_PROFILES:
         if len(variants) != 1:
-            parser.error("scanner-thinning-policy-v1 requires exactly one candidate variant")
+            parser.error(f"{args.comparison_profile} requires exactly one candidate variant")
         if args.baseline_variant != "current_default":
-            parser.error("scanner-thinning-policy-v1 requires --baseline-variant current_default")
+            parser.error(f"{args.comparison_profile} requires --baseline-variant current_default")
         if variants[0] != "current_default":
-            parser.error("scanner-thinning-policy-v1 requires candidate variant current_default")
+            parser.error(f"{args.comparison_profile} requires candidate variant current_default")
     baseline_metrics, candidate_metrics = _metrics_paths(args)
     try:
         positional_args = (
@@ -81,7 +84,7 @@ def main() -> int:
             args.promotion_gate,
             args.strict_missing_rows,
         )
-        if args.comparison_profile == SCANNER_POLICY_PROFILE:
+        if args.comparison_profile in SCANNER_POLICY_PROFILES:
             report = build_promotion_report(
                 *positional_args,
                 comparison_profile=args.comparison_profile,

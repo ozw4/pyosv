@@ -11,8 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pyosv.evaluation.promotion import compare_reports
 from pyosv.evaluation.promotion.markdown import comparison_markdown
 
-COMPARISON_PROFILES = ("variant", "scanner-thinning-policy-v1")
-SCANNER_POLICY_PROFILE = "scanner-thinning-policy-v1"
+COMPARISON_PROFILES = (
+    "variant",
+    "scanner-thinning-policy-v1",
+    "quality-workflow-scanner-thinning-v1",
+)
+SCANNER_POLICY_PROFILES = frozenset(COMPARISON_PROFILES[1:])
+PROMOTION_GATES = ("none", "scanner-boundary", "scanner-boundary-reference-like")
 
 
 def _argument_parser() -> argparse.ArgumentParser:
@@ -25,7 +30,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-variant")
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--output-markdown", type=Path)
-    parser.add_argument("--promotion-gate", choices=("none", "scanner-boundary"), default="none")
+    parser.add_argument("--promotion-gate", choices=PROMOTION_GATES, default="none")
     parser.add_argument("--fail-on-gate-failure", action="store_true")
     parser.add_argument("--strict-missing-rows", action="store_true")
     parser.add_argument("--comparison-profile", choices=COMPARISON_PROFILES, default="variant")
@@ -35,7 +40,7 @@ def _argument_parser() -> argparse.ArgumentParser:
 
 
 def _metrics_paths(args: argparse.Namespace) -> tuple[Path | None, Path | None]:
-    if args.comparison_profile != SCANNER_POLICY_PROFILE:
+    if args.comparison_profile not in SCANNER_POLICY_PROFILES:
         return args.baseline_metrics, args.candidate_metrics
     return (
         args.baseline_metrics or args.baseline_summary.with_name("metrics.json"),
@@ -56,7 +61,7 @@ def main() -> int:
             args.promotion_gate,
             args.strict_missing_rows,
         )
-        if args.comparison_profile == SCANNER_POLICY_PROFILE:
+        if args.comparison_profile in SCANNER_POLICY_PROFILES:
             report = compare_reports(
                 *positional_args,
                 comparison_profile=args.comparison_profile,
