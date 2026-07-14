@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from pyosv.evaluation.reporting import write_summary_csv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +111,37 @@ def _write_reference_like_policy_inputs(tmp_path: Path) -> tuple[Path, Path]:
     (baseline_dir / "metrics.json").write_text(json.dumps(baseline_report), encoding="utf-8")
     (candidate_dir / "metrics.json").write_text(json.dumps(candidate_report), encoding="utf-8")
     return baseline_summary, candidate_summary
+
+
+def _write_reference_like_one_row_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    full_summary = write_summary_csv(_reference_like_policy_metrics("normal"), tmp_path / "full")
+    lines = full_summary.read_text(encoding="utf-8").splitlines()
+    boundary_scanner_row = next(
+        line for line in lines[1:] if line.startswith("boundary_plane,scanner,current_default,")
+    )
+    content = f"{lines[0]}\n{boundary_scanner_row}\n"
+    baseline_summary = tmp_path / "one-row-baseline" / "summary.csv"
+    candidate_summary = tmp_path / "one-row-candidate" / "summary.csv"
+    baseline_summary.parent.mkdir()
+    candidate_summary.parent.mkdir()
+    baseline_summary.write_text(content, encoding="utf-8")
+    candidate_summary.write_text(content, encoding="utf-8")
+    return baseline_summary, candidate_summary
+
+
+def _assert_required_profile_usage_error(
+    result: subprocess.CompletedProcess[str],
+    output_json: Path,
+    output_markdown: Path,
+) -> None:
+    assert result.returncode == 2
+    assert "requires comparison profile" in result.stderr
+    assert "scanner-boundary-reference-like" in result.stderr
+    assert "quality-workflow-scanner-thinning-v1" in result.stderr
+    assert "variant" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output_json.exists()
+    assert not output_markdown.exists()
 
 
 def test_compare_quality_reports_cli_preserves_json_and_markdown_contract(tmp_path: Path) -> None:
@@ -287,6 +320,47 @@ def test_reference_like_policy_compare_cli_infers_metrics_paths(tmp_path: Path) 
     ]
     assert report["promotion_gate"]["coverage"]["passed"] is True
     assert report["promotion_gate"]["passed"] is True
+
+
+@pytest.mark.parametrize(
+    "profile_args",
+    [(), ("--comparison-profile", "variant")],
+    ids=("omitted-profile", "explicit-variant"),
+)
+def test_reference_like_gate_compare_cli_requires_quality_workflow_profile(
+    tmp_path: Path,
+    profile_args: tuple[str, ...],
+) -> None:
+    baseline_summary, candidate_summary = _write_reference_like_one_row_inputs(tmp_path)
+    output_json = tmp_path / "must-not-exist.json"
+    output_markdown = tmp_path / "must-not-exist.md"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPARE_SCRIPT),
+            str(baseline_summary),
+            str(candidate_summary),
+            "--baseline-variant",
+            "current_default",
+            "--candidate-variant",
+            "current_default",
+            "--promotion-gate",
+            "scanner-boundary-reference-like",
+            "--strict-missing-rows",
+            "--fail-on-gate-failure",
+            "--output-json",
+            str(output_json),
+            "--output-markdown",
+            str(output_markdown),
+            *profile_args,
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    _assert_required_profile_usage_error(result, output_json, output_markdown)
 
 
 def test_reference_like_policy_compare_cli_explicit_metrics_paths_take_precedence(
@@ -480,6 +554,49 @@ def test_reference_like_policy_aggregate_cli_accepts_one_current_default_candida
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "profile_args",
+    [(), ("--comparison-profile", "variant")],
+    ids=("omitted-profile", "explicit-variant"),
+)
+def test_reference_like_gate_aggregate_cli_requires_quality_workflow_profile(
+    tmp_path: Path,
+    profile_args: tuple[str, ...],
+) -> None:
+    baseline_summary, candidate_summary = _write_reference_like_one_row_inputs(tmp_path)
+    output_json = tmp_path / "must-not-exist.json"
+    output_markdown = tmp_path / "must-not-exist.md"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--baseline-summary",
+            str(baseline_summary),
+            "--candidate-summary",
+            str(candidate_summary),
+            "--baseline-variant",
+            "current_default",
+            "--candidate-variant",
+            "current_default",
+            "--promotion-gate",
+            "scanner-boundary-reference-like",
+            "--strict-missing-rows",
+            "--fail-on-gate-failure",
+            "--output-json",
+            str(output_json),
+            "--output-markdown",
+            str(output_markdown),
+            *profile_args,
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    _assert_required_profile_usage_error(result, output_json, output_markdown)
 
 
 def test_reference_like_policy_aggregate_cli_rejects_multiple_candidates(

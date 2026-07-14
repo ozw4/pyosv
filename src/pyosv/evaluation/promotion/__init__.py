@@ -7,7 +7,11 @@ from .comparison import (
     compare_rows,
     metric_delta,
 )
-from .gates import add_required_coverage, build_promotion_report
+from .gates import (
+    add_required_coverage,
+    build_promotion_report,
+    validate_gate_comparison_profile,
+)
 from .rows import SummaryRow, read_summary_rows
 from .scanner_policy import (
     NORMAL_SCANNER_POLICY_ID,
@@ -42,4 +46,5 @@ __all__ = [
     "compare_rows",
     "metric_delta",
     "read_summary_rows",
+    "validate_gate_comparison_profile",
 ]

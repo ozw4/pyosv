@@ -120,6 +120,7 @@ class GateSpec:
     always_check_boundary_fvt: bool = False
     require_unchanged_oracle_metrics: bool = False
     allow_materially_improved_false_fallback: bool = True
+    required_comparison_profile: str | None = None
 
 
 SCANNER_BOUNDARY_GATE = GateSpec(
@@ -185,6 +186,7 @@ SCANNER_BOUNDARY_REFERENCE_LIKE_GATE = GateSpec(
     always_check_boundary_fvt=True,
     require_unchanged_oracle_metrics=True,
     allow_materially_improved_false_fallback=False,
+    required_comparison_profile="quality-workflow-scanner-thinning-v1",
 )
 
 PROMOTION_GATES = {

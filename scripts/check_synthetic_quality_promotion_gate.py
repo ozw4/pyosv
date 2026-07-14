@@ -8,7 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pyosv.evaluation.promotion import build_promotion_report
+from pyosv.evaluation.promotion import (
+    build_promotion_report,
+    validate_gate_comparison_profile,
+)
 from pyosv.evaluation.promotion.markdown import promotion_markdown
 from pyosv.evaluation.promotion.specifications import DEFAULT_CANDIDATES
 
@@ -60,6 +63,10 @@ def _metrics_paths(args: argparse.Namespace) -> tuple[Path | None, Path | None]:
 def main() -> int:
     parser = _argument_parser()
     args = parser.parse_args()
+    try:
+        validate_gate_comparison_profile(args.promotion_gate, args.comparison_profile)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.candidate_variant and args.candidate_variants:
         parser.error("use either --candidate-variant or --candidate-variants, not both")
     variants = (

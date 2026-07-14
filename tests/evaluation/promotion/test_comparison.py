@@ -3,7 +3,10 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from pyosv.evaluation.promotion.comparison import compare_reports, compare_rows
+from pyosv.evaluation.promotion.gates import build_promotion_report
 from pyosv.evaluation.promotion.rows import SummaryRow
 
 
@@ -46,6 +49,40 @@ def test_numeric_delta_ratio_and_missing_metric_contract() -> None:
         "candidate": None,
         "delta": None,
     }
+
+
+def test_compare_reports_rejects_gate_profile_mismatch_before_summary_io(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="requires comparison profile") as error:
+        compare_reports(
+            tmp_path / "missing-baseline.csv",
+            tmp_path / "missing-candidate.csv",
+            "current_default",
+            "current_default",
+            promotion_gate="scanner-boundary-reference-like",
+            comparison_profile="variant",
+        )
+
+    message = str(error.value)
+    assert "scanner-boundary-reference-like" in message
+    assert "quality-workflow-scanner-thinning-v1" in message
+    assert "variant" in message
+
+
+@pytest.mark.parametrize("candidate_variants", (("current_default",), ()))
+def test_build_promotion_report_rejects_gate_profile_mismatch_before_summary_io(
+    tmp_path: Path,
+    candidate_variants: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="requires comparison profile"):
+        build_promotion_report(
+            tmp_path / "missing-baseline.csv",
+            tmp_path / "missing-candidate.csv",
+            candidate_variants=candidate_variants,
+            promotion_gate="scanner-boundary-reference-like",
+            comparison_profile="variant",
+        )
 
 
 def test_compare_reports_exact_json_contract_and_strict_missing_rows(tmp_path: Path) -> None:

@@ -229,6 +229,14 @@ changing `scanner-thinning-policy-v1`. Its baseline policy is
 `quality_reference_like_scanner_thin_reference_v1`; its candidate policy is
 `quality_reference_like_scanner_thin_normal_v1`.
 
+The `scanner-boundary-reference-like` gate is dedicated to this profile and
+requires `quality-workflow-scanner-thinning-v1`. The CLI default is the
+`variant` profile, so omitting `--comparison-profile` (or explicitly selecting
+`variant`) is rejected rather than inferred or corrected automatically. A
+formal promotion artifact requires the profile's canonical `summary.csv` /
+`metrics.json` pairing, passing policy contract, and complete 14-row coverage;
+the numeric gate result alone is not valid evidence.
+
 Generate the reference-thinning baseline:
 
 ```bash

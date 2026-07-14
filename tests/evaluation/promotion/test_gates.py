@@ -3,18 +3,73 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from pyosv.evaluation.promotion.comparison import compare_rows
 from pyosv.evaluation.promotion.gates import (
     add_required_coverage,
     build_promotion_report,
     evaluate_gate,
+    validate_gate_comparison_profile,
 )
 from pyosv.evaluation.promotion.rows import SummaryRow
-from pyosv.evaluation.promotion.specifications import EXTENDED_CASES
+from pyosv.evaluation.promotion.specifications import (
+    EXTENDED_CASES,
+    SCANNER_BOUNDARY_GATE,
+    SCANNER_BOUNDARY_REFERENCE_LIKE_GATE,
+)
 from pyosv.evaluation.reporting import SUMMARY_CSV_V1_FIELDS
 
 
 FIXTURE = Path("tests/fixtures/synthetic_quality_refactor/known_49_quality_summary.csv")
+
+
+def test_gate_specs_declare_required_comparison_profile() -> None:
+    assert (
+        SCANNER_BOUNDARY_REFERENCE_LIKE_GATE.required_comparison_profile
+        == "quality-workflow-scanner-thinning-v1"
+    )
+    assert SCANNER_BOUNDARY_GATE.required_comparison_profile is None
+
+
+@pytest.mark.parametrize(
+    ("promotion_gate", "comparison_profile"),
+    (
+        (
+            "scanner-boundary-reference-like",
+            "quality-workflow-scanner-thinning-v1",
+        ),
+        ("scanner-boundary", "variant"),
+        ("scanner-boundary", "scanner-thinning-policy-v1"),
+        ("none", "quality-workflow-scanner-thinning-v1"),
+    ),
+)
+def test_gate_comparison_profile_compatible_pairs_are_allowed(
+    promotion_gate: str,
+    comparison_profile: str,
+) -> None:
+    validate_gate_comparison_profile(promotion_gate, comparison_profile)
+
+
+@pytest.mark.parametrize("comparison_profile", ("variant", "scanner-thinning-policy-v1"))
+def test_reference_like_gate_rejects_incompatible_comparison_profile(
+    comparison_profile: str,
+) -> None:
+    with pytest.raises(ValueError) as error:
+        validate_gate_comparison_profile(
+            "scanner-boundary-reference-like",
+            comparison_profile,
+        )
+
+    message = str(error.value)
+    assert "scanner-boundary-reference-like" in message
+    assert "quality-workflow-scanner-thinning-v1" in message
+    assert comparison_profile in message
+
+
+def test_gate_comparison_profile_validation_rejects_unknown_gate() -> None:
+    with pytest.raises(ValueError, match="unknown promotion gate: unknown"):
+        validate_gate_comparison_profile("unknown", "variant")
 
 
 def test_known_49_fixture_is_a_full_report_artifact() -> None:

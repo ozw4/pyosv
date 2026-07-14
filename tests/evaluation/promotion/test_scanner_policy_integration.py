@@ -38,6 +38,25 @@ def _metrics(scanner_thin_mode: str) -> dict[str, object]:
     return report
 
 
+def _reference_like_metrics(scanner_thin_mode: str) -> dict[str, object]:
+    report = _metrics(scanner_thin_mode)
+    _replace_scanner_backend(report)
+    report["config"]["variants"] = ["current_default"]
+    for case in report["cases"]:
+        case["variants"] = {"current_default": case["variants"]["current_default"]}
+        for pipeline in case["pipelines"].values():
+            pipeline["variants"] = {"current_default": pipeline["variants"]["current_default"]}
+            comparisons = pipeline["variant_comparison"]["variants"]
+            pipeline["variant_comparison"]["variants"] = {
+                "current_default": comparisons.get("current_default", {})
+            }
+        scanner_quality = case["pipelines"]["scanner"]["variants"]["current_default"]["quality"]
+        fvt_quality = scanner_quality["fvt_positive_top_truth_count"]
+        fvt_quality["buffered_overlap_radius2"]["buffered_f1"] = 0.95
+        fvt_quality["surface_distance"]["candidate_to_truth_p95"] = 1.0
+    return report
+
+
 def _replace_scanner_mode(value: object, scanner_thin_mode: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -48,6 +67,18 @@ def _replace_scanner_mode(value: object, scanner_thin_mode: str) -> None:
     elif isinstance(value, list):
         for child in value:
             _replace_scanner_mode(child, scanner_thin_mode)
+
+
+def _replace_scanner_backend(value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "backend" and child == "quality":
+                value[key] = "reference-like"
+            else:
+                _replace_scanner_backend(child)
+    elif isinstance(value, list):
+        for child in value:
+            _replace_scanner_backend(child)
 
 
 def _write_metrics(path: Path, report: dict[str, object]) -> None:
@@ -62,6 +93,27 @@ def _policy_inputs(
 ) -> tuple[Path, Path, Path, Path, dict[str, object], dict[str, object]]:
     baseline_report = _metrics(baseline_mode)
     candidate_report = _metrics(candidate_mode)
+    baseline_summary = write_summary_csv(baseline_report, tmp_path / "baseline")
+    candidate_summary = write_summary_csv(candidate_report, tmp_path / "candidate")
+    baseline_metrics = baseline_summary.with_name("metrics.json")
+    candidate_metrics = candidate_summary.with_name("metrics.json")
+    _write_metrics(baseline_metrics, baseline_report)
+    _write_metrics(candidate_metrics, candidate_report)
+    return (
+        baseline_summary,
+        candidate_summary,
+        baseline_metrics,
+        candidate_metrics,
+        baseline_report,
+        candidate_report,
+    )
+
+
+def _reference_like_policy_inputs(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, dict[str, object], dict[str, object]]:
+    baseline_report = _reference_like_metrics("reference")
+    candidate_report = _reference_like_metrics("normal")
     baseline_summary = write_summary_csv(baseline_report, tmp_path / "baseline")
     candidate_summary = write_summary_csv(candidate_report, tmp_path / "candidate")
     baseline_metrics = baseline_summary.with_name("metrics.json")
@@ -140,6 +192,29 @@ def test_valid_scanner_policy_comparison_matches_rows_and_passes_gate(tmp_path: 
         }
     ]
     assert report["promotion_gate"]["coverage"]["passed"] is True
+    assert report["promotion_gate"]["passed"] is True
+
+
+def test_valid_reference_like_profile_gate_comparison_passes(tmp_path: Path) -> None:
+    paths = _reference_like_policy_inputs(tmp_path)
+    report = compare_reports(
+        paths[0],
+        paths[1],
+        "current_default",
+        "current_default",
+        promotion_gate="scanner-boundary-reference-like",
+        strict_missing_rows=True,
+        comparison_profile="quality-workflow-scanner-thinning-v1",
+        baseline_metrics=paths[2],
+        candidate_metrics=paths[3],
+    )
+
+    assert report["row_count"] == 14
+    assert report["missing_baseline_rows"] == []
+    assert report["missing_candidate_rows"] == []
+    assert report["scanner_policy_contract"]["passed"] is True
+    assert report["promotion_gate"]["coverage"]["passed"] is True
+    assert len(report["promotion_gate"]["coverage"]["checks"]) == 5
     assert report["promotion_gate"]["passed"] is True
 
 

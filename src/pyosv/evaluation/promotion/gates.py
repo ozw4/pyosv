@@ -16,6 +16,25 @@ from .specifications import (
 )
 
 
+def validate_gate_comparison_profile(
+    promotion_gate: str,
+    comparison_profile: str,
+) -> None:
+    """Validate that a promotion gate supports the comparison profile."""
+
+    if promotion_gate == "none":
+        return
+    spec = PROMOTION_GATES.get(promotion_gate)
+    if spec is None:
+        raise ValueError(f"unknown promotion gate: {promotion_gate}")
+    required_profile = spec.required_comparison_profile
+    if required_profile is not None and comparison_profile != required_profile:
+        raise ValueError(
+            f"promotion gate {promotion_gate!r} requires comparison profile "
+            f"{required_profile!r}; got {comparison_profile!r}"
+        )
+
+
 def evaluate_gate(
     name: str,
     candidate_rows: dict[MatchKey, SummaryRow],
@@ -356,7 +375,11 @@ def build_promotion_report(
     baseline_metrics: Path | None = None,
     candidate_metrics: Path | None = None,
 ) -> dict[str, Any]:
-    from .comparison import VARIANT_COMPARISON_PROFILE, compare_reports
+    from .comparison import COMPARISON_PROFILES, VARIANT_COMPARISON_PROFILE, compare_reports
+
+    if comparison_profile not in COMPARISON_PROFILES:
+        raise ValueError(f"unknown comparison profile: {comparison_profile}")
+    validate_gate_comparison_profile(promotion_gate, comparison_profile)
 
     reports = []
     for variant in candidate_variants:

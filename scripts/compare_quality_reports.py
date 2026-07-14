@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pyosv.evaluation.promotion import compare_reports
+from pyosv.evaluation.promotion import compare_reports, validate_gate_comparison_profile
 from pyosv.evaluation.promotion.markdown import comparison_markdown
 
 COMPARISON_PROFILES = (
@@ -51,6 +51,10 @@ def _metrics_paths(args: argparse.Namespace) -> tuple[Path | None, Path | None]:
 def main() -> int:
     parser = _argument_parser()
     args = parser.parse_args()
+    try:
+        validate_gate_comparison_profile(args.promotion_gate, args.comparison_profile)
+    except ValueError as exc:
+        parser.error(str(exc))
     baseline_metrics, candidate_metrics = _metrics_paths(args)
     try:
         positional_args = (

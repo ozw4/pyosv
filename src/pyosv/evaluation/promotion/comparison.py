@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .gates import add_required_coverage, evaluate_gate
+from .gates import add_required_coverage, evaluate_gate, validate_gate_comparison_profile
 from .rows import MatchKey, MetricValue, SummaryRow, key_dict, numeric, read_summary_rows
 from .scanner_policy import (
     SCANNER_POLICY_PROFILES,
@@ -99,6 +99,7 @@ def compare_reports(
 ) -> dict[str, Any]:
     if comparison_profile not in COMPARISON_PROFILES:
         raise ValueError(f"unknown comparison profile: {comparison_profile}")
+    validate_gate_comparison_profile(promotion_gate, comparison_profile)
     scanner_policy_contract = None
     if comparison_profile in SCANNER_POLICY_PROFILES:
         if baseline_metrics is None:
