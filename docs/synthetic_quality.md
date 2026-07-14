@@ -297,10 +297,29 @@ crossing over-merge/over-split counts must not increase, and all 14 required
 rows must match with no missing rows. Policy and summary/metrics contracts
 must also pass.
 
-These commands are the formal evaluation procedure, not a claim that a 49^3
-run has been completed. A passing artifact evaluates this policy candidate;
-it does not change the quality-workflow default, another workflow default, or
-the public scanner thinning default.
+The formal 49^3 evaluation has been completed and passed. All 14 required rows
+were present, neither report had missing rows, and the coverage and scanner
+policy contracts passed. On the scanner `boundary_plane` row, normal scanner
+thinning changed FVT-positive buffered F1 from `0.49764129579935323` to
+`0.9931506849315068`, FVT-positive distance p95 from `5.0` to `1.0`, skin
+buffered F1 from `0.34785274570261476` to `0.9931506849315068`, skin count from
+`29` to `1`, and the skin/FVT-positive cell ratio from
+`0.2653061224489796` to `1.0`. No material non-boundary, oracle,
+fallback-replacement, or required topology regression was reported.
+
+The SHA-256 of `promotion_gate.json` is
+`1b099e06c8900181da68a3c437573c5d83868f727d37675a206380786aca7639`.
+Exact values and hashes for all six generated evidence artifacts are retained
+in
+`tests/fixtures/synthetic_quality_refactor/reference_like_scanner_thinning_49_evidence.json`.
+The generated reports did not record a source commit, so the compact evidence
+uses `source_commit=null` with `source_provenance="not_recorded"`; it does not
+guess a commit from timestamps.
+
+This passing artifact evaluates the synthetic policy candidate only. The F3
+shared-scan validation and manual review are pending, so it does not change the
+quality-workflow default, another workflow default, or the public scanner
+thinning default.
 
 The controlled synthetic oracle path is:
 
@@ -488,16 +507,18 @@ remain degraded. Diagnostic fallback variants are compared against these modes,
 but promotion requires the scanner-inclusive boundary target and non-boundary
 regression tolerances to pass.
 
-As of the documented scanner-boundary promotion gate, no diagnostic variant has
-been promoted into `quality current_default`. The scanner-inclusive 49^3
-`boundary_plane` case remains an open target. The current promotion-candidate
-flow compares `boundary_aware_voter_v1`, `boundary_edge_thin_v1`,
-`boundary_seed_retention_v1`, and `quality_boundary_skinner_fallback_v5`
-against `current_default` with
+No diagnostic voter or skinner variant has been promoted into
+`quality current_default`. In the separate legacy `quality` scanner-backend
+evaluation, the scanner-inclusive 49^3 `boundary_plane` case remains an open
+target. That promotion-candidate flow compares `boundary_aware_voter_v1`,
+`boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
+`quality_boundary_skinner_fallback_v5` against `current_default` with
 `scripts/compare_quality_reports.py` or
 `scripts/check_synthetic_quality_promotion_gate.py`. The 49^3
 `boundary_aware_voter_v1` promotion benchmark has not been run in this
-repository update, so these candidates remain unpromoted. See
+repository update, so those legacy quality-backend candidates remain
+unpromoted. This does not contradict the separate passing reference-like
+scanner-thinning policy gate documented above. See
 [Quality Mode](quality_mode.md) for the exact benchmark commands, metrics,
 promotion criteria, and diagnostic variant descriptions.
 
@@ -561,7 +582,7 @@ changed once, regardless of how many global-recovery updates affected it. It is
 not a count of independent nearest-interval projections, and it is zero when
 surface smoothing is disabled.
 
-The documented 49^3 quality-scanner `boundary_plane` baseline for
+The documented 49^3 legacy quality-scanner `boundary_plane` baseline for
 `current_default` is `fvt_positive_buffered_f1_r2=0.739494`,
 `fvt_positive_distance_p95=4.0`, `skin_buffered_f1_r2=0.453890`, and
 `skin_count=17`. A candidate that changes FVT must include
@@ -571,7 +592,9 @@ the skin, non-boundary, oracle, and topology guardrails documented in
 [Quality Mode](quality_mode.md). No 49^3 result for
 `boundary_aware_voter_v1` is recorded by this documentation update. Until the
 gate passes, do not describe the candidate as higher quality than the reference
-implementation or as promoted/default behavior.
+implementation or as promoted/default behavior. The passing reference-like
+scanner-thinning gate above evaluates a different backend and policy pair; its
+pending F3 validation still prevents a default change.
 
 ## Curved Surface Thinning Diagnostic
 

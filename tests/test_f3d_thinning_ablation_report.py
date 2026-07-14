@@ -506,6 +506,69 @@ def test_scan_backend_dispatch_uses_fast_and_explicit_reference_like(
     ]
 
 
+def test_real_small_pipeline_outputs_build_crop_reports_and_serialize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_ablation_module(monkeypatch)
+    shape = (9, 9, 9)
+    _, i2, _ = np.indices(shape, dtype=np.float32)
+    ep = np.exp(-0.5 * ((i2 - np.float32(4.0)) / np.float32(1.0)) ** 2).astype(
+        np.float32,
+        copy=False,
+    )
+
+    case_outputs = module.run_ablation_pipeline(
+        ep,
+        scanner_backend="fast",
+        sigma1=1.0,
+        sigma2=1.0,
+        phi_min=0.0,
+        phi_max=0.0,
+        theta_min=90.0,
+        theta_max=90.0,
+        ru=1,
+        rv=1,
+        rw=1,
+        strain_max1=0.5,
+        strain_max2=0.5,
+        surface_smoothing1=0.0,
+        surface_smoothing2=0.0,
+        d=1,
+        fm=0.0,
+        remove_scanner_edge_effects=True,
+        final_normalization_smoothing=0.0,
+    )
+
+    expected_output_names = {
+        "ft_py.dat",
+        "pt_py.dat",
+        "tt_py.dat",
+        "fet_py.dat",
+        "fpt_py.dat",
+        "ftt_py.dat",
+        "fv_py.dat",
+        "vp_py.dat",
+        "vt_py.dat",
+        "fvt_py.dat",
+    }
+    slices = tuple(slice(0, size) for size in shape)
+    reports = {}
+    for case_name, outputs in case_outputs.items():
+        assert set(outputs) == expected_output_names
+        reports[case_name] = module.crop_validation.build_crop_report(
+            crop_index=1,
+            center=(4, 4, 4),
+            slices=slices,
+            crop_shape=shape,
+            outputs=outputs,
+            reference_fv=outputs["fv_py.dat"],
+            reference_fvt=outputs["fvt_py.dat"],
+            interior_margin=1,
+        )
+
+    json.dumps(reports, allow_nan=False)
+
+
 def test_import_does_not_run_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _import_ablation_module(monkeypatch)
 

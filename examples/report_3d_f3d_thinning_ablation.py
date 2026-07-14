@@ -466,6 +466,8 @@ def run_ablation_pipeline(
             "fpt_py.dat": fpt,
             "ftt_py.dat": ftt,
             "fv_py.dat": fv,
+            "vp_py.dat": vp,
+            "vt_py.dat": vt,
             "fvt_py.dat": fvt,
         }
 

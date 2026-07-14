@@ -151,16 +151,29 @@ metrics. That document also explains controlled report workflow modes:
 thinning to the truth-quality-favored `hybrid_v2` path with support-aware surface
 voting inactive, the quality skinner v2 profile, and the empty-primary boundary
 skinner fallback. Degraded-primary fallback variants remain diagnostic after
-the documented 49^3 scanner-inclusive boundary benchmark: v2 over-includes
-fallback components, filtered v3 did not reach the boundary skin F1 promotion
-target or the non-boundary regression tolerances, and skeletonized v4 still
-missed the scanner boundary skin target while regressing oracle boundary skin.
-The current promotion-candidate flow for `boundary_edge_thin_v1`,
-`boundary_seed_retention_v1`, and `quality_boundary_skinner_fallback_v5` is
-reported with `scripts/compare_quality_reports.py` or
+the legacy quality-backend 49^3 scanner-inclusive boundary benchmark: v2
+over-includes fallback components, filtered v3 did not reach the boundary skin
+F1 promotion target or the non-boundary regression tolerances, and skeletonized
+v4 still missed the scanner boundary skin target while regressing oracle
+boundary skin.
+
+The separate reference-like-backend 49^3 scanner-thinning policy evaluation has
+been completed. `quality_reference_like_scanner_thin_normal_v1` passed the
+`scanner-boundary-reference-like` gate against
+`quality_reference_like_scanner_thin_reference_v1`, with all 14 required rows,
+no missing evidence rows, and a passing configuration contract. Compact values
+and hashes are recorded in
+`tests/fixtures/synthetic_quality_refactor/reference_like_scanner_thinning_49_evidence.json`.
+This is synthetic candidate evidence only: the F3 shared-scan policy validation
+and manual review remain pending, so the quality-workflow scanner-thinning
+default and all public defaults remain unchanged.
+
+The legacy quality-backend promotion-candidate flow for
+`boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
+`quality_boundary_skinner_fallback_v5` is reported with
+`scripts/compare_quality_reports.py` or
 `scripts/check_synthetic_quality_promotion_gate.py`; no new 49^3
-`promotion_candidates_49` result is recorded here, so `quality current_default`
-is unchanged. The scanner-inclusive boundary target remains open.
+`promotion_candidates_49` result is recorded for that separate flow.
 `diagnostic` keeps the reference path while enabling reference-vs-normal
 thinning diagnostics.
 The current quality workflow profile and guardrails are summarized in

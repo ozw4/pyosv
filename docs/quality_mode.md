@@ -313,10 +313,35 @@ replacements and parallel/crossing over-merge or over-split counts must not
 increase. The gate also requires all 14 rows, no missing rows, canonical
 summary/metrics pairing, and a passing policy contract.
 
-These commands define the formal 49^3 evaluation; their presence does not
-claim the run was performed. A pass evaluates the policy candidate only. It
-does not change the quality, reference, or diagnostic workflow defaults or
-the public `FaultOrientScanner3.thin()` default.
+The formal 49^3 evaluation above has been completed and passed. The comparison
+contained all 14 required rows with no missing baseline or candidate rows; its
+coverage and scanner-policy configuration contracts both passed. On the scanner
+`boundary_plane` row, the reference-to-normal policy change produced:
+
+| metric | reference baseline | normal candidate | delta |
+|---|---:|---:|---:|
+| `skin_buffered_f1_r2` | 0.347853 | 0.993151 | +0.645298 |
+| `skin_count` | 29 | 1 | -28 |
+| `skin_cell_count / fvt_positive_candidate_count` | 0.265306 | 1.000000 | +0.734694 |
+| `fvt_positive_buffered_f1_r2` | 0.497641 | 0.993151 | +0.495509 |
+| `fvt_positive_distance_p95` | 5.0 | 1.0 | -4.0 |
+| `fvt_positive_candidate_count` | 2401 | 2303 | -98 |
+
+The gate reported no material non-boundary, oracle, fallback-replacement, or
+required topology regression. The SHA-256 of the generated
+`promotion_gate.json` is
+`1b099e06c8900181da68a3c437573c5d83868f727d37675a206380786aca7639`.
+Exact values and hashes for both `metrics.json` files, both `summary.csv` files,
+and the JSON and Markdown promotion artifacts are retained in
+`tests/fixtures/synthetic_quality_refactor/reference_like_scanner_thinning_49_evidence.json`.
+The ignored reports did not record a source commit, so the compact evidence
+records `source_commit=null` and `source_provenance="not_recorded"` rather than
+inferring one.
+
+This pass evaluates the synthetic policy candidate only. F3 shared-scan policy
+validation and manual review remain pending, so the quality, reference, and
+diagnostic workflow defaults and the public `FaultOrientScanner3.thin()`
+default remain unchanged.
 
 For the 49^3 scanner-boundary promotion benchmark, run the current default and
 the opt-in diagnostic candidates with downstream diagnostics enabled:
@@ -516,9 +541,9 @@ Oracle shape-49 behavior must not materially regress.
 `parallel_planes` and `crossing_planes` also must not worsen the
 component-aware over-merge or over-split counts.
 
-The previously documented 33^3 and 49^3 scanner-inclusive gate runs kept
-`quality current_default` unchanged. In the 49^3 scanner run with
-`--scanner-backend quality --scanner-refinement-factor 2`,
+The previously documented 33^3 and 49^3 legacy quality-backend
+scanner-inclusive gate runs kept `quality current_default` unchanged. In the
+49^3 scanner run with `--scanner-backend quality --scanner-refinement-factor 2`,
 `current_default` on `boundary_plane` had
 `fvt_positive_buffered_f1_r2=0.739494`,
 `fvt_positive_distance_p95=4.0`, `skin_buffered_f1_r2=0.453890`,
@@ -532,9 +557,10 @@ metrics to `fvt_positive_buffered_f1_r2=0.740855` and
 `skin_cell_count/fvt_positive_candidate_count=0.857976`, but it produced
 `skin_count=42`, still missed the 0.90 skin-F1 target, and the oracle
 `boundary_plane` row collapsed to `skin_buffered_f1_r2=0.0`. v4 therefore
-also remains diagnostic. The known scanner-inclusive boundary issue remains
-open: scanner `ft` can be high quality while downstream FVT and skinning
-degrade near boundaries.
+also remains diagnostic. The known boundary issue remains open for this legacy
+quality-backend candidate flow: scanner `ft` can be high quality while
+downstream FVT and skinning degrade near boundaries. This is distinct from the
+passing reference-like-backend scanner-thinning policy gate documented above.
 
 For the promotion-candidate flow above, no new 49^3
 `promotion_candidates_49` result for `boundary_aware_voter_v1` has been
@@ -632,10 +658,26 @@ This F3 smoke requires external F3 volumes and should not be mandatory in CI.
 CI should keep using mock/fixture structure tests for the report and markdown
 schema.
 
+For the passing reference-like 49^3 scanner-thinning candidate, use the
+dedicated shared-scan F3 comparison rather than `--compare-workflows`. The
+dedicated path runs `FaultOrientScanner3.scan()` once per crop, changes only
+scanner thinning from `reference` to `normal`, and fixes the quality downstream
+voter to `hybrid_v2` with each branch's own scanner-thinned `fet` as the plateau
+tie-breaker. Its profile is `quality-workflow-scanner-thinning-v1`; the policies
+are `quality_reference_like_scanner_thin_reference_v1` and
+`quality_reference_like_scanner_thin_normal_v1`. It reports
+`policy_validation` with role `truthless_external_smoke`, not a promotion gate,
+because public F3 `fv.dat` and `fvt.dat` are not independent truth. The formal
+64^3 multi-crop and large-crop commands, automatic checks, manual review list,
+and evidence policy are documented in [F3 3D Reference Data Validation](f3d_validation.md).
+This F3 validation is currently pending.
+
 F3 reference agreement is not quality itself. A quality-mode change should be
-promoted only when the controlled synthetic `extended` matrix and F3 multi-crop
-comparison both show fewer clear failures than the reference workflow: improved
-or preserved synthetic truth recovery, no new boundary or over-filtering
-failure, and no obvious loss of real-data geological signal across crops. Until
-then, keep `reference` as the default API behavior and use `quality` as an
-explicit workflow mode.
+promoted only when the controlled synthetic `extended` matrix and the matching
+F3 real-data comparison both avoid clear failures: improved or preserved
+synthetic truth recovery, no new boundary or over-filtering failure, and no
+obvious loss of real-data geological signal across crops. For a scanner-only
+policy candidate, this means the dedicated shared-scan comparison above, not a
+workflow comparison that also changes voter thinning. Until that evidence and
+manual review exist, keep `reference` as the default API behavior and use
+`quality` as an explicit workflow mode.

@@ -1,0 +1,117 @@
+{
+  "format_version": 1,
+  "evidence_type": "synthetic_scanner_thinning_policy_gate",
+  "status": {
+    "reference_like_backend_49_cubed_synthetic_gate": "passed",
+    "f3_shared_scan_policy_validation": "pending",
+    "quality_workflow_default_promotion": "pending_unchanged"
+  },
+  "comparison_profile": "quality-workflow-scanner-thinning-v1",
+  "promotion_gate": {
+    "name": "scanner-boundary-reference-like",
+    "passed": true,
+    "row_count": 14,
+    "missing_baseline_row_count": 0,
+    "missing_candidate_row_count": 0,
+    "coverage_passed": true,
+    "scanner_policy_contract_passed": true,
+    "non_boundary_regression_count": 0,
+    "oracle_regression_count": 0,
+    "topology_regression_count": 0,
+    "false_fallback_replacement_count": 0
+  },
+  "policies": {
+    "baseline": {
+      "policy_id": "quality_reference_like_scanner_thin_reference_v1",
+      "scanner_thin_mode": "reference",
+      "requested_remove_edge_effects": true,
+      "effective_remove_edge_effects": true
+    },
+    "candidate": {
+      "policy_id": "quality_reference_like_scanner_thin_normal_v1",
+      "scanner_thin_mode": "normal",
+      "requested_remove_edge_effects": true,
+      "effective_remove_edge_effects": null
+    }
+  },
+  "run": {
+    "source_commit": null,
+    "source_provenance": "not_recorded",
+    "source_provenance_note": "The ignored generated reports did not record a source commit; no commit is inferred for this evidence.",
+    "shape": [
+      49,
+      49,
+      49
+    ],
+    "case_set": "extended",
+    "input_mode": "both",
+    "workflow_mode": "quality",
+    "scanner_backend": "reference-like",
+    "scanner_refinement_factor": 2,
+    "voter_thin_mode": "hybrid_v2",
+    "surface_support_min_fraction": 0.0,
+    "surface_support_exponent": 0.0
+  },
+  "boundary_plane_scanner_metrics": {
+    "skin_buffered_f1_r2": {
+      "baseline": 0.34785274570261476,
+      "candidate": 0.9931506849315068,
+      "delta": 0.645297939228892
+    },
+    "skin_count": {
+      "baseline": 29,
+      "candidate": 1,
+      "delta": -28
+    },
+    "skin_cell_to_fvt_positive_candidate_ratio": {
+      "baseline": 0.2653061224489796,
+      "candidate": 1.0,
+      "delta": 0.7346938775510203
+    },
+    "fvt_positive_buffered_f1_r2": {
+      "baseline": 0.49764129579935323,
+      "candidate": 0.9931506849315068,
+      "delta": 0.4955093891321536
+    },
+    "fvt_positive_distance_p95": {
+      "baseline": 5.0,
+      "candidate": 1.0,
+      "delta": -4.0
+    },
+    "fvt_positive_candidate_count": {
+      "baseline": 2401,
+      "candidate": 2303,
+      "delta": -98
+    }
+  },
+  "artifacts": {
+    "baseline_metrics.json": {
+      "path": "outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49/metrics.json",
+      "sha256": "827f9d4678572506c96d2e49fa60b92008746bad8967303b4078d68500ac6ab6"
+    },
+    "baseline_summary.csv": {
+      "path": "outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49/summary.csv",
+      "sha256": "990a425310316d7f1b8defb189870024c3f24bad5bb7a59a7aae66d5595aeafc"
+    },
+    "candidate_metrics.json": {
+      "path": "outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/metrics.json",
+      "sha256": "335f54432c34d69612ebbe6b4885ee94ea1c1caec8c900b947684c7810b24d4a"
+    },
+    "candidate_summary.csv": {
+      "path": "outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/summary.csv",
+      "sha256": "da5998b8c124aff9cbf4152b1acda4fd2de43ac8d00f6b9a273d40dbc79c8ec5"
+    },
+    "promotion_gate.json": {
+      "path": "outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/promotion_gate.json",
+      "sha256": "1b099e06c8900181da68a3c437573c5d83868f727d37675a206380786aca7639"
+    },
+    "promotion_gate.md": {
+      "path": "outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/promotion_gate.md",
+      "sha256": "38ab5b6a9ea971aa9be569ab48a348ebed7b5bf4b4a25d7c4043a569f9d66bb7"
+    }
+  },
+  "notes": [
+    "This evidence is for the reference-like scanner backend policy comparison, not the legacy quality-backend boundary-aware-voter evaluation.",
+    "A passing synthetic gate does not constitute F3 real-data validation and does not change any workflow or public API default."
+  ]
+}
