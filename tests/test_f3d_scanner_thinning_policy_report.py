@@ -49,6 +49,42 @@ def _policy_outputs(shape: tuple[int, int, int]) -> dict[str, np.ndarray]:
     }
 
 
+def _outputs_from_fvt(fvt: np.ndarray, *, offset: float = 0.0) -> dict[str, np.ndarray]:
+    ridge = np.asarray(fvt, dtype=np.float32)
+    shape = ridge.shape
+    return {
+        "ft_py.dat": np.full(shape, 0.5 + offset, dtype=np.float32),
+        "pt_py.dat": np.full(shape, 10.0 + offset, dtype=np.float32),
+        "tt_py.dat": np.full(shape, 70.0 + offset, dtype=np.float32),
+        "fet_py.dat": ridge.copy(),
+        "fpt_py.dat": np.full(shape, 20.0 + offset, dtype=np.float32),
+        "ftt_py.dat": np.full(shape, 60.0 + offset, dtype=np.float32),
+        "fv_py.dat": ridge.copy(),
+        "vp_py.dat": np.full(shape, 30.0 + offset, dtype=np.float32),
+        "vt_py.dat": np.full(shape, 50.0 + offset, dtype=np.float32),
+        "fvt_py.dat": ridge.copy(),
+    }
+
+
+def _shared_run_from_ridges(
+    baseline_fvt: np.ndarray,
+    candidate_fvt: np.ndarray,
+) -> dict[str, Any]:
+    return {
+        "scanner_execution_count": 1,
+        "policies": {
+            "baseline": {
+                "policy_id": policy_evaluation.BASELINE_POLICY_ID,
+                "outputs": _outputs_from_fvt(baseline_fvt),
+            },
+            "candidate": {
+                "policy_id": policy_evaluation.CANDIDATE_POLICY_ID,
+                "outputs": _outputs_from_fvt(candidate_fvt, offset=1.0),
+            },
+        },
+    }
+
+
 def _fake_shared_run(ep: np.ndarray, **kwargs: Any) -> dict[str, Any]:
     del kwargs
     return {
@@ -97,6 +133,14 @@ def test_parser_exposes_formal_flags_and_fixed_profile(monkeypatch: pytest.Monke
     assert defaults.save_figures is False
     assert defaults.write_markdown_index is False
     assert defaults.fail_on_validation_failure is False
+    assert defaults.outlier_diagnostics is False
+    assert defaults.context_crop_shape is None
+    assert defaults.context_crop_index is None
+    assert defaults.outlier_max_points == 64
+    assert defaults.outlier_max_components == 8
+    assert defaults.outlier_window_radius == 24
+    assert defaults.outlier_adjacent_slice_radius == 3
+    assert defaults.amplitude_clip_percentile == 99.0
     assert defaults.pretty is False
     assert defaults.count == 3
     assert defaults.crop_shape == (64, 64, 64)
@@ -130,6 +174,23 @@ def test_parser_exposes_formal_flags_and_fixed_profile(monkeypatch: pytest.Monke
             "--save-volumes",
             "--save-figures",
             "--write-markdown-index",
+            "--outlier-diagnostics",
+            "--context-crop-shape",
+            "9,9,9",
+            "--context-crop-index",
+            "1",
+            "--context-crop-index",
+            "2",
+            "--outlier-max-points",
+            "12",
+            "--outlier-max-components",
+            "4",
+            "--outlier-window-radius",
+            "8",
+            "--outlier-adjacent-slice-radius",
+            "2",
+            "--amplitude-clip-percentile",
+            "98.5",
             "--fail-on-validation-failure",
             "--pretty",
         ]
@@ -141,6 +202,14 @@ def test_parser_exposes_formal_flags_and_fixed_profile(monkeypatch: pytest.Monke
     assert args.save_volumes is True
     assert args.save_figures is True
     assert args.write_markdown_index is True
+    assert args.outlier_diagnostics is True
+    assert args.context_crop_shape == (9, 9, 9)
+    assert args.context_crop_index == [1, 2]
+    assert args.outlier_max_points == 12
+    assert args.outlier_max_components == 4
+    assert args.outlier_window_radius == 8
+    assert args.outlier_adjacent_slice_radius == 2
+    assert args.amplitude_clip_percentile == 98.5
     assert args.fail_on_validation_failure is True
     assert args.pretty is True
 
@@ -440,6 +509,704 @@ def test_output_safety_and_output_requirements(
         module.run_example(data_root_arg=data_root, count=0)
 
 
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (
+            ["--context-crop-shape", "128,128,100"],
+            "--context-crop-shape requires --outlier-diagnostics",
+        ),
+        (["--context-crop-index", "1"], "--context-crop-index requires --context-crop-shape"),
+        (["--outlier-max-points", "0"], "outlier_max_points must be >= 1"),
+        (["--outlier-max-components", "0"], "outlier_max_components must be >= 1"),
+        (["--outlier-window-radius", "-1"], "outlier_window_radius must be >= 0"),
+        (
+            ["--outlier-adjacent-slice-radius", "-1"],
+            "outlier_adjacent_slice_radius must be >= 0",
+        ),
+        (
+            ["--amplitude-clip-percentile", "0"],
+            "amplitude_clip_percentile must be finite and in (0, 100]",
+        ),
+        (
+            [
+                "--outlier-diagnostics",
+                "--crop-shape",
+                "64,64,64",
+                "--context-crop-shape",
+                "63,64,64",
+            ],
+            "context_crop_shape[0] must be >= base crop_shape[0]",
+        ),
+    ],
+)
+def test_diagnostic_cli_input_errors_return_one_without_traceback(
+    argv: list[str],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _import_report_module(monkeypatch)
+    assert module.main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    assert message in captured.err
+
+
+def test_context_shape_and_indices_validate_against_selected_f3_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    with pytest.raises(ValueError, match=r"context_crop_shape\[1].*F3 full_shape"):
+        module.validate_context_selection(
+            context_crop_shape=(9, 11, 9),
+            full_shape=(10, 10, 10),
+            context_crop_indices=None,
+            crop_count=2,
+        )
+    with pytest.raises(ValueError, match="selected 1-origin crop range"):
+        module.validate_context_selection(
+            context_crop_shape=(9, 9, 9),
+            full_shape=(10, 10, 10),
+            context_crop_indices=[0, 3],
+            crop_count=2,
+        )
+    assert module.validate_context_selection(
+        context_crop_shape=(9, 9, 9),
+        full_shape=(10, 10, 10),
+        context_crop_indices=[2, 1, 2],
+        crop_count=2,
+    ) == [2, 1]
+
+
+def test_outlier_diagnostics_are_opt_in_and_preserve_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    data_root = tmp_path / "f3_data"
+    data_root.mkdir()
+    output_json = tmp_path / "outputs" / "metrics.json"
+    full_shape = (15, 15, 15)
+    center = (7, 7, 7)
+    arrays = {
+        "ep.dat": np.zeros(full_shape, dtype=np.float32),
+        "fv.dat": np.ones(full_shape, dtype=np.float32),
+        "fvt.dat": np.zeros(full_shape, dtype=np.float32),
+    }
+    arrays["fvt.dat"][center] = 1.0
+    read_names: list[str] = []
+
+    monkeypatch.setattr(module.crop_validation, "read_reference_arrays", lambda root: arrays)
+
+    def fake_read(name: str, root: Path) -> np.ndarray:
+        del root
+        read_names.append(name)
+        if name == "xs.dat":
+            return np.linspace(-2.0, 2.0, np.prod(full_shape), dtype=np.float32).reshape(full_shape)
+        if name == "fl.dat":
+            return np.ones(full_shape, dtype=np.float32)
+        raise AssertionError(name)
+
+    monkeypatch.setattr(module, "read_f3d_file", fake_read)
+
+    def fake_pipeline(ep: np.ndarray, **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        baseline = np.zeros(ep.shape, dtype=np.float32)
+        candidate = np.zeros(ep.shape, dtype=np.float32)
+        baseline[6, 6, 6] = 1.0
+        candidate[1, 1, 1] = 1.0
+        return _shared_run_from_ridges(baseline, candidate)
+
+    monkeypatch.setattr(module, "run_shared_scan_policy_pipeline", fake_pipeline)
+
+    base_report = module.run_example(
+        data_root_arg=data_root,
+        centers=[center],
+        crop_shape=(13, 13, 13),
+        interior_margin=1,
+    )
+    assert read_names == []
+    assert "diagnostics" not in base_report["config"]
+    assert "context_diagnostics" not in base_report
+    base_direct = base_report["consensus"]["candidate_minus_baseline"]["crops"][0]
+    assert "public_fvt_distance_outliers" not in base_direct
+
+    monkeypatch.setattr(module.crop_validation, "require_figure_support", lambda: None)
+    monkeypatch.setattr(
+        module.crop_validation,
+        "write_crop_figures",
+        lambda output_dir, **kwargs: {"directory": str(output_dir), "files": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "write_direct_comparison_figures",
+        lambda output_dir, **kwargs: {"directory": str(output_dir), "files": {}},
+    )
+    outlier_figure_calls: list[dict[str, Any]] = []
+
+    def fake_outlier_figures(
+        output_dir: str | Path,
+        *,
+        metrics_base_dir: str | Path,
+        outlier_report: Mapping[str, Any],
+        crop_index: int,
+        **kwargs: Any,
+    ) -> dict[int, dict[str, Any]]:
+        outlier_figure_calls.append(
+            {
+                "output_dir": Path(output_dir),
+                "crop_index": crop_index,
+                "coordinate": outlier_report["components"][0]["representative_point"][
+                    "crop_local_coordinate"
+                ],
+                **kwargs,
+            }
+        )
+        relative = Path(output_dir).relative_to(Path(metrics_base_dir)) / "component_001"
+        return {
+            1: {
+                "orthogonal_amplitude_overlay": (
+                    relative / "orthogonal_amplitude_overlay.png"
+                ).as_posix(),
+                "adjacent_i3": (relative / "adjacent_i3.png").as_posix(),
+                "adjacent_i2": (relative / "adjacent_i2.png").as_posix(),
+                "adjacent_i1": (relative / "adjacent_i1.png").as_posix(),
+            }
+        }
+
+    monkeypatch.setattr(module, "write_outlier_diagnostic_figures", fake_outlier_figures)
+
+    diagnostic_report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        save_figures=True,
+        write_markdown_index=True,
+        outlier_diagnostics=True,
+        centers=[center],
+        crop_shape=(13, 13, 13),
+        interior_margin=1,
+        pretty=True,
+    )
+
+    assert read_names == ["xs.dat", "fl.dat"]
+    assert diagnostic_report["policy_validation"] == base_report["policy_validation"]
+    assert diagnostic_report["policy_validation"]["passed"] is False
+    assert len(diagnostic_report["policy_validation"]["checks"]) == 8
+    assert diagnostic_report["manual_review"]["status"] == "pending"
+    assert "context_diagnostics" not in diagnostic_report
+    diagnostic = diagnostic_report["consensus"]["candidate_minus_baseline"]["crops"][0][
+        "public_fvt_distance_outliers"
+    ]
+    assert diagnostic["status"] == "available"
+    assert diagnostic["summary"]["outlier_count"] == 1
+    assert diagnostic["summary"]["component_count"] == 1
+    assert diagnostic["points"][0]["values"]["xs"] < 0.0
+    assert outlier_figure_calls[0]["coordinate"] == [1, 1, 1]
+    assert outlier_figure_calls[0]["crop_index"] == 1
+    orthogonal = diagnostic["components"][0]["figures"]["orthogonal_amplitude_overlay"]
+    assert orthogonal.endswith(
+        "crop_001/policy_comparison/outlier_diagnostics/component_001/"
+        "orthogonal_amplitude_overlay.png"
+    )
+
+    report_text = output_json.read_text(encoding="utf-8")
+    json.loads(report_text, parse_constant=lambda value: pytest.fail(value))
+    assert report_text.endswith("\n")
+    markdown = (output_json.parent / "visual_report.md").read_text(encoding="utf-8")
+    assert "## Public-FVT Distance Outlier Review" in markdown
+    assert f"![crop 1 component 1 orthogonal amplitude review]({orthogonal})" in markdown
+    assert "adjacent_i3.png" in markdown
+    assert markdown.endswith("\n")
+
+
+def test_outlier_free_crop_does_not_call_amplitude_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    data_root = tmp_path / "f3_data"
+    data_root.mkdir()
+    shape = (9, 9, 9)
+    arrays = _reference_arrays(shape)
+    arrays["fvt.dat"].fill(0.0)
+    arrays["fvt.dat"][4, 4, 4] = 1.0
+    monkeypatch.setattr(module.crop_validation, "read_reference_arrays", lambda root: arrays)
+    monkeypatch.setattr(module, "read_f3d_file", lambda name, root: np.ones(shape, np.float32))
+    monkeypatch.setattr(module.crop_validation, "require_figure_support", lambda: None)
+    monkeypatch.setattr(
+        module.crop_validation,
+        "write_crop_figures",
+        lambda output_dir, **kwargs: {"directory": str(output_dir), "files": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "write_direct_comparison_figures",
+        lambda output_dir, **kwargs: {"directory": str(output_dir), "files": {}},
+    )
+
+    def same_pipeline(ep: np.ndarray, **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        ridge = np.zeros(ep.shape, dtype=np.float32)
+        ridge[2, 2, 2] = 1.0
+        return _shared_run_from_ridges(ridge, ridge)
+
+    monkeypatch.setattr(module, "run_shared_scan_policy_pipeline", same_pipeline)
+    monkeypatch.setattr(
+        module,
+        "write_outlier_diagnostic_figures",
+        lambda *args, **kwargs: pytest.fail("no outlier figure should be written"),
+    )
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=tmp_path / "outputs" / "metrics.json",
+        save_figures=True,
+        outlier_diagnostics=True,
+        centers=[(4, 4, 4)],
+        crop_shape=(5, 5, 5),
+        interior_margin=0,
+    )
+    diagnostic = report["consensus"]["candidate_minus_baseline"]["crops"][0][
+        "public_fvt_distance_outliers"
+    ]
+    assert diagnostic["status"] == "available"
+    assert diagnostic["summary"]["outlier_count"] == 0
+    assert diagnostic["components"] == []
+
+
+def test_context_pipeline_uses_separate_scan_count_and_exact_base_roi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    data_root = tmp_path / "f3_data"
+    data_root.mkdir()
+    full_shape = (35, 35, 35)
+    centers = [(8, 8, 8), (17, 17, 17), (26, 26, 26)]
+    arrays = {
+        "ep.dat": np.zeros(full_shape, dtype=np.float32),
+        "fv.dat": np.ones(full_shape, dtype=np.float32),
+        "fvt.dat": np.zeros(full_shape, dtype=np.float32),
+    }
+    for center in centers:
+        arrays["fvt.dat"][center] = 1.0
+    monkeypatch.setattr(module.crop_validation, "read_reference_arrays", lambda root: arrays)
+    monkeypatch.setattr(module, "read_f3d_file", lambda name, root: np.ones(full_shape, np.float32))
+
+    pipeline_shapes: list[tuple[int, int, int]] = []
+
+    def fake_pipeline(ep: np.ndarray, **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        pipeline_shapes.append(ep.shape)
+        baseline = np.zeros(ep.shape, dtype=np.float32)
+        candidate = np.zeros(ep.shape, dtype=np.float32)
+        center = tuple(size // 2 for size in ep.shape)
+        baseline[center] = 1.0
+        if ep.shape == (9, 9, 9) and len(pipeline_shapes) == 1:
+            candidate[0, 0, 0] = 1.0
+        elif ep.shape == (13, 13, 13):
+            # Context local (2,2,2) maps to base local (0,0,0).
+            candidate[2, 2, 2] = 1.0
+        else:
+            candidate[center] = 1.0
+        return _shared_run_from_ridges(baseline, candidate)
+
+    monkeypatch.setattr(module, "run_shared_scan_policy_pipeline", fake_pipeline)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        outlier_diagnostics=True,
+        context_crop_shape=(13, 13, 13),
+        centers=centers,
+        crop_shape=(9, 9, 9),
+        interior_margin=0,
+    )
+
+    assert pipeline_shapes == [(9, 9, 9), (9, 9, 9), (9, 9, 9), (13, 13, 13)]
+    assert report["policy_validation"]["scanner_execution_count"] == 3
+    assert report["policy_validation"]["crop_count"] == 3
+    assert report["policy_validation"]["passed"] is False
+    assert len(report["policy_validation"]["checks"]) == 8
+    context = report["context_diagnostics"]
+    assert context["role"] == "diagnostic_context_ablation"
+    assert context["selected_crop_indices"] == [1]
+    assert context["context_scanner_execution_count"] == 1
+    crop = context["crops"][0]
+    assert [entry["start"] for entry in crop["base_roi_slices_within_context"]] == [2, 2, 2]
+    assert [entry["stop"] for entry in crop["base_roi_slices_within_context"]] == [11, 11, 11]
+    for role in policy_evaluation.POLICY_ROLES:
+        stage_report = crop["policies"][role]
+        assert stage_report["status"] == "available"
+        assert set(stage_report["stages"]) == {"ft", "fet", "fv", "fvt"}
+    candidate_fvt = crop["policies"]["candidate"]["stages"]["fvt"]
+    assert candidate_fvt["shape_equal"] is True
+    assert candidate_fvt["absolute_difference"]["maximum"] == 0.0
+    persistence = crop["outlier_persistence"]
+    assert persistence["summary"]["base_outlier_count"] == 1
+    assert persistence["summary"]["context_outlier_count"] == 1
+    assert persistence["summary"]["base_outlier_points_with_context_candidate_within_radius"] == 1
+    assert persistence["summary"]["persistence_fraction"] == 1.0
+    assert persistence["points"][0]["base_roi_local_coordinate"] == [0, 0, 0]
+    assert persistence["points"][0]["nearest_context_candidate_sparse_ridge_distance"] == 0.0
+    assert report["manual_review"]["status"] == "pending"
+
+
+def test_context_orchestration_preserves_scanner_and_branch_voter_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyosv import orient3d, voting3d
+
+    module = _import_report_module(monkeypatch)
+    data_root = tmp_path / "f3_data"
+    data_root.mkdir()
+    full_shape = (25, 25, 25)
+    centers = [(5, 5, 5), (12, 12, 12), (19, 19, 19)]
+    arrays = {
+        "ep.dat": np.zeros(full_shape, dtype=np.float32),
+        "fv.dat": np.ones(full_shape, dtype=np.float32),
+        "fvt.dat": np.ones(full_shape, dtype=np.float32),
+    }
+    monkeypatch.setattr(module.crop_validation, "read_reference_arrays", lambda root: arrays)
+    monkeypatch.setattr(module, "read_f3d_file", lambda name, root: np.ones(full_shape, np.float32))
+
+    scanners: list[Any] = []
+    voters: list[Any] = []
+
+    class ContractScanner:
+        def __init__(self, *, sigma1: float, sigma2: float) -> None:
+            self.sigmas = (sigma1, sigma2)
+            self.scan_calls: list[np.ndarray] = []
+            self.thin_calls: list[dict[str, Any]] = []
+            self.thinned: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+            self.ft: np.ndarray | None = None
+            self.pt: np.ndarray | None = None
+            self.tt: np.ndarray | None = None
+            scanners.append(self)
+
+        def scan(
+            self,
+            phi_min: float,
+            phi_max: float,
+            theta_min: float,
+            theta_max: float,
+            ep: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            del phi_min, phi_max, theta_min, theta_max
+            self.scan_calls.append(ep)
+            self.ft = np.full(ep.shape, 0.5, dtype=np.float32)
+            self.pt = np.full(ep.shape, 10.0, dtype=np.float32)
+            self.tt = np.full(ep.shape, 70.0, dtype=np.float32)
+            return self.ft, self.pt, self.tt
+
+        def thin(
+            self,
+            ft: np.ndarray,
+            pt: np.ndarray,
+            tt: np.ndarray,
+            **kwargs: Any,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            mode = str(kwargs["mode"])
+            value = 1.0 if mode == "reference" else 2.0
+            result = (
+                np.full_like(ft, value),
+                np.full_like(pt, 20.0 + value),
+                np.full_like(tt, 60.0 + value),
+            )
+            self.thin_calls.append({"ft": ft, "pt": pt, "tt": tt, **kwargs})
+            self.thinned[mode] = result
+            return result
+
+    class ContractVoter:
+        def __init__(self, *, ru: int, rv: int, rw: int) -> None:
+            self.radii = (ru, rv, rw)
+            self.apply_calls: list[dict[str, Any]] = []
+            self.thin_calls: list[dict[str, Any]] = []
+            voters.append(self)
+
+        def set_strain_max(self, value1: float, value2: float) -> None:
+            del value1, value2
+
+        def set_surface_smoothing(self, value1: float, value2: float) -> None:
+            del value1, value2
+
+        def set_surface_support_policy(self, **kwargs: float) -> None:
+            del kwargs
+
+        def set_surface_voting_boundary_policy(self, value: str) -> None:
+            del value
+
+        def set_surface_orientation_smoothing(self, value: float) -> None:
+            del value
+
+        def set_final_normalization_smoothing(self, value: float) -> None:
+            del value
+
+        def apply_voting(self, **kwargs: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            self.apply_calls.append(kwargs)
+            likelihood = np.asarray(kwargs["ft"])
+            strike = np.asarray(kwargs["pt"])
+            dip = np.asarray(kwargs["tt"])
+            return likelihood.copy(), strike.copy(), dip.copy()
+
+        def thin(
+            self,
+            fv: np.ndarray,
+            vp: np.ndarray,
+            vt: np.ndarray,
+            **kwargs: Any,
+        ) -> np.ndarray:
+            self.thin_calls.append({"fv": fv, "vp": vp, "vt": vt, **kwargs})
+            return np.asarray(fv).copy()
+
+    monkeypatch.setattr(orient3d, "FaultOrientScanner3", ContractScanner)
+    monkeypatch.setattr(voting3d, "OptimalSurfaceVoter", ContractVoter)
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        outlier_diagnostics=True,
+        context_crop_shape=(9, 9, 9),
+        context_crop_indices=[1],
+        centers=centers,
+        crop_shape=(5, 5, 5),
+        interior_margin=0,
+        ru=1,
+        rv=1,
+        rw=1,
+    )
+
+    assert len(scanners) == 4
+    assert sum(len(scanner.scan_calls) for scanner in scanners) == 4
+    assert [scanner.scan_calls[0].shape for scanner in scanners] == [
+        (5, 5, 5),
+        (5, 5, 5),
+        (5, 5, 5),
+        (9, 9, 9),
+    ]
+    assert report["policy_validation"]["scanner_execution_count"] == 3
+    assert report["context_diagnostics"]["context_scanner_execution_count"] == 1
+
+    assert len(voters) == 8
+    assert len({id(voter) for voter in voters}) == 8
+    for crop_index, scanner in enumerate(scanners):
+        baseline_voter, candidate_voter = voters[2 * crop_index : 2 * crop_index + 2]
+        assert baseline_voter is not candidate_voter
+        assert baseline_voter.apply_calls[0]["ft"] is scanner.thinned["reference"][0]
+        assert candidate_voter.apply_calls[0]["ft"] is scanner.thinned["normal"][0]
+        assert (
+            baseline_voter.thin_calls[0]["plateau_tie_breaker"] is scanner.thinned["reference"][0]
+        )
+        assert candidate_voter.thin_calls[0]["plateau_tie_breaker"] is scanner.thinned["normal"][0]
+        assert baseline_voter.thin_calls[0]["mode"] == "hybrid_v2"
+        assert candidate_voter.thin_calls[0]["mode"] == "hybrid_v2"
+
+
+def test_explicit_context_index_runs_only_requested_crop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    data_root = tmp_path / "f3_data"
+    data_root.mkdir()
+    shape = (25, 25, 25)
+    centers = [(7, 7, 7), (17, 17, 17)]
+    arrays = {
+        "ep.dat": np.zeros(shape, dtype=np.float32),
+        "fv.dat": np.ones(shape, dtype=np.float32),
+        "fvt.dat": np.zeros(shape, dtype=np.float32),
+    }
+    for center in centers:
+        arrays["fvt.dat"][center] = 1.0
+    monkeypatch.setattr(module.crop_validation, "read_reference_arrays", lambda root: arrays)
+    monkeypatch.setattr(module, "read_f3d_file", lambda name, root: np.ones(shape, np.float32))
+    calls: list[tuple[int, int, int]] = []
+
+    def same_pipeline(ep: np.ndarray, **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        calls.append(ep.shape)
+        ridge = np.zeros(ep.shape, dtype=np.float32)
+        ridge[tuple(size // 2 for size in ep.shape)] = 1.0
+        return _shared_run_from_ridges(ridge, ridge)
+
+    monkeypatch.setattr(module, "run_shared_scan_policy_pipeline", same_pipeline)
+    report = module.run_example(
+        data_root_arg=data_root,
+        outlier_diagnostics=True,
+        context_crop_shape=(11, 11, 11),
+        context_crop_indices=[2],
+        centers=centers,
+        crop_shape=(7, 7, 7),
+        interior_margin=0,
+    )
+    assert calls == [(7, 7, 7), (7, 7, 7), (11, 11, 11)]
+    assert report["policy_validation"]["scanner_execution_count"] == 2
+    assert report["context_diagnostics"]["selected_crop_indices"] == [2]
+    assert report["context_diagnostics"]["context_scanner_execution_count"] == 1
+
+
+def test_context_figure_path_is_relative_and_linked_from_outlier_markdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    data_root = tmp_path / "f3_data"
+    data_root.mkdir()
+    output_json = tmp_path / "outputs" / "metrics.json"
+    shape = (15, 15, 15)
+    arrays = {
+        "ep.dat": np.zeros(shape, dtype=np.float32),
+        "fv.dat": np.ones(shape, dtype=np.float32),
+        "fvt.dat": np.zeros(shape, dtype=np.float32),
+    }
+    arrays["fvt.dat"][7, 7, 7] = 1.0
+    monkeypatch.setattr(module.crop_validation, "read_reference_arrays", lambda root: arrays)
+    monkeypatch.setattr(module, "read_f3d_file", lambda name, root: np.ones(shape, np.float32))
+    monkeypatch.setattr(module.crop_validation, "require_figure_support", lambda: None)
+    monkeypatch.setattr(
+        module.crop_validation,
+        "write_crop_figures",
+        lambda output_dir, **kwargs: {"directory": str(output_dir), "files": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "write_direct_comparison_figures",
+        lambda output_dir, **kwargs: {"directory": str(output_dir), "files": {}},
+    )
+
+    def fake_pipeline(ep: np.ndarray, **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        baseline = np.zeros(ep.shape, dtype=np.float32)
+        candidate = np.zeros(ep.shape, dtype=np.float32)
+        baseline[tuple(size // 2 for size in ep.shape)] = 1.0
+        candidate[(1, 1, 1) if ep.shape == (13, 13, 13) else (2, 2, 2)] = 1.0
+        return _shared_run_from_ridges(baseline, candidate)
+
+    monkeypatch.setattr(module, "run_shared_scan_policy_pipeline", fake_pipeline)
+
+    def fake_outlier_writer(
+        output_dir: str | Path,
+        *,
+        metrics_base_dir: str | Path,
+        **kwargs: Any,
+    ) -> dict[int, dict[str, Any]]:
+        del kwargs
+        relative = Path(output_dir).relative_to(Path(metrics_base_dir)) / "component_001"
+        return {
+            1: {
+                "orthogonal_amplitude_overlay": (
+                    relative / "orthogonal_amplitude_overlay.png"
+                ).as_posix()
+            }
+        }
+
+    context_calls: list[dict[str, Any]] = []
+
+    def fake_context_writer(
+        output_dir: str | Path,
+        *,
+        metrics_base_dir: str | Path,
+        **kwargs: Any,
+    ) -> dict[int, dict[str, Any]]:
+        context_calls.append(kwargs)
+        relative = Path(output_dir).relative_to(Path(metrics_base_dir)) / "component_001"
+        return {
+            1: {"context_comparison": (relative / "base_context_amplitude_overlay.png").as_posix()}
+        }
+
+    monkeypatch.setattr(module, "write_outlier_diagnostic_figures", fake_outlier_writer)
+    monkeypatch.setattr(module, "write_context_diagnostic_figures", fake_context_writer)
+    report = module.run_example(
+        data_root_arg=data_root,
+        output_json=output_json,
+        save_figures=True,
+        write_markdown_index=True,
+        outlier_diagnostics=True,
+        context_crop_shape=(15, 15, 15),
+        context_crop_indices=[1],
+        centers=[(7, 7, 7)],
+        crop_shape=(13, 13, 13),
+        interior_margin=1,
+    )
+    assert len(context_calls) == 1
+    assert context_calls[0]["base_candidate_fvt"].shape == (13, 13, 13)
+    assert context_calls[0]["context_candidate_fvt"].shape == (13, 13, 13)
+    component = report["consensus"]["candidate_minus_baseline"]["crops"][0][
+        "public_fvt_distance_outliers"
+    ]["components"][0]
+    context_path = component["figures"]["context_comparison"]
+    assert context_path == (
+        "crop_001/policy_comparison/context_diagnostics/component_001/"
+        "base_context_amplitude_overlay.png"
+    )
+    markdown = (output_json.parent / "visual_report.md").read_text(encoding="utf-8")
+    assert f"[same-global-ROI context comparison]({context_path})" in markdown
+
+
+def test_outlier_markdown_finishes_crop_table_before_component_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    available = {
+        "status": "available",
+        "summary": {
+            "baseline_candidate_to_public_p95": 1.0,
+            "candidate_candidate_to_public_p95": 7.0,
+            "candidate_minus_baseline_p95": 6.0,
+            "allowed_candidate_p95": 6.0,
+            "outlier_count": 1,
+            "component_count": 1,
+            "minimum_crop_face_distance": 2,
+            "maximum_crop_face_distance": 2,
+        },
+        "components": [
+            {
+                "component_id": 1,
+                "voxel_count": 1,
+                "minimum_crop_face_distance": 2,
+                "distance_to_public_fvt": {"maximum": 7.0},
+                "representative_point": {"global_coordinate": [3, 4, 5]},
+            }
+        ],
+    }
+    empty = {
+        "status": "available",
+        "summary": {
+            "baseline_candidate_to_public_p95": 1.0,
+            "candidate_candidate_to_public_p95": 1.0,
+            "candidate_minus_baseline_p95": 0.0,
+            "allowed_candidate_p95": 6.0,
+            "outlier_count": 0,
+            "component_count": 0,
+            "minimum_crop_face_distance": None,
+            "maximum_crop_face_distance": None,
+        },
+        "components": [],
+    }
+    markdown = module.visual_report_markdown(
+        {
+            "config": {"crop_selection": {}},
+            "scanner_policies": {
+                "baseline": {"crops": []},
+                "candidate": {"crops": []},
+            },
+            "consensus": {
+                "candidate_minus_baseline": {
+                    "crops": [
+                        {"index": 1, "public_fvt_distance_outliers": available},
+                        {"index": 2, "public_fvt_distance_outliers": empty},
+                    ]
+                }
+            },
+            "policy_validation": {"checks": {}},
+            "manual_review": {"status": "pending", "items": {}},
+        }
+    )
+    assert markdown.index("| crop_002 |") < markdown.index("### crop_001 / component_001")
+    assert markdown.endswith("\n")
+
+
 def test_small_real_pipeline_builds_crop_reports_and_strict_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,6 +1301,30 @@ def test_small_real_pipeline_builds_crop_reports_and_strict_json(
     )
     assert validation["passed"] is True
 
+    outlier_report = module.policy_diagnostics.build_public_fvt_distance_outlier_report(
+        reference_fvt=baseline_outputs["fvt_py.dat"],
+        baseline_outputs=outputs_by_role["baseline"],
+        candidate_outputs=outputs_by_role["candidate"],
+        crop_slices=slices,
+        interior_margin=2,
+    )
+    assert outlier_report["status"] == "available"
+    context_comparison = module.policy_diagnostics.build_same_global_roi_stage_comparison(
+        base_outputs=outputs_by_role["candidate"],
+        context_roi_outputs=outputs_by_role["candidate"],
+    )
+    assert context_comparison["status"] == "available"
+    persistence = module.policy_diagnostics.build_context_outlier_persistence_report(
+        base_outlier_report=outlier_report,
+        reference_fvt=baseline_outputs["fvt_py.dat"],
+        base_baseline_outputs=outputs_by_role["baseline"],
+        base_candidate_outputs=outputs_by_role["candidate"],
+        context_baseline_outputs=outputs_by_role["baseline"],
+        context_candidate_outputs=outputs_by_role["candidate"],
+        base_global_slices=slices,
+    )
+    assert persistence["status"] == "available"
+
     serialized = module.report_to_json(
         {
             "format_version": 1,
@@ -542,6 +1333,9 @@ def test_small_real_pipeline_builds_crop_reports_and_strict_json(
                 "candidate": {"crops": [crop_reports["candidate"]]},
             },
             "direct_comparison": direct,
+            "public_fvt_distance_outliers": outlier_report,
+            "context_comparison": context_comparison,
+            "outlier_persistence": persistence,
             "policy_validation": validation,
         },
         pretty=True,

@@ -338,10 +338,13 @@ The ignored reports did not record a source commit, so the compact evidence
 records `source_commit=null` and `source_provenance="not_recorded"` rather than
 inferring one.
 
-This pass evaluates the synthetic policy candidate only. F3 shared-scan policy
-validation and manual review remain pending, so the quality, reference, and
-diagnostic workflow defaults and the public `FaultOrientScanner3.thin()`
-default remain unchanged.
+This pass evaluates the synthetic policy candidate only. The formal F3
+64^3-by-3 shared-scan run later failed the per-crop public-FVT sparse-distance
+p95 check (`+6.193637` samples on crop 1 versus the `+5.0` limit); the other
+seven external-smoke checks passed. The prerequisite large crop was not run and
+human review remains pending, so the quality, reference, and diagnostic
+workflow defaults and the public `FaultOrientScanner3.thin()` default remain
+unchanged.
 
 For the 49^3 scanner-boundary promotion benchmark, run the current default and
 the opt-in diagnostic candidates with downstream diagnostics enabled:
@@ -670,7 +673,12 @@ are `quality_reference_like_scanner_thin_reference_v1` and
 because public F3 `fv.dat` and `fvt.dat` are not independent truth. The formal
 64^3 multi-crop and large-crop commands, automatic checks, manual review list,
 and evidence policy are documented in [F3 3D Reference Data Validation](f3d_validation.md).
-This F3 validation is currently pending.
+The formal 64^3-by-3 run completed with three scanner executions and finite,
+nonempty outputs, but `policy_validation.passed=false`: crop 1's candidate
+public-FVT sparse-distance p95 was `8.429705` versus baseline `2.236068`, a
+`+6.193637`-sample regression above the `+5.0` limit. All other automatic
+checks passed. Per the documented ordering, the large crop was not run; human
+geological review and default promotion remain blocked.
 
 F3 reference agreement is not quality itself. A quality-mode change should be
 promoted only when the controlled synthetic `extended` matrix and the matching

@@ -29,6 +29,11 @@ The files are read as big-endian `float32` volumes with shape
 volumes belong in `outputs/` or another ignored working directory, never in the
 data root or `reference_osv/`.
 
+`xs.dat` is the signed input seismic amplitude image. `ep.dat` is the planarity
+attribute used as scanner input, while `fl.dat`, `fv.dat`, and `fvt.dat` are
+public-workflow attributes or processing results. None of those derived public
+volumes is independent geological truth.
+
 ## Install Visualization Support
 
 PNG diagnostics require the optional visualization dependency:
@@ -129,6 +134,102 @@ For reference-like thinning diagnostics, run the same visual reports with
 dedicated ablation report. Copy-pastable commands are in
 `docs/f3d_validation.md#reference-like-thinning-validation`, and the thinning
 mode behavior is summarized in `docs/reference_like_thinning.md`.
+
+## Scanner-Thinning Distance-Outlier Review
+
+The scanner-thinning policy report has an opt-in review for candidate sparse
+ridges whose distance to public FVT is strictly greater than the baseline
+candidate-to-public p95 plus the unchanged `5.0`-sample allowance. It uses the
+same positive-only 99th-percentile masks, interior ROI, and unit-spacing 3D
+Euclidean distance as the automatic sparse-distance metric. Public FVT is a
+comparison reference here, not a truth label.
+
+Generate the three-crop review with:
+
+```bash
+PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
+  --data-root "$PYOSV_F3D_DATA_ROOT" \
+  --comparison-profile quality-workflow-scanner-thinning-v1 \
+  --count 3 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --outlier-diagnostics \
+  --save-figures \
+  --write-markdown-index \
+  --output-json outputs/3d/f3d/scanner_thinning_policy_64x3_outlier_review/metrics.json \
+  --pretty
+```
+
+For crop 1, add the exact same-global-ROI context comparison with:
+
+```bash
+PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
+  --data-root "$PYOSV_F3D_DATA_ROOT" \
+  --comparison-profile quality-workflow-scanner-thinning-v1 \
+  --count 3 \
+  --crop-shape 64,64,64 \
+  --interior-margin 16 \
+  --outlier-diagnostics \
+  --context-crop-index 1 \
+  --context-crop-shape 128,128,100 \
+  --save-figures \
+  --write-markdown-index \
+  --output-json outputs/3d/f3d/scanner_thinning_policy_64x3_context_review/metrics.json \
+  --pretty
+```
+
+Each crop uses one symmetric seismic display range for every outlier and every
+panel. From finite samples in `xs_crop`, the report computes
+`clip = percentile(abs(xs_crop), amplitude_clip_percentile)` (default `99.0`)
+and displays grayscale amplitude with `vmin=-clip` and `vmax=clip`; a safe
+fallback is used if the clip is zero or non-finite. Panels are never auto-scaled
+independently.
+
+The optional review limits default to 64 stored points, 8 stored connected
+components, a 24-sample local window radius, and 3 adjacent slices on either
+side. Adjust them with `--outlier-max-points`, `--outlier-max-components`,
+`--outlier-window-radius`, and `--outlier-adjacent-slice-radius`. Adjust the
+symmetric amplitude percentile with `--amplitude-clip-percentile`; these options
+change diagnostic detail only, not validation thresholds.
+
+The orthogonal review passes the representative outlier's actual `i3`, `i2`,
+and `i1` slices, rather than only the crop-center slice. Its columns separate
+amplitude-only, public-FVT, baseline-FVT, candidate-FVT, and combined overlays.
+Thin contours preserve the underlying amplitude, and the legend distinguishes
+public, baseline, candidate, the representative outlier, and its nearest public
+point. The three adjacent-slice figures show the same overlay from `index-R`
+through `index+R` for each axis (default `R=3`), omitting out-of-crop slices and
+labelling the global index actually shown. Use them to distinguish a continuous
+ridge trend from a single-slice speck.
+
+Context figures use the same seismic amplitude, representative coordinate, and
+global base ROI to compare base candidate FVT, context-derived candidate FVT,
+their combined overlay, and base-only/context-only sparse masks. A persistent
+ridge within two samples is evidence about context sensitivity only; it is not
+an automatic geological judgment. Preliminary outliers being 19--25 samples
+inside a crop does not itself eliminate context dependence because voting uses
+`rw=30` and clamps out-of-crop surface samples to the crop edge.
+
+The generated files live under paths such as:
+
+```text
+crop_001/policy_comparison/outlier_diagnostics/component_001/
+crop_001/policy_comparison/context_diagnostics/component_001/
+```
+
+`visual_report.md` includes a `Public-FVT Distance Outlier Review` section only
+when diagnostics are enabled. It embeds the orthogonal amplitude image and
+links the adjacent-slice and context images using paths relative to
+`metrics.json`.
+
+The currently recorded formal `3 x 64^3` automatic validation still passes
+seven of eight checks and fails the crop-1 public-FVT sparse-distance p95 check.
+Manual geological review remains pending. These figures do not relax the
+threshold, change a scanner/workflow default, create passing evidence, or
+constitute formal large-crop acceptance; the `128 x 128 x 100` run above is a
+diagnostic context ablation only. In report terms,
+`manual_review.status=pending` remains separate from the failed automatic
+result.
 
 ## Figure Interpretation
 

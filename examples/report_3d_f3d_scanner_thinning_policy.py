@@ -14,6 +14,7 @@ import numpy as np
 
 import run_3d_f3d_crop_validation as crop_validation
 from pyosv.evaluation import f3d_scanner_policy as policy_evaluation
+from pyosv.evaluation import f3d_scanner_policy_diagnostics as policy_diagnostics
 from pyosv.f3d_reference import (
     F3D_ENV_VAR,
     crop_slices,
@@ -22,12 +23,18 @@ from pyosv.f3d_reference import (
     read_f3d_file,
     resolve_f3d_data_root,
 )
+from pyosv.metrics import top_percentile_mask
 
 DEFAULT_COUNT = 3
 DEFAULT_CROP_SHAPE = (64, 64, 64)
 DEFAULT_INTERIOR_MARGIN = 16
 DEFAULT_PERCENTILE = 99.9
 DEFAULT_MIN_SEPARATION = 48.0
+DEFAULT_OUTLIER_MAX_POINTS = 64
+DEFAULT_OUTLIER_MAX_COMPONENTS = 8
+DEFAULT_OUTLIER_WINDOW_RADIUS = 24
+DEFAULT_OUTLIER_ADJACENT_SLICE_RADIUS = 3
+DEFAULT_AMPLITUDE_CLIP_PERCENTILE = 99.0
 REFERENCE_OSV_DIR = Path(__file__).resolve().parents[1] / "reference_osv"
 ISSUE_FORGE_DIR = Path(__file__).resolve().parents[1] / "vendor" / "issue_forge"
 
@@ -81,6 +88,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-on-validation-failure",
         action="store_true",
         help="Exit with status 2 when the truthless policy validation fails.",
+    )
+    parser.add_argument(
+        "--outlier-diagnostics",
+        action="store_true",
+        help=(
+            "Add public-FVT distance-outlier diagnostics; with --save-figures, "
+            "also write seismic-amplitude review figures."
+        ),
+    )
+    parser.add_argument(
+        "--context-crop-shape",
+        type=parse_shape3,
+        default=None,
+        help=(
+            "Optional larger n3,n2,n1 crop used to recompute the same global base ROI; "
+            "requires --outlier-diagnostics."
+        ),
+    )
+    parser.add_argument(
+        "--context-crop-index",
+        action="append",
+        type=int,
+        default=None,
+        help=(
+            "1-origin base crop index for context recomputation; may be repeated. "
+            "Defaults to crops with distance outliers."
+        ),
+    )
+    parser.add_argument(
+        "--outlier-max-points",
+        type=int,
+        default=DEFAULT_OUTLIER_MAX_POINTS,
+        help="Maximum number of deterministically sorted outlier points stored per crop.",
+    )
+    parser.add_argument(
+        "--outlier-max-components",
+        type=int,
+        default=DEFAULT_OUTLIER_MAX_COMPONENTS,
+        help="Maximum number of connected-component details stored per crop.",
+    )
+    parser.add_argument(
+        "--outlier-window-radius",
+        type=int,
+        default=DEFAULT_OUTLIER_WINDOW_RADIUS,
+        help="Local half-window in samples for outlier amplitude figures.",
+    )
+    parser.add_argument(
+        "--outlier-adjacent-slice-radius",
+        type=int,
+        default=DEFAULT_OUTLIER_ADJACENT_SLICE_RADIUS,
+        help="Number of adjacent slices shown before and after an outlier slice.",
+    )
+    parser.add_argument(
+        "--amplitude-clip-percentile",
+        type=float,
+        default=DEFAULT_AMPLITUDE_CLIP_PERCENTILE,
+        help="Absolute seismic-amplitude percentile used for one symmetric crop-level clip.",
     )
     parser.add_argument("--pretty", action="store_true", help="Write indented JSON.")
     parser.add_argument(
@@ -164,6 +228,14 @@ def run_example(
     save_volumes: bool = False,
     save_figures: bool = False,
     write_markdown_index: bool = False,
+    outlier_diagnostics: bool = False,
+    context_crop_shape: tuple[int, int, int] | None = None,
+    context_crop_indices: Iterable[int] | None = None,
+    outlier_max_points: int = DEFAULT_OUTLIER_MAX_POINTS,
+    outlier_max_components: int = DEFAULT_OUTLIER_MAX_COMPONENTS,
+    outlier_window_radius: int = DEFAULT_OUTLIER_WINDOW_RADIUS,
+    outlier_adjacent_slice_radius: int = DEFAULT_OUTLIER_ADJACENT_SLICE_RADIUS,
+    amplitude_clip_percentile: float = DEFAULT_AMPLITUDE_CLIP_PERCENTILE,
     pretty: bool = False,
     count: int = DEFAULT_COUNT,
     crop_shape: tuple[int, int, int] = DEFAULT_CROP_SHAPE,
@@ -195,6 +267,17 @@ def run_example(
     if count < 1:
         raise ValueError("count must be >= 1")
     crop_shape, interior_margin = validate_crop_config(crop_shape, interior_margin)
+    context_crop_indices = validate_diagnostic_options(
+        outlier_diagnostics=outlier_diagnostics,
+        context_crop_shape=context_crop_shape,
+        context_crop_indices=context_crop_indices,
+        base_crop_shape=crop_shape,
+        outlier_max_points=outlier_max_points,
+        outlier_max_components=outlier_max_components,
+        outlier_window_radius=outlier_window_radius,
+        outlier_adjacent_slice_radius=outlier_adjacent_slice_radius,
+        amplitude_clip_percentile=amplitude_clip_percentile,
+    )
 
     data_root = resolve_f3d_data_root(data_root_arg)
     if output_json is not None:
@@ -210,6 +293,7 @@ def run_example(
 
     output_base_dir = Path(output_json).parent if output_json is not None else None
     arrays = crop_validation.read_reference_arrays(data_root)
+    full_shape = tuple(int(size) for size in arrays["ep.dat"].shape)
     selected_centers = select_centers(
         arrays["fv.dat"],
         count=count,
@@ -222,7 +306,16 @@ def run_example(
         raise ValueError(f"selected {len(selected_centers)} crop centers; requested {count}")
     if not selected_centers:
         raise ValueError("at least one crop center is required")
-    if save_figures:
+    context_crop_indices = validate_context_selection(
+        context_crop_shape=context_crop_shape,
+        full_shape=full_shape,
+        context_crop_indices=context_crop_indices,
+        crop_count=len(selected_centers),
+    )
+    if outlier_diagnostics:
+        arrays["xs.dat"] = read_f3d_file("xs.dat", data_root)
+        arrays["fl.dat"] = read_f3d_file("fl.dat", data_root)
+    elif save_figures:
         arrays["fl.dat"] = read_f3d_file("fl.dat", data_root)
 
     policy_configs = {
@@ -249,35 +342,39 @@ def run_example(
     }
     direct_comparisons: list[dict[str, Any]] = []
     scanner_execution_count = 0
+    pipeline_kwargs = {
+        "sigma1": sigma1,
+        "sigma2": sigma2,
+        "phi_min": phi_min,
+        "phi_max": phi_max,
+        "theta_min": theta_min,
+        "theta_max": theta_max,
+        "ru": ru,
+        "rv": rv,
+        "rw": rw,
+        "strain_max1": strain_max1,
+        "strain_max2": strain_max2,
+        "surface_smoothing1": surface_smoothing1,
+        "surface_smoothing2": surface_smoothing2,
+        "surface_orientation_smoothing": surface_orientation_smoothing,
+        "final_normalization_smoothing": None,
+        "d": d,
+        "fm": fm,
+        "reference_thin_sigma": 1.0,
+    }
+    base_diagnostic_states: list[dict[str, Any]] = []
 
     for crop_index, center in enumerate(selected_centers, start=1):
         slices = crop_slices(center, crop_shape, full_shape=arrays["ep.dat"].shape)
         ep_crop = _crop(arrays["ep.dat"], slices)
         reference_fv = _crop(arrays["fv.dat"], slices)
         reference_fvt = _crop(arrays["fvt.dat"], slices)
-        reference_fl = _crop(arrays["fl.dat"], slices) if save_figures else None
-
-        run = run_shared_scan_policy_pipeline(
-            ep_crop,
-            sigma1=sigma1,
-            sigma2=sigma2,
-            phi_min=phi_min,
-            phi_max=phi_max,
-            theta_min=theta_min,
-            theta_max=theta_max,
-            ru=ru,
-            rv=rv,
-            rw=rw,
-            strain_max1=strain_max1,
-            strain_max2=strain_max2,
-            surface_smoothing1=surface_smoothing1,
-            surface_smoothing2=surface_smoothing2,
-            surface_orientation_smoothing=surface_orientation_smoothing,
-            final_normalization_smoothing=None,
-            d=d,
-            fm=fm,
-            reference_thin_sigma=1.0,
+        reference_fl = (
+            _crop(arrays["fl.dat"], slices) if save_figures or outlier_diagnostics else None
         )
+        xs_crop = _crop(arrays["xs.dat"], slices) if outlier_diagnostics else None
+
+        run = run_shared_scan_policy_pipeline(ep_crop, **pipeline_kwargs)
         scanner_execution_count += int(run["scanner_execution_count"])
         run_policies = _as_mapping(run.get("policies"))
 
@@ -367,6 +464,24 @@ def run_example(
                 baseline_crop=policy_crops["baseline"][-1],
                 candidate_crop=policy_crops["candidate"][-1],
             )
+        outlier_report: dict[str, Any] | None = None
+        if outlier_diagnostics:
+            outlier_report = policy_diagnostics.build_public_fvt_distance_outlier_report(
+                reference_fvt=reference_fvt,
+                baseline_outputs=outputs_by_role["baseline"],
+                candidate_outputs=outputs_by_role["candidate"],
+                crop_slices=slices,
+                interior_margin=interior_margin,
+                ridge_percentile=policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+                allowed_p95_delta=policy_evaluation.DEFAULT_SPARSE_DISTANCE_P95_MAX_DELTA,
+                max_points=outlier_max_points,
+                max_components=outlier_max_components,
+                xs=xs_crop,
+                ep=ep_crop,
+                reference_fl=reference_fl,
+                reference_fv=reference_fv,
+            )
+            direct["public_fvt_distance_outliers"] = outlier_report
         if save_figures and direct_fvt_is_finite:
             if output_base_dir is None:
                 raise ValueError("--save-figures requires --output-json")
@@ -384,6 +499,48 @@ def run_example(
                 "skipped": True,
                 "reason": "policy fvt outputs contain non-finite values",
             }
+        if (
+            outlier_diagnostics
+            and save_figures
+            and outlier_report is not None
+            and outlier_report.get("status") == "available"
+            and int(_nested(outlier_report, "summary", "outlier_count") or 0) > 0
+        ):
+            if output_base_dir is None or xs_crop is None:
+                raise ValueError("outlier amplitude figures require --output-json and xs.dat")
+            component_figures = write_outlier_diagnostic_figures(
+                output_base_dir
+                / f"crop_{crop_index:03d}"
+                / "policy_comparison"
+                / "outlier_diagnostics",
+                metrics_base_dir=output_base_dir,
+                xs=xs_crop,
+                reference_fvt=reference_fvt,
+                baseline_fvt=outputs_by_role["baseline"]["fvt_py.dat"],
+                candidate_fvt=outputs_by_role["candidate"]["fvt_py.dat"],
+                crop_slices=slices,
+                crop_index=crop_index,
+                outlier_report=outlier_report,
+                window_radius=outlier_window_radius,
+                adjacent_slice_radius=outlier_adjacent_slice_radius,
+                amplitude_clip_percentile=amplitude_clip_percentile,
+            )
+            _attach_component_figures(outlier_report, component_figures)
+        if outlier_diagnostics:
+            base_diagnostic_states.append(
+                {
+                    "index": int(crop_index),
+                    "center": tuple(int(value) for value in center),
+                    "crop_slices": slices,
+                    "ep": ep_crop,
+                    "xs": xs_crop,
+                    "reference_fl": reference_fl,
+                    "reference_fv": reference_fv,
+                    "reference_fvt": reference_fvt,
+                    "outputs_by_role": outputs_by_role,
+                    "outlier_report": outlier_report,
+                }
+            )
         direct_comparisons.append(direct)
 
     consensus = policy_evaluation.build_consensus(
@@ -401,6 +558,36 @@ def run_example(
         scanner_execution_count=scanner_execution_count,
         expected_crop_count=len(selected_centers),
     )
+    context_report: dict[str, Any] | None = None
+    if context_crop_shape is not None:
+        selected_context_indices = (
+            context_crop_indices
+            if context_crop_indices is not None
+            else [
+                int(state["index"])
+                for state in base_diagnostic_states
+                if int(
+                    _nested(
+                        _as_mapping(state.get("outlier_report")),
+                        "summary",
+                        "outlier_count",
+                    )
+                    or 0
+                )
+                > 0
+            ]
+        )
+        context_report = run_context_diagnostics(
+            arrays=arrays,
+            base_states=base_diagnostic_states,
+            selected_crop_indices=selected_context_indices,
+            context_crop_shape=context_crop_shape,
+            pipeline_kwargs=pipeline_kwargs,
+            save_figures=save_figures,
+            output_base_dir=output_base_dir,
+            outlier_window_radius=outlier_window_radius,
+            amplitude_clip_percentile=amplitude_clip_percentile,
+        )
 
     config = build_config(
         comparison_profile=comparison_profile,
@@ -434,6 +621,26 @@ def run_example(
         d=d,
         fm=fm,
     )
+    if outlier_diagnostics:
+        config["diagnostics"] = {
+            "public_fvt_distance_outliers": {
+                "enabled": True,
+                "ridge_percentile": policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+                "positive_only": True,
+                "allowed_p95_delta": (policy_evaluation.DEFAULT_SPARSE_DISTANCE_P95_MAX_DELTA),
+                "max_points": int(outlier_max_points),
+                "max_components": int(outlier_max_components),
+                "window_radius": int(outlier_window_radius),
+                "adjacent_slice_radius": int(outlier_adjacent_slice_radius),
+                "amplitude_clip_percentile": float(amplitude_clip_percentile),
+            },
+            "context_crop_shape": (
+                None if context_crop_shape is None else [int(size) for size in context_crop_shape]
+            ),
+            "context_crop_indices": (
+                None if context_report is None else list(context_report["selected_crop_indices"])
+            ),
+        }
     report = {
         "format_version": 1,
         "data_root": str(data_root),
@@ -451,6 +658,8 @@ def run_example(
         "policy_validation": validation,
         "manual_review": build_pending_manual_review(),
     }
+    if context_report is not None:
+        report["context_diagnostics"] = context_report
     report = policy_evaluation.json_safe(report)
     if output_json is not None:
         write_report_json(report, output_json, pretty=pretty)
@@ -587,6 +796,196 @@ def validate_crop_config(
         raise ValueError("interior_margin must be >= 0")
     crop_validation.interior_slices(crop_shape, margin=interior_margin)
     return crop_shape, int(interior_margin)
+
+
+def validate_diagnostic_options(
+    *,
+    outlier_diagnostics: bool,
+    context_crop_shape: tuple[int, int, int] | None,
+    context_crop_indices: Iterable[int] | None,
+    base_crop_shape: tuple[int, int, int],
+    outlier_max_points: int,
+    outlier_max_components: int,
+    outlier_window_radius: int,
+    outlier_adjacent_slice_radius: int,
+    amplitude_clip_percentile: float,
+) -> list[int] | None:
+    if outlier_max_points < 1:
+        raise ValueError("outlier_max_points must be >= 1")
+    if outlier_max_components < 1:
+        raise ValueError("outlier_max_components must be >= 1")
+    if outlier_window_radius < 0:
+        raise ValueError("outlier_window_radius must be >= 0")
+    if outlier_adjacent_slice_radius < 0:
+        raise ValueError("outlier_adjacent_slice_radius must be >= 0")
+    if not math.isfinite(amplitude_clip_percentile) or not (
+        0.0 < amplitude_clip_percentile <= 100.0
+    ):
+        raise ValueError("amplitude_clip_percentile must be finite and in (0, 100]")
+
+    indices = None
+    if context_crop_indices is not None:
+        indices = [int(index) for index in context_crop_indices]
+    if context_crop_shape is not None and not outlier_diagnostics:
+        raise ValueError("--context-crop-shape requires --outlier-diagnostics")
+    if indices and context_crop_shape is None:
+        raise ValueError("--context-crop-index requires --context-crop-shape")
+    if context_crop_shape is not None:
+        for axis, (context_size, base_size) in enumerate(
+            zip(context_crop_shape, base_crop_shape, strict=True)
+        ):
+            if context_size < base_size:
+                raise ValueError(f"context_crop_shape[{axis}] must be >= base crop_shape[{axis}]")
+    return indices
+
+
+def validate_context_selection(
+    *,
+    context_crop_shape: tuple[int, int, int] | None,
+    full_shape: tuple[int, int, int],
+    context_crop_indices: list[int] | None,
+    crop_count: int,
+) -> list[int] | None:
+    if context_crop_shape is None:
+        return None
+    for axis, (context_size, full_size) in enumerate(
+        zip(context_crop_shape, full_shape, strict=True)
+    ):
+        if context_size > full_size:
+            raise ValueError(f"context_crop_shape[{axis}] must be <= F3 full_shape[{axis}]")
+    if context_crop_indices is None:
+        return None
+    invalid = [index for index in context_crop_indices if index < 1 or index > crop_count]
+    if invalid:
+        raise ValueError(
+            "context_crop_index must be within the selected 1-origin crop range; "
+            f"invalid: {invalid}"
+        )
+    return list(dict.fromkeys(context_crop_indices))
+
+
+def run_context_diagnostics(
+    *,
+    arrays: Mapping[str, np.ndarray],
+    base_states: list[dict[str, Any]],
+    selected_crop_indices: list[int],
+    context_crop_shape: tuple[int, int, int],
+    pipeline_kwargs: Mapping[str, Any],
+    save_figures: bool,
+    output_base_dir: Path | None,
+    outlier_window_radius: int,
+    amplitude_clip_percentile: float,
+) -> dict[str, Any]:
+    state_by_index = {int(state["index"]): state for state in base_states}
+    missing = [index for index in selected_crop_indices if index not in state_by_index]
+    if missing:
+        raise ValueError(f"context diagnostic base crop state is unavailable: {missing}")
+
+    full_shape = tuple(int(size) for size in np.asarray(arrays["ep.dat"]).shape)
+    context_crops: list[dict[str, Any]] = []
+    context_scanner_execution_count = 0
+    for crop_index in selected_crop_indices:
+        state = state_by_index[crop_index]
+        center = tuple(int(value) for value in state["center"])
+        base_global_slices = state["crop_slices"]
+        context_global_slices = crop_slices(
+            center,
+            context_crop_shape,
+            full_shape=full_shape,
+        )
+        base_roi_slices = policy_diagnostics.map_base_roi_slices_within_context(
+            base_global_slices,
+            context_global_slices,
+        )
+        ep_context = _crop(np.asarray(arrays["ep.dat"]), context_global_slices)
+        context_run = run_shared_scan_policy_pipeline(ep_context, **dict(pipeline_kwargs))
+        context_scanner_execution_count += int(context_run["scanner_execution_count"])
+        context_policies = _as_mapping(context_run.get("policies"))
+
+        context_roi_outputs: dict[str, dict[str, np.ndarray]] = {}
+        policy_reports: dict[str, Any] = {}
+        for role in policy_evaluation.POLICY_ROLES:
+            role_run = _as_mapping(context_policies.get(role))
+            context_outputs = _as_array_mapping(role_run.get("outputs"))
+            roi_outputs = policy_diagnostics.extract_same_global_roi_outputs(
+                context_outputs,
+                base_global_slices=base_global_slices,
+                context_global_slices=context_global_slices,
+            )
+            context_roi_outputs[role] = roi_outputs
+            base_outputs = _as_array_mapping(_as_mapping(state["outputs_by_role"]).get(role))
+            policy_reports[role] = policy_diagnostics.build_same_global_roi_stage_comparison(
+                base_outputs=base_outputs,
+                context_roi_outputs=roi_outputs,
+                ridge_percentile=policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+                ridge_buffer_radius=policy_evaluation.DEFAULT_RIDGE_BUFFER_RADIUS,
+                nonzero_epsilon=policy_evaluation.DEFAULT_NONZERO_EPSILON,
+            )
+
+        base_outputs_by_role = _as_mapping(state["outputs_by_role"])
+        base_outlier_report = _as_mapping(state["outlier_report"])
+        persistence = policy_diagnostics.build_context_outlier_persistence_report(
+            base_outlier_report=base_outlier_report,
+            reference_fvt=np.asarray(state["reference_fvt"]),
+            base_baseline_outputs=_as_array_mapping(base_outputs_by_role.get("baseline")),
+            base_candidate_outputs=_as_array_mapping(base_outputs_by_role.get("candidate")),
+            context_baseline_outputs=context_roi_outputs["baseline"],
+            context_candidate_outputs=context_roi_outputs["candidate"],
+            base_global_slices=base_global_slices,
+            ridge_percentile=policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+            allowed_p95_delta=policy_evaluation.DEFAULT_SPARSE_DISTANCE_P95_MAX_DELTA,
+            persistence_radius=2.0,
+        )
+        crop_report: dict[str, Any] = {
+            "index": int(crop_index),
+            "center": [int(value) for value in center],
+            "base_global_slices": policy_diagnostics.slices_to_json(base_global_slices),
+            "context_global_slices": policy_diagnostics.slices_to_json(context_global_slices),
+            "base_roi_slices_within_context": policy_diagnostics.slices_to_json(base_roi_slices),
+            "policies": policy_reports,
+            "outlier_persistence": persistence,
+        }
+
+        if save_figures and int(_nested(base_outlier_report, "summary", "outlier_count") or 0):
+            if output_base_dir is None or state.get("xs") is None:
+                raise ValueError("context amplitude figures require --output-json and xs.dat")
+            context_component_figures = write_context_diagnostic_figures(
+                output_base_dir
+                / f"crop_{crop_index:03d}"
+                / "policy_comparison"
+                / "context_diagnostics",
+                metrics_base_dir=output_base_dir,
+                xs=np.asarray(state["xs"]),
+                base_candidate_fvt=np.asarray(
+                    _as_array_mapping(base_outputs_by_role["candidate"])["fvt_py.dat"]
+                ),
+                context_candidate_fvt=np.asarray(context_roi_outputs["candidate"]["fvt_py.dat"]),
+                crop_slices=base_global_slices,
+                crop_index=crop_index,
+                outlier_report=base_outlier_report,
+                window_radius=outlier_window_radius,
+                amplitude_clip_percentile=amplitude_clip_percentile,
+            )
+            crop_report["figures"] = {
+                "components": [
+                    {"component_id": int(component_id), **files}
+                    for component_id, files in context_component_figures.items()
+                ]
+            }
+            _attach_context_component_figures(
+                base_outlier_report,
+                context_component_figures,
+            )
+        context_crops.append(crop_report)
+
+    return {
+        "status": "available",
+        "role": "diagnostic_context_ablation",
+        "requested_context_crop_shape": [int(size) for size in context_crop_shape],
+        "context_scanner_execution_count": int(context_scanner_execution_count),
+        "selected_crop_indices": [int(index) for index in selected_crop_indices],
+        "crops": context_crops,
+    }
 
 
 def build_pending_manual_review() -> dict[str, Any]:
@@ -757,6 +1156,263 @@ def write_direct_comparison_figures(
     }
 
 
+def write_outlier_diagnostic_figures(
+    output_dir: str | PathLike[str],
+    *,
+    metrics_base_dir: str | PathLike[str],
+    xs: np.ndarray,
+    reference_fvt: np.ndarray,
+    baseline_fvt: np.ndarray,
+    candidate_fvt: np.ndarray,
+    crop_slices: tuple[slice, slice, slice],
+    crop_index: int,
+    outlier_report: Mapping[str, Any],
+    window_radius: int,
+    adjacent_slice_radius: int,
+    amplitude_clip_percentile: float,
+) -> dict[int, dict[str, Any]]:
+    from pyosv import viz
+
+    amplitude = np.asarray(xs, dtype=np.float32)
+    arrays = {
+        "public": np.asarray(reference_fvt, dtype=np.float32),
+        "baseline": np.asarray(baseline_fvt, dtype=np.float32),
+        "candidate": np.asarray(candidate_fvt, dtype=np.float32),
+    }
+    if any(values.shape != amplitude.shape for values in arrays.values()):
+        raise ValueError("xs and public/baseline/candidate fvt shapes must match")
+    percentile = float(
+        _nested(outlier_report, "definition", "ridge_percentile")
+        or policy_evaluation.DEFAULT_RIDGE_PERCENTILE
+    )
+    interior_margin = int(_nested(outlier_report, "definition", "interior_margin") or 0)
+    masks = {
+        name: _full_sparse_ridge_mask(
+            values,
+            percentile=percentile,
+            interior_margin=interior_margin,
+        )
+        for name, values in arrays.items()
+    }
+    clip = symmetric_amplitude_clip(amplitude, amplitude_clip_percentile)
+    directory = Path(output_dir)
+    base_dir = Path(metrics_base_dir)
+    global_start = tuple(int(value.start) for value in crop_slices)
+    written: dict[int, dict[str, Any]] = {}
+    for component_value in outlier_report.get("components", []):
+        component = _as_mapping(component_value)
+        component_id = int(component.get("component_id", 0))
+        if component_id < 1:
+            continue
+        representative = _as_mapping(component.get("representative_point"))
+        coordinate = _coordinate3(
+            representative.get("crop_local_coordinate"),
+            "representative crop-local coordinate",
+        )
+        nearest = _coordinate3(
+            _nested(representative, "nearest_public_fvt", "crop_local_coordinate"),
+            "nearest-public crop-local coordinate",
+        )
+        distance = _number(representative.get("distance_to_public_fvt"))
+        if distance is None:
+            raise ValueError("representative outlier distance must be finite")
+        component_dir = directory / f"component_{component_id:03d}"
+        files: dict[str, Any] = {
+            "amplitude_clip": {
+                "percentile": float(amplitude_clip_percentile),
+                "absolute_value": True,
+                "symmetric": True,
+                "clip": clip,
+                "vmin": -clip,
+                "vmax": clip,
+            }
+        }
+        orthogonal = viz.save_outlier_orthogonal_amplitude_overlay(
+            component_dir / "orthogonal_amplitude_overlay.png",
+            amplitude=amplitude,
+            public_fvt_mask=masks["public"],
+            baseline_fvt_mask=masks["baseline"],
+            candidate_fvt_mask=masks["candidate"],
+            representative_coordinate=coordinate,
+            nearest_public_coordinate=nearest,
+            crop_global_start=global_start,
+            amplitude_clip=clip,
+            window_radius=window_radius,
+            crop_index=int(crop_index),
+            component_id=component_id,
+            distance_to_public=distance,
+        )
+        files["orthogonal_amplitude_overlay"] = crop_validation.path_for_metrics(
+            orthogonal,
+            base_dir,
+        )
+        for axis in ("i3", "i2", "i1"):
+            adjacent = viz.save_outlier_adjacent_slice_overlay(
+                component_dir / f"adjacent_{axis}.png",
+                amplitude=amplitude,
+                public_fvt_mask=masks["public"],
+                baseline_fvt_mask=masks["baseline"],
+                candidate_fvt_mask=masks["candidate"],
+                representative_coordinate=coordinate,
+                nearest_public_coordinate=nearest,
+                crop_global_start=global_start,
+                amplitude_clip=clip,
+                window_radius=window_radius,
+                adjacent_slice_radius=adjacent_slice_radius,
+                axis=axis,
+                crop_index=int(crop_index),
+                component_id=component_id,
+            )
+            files[f"adjacent_{axis}"] = crop_validation.path_for_metrics(
+                adjacent,
+                base_dir,
+            )
+        written[component_id] = files
+    return written
+
+
+def write_context_diagnostic_figures(
+    output_dir: str | PathLike[str],
+    *,
+    metrics_base_dir: str | PathLike[str],
+    xs: np.ndarray,
+    base_candidate_fvt: np.ndarray,
+    context_candidate_fvt: np.ndarray,
+    crop_slices: tuple[slice, slice, slice],
+    crop_index: int,
+    outlier_report: Mapping[str, Any],
+    window_radius: int,
+    amplitude_clip_percentile: float,
+) -> dict[int, dict[str, Any]]:
+    from pyosv import viz
+
+    amplitude = np.asarray(xs, dtype=np.float32)
+    base_fvt = np.asarray(base_candidate_fvt, dtype=np.float32)
+    context_fvt = np.asarray(context_candidate_fvt, dtype=np.float32)
+    if base_fvt.shape != amplitude.shape or context_fvt.shape != amplitude.shape:
+        raise ValueError("xs and base/context candidate fvt shapes must match")
+    percentile = float(
+        _nested(outlier_report, "definition", "ridge_percentile")
+        or policy_evaluation.DEFAULT_RIDGE_PERCENTILE
+    )
+    interior_margin = int(_nested(outlier_report, "definition", "interior_margin") or 0)
+    base_mask = _full_sparse_ridge_mask(
+        base_fvt,
+        percentile=percentile,
+        interior_margin=interior_margin,
+    )
+    context_mask = _full_sparse_ridge_mask(
+        context_fvt,
+        percentile=percentile,
+        interior_margin=interior_margin,
+    )
+    clip = symmetric_amplitude_clip(amplitude, amplitude_clip_percentile)
+    directory = Path(output_dir)
+    base_dir = Path(metrics_base_dir)
+    global_start = tuple(int(value.start) for value in crop_slices)
+    written: dict[int, dict[str, Any]] = {}
+    for component_value in outlier_report.get("components", []):
+        component = _as_mapping(component_value)
+        component_id = int(component.get("component_id", 0))
+        if component_id < 1:
+            continue
+        representative = _as_mapping(component.get("representative_point"))
+        coordinate = _coordinate3(
+            representative.get("crop_local_coordinate"),
+            "representative crop-local coordinate",
+        )
+        nearest = _coordinate3(
+            _nested(representative, "nearest_public_fvt", "crop_local_coordinate"),
+            "nearest-public crop-local coordinate",
+        )
+        component_dir = directory / f"component_{component_id:03d}"
+        path = viz.save_context_orthogonal_amplitude_comparison(
+            component_dir / "base_context_amplitude_overlay.png",
+            amplitude=amplitude,
+            base_candidate_fvt_mask=base_mask,
+            context_candidate_fvt_mask=context_mask,
+            representative_coordinate=coordinate,
+            nearest_public_coordinate=nearest,
+            crop_global_start=global_start,
+            amplitude_clip=clip,
+            window_radius=window_radius,
+            crop_index=int(crop_index),
+            component_id=component_id,
+        )
+        written[component_id] = {
+            "context_comparison": crop_validation.path_for_metrics(path, base_dir),
+            "amplitude_clip": {
+                "percentile": float(amplitude_clip_percentile),
+                "absolute_value": True,
+                "symmetric": True,
+                "clip": clip,
+                "vmin": -clip,
+                "vmax": clip,
+            },
+        }
+    return written
+
+
+def symmetric_amplitude_clip(xs: np.ndarray, percentile: float) -> float:
+    values = np.asarray(xs)
+    finite = values[np.isfinite(values)]
+    if finite.size:
+        clip = float(np.percentile(np.abs(finite.astype(np.float64, copy=False)), percentile))
+        if math.isfinite(clip) and clip > 0.0:
+            return clip
+    return 1.0
+
+
+def _full_sparse_ridge_mask(
+    values: np.ndarray,
+    *,
+    percentile: float,
+    interior_margin: int,
+) -> np.ndarray:
+    array = np.asarray(values)
+    local_interior = crop_validation.interior_slices(
+        array.shape,
+        margin=interior_margin,
+    )
+    mask = np.zeros(array.shape, dtype=bool)
+    mask[local_interior] = top_percentile_mask(
+        array[local_interior],
+        percentile=percentile,
+        positive_only=True,
+    )
+    return mask
+
+
+def _attach_component_figures(
+    outlier_report: Mapping[str, Any],
+    figures: Mapping[int, Mapping[str, Any]],
+) -> None:
+    for component_value in outlier_report.get("components", []):
+        if not isinstance(component_value, dict):
+            continue
+        component_id = int(component_value.get("component_id", 0))
+        if component_id in figures:
+            component_value["figures"] = dict(figures[component_id])
+
+
+def _attach_context_component_figures(
+    outlier_report: Mapping[str, Any],
+    figures: Mapping[int, Mapping[str, Any]],
+) -> None:
+    for component_value in outlier_report.get("components", []):
+        if not isinstance(component_value, dict):
+            continue
+        component_id = int(component_value.get("component_id", 0))
+        context_files = figures.get(component_id)
+        if context_files is None:
+            continue
+        existing = component_value.get("figures")
+        if not isinstance(existing, dict):
+            existing = {}
+            component_value["figures"] = existing
+        existing.update(context_files)
+
+
 def visual_report_markdown(report: Mapping[str, Any]) -> str:
     config = _as_mapping(report.get("config"))
     crop_selection = _as_mapping(config.get("crop_selection"))
@@ -874,6 +1530,96 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
             lines.append("")
     if not any_figures:
         lines.append("No PNG figures were written for this run.")
+
+    if any("public_fvt_distance_outliers" in comparison for comparison in comparisons):
+        lines.extend(
+            [
+                "",
+                "## Public-FVT Distance Outlier Review",
+                "",
+                "Public FVT is a comparison reference, not independent truth. The rows below "
+                "preserve the automatic distance failure and provide amplitude/context "
+                "evidence for human adjudication.",
+                "",
+                "| Crop | Status | Baseline p95 | Candidate p95 | Delta | Allowed candidate "
+                "p95 | Outliers | Components | Crop-face distance min/max |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for comparison_value in comparisons:
+            comparison = _as_mapping(comparison_value)
+            diagnostics = _as_mapping(comparison.get("public_fvt_distance_outliers"))
+            if not diagnostics:
+                continue
+            summary = _as_mapping(diagnostics.get("summary"))
+            lines.append(
+                "| "
+                f"crop_{int(comparison.get('index', 0)):03d} | "
+                f"{diagnostics.get('status', '')} | "
+                f"{_format_metric(summary.get('baseline_candidate_to_public_p95'))} | "
+                f"{_format_metric(summary.get('candidate_candidate_to_public_p95'))} | "
+                f"{_format_metric(summary.get('candidate_minus_baseline_p95'))} | "
+                f"{_format_metric(summary.get('allowed_candidate_p95'))} | "
+                f"{summary.get('outlier_count', '')} | "
+                f"{summary.get('component_count', '')} | "
+                f"{_format_metric(summary.get('minimum_crop_face_distance'))}/"
+                f"{_format_metric(summary.get('maximum_crop_face_distance'))} |"
+            )
+        lines.append("")
+        for comparison_value in comparisons:
+            comparison = _as_mapping(comparison_value)
+            diagnostics = _as_mapping(comparison.get("public_fvt_distance_outliers"))
+            if not diagnostics:
+                continue
+            if diagnostics.get("status") != "available":
+                lines.append(
+                    f"- crop_{int(comparison.get('index', 0)):03d}: "
+                    f"unavailable: {diagnostics.get('reason', '')}"
+                )
+                continue
+            for component_value in diagnostics.get("components", []):
+                component = _as_mapping(component_value)
+                representative = _as_mapping(component.get("representative_point"))
+                figures = _as_mapping(component.get("figures"))
+                component_id = int(component.get("component_id", 0))
+                lines.extend(
+                    [
+                        "",
+                        f"### crop_{int(comparison.get('index', 0)):03d} / "
+                        f"component_{component_id:03d}",
+                        "",
+                        f"- voxel_count: `{component.get('voxel_count', '')}`",
+                        f"- representative_global_coordinate: "
+                        f"`{representative.get('global_coordinate', '')}`",
+                        f"- max_distance_to_public_fvt: "
+                        f"`{_format_metric(_nested(component, 'distance_to_public_fvt', 'maximum'))}`",
+                        f"- minimum_crop_face_distance: "
+                        f"`{component.get('minimum_crop_face_distance', '')}`",
+                        "",
+                    ]
+                )
+                orthogonal = figures.get("orthogonal_amplitude_overlay")
+                if isinstance(orthogonal, str):
+                    lines.extend(
+                        [
+                            _image_or_blank(
+                                orthogonal,
+                                f"crop {comparison.get('index', '')} component "
+                                f"{component_id} orthogonal amplitude review",
+                            ),
+                            "",
+                        ]
+                    )
+                adjacent_links = [
+                    f"[{axis} adjacent slices]({figures[f'adjacent_{axis}']})"
+                    for axis in ("i3", "i2", "i1")
+                    if isinstance(figures.get(f"adjacent_{axis}"), str)
+                ]
+                if adjacent_links:
+                    lines.append("- " + "; ".join(adjacent_links))
+                context_link = figures.get("context_comparison")
+                if isinstance(context_link, str):
+                    lines.append(f"- [same-global-ROI context comparison]({context_link})")
 
     manual_items = _as_mapping(manual_review.get("items"))
     lines.extend(["", "## Manual Geological Review", ""])
@@ -1038,6 +1784,19 @@ def _number(value: Any) -> float | None:
     return None
 
 
+def _coordinate3(value: Any, name: str) -> tuple[int, int, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError(f"{name} must contain three coordinates")
+    coordinates: list[int] = []
+    for coordinate in value:
+        if not isinstance(coordinate, (int, np.integer)) or isinstance(
+            coordinate, (bool, np.bool_)
+        ):
+            raise ValueError(f"{name} must contain integer coordinates")
+        coordinates.append(int(coordinate))
+    return tuple(coordinates)  # type: ignore[return-value]
+
+
 def _delta(candidate: Any, baseline: Any) -> float | None:
     candidate_value = _number(candidate)
     baseline_value = _number(baseline)
@@ -1066,6 +1825,14 @@ def main(argv: list[str] | None = None) -> int:
             save_volumes=args.save_volumes,
             save_figures=args.save_figures,
             write_markdown_index=args.write_markdown_index,
+            outlier_diagnostics=args.outlier_diagnostics,
+            context_crop_shape=args.context_crop_shape,
+            context_crop_indices=args.context_crop_index,
+            outlier_max_points=args.outlier_max_points,
+            outlier_max_components=args.outlier_max_components,
+            outlier_window_radius=args.outlier_window_radius,
+            outlier_adjacent_slice_radius=args.outlier_adjacent_slice_radius,
+            amplitude_clip_percentile=args.amplitude_clip_percentile,
             pretty=args.pretty,
             count=args.count,
             crop_shape=args.crop_shape,

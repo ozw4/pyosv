@@ -1,0 +1,445 @@
+{
+  "format_version": 1,
+  "evidence_type": "f3_scanner_thinning_policy_external_smoke",
+  "status": {
+    "reference_like_backend_49_cubed_synthetic_gate": "passed",
+    "f3_shared_scan_policy_validation": "failed_64x3",
+    "large_crop": "not_run_prerequisite_failed",
+    "manual_review": "pending_human_review",
+    "quality_workflow_default_promotion": "blocked_unchanged"
+  },
+  "comparison_profile": "quality-workflow-scanner-thinning-v1",
+  "validation_role": "truthless_external_smoke",
+  "fixed_configuration": {
+    "scanner_backend": "reference-like",
+    "workflow_mode": "quality",
+    "voter_thin_mode": "hybrid_v2",
+    "voter_plateau_tie_breaker": "branch_fet",
+    "surface_support_min_fraction": 0.0,
+    "surface_support_exponent": 0.0,
+    "surface_voting_boundary_policy": "reference",
+    "final_normalization_smoothing": 0.0,
+    "requested_remove_edge_effects": true
+  },
+  "policies": {
+    "baseline": {
+      "policy_id": "quality_reference_like_scanner_thin_reference_v1",
+      "scanner_thin_mode": "reference",
+      "requested_remove_edge_effects": true,
+      "effective_remove_edge_effects": true
+    },
+    "candidate": {
+      "policy_id": "quality_reference_like_scanner_thin_normal_v1",
+      "scanner_thin_mode": "normal",
+      "requested_remove_edge_effects": true,
+      "effective_remove_edge_effects": null
+    }
+  },
+  "run_64x3": {
+    "status": "completed_validation_failed",
+    "exit_code": 2,
+    "source_commit": "8b8b44eecd08cdc0bfa5c5a32a94f36b74eba650",
+    "source_worktree_state": "clean",
+    "environment": {
+      "python": "3.10.12",
+      "numpy": "1.26.4",
+      "scipy": "1.14.0"
+    },
+    "dataset": {
+      "root": "/home/dcuser/public_data/field/F3/reference_osv",
+      "shape": [
+        420,
+        400,
+        100
+      ],
+      "encoding": "big-endian float32",
+      "files": {
+        "ep.dat": {
+          "size_bytes": 67200000,
+          "sha256": "6b5f5fe07414b1e6cfc78495c67e8665d7d6f36be54a404da966ce80175e5d1e"
+        },
+        "fl.dat": {
+          "size_bytes": 67200000,
+          "sha256": "f41d9293a0d63cc30392a7f5bfa6a624af9d1a70e1db800bae50c5b5457024b8"
+        },
+        "fv.dat": {
+          "size_bytes": 67200000,
+          "sha256": "711b4a4922df434d756aaff742850c2131cec33db5817d18434bbf46fec2fe75"
+        },
+        "fvt.dat": {
+          "size_bytes": 67200000,
+          "sha256": "3e1103a29da6e9cafb4f4641e8f8940848377dcc3b8d38bb89a4be9258073bc8"
+        }
+      }
+    },
+    "command": [
+      "PYTHONPATH=src",
+      "python",
+      "examples/report_3d_f3d_scanner_thinning_policy.py",
+      "--data-root",
+      "/home/dcuser/public_data/field/F3/reference_osv",
+      "--comparison-profile",
+      "quality-workflow-scanner-thinning-v1",
+      "--count",
+      "3",
+      "--crop-shape",
+      "64,64,64",
+      "--interior-margin",
+      "16",
+      "--save-volumes",
+      "--save-figures",
+      "--write-markdown-index",
+      "--fail-on-validation-failure",
+      "--output-json",
+      "outputs/3d/f3d/scanner_thinning_policy_64x3/metrics.json",
+      "--pretty"
+    ],
+    "selection_mode": "count",
+    "requested_count": 3,
+    "requested_centers": null,
+    "selected_centers": [
+      [
+        147,
+        96,
+        67
+      ],
+      [
+        96,
+        65,
+        51
+      ],
+      [
+        74,
+        145,
+        64
+      ]
+    ],
+    "effective_crop_bounds": [
+      {
+        "index": 1,
+        "i3": [
+          115,
+          179
+        ],
+        "i2": [
+          64,
+          128
+        ],
+        "i1": [
+          35,
+          99
+        ]
+      },
+      {
+        "index": 2,
+        "i3": [
+          64,
+          128
+        ],
+        "i2": [
+          33,
+          97
+        ],
+        "i1": [
+          19,
+          83
+        ]
+      },
+      {
+        "index": 3,
+        "i3": [
+          42,
+          106
+        ],
+        "i2": [
+          113,
+          177
+        ],
+        "i1": [
+          32,
+          96
+        ]
+      }
+    ],
+    "crop_shape": [
+      64,
+      64,
+      64
+    ],
+    "interior_margin": 16,
+    "scanner_execution_count": 3
+  },
+  "policy_validation": {
+    "passed": false,
+    "crop_count": 3,
+    "scanner_execution_count": 3,
+    "reasons": [
+      "candidate public-F3 fvt sparse distance p95 worsened beyond the smoke limit"
+    ],
+    "checks": {
+      "shared_scan_contract": {
+        "passed": true,
+        "expected_scanner_execution_count": 3,
+        "scanner_execution_count": 3
+      },
+      "finite_outputs": {
+        "passed": true,
+        "failure_count": 0,
+        "stage_count_per_policy": 10
+      },
+      "nonempty_stages": {
+        "passed": true,
+        "baseline_failures": [],
+        "candidate_failures": []
+      },
+      "fvt_density_ratio": {
+        "passed": true,
+        "allowed_range": [
+          0.5,
+          2.0
+        ],
+        "per_crop": [
+          1.0237069942432346,
+          1.0253459042488062,
+          1.147161615657297
+        ],
+        "aggregate": 1.0638003439587251
+      },
+      "edge_density_proxy": {
+        "passed": true,
+        "maximum_allowed_delta": 0.1,
+        "per_crop_delta": [
+          0.0,
+          0.005840301513671875,
+          -0.007999420166015625
+        ],
+        "maximum_crop_delta": 0.005840301513671875,
+        "aggregate_mean_delta": -0.0007197062174479166
+      },
+      "public_fvt_sparse_distance_p95": {
+        "passed": false,
+        "maximum_allowed_delta_samples": 5.0,
+        "per_crop_delta_samples": [
+          6.193637208461375,
+          -8.22397640394142,
+          -0.1528180781749615
+        ],
+        "maximum_crop_delta_samples": 6.193637208461375,
+        "aggregate_mean_delta_samples": -0.7277190912183352
+      },
+      "crop_stability": {
+        "passed": true,
+        "maximum_candidate_fvt_density_cv": 2.0,
+        "baseline_fvt_density_cv": 0.04226960583649463,
+        "candidate_fvt_density_cv": 0.03990472148251622,
+        "candidate_minus_baseline_cv": -0.0023648843539784137
+      },
+      "configuration_contract": {
+        "passed": true,
+        "requested_difference_paths": [
+          "scanner_thin_mode"
+        ],
+        "effective_difference_paths": [
+          "effective_remove_edge_effects",
+          "scanner_thin_mode"
+        ]
+      }
+    }
+  },
+  "per_crop_metrics": [
+    {
+      "index": 1,
+      "fvt_density": {
+        "baseline": 0.16831207275390625,
+        "candidate": 0.17230224609375,
+        "candidate_over_baseline": 1.0237069942432346
+      },
+      "edge_density_proxy": {
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "delta": 0.0
+      },
+      "public_fvt_sparse_distance_p95": {
+        "baseline": 2.23606797749979,
+        "candidate": 8.429705185961165,
+        "delta": 6.193637208461375
+      },
+      "public_fvt_buffered_overlap": {
+        "baseline_precision": 0.8793103448275862,
+        "baseline_recall": 0.847457627118644,
+        "candidate_precision": 0.6842105263157895,
+        "candidate_recall": 0.8813559322033898
+      },
+      "validation_passed": false
+    },
+    {
+      "index": 2,
+      "fvt_density": {
+        "baseline": 0.15577316284179688,
+        "candidate": 0.15972137451171875,
+        "candidate_over_baseline": 1.0253459042488062
+      },
+      "edge_density_proxy": {
+        "baseline": 0.002483367919921875,
+        "candidate": 0.00832366943359375,
+        "delta": 0.005840301513671875
+      },
+      "public_fvt_sparse_distance_p95": {
+        "baseline": 22.269925721726295,
+        "candidate": 14.045949317784876,
+        "delta": -8.22397640394142
+      },
+      "public_fvt_buffered_overlap": {
+        "baseline_precision": 0.0196078431372549,
+        "baseline_recall": 0.06666666666666667,
+        "candidate_precision": 0.26,
+        "candidate_recall": 0.4666666666666667
+      },
+      "validation_passed": true
+    },
+    {
+      "index": 3,
+      "fvt_density": {
+        "baseline": 0.15280914306640625,
+        "candidate": 0.17529678344726562,
+        "candidate_over_baseline": 1.147161615657297
+      },
+      "edge_density_proxy": {
+        "baseline": 0.01877593994140625,
+        "candidate": 0.010776519775390625,
+        "delta": -0.007999420166015625
+      },
+      "public_fvt_sparse_distance_p95": {
+        "baseline": 13.319050348248322,
+        "candidate": 13.16623227007336,
+        "delta": -0.1528180781749615
+      },
+      "public_fvt_buffered_overlap": {
+        "baseline_precision": 0.13636363636363635,
+        "baseline_recall": 0.13333333333333333,
+        "candidate_precision": 0.2962962962962963,
+        "candidate_recall": 0.37777777777777777
+      },
+      "validation_passed": true
+    }
+  ],
+  "aggregate_metrics": {
+    "baseline_stage_nonzero_fraction_mean": {
+      "fet": 0.07999420166015625,
+      "fv": 0.7236836751302084,
+      "fvt": 0.15896479288736978
+    },
+    "candidate_stage_nonzero_fraction_mean": {
+      "fet": 0.15094121297200522,
+      "fv": 0.81317138671875,
+      "fvt": 0.16910680135091147
+    },
+    "candidate_over_baseline_fvt_density": 1.0638003439587251,
+    "baseline_fvt_edge_density_proxy_mean": 0.007086435953776042,
+    "candidate_fvt_edge_density_proxy_mean": 0.006366729736328125,
+    "candidate_minus_baseline_edge_density_proxy_mean": -0.0007197062174479166,
+    "baseline_public_fvt_sparse_distance_p95_mean": 12.608348015824802,
+    "candidate_public_fvt_sparse_distance_p95_mean": 11.880628924606468,
+    "candidate_minus_baseline_public_fvt_sparse_distance_p95_mean": -0.7277190912183352,
+    "candidate_only_positive_fvt_fraction_mean": 0.5766249867778989,
+    "baseline_only_positive_fvt_fraction_mean": 0.5527854677609644,
+    "edge_shell_share_of_candidate_only_positive_fvt_mean": 0.8978700183295824
+  },
+  "failure_analysis": {
+    "crop_index": 1,
+    "status": "metric_failure_reproduced_no_pipeline_or_coordinate_bug_found",
+    "interpretation": "The candidate promoted a small tail of formerly weaker ridges into its top one percent; this is not evidence of wholesale ridge displacement and is not by itself a geological quality judgment.",
+    "candidate_top_percentile_point_count": 57,
+    "candidate_points_exceeding_baseline_p95_plus_limit": 5,
+    "candidate_points_exceeding_limit_fraction": 0.08771929824561403,
+    "candidate_tail_distance_samples": [
+      12.36931687685298,
+      11.313708498984761,
+      9.899494936611665,
+      8.06225774829855,
+      7.54983443527075
+    ],
+    "candidate_tail_global_coordinates_i3_i2_i1": [
+      [
+        143,
+        88,
+        54
+      ],
+      [
+        157,
+        105,
+        61
+      ],
+      [
+        156,
+        104,
+        61
+      ],
+      [
+        140,
+        101,
+        71
+      ],
+      [
+        153,
+        102,
+        66
+      ]
+    ],
+    "minimum_crop_face_distance_samples": 19,
+    "candidate_to_baseline_p95_samples": 8.90176120130651,
+    "baseline_to_candidate_p95_samples": 1.7722431864335453,
+    "note": "All five tail points are on or within one sample of a positive public-FVT ridge, but the corresponding public ridge strength is below the public top-one-percent mask."
+  },
+  "large_crop": {
+    "status": "not_run_prerequisite_failed",
+    "reason": "The documented procedure requires the 64x3 validation to pass before selecting and running the large crop."
+  },
+  "manual_review": {
+    "status": "pending_human_review",
+    "reviewer": null,
+    "decision": null,
+    "checklist": {
+      "major_fault_surface_continuity": "pending",
+      "weak_and_small_fault_retention": "pending",
+      "candidate_only_random_noise": "pending",
+      "implausible_parallel_ridges": "pending",
+      "crop_face_planar_artifacts": "pending",
+      "local_strike_dip_continuity": "pending",
+      "plausible_baseline_only_structure_retention": "pending"
+    }
+  },
+  "machine_preliminary_visual_screen": {
+    "status": "concerns_unresolved_not_a_manual_review",
+    "major_fault_surface_continuity": "appears_preserved_in_three-axis_center_slices",
+    "candidate_only_random_noise": "no_clear_salt_and_pepper_increase_in_center_slices",
+    "implausible_parallel_ridges": "no_clear_candidate_specific_increase_in_center_slices",
+    "crop_face_planar_artifacts": "not_seen_in_center_slices_but_not_excluded",
+    "weak_and_small_fault_retention": "unresolved",
+    "local_strike_dip_continuity": "unresolved_without_orientation_maps",
+    "plausible_baseline_only_structure_retention": "unresolved_in_crop_2",
+    "concerns": [
+      "Crop 1 contains a small asymmetric tail of promoted high ridges and fails the automatic sparse-distance check.",
+      "Crop 3 has the largest density increases: FET 2.376x, FV 1.307x, and FVT 1.147x.",
+      "Center slices and MIPs are insufficient for a human geological decision."
+    ]
+  },
+  "artifacts": {
+    "metrics.json": {
+      "path": "outputs/3d/f3d/scanner_thinning_policy_64x3/metrics.json",
+      "sha256": "3a5ef75a97b15b357f3c715ff9280ef90a016c1888e29a4baac1d65865aa0eb2",
+      "committed": false
+    },
+    "visual_report.md": {
+      "path": "outputs/3d/f3d/scanner_thinning_policy_64x3/visual_report.md",
+      "sha256": "f17e5de7cb062a1c3c5d00e73087e52d74fdc5a28cb0eaf5c98496f8521a036f",
+      "committed": false
+    }
+  },
+  "notes": [
+    "Public F3 fv.dat and fvt.dat are smoke references, not independent truth labels.",
+    "This is a failed-run evidence manifest, not a passing F3 promotion artifact.",
+    "No DAT volume, generated PNG, full metrics JSON, or generated Markdown is committed.",
+    "No scanner-thinning default or other workflow/public default changed."
+  ]
+}

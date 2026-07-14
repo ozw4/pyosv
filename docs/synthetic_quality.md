@@ -316,10 +316,12 @@ The generated reports did not record a source commit, so the compact evidence
 uses `source_commit=null` with `source_provenance="not_recorded"`; it does not
 guess a commit from timestamps.
 
-This passing artifact evaluates the synthetic policy candidate only. The F3
-shared-scan validation and manual review are pending, so it does not change the
-quality-workflow default, another workflow default, or the public scanner
-thinning default.
+This passing artifact evaluates the synthetic policy candidate only. The later
+formal F3 64^3-by-3 shared-scan run failed one per-crop external-smoke check:
+crop 1's public-FVT sparse-distance p95 delta was `+6.193637` samples against a
+`+5.0` limit. The prerequisite large crop was not run and human review remains
+pending, so the synthetic result does not change the quality-workflow default,
+another workflow default, or the public scanner-thinning default.
 
 The controlled synthetic oracle path is:
 
@@ -594,7 +596,7 @@ the skin, non-boundary, oracle, and topology guardrails documented in
 gate passes, do not describe the candidate as higher quality than the reference
 implementation or as promoted/default behavior. The passing reference-like
 scanner-thinning gate above evaluates a different backend and policy pair; its
-pending F3 validation still prevents a default change.
+failed F3 64^3-by-3 external smoke still prevents a default change.
 
 ## Curved Surface Thinning Diagnostic
 

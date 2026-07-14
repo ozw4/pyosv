@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
+
+
+@dataclass(frozen=True)
+class _SparseRidgeDistanceField:
+    """Sparse percentile mask and Euclidean distance field for one array.
+
+    Empty sparse masks have ``distance=None`` and ``nearest_indices=None`` so
+    callers cannot accidentally interpret SciPy's empty-target behavior as a
+    meaningful ridge distance.
+    """
+
+    mask: np.ndarray
+    count: int
+    distance: np.ndarray | None
+    nearest_indices: np.ndarray | None
 
 
 def finite_value_report(x: np.ndarray) -> dict[str, float | int | tuple[int, ...]]:
@@ -102,6 +118,45 @@ def top_percentile_mask(
     return mask
 
 
+def _sparse_ridge_distance_field(
+    x: np.ndarray,
+    *,
+    percentile: float = 99.0,
+    positive_only: bool = True,
+    return_indices: bool = False,
+) -> _SparseRidgeDistanceField:
+    """Return the shared sparse-mask Euclidean distance representation.
+
+    This helper is side-effect free. Its mask definition is exactly
+    :func:`top_percentile_mask`, and its distance uses unit-spacing
+    :func:`scipy.ndimage.distance_transform_edt` on the inverse mask.
+    """
+
+    mask = top_percentile_mask(x, percentile, positive_only=positive_only)
+    count = int(np.count_nonzero(mask))
+    if count == 0:
+        return _SparseRidgeDistanceField(
+            mask=mask,
+            count=0,
+            distance=None,
+            nearest_indices=None,
+        )
+    if return_indices:
+        distance, nearest_indices = distance_transform_edt(
+            ~mask,
+            return_indices=True,
+        )
+    else:
+        distance = distance_transform_edt(~mask)
+        nearest_indices = None
+    return _SparseRidgeDistanceField(
+        mask=mask,
+        count=count,
+        distance=distance,
+        nearest_indices=nearest_indices,
+    )
+
+
 def buffered_ridge_overlap(
     reference: np.ndarray,
     candidate: np.ndarray,
@@ -173,11 +228,19 @@ def sparse_ridge_distance_metrics(
     """
 
     reference_values, candidate_values = _validate_comparable_finite_arrays(reference, candidate)
-    reference_mask = top_percentile_mask(reference_values, percentile, positive_only=positive_only)
-    candidate_mask = top_percentile_mask(candidate_values, percentile, positive_only=positive_only)
+    reference_field = _sparse_ridge_distance_field(
+        reference_values,
+        percentile=percentile,
+        positive_only=positive_only,
+    )
+    candidate_field = _sparse_ridge_distance_field(
+        candidate_values,
+        percentile=percentile,
+        positive_only=positive_only,
+    )
 
-    reference_count = int(np.count_nonzero(reference_mask))
-    candidate_count = int(np.count_nonzero(candidate_mask))
+    reference_count = reference_field.count
+    candidate_count = candidate_field.count
     result: dict[str, float | int | None] = {
         "reference_count": reference_count,
         "candidate_count": candidate_count,
@@ -194,12 +257,12 @@ def sparse_ridge_distance_metrics(
     if reference_count == 0 or candidate_count == 0:
         return result
 
-    distance_to_reference = distance_transform_edt(~reference_mask)
-    candidate_to_reference = distance_to_reference[candidate_mask]
+    assert reference_field.distance is not None
+    assert candidate_field.distance is not None
+    candidate_to_reference = reference_field.distance[candidate_field.mask]
     result.update(_distance_summary("candidate_to_reference", candidate_to_reference))
 
-    distance_to_candidate = distance_transform_edt(~candidate_mask)
-    reference_to_candidate = distance_to_candidate[reference_mask]
+    reference_to_candidate = candidate_field.distance[reference_field.mask]
     result.update(_distance_summary("reference_to_candidate", reference_to_candidate))
     return result
 
@@ -464,11 +527,18 @@ def _f1(precision: float, recall: float) -> float:
     return float(2.0 * precision * recall / denominator) if denominator else 0.0
 
 
-def _distance_summary(prefix: str, distances: np.ndarray) -> dict[str, float]:
-    values = distances.astype(np.float64, copy=False)
+def _sparse_ridge_distance_summary(distances: np.ndarray) -> dict[str, float]:
+    """Return the shared finite distribution summary for ridge distances."""
+
+    values = np.asarray(distances).astype(np.float64, copy=False)
     return {
-        f"{prefix}_mean": float(np.mean(values)),
-        f"{prefix}_median": float(np.median(values)),
-        f"{prefix}_p90": float(np.percentile(values, 90.0)),
-        f"{prefix}_p95": float(np.percentile(values, 95.0)),
+        "mean": float(np.mean(values)),
+        "median": float(np.median(values)),
+        "p90": float(np.percentile(values, 90.0)),
+        "p95": float(np.percentile(values, 95.0)),
     }
+
+
+def _distance_summary(prefix: str, distances: np.ndarray) -> dict[str, float]:
+    summary = _sparse_ridge_distance_summary(distances)
+    return {f"{prefix}_{name}": value for name, value in summary.items()}

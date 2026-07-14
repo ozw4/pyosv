@@ -3,8 +3,8 @@
   "evidence_type": "synthetic_scanner_thinning_policy_gate",
   "status": {
     "reference_like_backend_49_cubed_synthetic_gate": "passed",
-    "f3_shared_scan_policy_validation": "pending",
-    "quality_workflow_default_promotion": "pending_unchanged"
+    "f3_shared_scan_policy_validation": "failed_64x3",
+    "quality_workflow_default_promotion": "blocked_unchanged"
   },
   "comparison_profile": "quality-workflow-scanner-thinning-v1",
   "promotion_gate": {

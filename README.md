@@ -164,9 +164,16 @@ been completed. `quality_reference_like_scanner_thin_normal_v1` passed the
 no missing evidence rows, and a passing configuration contract. Compact values
 and hashes are recorded in
 `tests/fixtures/synthetic_quality_refactor/reference_like_scanner_thinning_49_evidence.json`.
-This is synthetic candidate evidence only: the F3 shared-scan policy validation
-and manual review remain pending, so the quality-workflow scanner-thinning
-default and all public defaults remain unchanged.
+This is synthetic candidate evidence only. The formal F3 64^3-by-3 shared-scan
+run has since completed but failed one conservative external-smoke check: crop
+1 worsened public-FVT sparse-distance p95 by `6.193637` samples against the
+allowed `5.0`. The other seven checks passed, including shared scanning,
+finite/nonempty stages, density, edge, crop-stability, and configuration
+contracts. The prerequisite large crop was therefore not run and human
+geological review remains pending. The quality-workflow scanner-thinning
+default and all public defaults remain unchanged. Compact failed-run evidence
+is recorded in
+`tests/fixtures/f3d_scanner_thinning_policy/quality_reference_like_normal_v1_evidence.json`.
 
 The legacy quality-backend promotion-candidate flow for
 `boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,21 @@ _RIDGE_REFERENCE_ONLY_RGB = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 _RIDGE_CANDIDATE_ONLY_RGB = np.array([0.0, 0.25, 1.0], dtype=np.float32)
 _RIDGE_EXACT_OVERLAP_RGB = np.array([1.0, 1.0, 1.0], dtype=np.float32)
 _RIDGE_BUFFERED_MATCH_RGB = np.array([0.0, 1.0, 1.0], dtype=np.float32)
+
+_PUBLIC_FVT_COLOR = "#ff453a"
+_BASELINE_FVT_COLOR = "#00c7ff"
+_CANDIDATE_FVT_COLOR = "#ffd60a"
+_CONTEXT_FVT_COLOR = "#ff9f0a"
+_RIDGE_OVERLAP_COLOR = "#ffffff"
+_OUTLIER_POINT_COLOR = "#ff2dff"
+_NEAREST_PUBLIC_POINT_COLOR = "#30d158"
+
+_PLANE_AXES = {
+    "i3": (0, 1, 2),
+    "i2": (1, 0, 2),
+    "i1": (2, 0, 1),
+}
+_ARRAY_AXIS_NAMES = ("i3", "i2", "i1")
 
 
 def require_matplotlib() -> Any:
@@ -399,6 +415,413 @@ def save_buffered_ridge_overlay_slices(
     return written
 
 
+def save_outlier_orthogonal_amplitude_overlay(
+    output_path: str | Path,
+    *,
+    amplitude: ArrayLike,
+    public_fvt_mask: ArrayLike,
+    baseline_fvt_mask: ArrayLike,
+    candidate_fvt_mask: ArrayLike,
+    representative_coordinate: tuple[int, int, int],
+    nearest_public_coordinate: tuple[int, int, int],
+    crop_global_start: tuple[int, int, int],
+    amplitude_clip: float,
+    window_radius: int,
+    crop_index: int,
+    component_id: int,
+    distance_to_public: float,
+) -> Path:
+    """Save a 3-by-5 signed-amplitude review at an outlier's three planes.
+
+    All coordinates are ordered ``(i3, i2, i1)``. Ridge inputs are precomputed
+    boolean masks so this visualization helper cannot drift from the metric's
+    percentile or interior-ROI definition. The nearest-public marker is projected
+    onto each representative-point plane; the fixed-axis offset is shown in the
+    corresponding row label.
+    """
+
+    values, masks = _validate_amplitude_and_masks(
+        amplitude,
+        {
+            "public": public_fvt_mask,
+            "baseline": baseline_fvt_mask,
+            "candidate": candidate_fvt_mask,
+        },
+    )
+    representative = _validate_coordinate(
+        representative_coordinate,
+        values.shape,
+        "representative_coordinate",
+    )
+    nearest_public = _validate_coordinate(
+        nearest_public_coordinate,
+        values.shape,
+        "nearest_public_coordinate",
+    )
+    global_start = _validate_global_start(crop_global_start)
+    clip = _validate_positive_finite_value(amplitude_clip, "amplitude_clip")
+    radius = _validate_nonnegative_integer(window_radius, "window_radius")
+    crop_number = _validate_positive_integer(crop_index, "crop_index")
+    component_number = _validate_positive_integer(component_id, "component_id")
+    distance = _validate_nonnegative_finite_value(distance_to_public, "distance_to_public")
+
+    output_file = _prepare_output_file(output_path)
+    plt = require_matplotlib()
+    fig, axes = plt.subplots(
+        3,
+        5,
+        figsize=(18.0, 10.5),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    columns: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("seismic amplitude", ()),
+        ("seismic + public FVT", ("public",)),
+        ("seismic + baseline FVT", ("baseline",)),
+        ("seismic + candidate FVT", ("candidate",)),
+        ("seismic + combined ridges", ("public", "baseline", "candidate")),
+    )
+    colors = {
+        "public": _PUBLIC_FVT_COLOR,
+        "baseline": _BASELINE_FVT_COLOR,
+        "candidate": _CANDIDATE_FVT_COLOR,
+    }
+    global_representative = _global_coordinate(representative, global_start)
+    try:
+        fig.suptitle(
+            f"crop {crop_number:03d}, component {component_number:03d}; "
+            f"outlier global={global_representative}, distance={distance:.6g} samples"
+        )
+        for row, axis_name in enumerate(("i3", "i2", "i1")):
+            fixed_axis, row_axis, column_axis = _PLANE_AXES[axis_name]
+            row_slice, column_slice = _plane_window_slices(
+                values.shape,
+                representative,
+                fixed_axis=fixed_axis,
+                radius=radius,
+                include=nearest_public,
+            )
+            fixed_index = representative[fixed_axis]
+            fixed_global = global_start[fixed_axis] + fixed_index
+            nearest_offset = nearest_public[fixed_axis] - fixed_index
+            for column, (panel_title, overlay_names) in enumerate(columns):
+                ax = axes[row, column]
+                _draw_amplitude_plane(
+                    ax,
+                    values,
+                    axis_name=axis_name,
+                    fixed_index=fixed_index,
+                    row_slice=row_slice,
+                    column_slice=column_slice,
+                    global_start=global_start,
+                    amplitude_clip=clip,
+                )
+                for overlay_name in overlay_names:
+                    _draw_mask_plane(
+                        ax,
+                        masks[overlay_name],
+                        axis_name=axis_name,
+                        fixed_index=fixed_index,
+                        row_slice=row_slice,
+                        column_slice=column_slice,
+                        global_start=global_start,
+                        color=colors[overlay_name],
+                    )
+                _draw_projected_point_markers(
+                    ax,
+                    representative=representative,
+                    nearest_public=nearest_public,
+                    row_axis=row_axis,
+                    column_axis=column_axis,
+                    global_start=global_start,
+                    show_representative=True,
+                    show_nearest=True,
+                )
+                ax.set_title(panel_title)
+                if column == 0:
+                    offset_text = (
+                        "on plane"
+                        if nearest_offset == 0
+                        else f"nearest-public projection Δ{axis_name}={nearest_offset:+d}"
+                    )
+                    ax.set_ylabel(
+                        f"global {axis_name}={fixed_global}\n{offset_text}\n"
+                        f"global {_ARRAY_AXIS_NAMES[row_axis]}"
+                    )
+        _add_bottom_figure_legend(
+            fig,
+            _outlier_legend_handles(include_all_ridges=True),
+            columns=5,
+        )
+        fig.savefig(output_file, dpi=150)
+    finally:
+        plt.close(fig)
+    return output_file
+
+
+def save_outlier_adjacent_slice_overlay(
+    output_path: str | Path,
+    *,
+    amplitude: ArrayLike,
+    public_fvt_mask: ArrayLike,
+    baseline_fvt_mask: ArrayLike,
+    candidate_fvt_mask: ArrayLike,
+    representative_coordinate: tuple[int, int, int],
+    nearest_public_coordinate: tuple[int, int, int],
+    crop_global_start: tuple[int, int, int],
+    amplitude_clip: float,
+    window_radius: int,
+    adjacent_slice_radius: int,
+    axis: str | int,
+    crop_index: int,
+    component_id: int,
+) -> Path:
+    """Save signed-amplitude combined overlays on neighboring slices of one axis."""
+
+    values, masks = _validate_amplitude_and_masks(
+        amplitude,
+        {
+            "public": public_fvt_mask,
+            "baseline": baseline_fvt_mask,
+            "candidate": candidate_fvt_mask,
+        },
+    )
+    representative = _validate_coordinate(
+        representative_coordinate,
+        values.shape,
+        "representative_coordinate",
+    )
+    nearest_public = _validate_coordinate(
+        nearest_public_coordinate,
+        values.shape,
+        "nearest_public_coordinate",
+    )
+    global_start = _validate_global_start(crop_global_start)
+    clip = _validate_positive_finite_value(amplitude_clip, "amplitude_clip")
+    radius = _validate_nonnegative_integer(window_radius, "window_radius")
+    adjacent_radius = _validate_nonnegative_integer(
+        adjacent_slice_radius,
+        "adjacent_slice_radius",
+    )
+    crop_number = _validate_positive_integer(crop_index, "crop_index")
+    component_number = _validate_positive_integer(component_id, "component_id")
+    axis_name, fixed_axis = _normalize_axis(axis)
+    _, row_axis, column_axis = _PLANE_AXES[axis_name]
+
+    center_index = representative[fixed_axis]
+    first_index = max(0, center_index - adjacent_radius)
+    stop_index = min(values.shape[fixed_axis], center_index + adjacent_radius + 1)
+    fixed_indices = list(range(first_index, stop_index))
+    row_slice, column_slice = _plane_window_slices(
+        values.shape,
+        representative,
+        fixed_axis=fixed_axis,
+        radius=radius,
+        include=nearest_public,
+    )
+
+    output_file = _prepare_output_file(output_path)
+    plt = require_matplotlib()
+    column_count = min(7, len(fixed_indices))
+    row_count = (len(fixed_indices) + column_count - 1) // column_count
+    fig, axes = plt.subplots(
+        row_count,
+        column_count,
+        figsize=(3.25 * column_count, 3.4 * row_count),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    colors = {
+        "public": _PUBLIC_FVT_COLOR,
+        "baseline": _BASELINE_FVT_COLOR,
+        "candidate": _CANDIDATE_FVT_COLOR,
+    }
+    try:
+        fig.suptitle(
+            f"crop {crop_number:03d}, component {component_number:03d}; "
+            f"adjacent {axis_name} continuity"
+        )
+        for panel_number, fixed_index in enumerate(fixed_indices):
+            ax = axes.flat[panel_number]
+            _draw_amplitude_plane(
+                ax,
+                values,
+                axis_name=axis_name,
+                fixed_index=fixed_index,
+                row_slice=row_slice,
+                column_slice=column_slice,
+                global_start=global_start,
+                amplitude_clip=clip,
+            )
+            for overlay_name in ("public", "baseline", "candidate"):
+                _draw_mask_plane(
+                    ax,
+                    masks[overlay_name],
+                    axis_name=axis_name,
+                    fixed_index=fixed_index,
+                    row_slice=row_slice,
+                    column_slice=column_slice,
+                    global_start=global_start,
+                    color=colors[overlay_name],
+                )
+            _draw_projected_point_markers(
+                ax,
+                representative=representative,
+                nearest_public=nearest_public,
+                row_axis=row_axis,
+                column_axis=column_axis,
+                global_start=global_start,
+                show_representative=fixed_index == representative[fixed_axis],
+                show_nearest=fixed_index == nearest_public[fixed_axis],
+            )
+            fixed_global = global_start[fixed_axis] + fixed_index
+            suffix = " (representative)" if fixed_index == center_index else ""
+            ax.set_title(f"global {axis_name}={fixed_global}{suffix}")
+        for ax in axes.flat[len(fixed_indices) :]:
+            ax.set_visible(False)
+        _add_bottom_figure_legend(
+            fig,
+            _outlier_legend_handles(include_all_ridges=True),
+            columns=5,
+        )
+        fig.savefig(output_file, dpi=150)
+    finally:
+        plt.close(fig)
+    return output_file
+
+
+def save_context_orthogonal_amplitude_comparison(
+    output_path: str | Path,
+    *,
+    amplitude: ArrayLike,
+    base_candidate_fvt_mask: ArrayLike,
+    context_candidate_fvt_mask: ArrayLike,
+    representative_coordinate: tuple[int, int, int],
+    nearest_public_coordinate: tuple[int, int, int],
+    crop_global_start: tuple[int, int, int],
+    amplitude_clip: float,
+    window_radius: int,
+    crop_index: int,
+    component_id: int,
+) -> Path:
+    """Save a 3-by-4 same-global-ROI base/context amplitude comparison."""
+
+    values, masks = _validate_amplitude_and_masks(
+        amplitude,
+        {
+            "base": base_candidate_fvt_mask,
+            "context": context_candidate_fvt_mask,
+        },
+    )
+    representative = _validate_coordinate(
+        representative_coordinate,
+        values.shape,
+        "representative_coordinate",
+    )
+    nearest_public = _validate_coordinate(
+        nearest_public_coordinate,
+        values.shape,
+        "nearest_public_coordinate",
+    )
+    global_start = _validate_global_start(crop_global_start)
+    clip = _validate_positive_finite_value(amplitude_clip, "amplitude_clip")
+    radius = _validate_nonnegative_integer(window_radius, "window_radius")
+    crop_number = _validate_positive_integer(crop_index, "crop_index")
+    component_number = _validate_positive_integer(component_id, "component_id")
+
+    base_only = masks["base"] & (~masks["context"])
+    context_only = masks["context"] & (~masks["base"])
+    overlap = masks["base"] & masks["context"]
+    output_file = _prepare_output_file(output_path)
+    plt = require_matplotlib()
+    fig, axes = plt.subplots(
+        3,
+        4,
+        figsize=(15.0, 10.5),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    global_representative = _global_coordinate(representative, global_start)
+    try:
+        fig.suptitle(
+            f"crop {crop_number:03d}, component {component_number:03d}; "
+            f"base/context same-global ROI at {global_representative}"
+        )
+        for row, axis_name in enumerate(("i3", "i2", "i1")):
+            fixed_axis, row_axis, column_axis = _PLANE_AXES[axis_name]
+            row_slice, column_slice = _plane_window_slices(
+                values.shape,
+                representative,
+                fixed_axis=fixed_axis,
+                radius=radius,
+                include=nearest_public,
+            )
+            fixed_index = representative[fixed_axis]
+            panels: tuple[tuple[str, tuple[tuple[np.ndarray, str], ...]], ...] = (
+                ("base candidate FVT", ((masks["base"], _BASELINE_FVT_COLOR),)),
+                ("context-derived candidate FVT", ((masks["context"], _CONTEXT_FVT_COLOR),)),
+                (
+                    "base/context combined",
+                    (
+                        (base_only, _BASELINE_FVT_COLOR),
+                        (context_only, _CONTEXT_FVT_COLOR),
+                        (overlap, _RIDGE_OVERLAP_COLOR),
+                    ),
+                ),
+                (
+                    "base-only / context-only",
+                    (
+                        (base_only, _BASELINE_FVT_COLOR),
+                        (context_only, _CONTEXT_FVT_COLOR),
+                    ),
+                ),
+            )
+            for column, (panel_title, overlays) in enumerate(panels):
+                ax = axes[row, column]
+                _draw_amplitude_plane(
+                    ax,
+                    values,
+                    axis_name=axis_name,
+                    fixed_index=fixed_index,
+                    row_slice=row_slice,
+                    column_slice=column_slice,
+                    global_start=global_start,
+                    amplitude_clip=clip,
+                )
+                for mask, color in overlays:
+                    _draw_mask_plane(
+                        ax,
+                        mask,
+                        axis_name=axis_name,
+                        fixed_index=fixed_index,
+                        row_slice=row_slice,
+                        column_slice=column_slice,
+                        global_start=global_start,
+                        color=color,
+                    )
+                _draw_projected_point_markers(
+                    ax,
+                    representative=representative,
+                    nearest_public=nearest_public,
+                    row_axis=row_axis,
+                    column_axis=column_axis,
+                    global_start=global_start,
+                    show_representative=True,
+                    show_nearest=True,
+                )
+                ax.set_title(panel_title)
+                if column == 0:
+                    fixed_global = global_start[fixed_axis] + fixed_index
+                    ax.set_ylabel(
+                        f"global {axis_name}={fixed_global}\nglobal {_ARRAY_AXIS_NAMES[row_axis]}"
+                    )
+        _add_bottom_figure_legend(fig, _context_legend_handles(), columns=5)
+        fig.savefig(output_file, dpi=150)
+    finally:
+        plt.close(fig)
+    return output_file
+
+
 def safe_percentile_threshold(volume: ArrayLike, percentile: float) -> float:
     """Return a finite percentile threshold for finite values in ``volume``."""
     _validate_percentile(percentile, "percentile")
@@ -599,6 +1022,334 @@ def _save_ridge_overlay_rgb(
         plt.close(fig)
 
     return output_file
+
+
+def _validate_amplitude_and_masks(
+    amplitude: ArrayLike,
+    masks: dict[str, ArrayLike],
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    values = np.asarray(amplitude, dtype=np.float32)
+    if values.ndim != 3:
+        raise ValueError("amplitude must be a 3D (n3, n2, n1) array")
+    if any(size <= 0 for size in values.shape):
+        raise ValueError("amplitude dimensions must be positive")
+
+    validated: dict[str, np.ndarray] = {}
+    for name, mask in masks.items():
+        mask_values = np.asarray(mask)
+        if mask_values.shape != values.shape:
+            raise ValueError(f"{name}_fvt_mask must have the same shape as amplitude")
+        if mask_values.ndim != 3:
+            raise ValueError(f"{name}_fvt_mask must be a 3D (n3, n2, n1) array")
+        validated[name] = mask_values.astype(bool, copy=False)
+    return values, validated
+
+
+def _validate_coordinate(
+    coordinate: tuple[int, int, int],
+    shape: tuple[int, int, int],
+    name: str,
+) -> tuple[int, int, int]:
+    if len(coordinate) != 3:
+        raise ValueError(f"{name} must contain exactly three coordinates")
+    validated: list[int] = []
+    for axis, (index, size) in enumerate(zip(coordinate, shape, strict=True)):
+        if not isinstance(index, Integral) or isinstance(index, bool):
+            raise TypeError(f"{name}[{axis}] must be an integer")
+        integer = int(index)
+        if integer < 0 or integer >= size:
+            raise ValueError(f"{name}[{axis}] must be between 0 and {size - 1}")
+        validated.append(integer)
+    return tuple(validated)
+
+
+def _validate_global_start(value: tuple[int, int, int]) -> tuple[int, int, int]:
+    if len(value) != 3:
+        raise ValueError("crop_global_start must contain exactly three coordinates")
+    starts: list[int] = []
+    for axis, start in enumerate(value):
+        if not isinstance(start, Integral) or isinstance(start, bool):
+            raise TypeError(f"crop_global_start[{axis}] must be an integer")
+        integer = int(start)
+        if integer < 0:
+            raise ValueError(f"crop_global_start[{axis}] must be non-negative")
+        starts.append(integer)
+    return tuple(starts)
+
+
+def _validate_positive_integer(value: int, name: str) -> int:
+    if not isinstance(value, Integral) or isinstance(value, bool):
+        raise TypeError(f"{name} must be an integer")
+    result = int(value)
+    if result < 1:
+        raise ValueError(f"{name} must be >= 1")
+    return result
+
+
+def _validate_nonnegative_integer(value: int, name: str) -> int:
+    if not isinstance(value, Integral) or isinstance(value, bool):
+        raise TypeError(f"{name} must be an integer")
+    result = int(value)
+    if result < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return result
+
+
+def _validate_positive_finite_value(value: float, name: str) -> float:
+    if not isinstance(value, Real) or isinstance(value, bool):
+        raise TypeError(f"{name} must be a real number")
+    result = float(value)
+    if not np.isfinite(result) or result <= 0.0:
+        raise ValueError(f"{name} must be finite and > 0")
+    return result
+
+
+def _validate_nonnegative_finite_value(value: float, name: str) -> float:
+    if not isinstance(value, Real) or isinstance(value, bool):
+        raise TypeError(f"{name} must be a real number")
+    result = float(value)
+    if not np.isfinite(result) or result < 0.0:
+        raise ValueError(f"{name} must be finite and >= 0")
+    return result
+
+
+def _prepare_output_file(path: str | Path) -> Path:
+    output_file = Path(path)
+    if output_file.parent != Path(""):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+    return output_file
+
+
+def _plane_window_slices(
+    shape: tuple[int, int, int],
+    center: tuple[int, int, int],
+    *,
+    fixed_axis: int,
+    radius: int,
+    include: tuple[int, int, int],
+) -> tuple[slice, slice]:
+    _, row_axis, column_axis = _PLANE_AXES[_ARRAY_AXIS_NAMES[fixed_axis]]
+
+    def bounds(axis: int) -> slice:
+        start = max(0, center[axis] - radius)
+        stop = min(shape[axis], center[axis] + radius + 1)
+        # The requested radius is the minimum window. Expand only when needed
+        # so the projected nearest-public marker is always reviewable.
+        start = min(start, include[axis])
+        stop = max(stop, include[axis] + 1)
+        return slice(start, stop)
+
+    return bounds(row_axis), bounds(column_axis)
+
+
+def _global_coordinate(
+    local: tuple[int, int, int],
+    start: tuple[int, int, int],
+) -> tuple[int, int, int]:
+    return tuple(index + offset for index, offset in zip(local, start, strict=True))
+
+
+def _plane_extent(
+    *,
+    row_slice: slice,
+    column_slice: slice,
+    row_axis: int,
+    column_axis: int,
+    global_start: tuple[int, int, int],
+) -> tuple[float, float, float, float]:
+    left = global_start[column_axis] + int(column_slice.start) - 0.5
+    right = global_start[column_axis] + int(column_slice.stop) - 0.5
+    top = global_start[row_axis] + int(row_slice.start) - 0.5
+    bottom = global_start[row_axis] + int(row_slice.stop) - 0.5
+    return float(left), float(right), float(bottom), float(top)
+
+
+def _draw_amplitude_plane(
+    ax: Any,
+    amplitude: np.ndarray,
+    *,
+    axis_name: str,
+    fixed_index: int,
+    row_slice: slice,
+    column_slice: slice,
+    global_start: tuple[int, int, int],
+    amplitude_clip: float,
+) -> None:
+    _, row_axis, column_axis = _PLANE_AXES[axis_name]
+    panel = slice_2d(amplitude, axis_name, fixed_index)[row_slice, column_slice]
+    display = np.where(np.isfinite(panel), panel, np.float32(0.0))
+    extent = _plane_extent(
+        row_slice=row_slice,
+        column_slice=column_slice,
+        row_axis=row_axis,
+        column_axis=column_axis,
+        global_start=global_start,
+    )
+    ax.imshow(
+        display,
+        cmap="gray",
+        vmin=-amplitude_clip,
+        vmax=amplitude_clip,
+        origin="upper",
+        aspect="auto",
+        interpolation="nearest",
+        extent=extent,
+    )
+    ax.set_xlabel(f"global {_ARRAY_AXIS_NAMES[column_axis]}")
+    ax.set_ylabel(f"global {_ARRAY_AXIS_NAMES[row_axis]}")
+
+
+def _draw_mask_plane(
+    ax: Any,
+    mask: np.ndarray,
+    *,
+    axis_name: str,
+    fixed_index: int,
+    row_slice: slice,
+    column_slice: slice,
+    global_start: tuple[int, int, int],
+    color: str,
+) -> None:
+    _, row_axis, column_axis = _PLANE_AXES[axis_name]
+    panel = slice_2d(mask, axis_name, fixed_index)[row_slice, column_slice].astype(
+        bool,
+        copy=False,
+    )
+    if not np.any(panel):
+        return
+
+    x = np.arange(column_slice.start, column_slice.stop, dtype=np.float64)
+    x += global_start[column_axis]
+    y = np.arange(row_slice.start, row_slice.stop, dtype=np.float64)
+    y += global_start[row_axis]
+    if min(panel.shape) >= 2 and not np.all(panel):
+        ax.contour(
+            x,
+            y,
+            panel.astype(np.float32, copy=False),
+            levels=(0.5,),
+            colors=(color,),
+            linewidths=0.8,
+            alpha=0.95,
+        )
+        return
+
+    # ``contour`` needs at least a 2-by-2 non-constant panel. A small hollow
+    # square keeps radius-zero and crop-edge reviews valid without hiding xs.
+    rows, columns = np.nonzero(panel)
+    ax.scatter(
+        x[columns],
+        y[rows],
+        s=12,
+        marker="s",
+        facecolors="none",
+        edgecolors=color,
+        linewidths=0.7,
+        zorder=3,
+    )
+
+
+def _draw_projected_point_markers(
+    ax: Any,
+    *,
+    representative: tuple[int, int, int],
+    nearest_public: tuple[int, int, int],
+    row_axis: int,
+    column_axis: int,
+    global_start: tuple[int, int, int],
+    show_representative: bool,
+    show_nearest: bool,
+) -> None:
+    if show_representative:
+        ax.scatter(
+            representative[column_axis] + global_start[column_axis],
+            representative[row_axis] + global_start[row_axis],
+            s=64,
+            marker="*",
+            c=_OUTLIER_POINT_COLOR,
+            edgecolors="#111111",
+            linewidths=0.6,
+            zorder=5,
+        )
+    if show_nearest:
+        ax.scatter(
+            nearest_public[column_axis] + global_start[column_axis],
+            nearest_public[row_axis] + global_start[row_axis],
+            s=48,
+            marker="x",
+            c=_NEAREST_PUBLIC_POINT_COLOR,
+            linewidths=1.2,
+            zorder=5,
+        )
+
+
+def _add_bottom_figure_legend(fig: Any, handles: list[Any], *, columns: int) -> None:
+    try:
+        fig.legend(handles=handles, loc="outside lower center", ncol=columns)
+    except ValueError:
+        # Matplotlib before 3.7 does not support the ``outside`` location. Keep
+        # the optional visualization dependency usable there as well.
+        fig.legend(handles=handles, loc="lower center", ncol=columns)
+
+
+def _outlier_legend_handles(*, include_all_ridges: bool) -> list[Any]:
+    from matplotlib.lines import Line2D
+
+    handles: list[Any] = []
+    if include_all_ridges:
+        handles.extend(
+            [
+                Line2D([0], [0], color=_PUBLIC_FVT_COLOR, lw=1.2, label="public FVT ridge"),
+                Line2D(
+                    [0],
+                    [0],
+                    color=_BASELINE_FVT_COLOR,
+                    lw=1.2,
+                    label="baseline FVT ridge",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color=_CANDIDATE_FVT_COLOR,
+                    lw=1.2,
+                    label="candidate FVT ridge",
+                ),
+            ]
+        )
+    handles.extend(
+        [
+            Line2D(
+                [0],
+                [0],
+                color=_OUTLIER_POINT_COLOR,
+                marker="*",
+                linestyle="none",
+                markersize=9,
+                label="representative outlier",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color=_NEAREST_PUBLIC_POINT_COLOR,
+                marker="x",
+                linestyle="none",
+                markersize=7,
+                label="nearest public FVT point",
+            ),
+        ]
+    )
+    return handles
+
+
+def _context_legend_handles() -> list[Any]:
+    from matplotlib.lines import Line2D
+
+    return [
+        Line2D([0], [0], color=_BASELINE_FVT_COLOR, lw=1.2, label="base candidate FVT"),
+        Line2D([0], [0], color=_CONTEXT_FVT_COLOR, lw=1.2, label="context candidate FVT"),
+        Line2D([0], [0], color=_RIDGE_OVERLAP_COLOR, lw=1.2, label="exact mask overlap"),
+        *_outlier_legend_handles(include_all_ridges=False),
+    ]
 
 
 def _validate_buffer_radius(buffer_radius: float) -> None:
