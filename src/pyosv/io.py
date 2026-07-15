@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from math import prod
+from numbers import Integral
+from operator import index
 from os import PathLike
 from pathlib import Path
 from typing import Literal
-
-from math import prod
-from numbers import Integral
 
 import numpy as np
 
@@ -42,14 +42,12 @@ def _validate_shape(shape: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(validated)
 
 
-def read_dat(
+def _dat_spec(
     path: str | PathLike[str],
     shape: tuple[int, ...],
-    *,
-    endian: Endian = "big",
-    dtype: np.dtype | type = np.float32,
-) -> np.ndarray:
-    """Read raw binary scalar values and reshape them in C order."""
+    endian: Endian,
+    dtype: np.dtype | type,
+) -> tuple[Path, tuple[int, ...], np.dtype, int]:
     file_path = Path(path)
     valid_shape = _validate_shape(shape)
     storage_dtype = _storage_dtype(dtype, endian)
@@ -63,9 +61,96 @@ def read_dat(
             f"got {actual_bytes} bytes"
         )
 
+    return file_path, valid_shape, storage_dtype, element_count
+
+
+def _normalize_region(region: tuple[slice, ...], shape: tuple[int, ...]) -> tuple[slice, ...]:
+    if not isinstance(region, tuple) or len(region) != len(shape):
+        raise ValueError("region must be a slice tuple with one slice per shape axis")
+
+    normalized = []
+    for axis, (axis_slice, size) in enumerate(zip(region, shape, strict=True)):
+        if not isinstance(axis_slice, slice):
+            raise ValueError("region must be a slice tuple with one slice per shape axis")
+
+        if axis_slice.step is not None:
+            try:
+                step = index(axis_slice.step)
+            except TypeError as error:
+                raise ValueError("region slice step must be None or 1") from error
+            if isinstance(axis_slice.step, bool) or step != 1:
+                raise ValueError("region slice step must be None or 1")
+
+        bounds = []
+        for name, value, default in (
+            ("start", axis_slice.start, 0),
+            ("stop", axis_slice.stop, size),
+        ):
+            if value is None:
+                bound = default
+            else:
+                try:
+                    bound = index(value)
+                except TypeError as error:
+                    raise ValueError(
+                        f"region axis {axis} {name} must be an integer or None"
+                    ) from error
+                if isinstance(value, bool):
+                    raise ValueError(f"region axis {axis} {name} must be an integer or None")
+                if bound < 0:
+                    bound += size
+
+            if not 0 <= bound <= size:
+                raise ValueError(f"region axis {axis} {name} is outside the axis size {size}")
+            bounds.append(bound)
+
+        start, stop = bounds
+        if start >= stop:
+            raise ValueError(f"region axis {axis} must select a non-empty range")
+        normalized.append(slice(start, stop, 1))
+
+    return tuple(normalized)
+
+
+def read_dat(
+    path: str | PathLike[str],
+    shape: tuple[int, ...],
+    *,
+    endian: Endian = "big",
+    dtype: np.dtype | type = np.float32,
+) -> np.ndarray:
+    """Read raw binary scalar values and reshape them in C order."""
+    file_path, valid_shape, storage_dtype, element_count = _dat_spec(path, shape, endian, dtype)
+
     array = np.fromfile(file_path, dtype=storage_dtype, count=element_count)
     array = array.reshape(valid_shape, order="C")
     return np.ascontiguousarray(array.astype(_native_dtype(dtype), copy=False))
+
+
+def open_dat_memmap(
+    path: str | PathLike[str],
+    shape: tuple[int, ...],
+    *,
+    endian: Endian = "big",
+    dtype: np.dtype | type = np.float32,
+) -> np.memmap:
+    """Open an exactly sized raw binary array as a read-only memory map."""
+    file_path, valid_shape, storage_dtype, _ = _dat_spec(path, shape, endian, dtype)
+    return np.memmap(file_path, dtype=storage_dtype, mode="r", shape=valid_shape, order="C")
+
+
+def read_dat_region(
+    path: str | PathLike[str],
+    shape: tuple[int, ...],
+    region: tuple[slice, ...],
+    *,
+    endian: Endian = "big",
+    dtype: np.dtype | type = np.float32,
+) -> np.ndarray:
+    """Read a non-empty slice region into an independent native-order array."""
+    array = open_dat_memmap(path, shape, endian=endian, dtype=dtype)
+    normalized_region = _normalize_region(region, array.shape)
+    return np.array(array[normalized_region], dtype=_native_dtype(dtype), order="C", copy=True)
 
 
 def write_dat(
