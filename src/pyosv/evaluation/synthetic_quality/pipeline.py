@@ -14,7 +14,9 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticVotingConfig,
     _validate_nonnegative_finite_scalar,
 )
-from pyosv.evaluation.synthetic_quality.diagnostics import _run_voter_thinning_diagnostic
+from pyosv.evaluation.synthetic_quality.diagnostics import (
+    _run_voter_thinning_diagnostic,
+)
 from pyosv.evaluation.synthetic_quality.models import (
     OrientationField3D,
     PipelineArtifacts,
@@ -27,8 +29,12 @@ from pyosv.evaluation.synthetic_quality.models import (
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
     PipelineStageCache,
+    PrimarySkinningStageKey,
+    PrimarySkinningStageResult,
     SeedStageKey,
     SeedStageResult,
+    ThinningStageKey,
+    ThinningStageResult,
     VotingStageKey,
     VotingStageResult,
     diagnostic_items,
@@ -63,6 +69,15 @@ from pyosv.voting3d import OptimalSurfaceVoter
 EDGE_FALSE_POSITIVE_MARGIN = quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
 FORMAT_VERSION = 1
 NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
+THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD = 8.0
+THIN_HYBRID_V2_EDGE_MARGIN = 2
+THIN_PLATEAU_TOLERANCE = 1.0e-6
+
+# Case-local cache DAG (variant-specific work remains outside cached nodes):
+# attributes -> seeds -> voting(fv/vp/vt) -> base thinning(fvt)
+#   -> post-thinning -> primary skinning/min-size -> fallback -> metrics -> artifacts.
+# Primary snapshots are cloned before diagnostics and fallback so mutable skins,
+# cell links, and diagnostics never cross a variant boundary.
 
 
 def _positive_candidate_mask(values: np.ndarray) -> np.ndarray:
@@ -79,7 +94,7 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
     return {
         "shape": [int(size) for size in values.shape],
         "finite_count": int(np.count_nonzero(finite)),
-        "finite_fraction": float(np.count_nonzero(finite) / values.size) if values.size else 0.0,
+        "finite_fraction": (float(np.count_nonzero(finite) / values.size) if values.size else 0.0),
         "min": minimum,
         "max": maximum,
         "mean": mean,
@@ -325,14 +340,43 @@ def run_voting_from_attributes(
     )
     thin_mode = effective_thin_mode(variant_spec, voting_config)
     plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
-    fvt = voter.thin(
-        fv,
-        vp,
-        vt,
-        mode=thin_mode,
-        reference_sigma=voting_config.reference_thin_sigma,
-        plateau_tie_breaker=plateau_tie_breaker,
+    thinning_key = (
+        ThinningStageKey(
+            voting=voting_key,
+            thin_mode=thin_mode,
+            reference_sigma=float(voting_config.reference_thin_sigma),
+            hybrid_orientation_gradient_threshold=(THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD),
+            hybrid_v2_edge_margin=THIN_HYBRID_V2_EDGE_MARGIN,
+            orientation_source="voting_vp_vt",
+            tie_break_policy=("attribute_ft" if plateau_tie_breaker is not None else "voting_fv"),
+            plateau_tolerance=THIN_PLATEAU_TOLERANCE,
+        )
+        if voting_key is not None
+        else None
     )
+    cached_thinning = (
+        stage_cache.get_thinning(thinning_key)
+        if cache_enabled and stage_cache is not None and thinning_key is not None
+        else None
+    )
+    if cached_thinning is None:
+        fvt = voter.thin(
+            fv,
+            vp,
+            vt,
+            mode=thin_mode,
+            reference_sigma=voting_config.reference_thin_sigma,
+            hybrid_orientation_gradient_threshold=(THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD),
+            hybrid_v2_edge_margin=THIN_HYBRID_V2_EDGE_MARGIN,
+            plateau_tie_breaker=plateau_tie_breaker,
+            plateau_tolerance=THIN_PLATEAU_TOLERANCE,
+        )
+        if cache_enabled and stage_cache is not None and thinning_key is not None:
+            thinning_result = ThinningStageResult(fvt=fvt)
+            stage_cache.put_thinning(thinning_key, thinning_result)
+            fvt = thinning_result.fvt
+    else:
+        fvt = cached_thinning.fvt
     fvt_recenter_diagnostic: dict[str, Any] | None = None
     fvt_recenter_before_positive: np.ndarray | None = None
     boundary_edge_thin_diagnostic: dict[str, Any] | None = None
@@ -537,15 +581,69 @@ def run_voting_from_attributes(
         )
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
-        skin_diagnostics: dict[str, Any] = {}
-        skins = find_synthetic_skins(
-            fv,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_config,
-            diagnostics=skin_diagnostics,
+        post_thinning_target_source = None
+        if variant_spec.post_thinning_policy != "none":
+            post_thinning_target_source = (
+                "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
+            )
+        primary_skinning_key = (
+            PrimarySkinningStageKey(
+                thinning=thinning_key,
+                post_thinning_policy=variant_spec.post_thinning_policy,
+                post_thinning_target_source=post_thinning_target_source,
+                post_thinning_max_shift=(
+                    FVT_RECENTER_MAX_SHIFT
+                    if variant_spec.post_thinning_policy == "recenter_scanner_target"
+                    else None
+                ),
+                post_thinning_edge_margin=(
+                    EDGE_FALSE_POSITIVE_MARGIN
+                    if variant_spec.post_thinning_policy != "none"
+                    else None
+                ),
+                method=skinning_config.method,
+                growth_source=skinning_config.growth_source,
+                min_likelihood=skinning_config.min_likelihood,
+                min_skin_size=skinning_config.min_skin_size,
+                d=skinning_config.d,
+                ru=skinning_config.ru,
+                rv=skinning_config.rv,
+                rw=skinning_config.rw,
+                max_steps=skinning_config.max_steps,
+                du=skinning_config.du,
+                max_delta_strike=skinning_config.max_delta_strike,
+                reskin=skinning_config.reskin,
+                accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
+                small_skin_size=skinning_config.small_skin_size,
+            )
+            if thinning_key is not None
+            else None
         )
+        primary_result = (
+            stage_cache.get_primary_skinning(primary_skinning_key)
+            if cache_enabled and stage_cache is not None and primary_skinning_key is not None
+            else None
+        )
+        if primary_result is None:
+            primary_diagnostics: dict[str, Any] = {}
+            primary_skins = find_synthetic_skins(
+                fv,
+                fvt,
+                vp,
+                vt,
+                skinning_config=skinning_config,
+                diagnostics=primary_diagnostics,
+            )
+            if cache_enabled and stage_cache is not None and primary_skinning_key is not None:
+                primary_result = PrimarySkinningStageResult.from_skins(
+                    primary_skins, primary_diagnostics
+                )
+                stage_cache.put_primary_skinning(primary_skinning_key, primary_result)
+        if primary_result is None:
+            skins = primary_skins
+            skin_diagnostics = primary_diagnostics
+        else:
+            skins, skin_diagnostics = primary_result.clone()
         primary_skin_mask = skin_mask_from_skins(skins, case.shape) if capture_stage_trace else None
         add_primary_skin_diagnostics(
             skin_diagnostics,

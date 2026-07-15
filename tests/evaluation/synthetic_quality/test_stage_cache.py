@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
+import gc
 import hashlib
 import json
 from pathlib import Path
+import weakref
 
 import numpy as np
 import pytest
@@ -17,11 +20,14 @@ from pyosv.evaluation.synthetic_quality.config import (
 )
 from pyosv.evaluation.synthetic_quality.runner import run_case_variant
 from pyosv.evaluation.synthetic_quality.stage_cache import PipelineStageCache
+from pyosv.evaluation.synthetic_quality.stage_cache import PrimarySkinningStageResult
 from pyosv.evaluation.reporting.artifacts import write_case_skins_json, write_case_volumes
 from pyosv.evaluation.reporting.csv_v1 import write_summary_csv
 from pyosv.evaluation.reporting.json_v1 import write_metrics_json
 from pyosv.synthetic3d import Synthetic3DCase
 from pyosv.synthetic3d import make_single_vertical_plane_case
+from pyosv.cells import FaultCell
+from pyosv.skin import FaultSkin
 
 
 def _run_variant(
@@ -30,6 +36,7 @@ def _run_variant(
     cache: PipelineStageCache | None,
     case: Synthetic3DCase | None = None,
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
+    skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(enabled=False),
 ):
     if case is None:
         case = make_single_vertical_plane_case((9, 9, 9))
@@ -38,7 +45,7 @@ def _run_variant(
         voting_config=voting_config,
         scanner_config=SyntheticScannerConfig(),
         truth_metric_config=SyntheticTruthMetricConfig(),
-        skinning_config=SyntheticSkinningConfig(enabled=False),
+        skinning_config=skinning_config,
         variant=variant,
         input_mode="oracle",
         scanner_backend_matrix=False,
@@ -88,6 +95,145 @@ def test_identical_seed_and_voting_stages_are_called_once(
     assert calls == {"seed": 1, "voting": 1}
     assert cache.stats.seed_hits == 1
     assert cache.stats.voting_hits == 1
+
+
+def test_identical_base_thinning_is_called_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    original = pipeline.OptimalSurfaceVoter.thin
+
+    def count_thinning(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline.OptimalSurfaceVoter, "thin", count_thinning)
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = PipelineStageCache(case)
+    _run_variant("current_default", cache=cache, case=case)
+    _run_variant("quality_boundary_skinner_fallback", cache=cache, case=case)
+
+    assert calls == 1
+    assert cache.stats.thinning_misses == 1
+    assert cache.stats.thinning_hits == 1
+
+
+def test_thinning_key_distinguishes_mode_and_sigma_but_not_post_policy() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = PipelineStageCache(case)
+    _run_variant("current_default", cache=cache, case=case)
+    _run_variant("voter_thin_normal", cache=cache, case=case)
+    _run_variant(
+        "current_default",
+        cache=cache,
+        case=case,
+        voting_config=SyntheticVotingConfig(reference_thin_sigma=2.0),
+    )
+
+    assert cache.stats.thinning_misses == 3
+
+    post_cache = PipelineStageCache(case)
+    _run_variant("voter_thin_hybrid_v2", cache=post_cache, case=case)
+    _run_variant(
+        "voter_thin_hybrid_v2_recenter_scanner_target",
+        cache=post_cache,
+        case=case,
+    )
+    assert post_cache.stats.thinning_misses == 1
+    assert post_cache.stats.thinning_hits == 1
+
+
+def test_fallback_only_variants_share_primary_skinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = pipeline.find_synthetic_skins
+
+    def count_primary(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "find_synthetic_skins", count_primary)
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = PipelineStageCache(case)
+    for variant in (
+        "current_default",
+        "quality_boundary_skinner_fallback",
+        "quality_boundary_skinner_fallback_v2",
+    ):
+        _run_variant(
+            variant,
+            cache=cache,
+            case=case,
+            skinning_config=SyntheticSkinningConfig(),
+        )
+
+    assert calls == 1
+    assert cache.stats.primary_skinning_misses == 1
+    assert cache.stats.primary_skinning_hits == 2
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        {"ru": 11},
+        {"min_likelihood": 0.4},
+        {"min_skin_size": 2},
+        {"reskin": False},
+    ),
+)
+def test_primary_skinning_key_distinguishes_growth_settings(changed: dict[str, object]) -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = PipelineStageCache(case)
+    config = SyntheticSkinningConfig()
+    _run_variant("current_default", cache=cache, case=case, skinning_config=config)
+    _run_variant(
+        "current_default",
+        cache=cache,
+        case=case,
+        skinning_config=replace(config, **changed),
+    )
+
+    assert cache.stats.primary_skinning_misses == 2
+
+
+def test_post_thinning_policy_does_not_share_primary_skinning() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = PipelineStageCache(case)
+    config = SyntheticSkinningConfig()
+    _run_variant("voter_thin_hybrid_v2", cache=cache, case=case, skinning_config=config)
+    _run_variant(
+        "voter_thin_hybrid_v2_recenter_scanner_target",
+        cache=cache,
+        case=case,
+        skinning_config=config,
+    )
+
+    assert cache.stats.thinning_hits == 1
+    assert cache.stats.primary_skinning_misses == 2
+
+
+def test_primary_skinning_snapshot_clones_cells_links_skins_and_diagnostics() -> None:
+    above = FaultCell(1, 2, 3, 0.9, 20, 70)
+    below = FaultCell(1, 2, 4, 0.8, 21, 69)
+    object.__setattr__(above, "cb", below)
+    object.__setattr__(below, "ca", above)
+    result = PrimarySkinningStageResult.from_skins(
+        [FaultSkin.from_cells((above, below))],
+        {"nested": ["clean"]},
+    )
+
+    first_skins, first_diagnostics = result.clone()
+    second_skins, second_diagnostics = result.clone()
+    first_skins[0].append(FaultCell(0, 0, 0, 0.1, 0, 90))
+    object.__setattr__(next(iter(first_skins[0])), "cb", None)
+    first_diagnostics["nested"].append("mutated")
+
+    second_cells = list(second_skins[0])
+    assert len(second_cells) == 2
+    assert second_cells[0].cb is second_cells[1]
+    assert second_cells[1].ca is second_cells[0]
+    assert second_diagnostics == {"nested": ["clean"]}
 
 
 @pytest.mark.parametrize(
@@ -200,11 +346,15 @@ def test_report_outputs_are_identical_with_and_without_cache(tmp_path: Path) -> 
 
 
 def test_variant_order_does_not_change_each_variant_result() -> None:
-    variants = ("current_default", "voter_thin_normal", "quality_skinner_v2")
+    variants = (
+        "current_default",
+        "quality_boundary_skinner_fallback",
+        "quality_boundary_skinner_fallback_v2",
+    )
     common = dict(
         case_set="minimal",
         shape=(9, 9, 9),
-        skinning_config=SyntheticSkinningConfig(enabled=False),
+        skinning_config=SyntheticSkinningConfig(),
     )
     forward = application._build_report_outputs(**common, variants=variants)
     reverse = application._build_report_outputs(**common, variants=tuple(reversed(variants)))
@@ -223,6 +373,33 @@ def test_variant_order_does_not_change_each_variant_result() -> None:
             forward[2]["single_vertical_plane"][variant],
             reverse[2]["single_vertical_plane"][variant],
         )
+
+
+def test_skinning_outputs_are_identical_with_and_without_cache(tmp_path: Path) -> None:
+    kwargs = dict(
+        case_set="minimal",
+        shape=(9, 9, 9),
+        variants=(
+            "current_default",
+            "quality_boundary_skinner_fallback",
+            "quality_boundary_skinner_fallback_v2",
+        ),
+        skinning_config=SyntheticSkinningConfig(),
+    )
+    cached = application._build_report_outputs(**kwargs, use_stage_cache=True)
+    uncached = application._build_report_outputs(**kwargs, use_stage_cache=False)
+    for cached_part, uncached_part in zip(cached, uncached):
+        _assert_nested_equal(cached_part, uncached_part)
+
+    cached_dir = tmp_path / "cached-skinning"
+    uncached_dir = tmp_path / "uncached-skinning"
+    _write_report_outputs(cached_dir, cached)
+    _write_report_outputs(uncached_dir, uncached)
+    assert (cached_dir / "metrics.json").read_bytes() == (
+        uncached_dir / "metrics.json"
+    ).read_bytes()
+    assert (cached_dir / "summary.csv").read_bytes() == (uncached_dir / "summary.csv").read_bytes()
+    assert _artifact_hashes(cached_dir) == _artifact_hashes(uncached_dir)
 
 
 def test_cached_voting_arrays_are_read_only_and_diagnostics_are_copied() -> None:
@@ -259,3 +436,21 @@ def test_one_cache_cannot_be_reused_for_distinct_cases_with_same_metadata() -> N
         match="pipeline stage cache must not be reused across synthetic cases",
     ):
         _run_variant("current_default", cache=cache, case=second_case)
+
+
+def test_clear_releases_cached_stage_arrays() -> None:
+    cache = PipelineStageCache()
+    evaluation = _run_variant("current_default", cache=cache)
+    cached_fvt = next(iter(cache._thinning.values())).fvt
+    reference = weakref.ref(cached_fvt)
+
+    del cached_fvt
+    del evaluation
+    cache.clear()
+    gc.collect()
+
+    assert reference() is None
+    assert not cache._seeds
+    assert not cache._voting
+    assert not cache._thinning
+    assert not cache._primary_skinning

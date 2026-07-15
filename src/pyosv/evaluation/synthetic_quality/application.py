@@ -200,53 +200,59 @@ def _build_report_outputs(
             scanner_backend_matrix=effective_scanner_backend_matrix,
         )
         stage_cache = PipelineStageCache(case) if use_stage_cache else None
-        for variant in valid_variants:
-            diagnostic_runners = {
-                name: runner
-                for name, runner in (
-                    ("thinning_diagnostic_runner", thinning_diagnostic_runner),
-                    (
-                        "recenter_distance_diagnostic_runner",
-                        recenter_distance_diagnostic_runner,
+        try:
+            for variant in valid_variants:
+                diagnostic_runners = {
+                    name: runner
+                    for name, runner in (
+                        ("thinning_diagnostic_runner", thinning_diagnostic_runner),
+                        (
+                            "recenter_distance_diagnostic_runner",
+                            recenter_distance_diagnostic_runner,
+                        ),
+                        (
+                            "scanner_downstream_diagnostic_runner",
+                            scanner_downstream_diagnostic_runner,
+                        ),
+                        (
+                            "scanner_stage_loss_diagnostic_runner",
+                            scanner_stage_loss_diagnostic_runner,
+                        ),
+                        (
+                            "scanner_boundary_stage_diagnostic_runner",
+                            scanner_boundary_stage_diagnostic_runner,
+                        ),
+                    )
+                    if runner is not None
+                }
+                evaluation = run_case_variant(
+                    case,
+                    voting_config=voting_config,
+                    scanner_config=scanner_config,
+                    truth_metric_config=truth_metric_config,
+                    skinning_config=skinning_config,
+                    variant=variant,
+                    input_mode=valid_input_mode,
+                    scanner_backend_matrix=effective_scanner_backend_matrix,
+                    include_thinning_diagnostic=(
+                        include_thinning_diagnostic and case.case_id in diagnostic_case_ids
                     ),
-                    (
-                        "scanner_downstream_diagnostic_runner",
-                        scanner_downstream_diagnostic_runner,
+                    include_scanner_downstream_diagnostics=(
+                        effective_scanner_downstream_diagnostics
                     ),
-                    (
-                        "scanner_stage_loss_diagnostic_runner",
-                        scanner_stage_loss_diagnostic_runner,
+                    include_scanner_boundary_stage_diagnostics=(
+                        effective_scanner_boundary_stage_diagnostics
                     ),
-                    (
-                        "scanner_boundary_stage_diagnostic_runner",
-                        scanner_boundary_stage_diagnostic_runner,
-                    ),
+                    prepared_inputs=prepared_inputs,
+                    stage_cache=stage_cache,
+                    **diagnostic_runners,
                 )
-                if runner is not None
-            }
-            evaluation = run_case_variant(
-                case,
-                voting_config=voting_config,
-                scanner_config=scanner_config,
-                truth_metric_config=truth_metric_config,
-                skinning_config=skinning_config,
-                variant=variant,
-                input_mode=valid_input_mode,
-                scanner_backend_matrix=effective_scanner_backend_matrix,
-                include_thinning_diagnostic=(
-                    include_thinning_diagnostic and case.case_id in diagnostic_case_ids
-                ),
-                include_scanner_downstream_diagnostics=(effective_scanner_downstream_diagnostics),
-                include_scanner_boundary_stage_diagnostics=(
-                    effective_scanner_boundary_stage_diagnostics
-                ),
-                prepared_inputs=prepared_inputs,
-                stage_cache=stage_cache,
-                **diagnostic_runners,
-            )
-            variant_reports[variant] = dict(evaluation.report_payload)
-            variant_volumes[variant] = dict(evaluation.artifacts.volumes)
-            variant_skins[variant] = dict(evaluation.artifacts.skins_payload)
+                variant_reports[variant] = dict(evaluation.report_payload)
+                variant_volumes[variant] = dict(evaluation.artifacts.volumes)
+                variant_skins[variant] = dict(evaluation.artifacts.skins_payload)
+        finally:
+            if stage_cache is not None:
+                stage_cache.clear()
         case_model = build_case_report_model(
             case_id=case.case_id,
             shape=case.shape,
