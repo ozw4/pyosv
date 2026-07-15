@@ -15,13 +15,16 @@ import numpy as np
 
 from pyosv.f3d_reference import (
     F3D_ENV_VAR,
+    F3D_SHAPE,
     crop_slices,
+    f3d_file_paths,
     interior_slices,
     parse_shape3,
     pick_reference_centers,
     read_f3d_file,
     resolve_f3d_data_root,
 )
+from pyosv.io import open_dat_memmap, read_dat_region
 from pyosv.metrics import (
     buffered_ridge_overlap,
     finite_value_report,
@@ -152,7 +155,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run the pyosv 3D F3 crop scan/vote workflow and report practical "
-            "metrics against reference fv.dat and fvt.dat crops."
+            "metrics against reference fv.dat and fvt.dat crops. Explicit centers use "
+            "region reads; automatic center selection searches an fv.dat memory map."
         ),
     )
     parser.add_argument(
@@ -211,7 +215,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--center",
         type=parse_index3,
         default=None,
-        help="Optional crop center in i3,i2,i1 order. When omitted, centers are picked from fv.dat.",
+        help=(
+            "Optional crop center in i3,i2,i1 order. Explicit centers use region reads; "
+            "when omitted, centers are picked by searching an fv.dat memory map."
+        ),
     )
     parser.add_argument(
         "--large-crop-preset",
@@ -354,7 +361,6 @@ def run_example(
         interior_margin=interior_margin,
         large_crop_preset=large_crop_preset,
     )
-    arrays = read_reference_arrays(data_root)
     config = {
         "workflow_mode": workflow_options["workflow_mode"],
         "crop_shape": list(crop_shape),
@@ -402,6 +408,7 @@ def run_example(
         "interior_margin": int(interior_margin),
         "overlap_percentiles": [float(p) for p in OVERLAP_PERCENTILES],
     }
+    reference_paths = f3d_file_paths(data_root)
     if save_figures:
         config["figures"] = {
             "figure_percentile": float(figure_percentile),
@@ -409,25 +416,35 @@ def run_example(
             "figure_slices": figure_slices,
         }
     if center is None:
+        selection_volume = open_dat_memmap(
+            reference_paths["fv.dat"],
+            F3D_SHAPE,
+            endian="big",
+            dtype=np.float32,
+        )
         centers = pick_reference_centers(
-            arrays["fv.dat"],
+            selection_volume,
             count=max_crops,
             percentile=percentile,
             min_separation=min_separation,
             crop_shape=crop_shape,
         )
+        del selection_volume
     else:
         centers = [center]
-    if save_figures and "fl.dat" not in arrays:
-        arrays["fl.dat"] = read_f3d_file("fl.dat", data_root)
 
     crops = []
     for crop_index, center in enumerate(centers, start=1):
-        slices = crop_slices(center, crop_shape, full_shape=arrays["ep.dat"].shape)
-        ep_crop = _crop(arrays["ep.dat"], slices)
-        reference_fv = _crop(arrays["fv.dat"], slices)
-        reference_fvt = _crop(arrays["fvt.dat"], slices)
-        reference_fl = _crop(arrays["fl.dat"], slices) if save_figures else None
+        slices = _reference_crop_slices(center, crop_shape)
+        reference_arrays = _read_reference_region(
+            reference_paths,
+            slices,
+            include_fl=save_figures,
+        )
+        ep_crop = reference_arrays["ep.dat"]
+        reference_fv = reference_arrays["fv.dat"]
+        reference_fvt = reference_arrays["fvt.dat"]
+        reference_fl = reference_arrays.get("fl.dat")
         outputs = run_pipeline(
             ep_crop,
             sigma1=sigma1,
@@ -498,10 +515,45 @@ def run_example(
 
 
 def read_reference_arrays(data_root: str | PathLike[str]) -> dict[str, np.ndarray]:
+    """Read full reference volumes for full-volume reports and legacy helpers."""
     return {
         "ep.dat": read_f3d_file("ep.dat", data_root),
         "fv.dat": read_f3d_file("fv.dat", data_root),
         "fvt.dat": read_f3d_file("fvt.dat", data_root),
+    }
+
+
+def _reference_crop_slices(
+    center: tuple[int, int, int],
+    crop_shape: tuple[int, int, int],
+) -> tuple[slice, slice, slice]:
+    return crop_slices(center, crop_shape, full_shape=F3D_SHAPE)
+
+
+def _read_reference_region(
+    paths: Mapping[str, Path],
+    region: tuple[slice, slice, slice],
+    *,
+    include_fl: bool,
+) -> dict[str, np.ndarray]:
+    names = (
+        ("ep.dat", "fv.dat", "fvt.dat", "fl.dat")
+        if include_fl
+        else (
+            "ep.dat",
+            "fv.dat",
+            "fvt.dat",
+        )
+    )
+    return {
+        name: read_dat_region(
+            paths[name],
+            F3D_SHAPE,
+            region,
+            endian="big",
+            dtype=np.float32,
+        )
+        for name in names
     }
 
 

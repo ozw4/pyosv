@@ -11,7 +11,6 @@ import pytest
 
 from pyosv.f3d_reference import (
     F3D_ENV_VAR,
-    crop_slices,
     interior_slices,
     pick_reference_centers,
 )
@@ -72,20 +71,31 @@ def test_f3d_reference_one_crop_pipeline(
     crop_shape = (64, 64, 64)
     interior_margin = 16
 
-    arrays = module.read_reference_arrays(data_root)
+    selection_volume = module.open_dat_memmap(
+        data_root / "fv.dat",
+        module.F3D_SHAPE,
+        endian="big",
+        dtype=np.float32,
+    )
     centers = pick_reference_centers(
-        arrays["fv.dat"],
+        selection_volume,
         count=1,
         percentile=99.9,
         min_separation=48.0,
         crop_shape=crop_shape,
     )
+    del selection_volume
     assert len(centers) == 1
 
-    slices = crop_slices(centers[0], crop_shape, full_shape=arrays["ep.dat"].shape)
-    ep_crop = module._crop(arrays["ep.dat"], slices)
-    reference_fv = module._crop(arrays["fv.dat"], slices)
-    reference_fvt = module._crop(arrays["fvt.dat"], slices)
+    slices = module._reference_crop_slices(centers[0], crop_shape)
+    arrays = module._read_reference_region(
+        module.f3d_file_paths(data_root),
+        slices,
+        include_fl=False,
+    )
+    ep_crop = arrays["ep.dat"]
+    reference_fv = arrays["fv.dat"]
+    reference_fvt = arrays["fvt.dat"]
 
     outputs = module.run_pipeline(
         ep_crop,
