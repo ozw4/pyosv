@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.max_steps < 0:
+        raise ValueError("max_steps must be a nonnegative integer")
     if NUMBA_AVAILABLE and args.warmup == 0:
         raise ValueError("warmup must be positive when Numba is available")
     fv, vp, vt, seed = synthetic_skinning_inputs(args.shape, seed=args.seed)
@@ -158,14 +160,52 @@ def main(argv: list[str] | None = None) -> int:
     skin_indices = skin.indices()
     skin_likelihoods = skin.likelihoods()
 
+    seed_planarity = np.ones_like(fv)
+    diagnostics: dict[str, object] = {}
+
+    def find_reference_skins():
+        return skinner.find_skins(
+            fv,
+            vp,
+            vt,
+            min_likelihood=0.5,
+            ep=seed_planarity,
+            ft=fv,
+            pt=vp,
+            tt=vt,
+            d=1,
+            ru=local_radius,
+            rv=tangent_radius,
+            rw=tangent_radius,
+            max_steps=args.max_steps,
+            reskin=False,
+            diagnostics=diagnostics,
+        )
+
+    reference_times, skins = time_repeated(
+        find_reference_skins,
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    reference_indices = (
+        np.concatenate([accepted.indices() for accepted in skins])
+        if skins
+        else np.empty((0, 3), dtype=np.int32)
+    )
+    reference_likelihoods = (
+        np.concatenate([accepted.likelihoods() for accepted in skins])
+        if skins
+        else np.empty(0, dtype=np.float32)
+    )
+
     print(f"benchmark=skinning3d numba_available={NUMBA_AVAILABLE}")
     print(
         " ".join(
             [
                 f"input_shape={fv.shape}",
                 f"dtype={fv.dtype}",
-                "seeds=1",
-                f"skins={int(len(skin) > 0)}",
+                f"seeds={diagnostics['seed_count_after_spacing']}",
+                f"skins={len(skins)}",
                 f"rng_seed={args.seed}",
                 f"repeat={args.repeat}",
                 f"warmup={args.warmup}",
@@ -204,6 +244,27 @@ def main(argv: list[str] | None = None) -> int:
         f"output_count={len(skin)} {array_fingerprint('skin_likelihood', skin_likelihoods)}",
     )
     print(array_fingerprint("skin_indices", skin_indices))
+    print(
+        f"{timing_summary('reference_skinning', reference_times)} "
+        f"output_count={reference_likelihoods.size} "
+        f"{array_fingerprint('reference_likelihood', reference_likelihoods)}",
+    )
+    print(array_fingerprint("reference_indices", reference_indices))
+    print(
+        " ".join(
+            [
+                f"seed_candidates={diagnostics['seed_candidate_count_before_spacing']}",
+                f"seeds_after_spacing={diagnostics['seed_count_after_spacing']}",
+                f"grow_attempts={diagnostics['grow_attempt_count']}",
+                "seed_rejected_by_occupied="
+                f"{diagnostics['seed_count_rejected_by_occupied']}",
+                f"accepted_skins={diagnostics['accepted_skin_count']}",
+                f"accepted_cells={diagnostics['accepted_cell_count']}",
+                "accepted_occupancy=dense_bool_mask",
+                f"occupancy_bytes={fv.size * np.dtype(np.bool_).itemsize}",
+            ],
+        ),
+    )
     return 0
 
 

@@ -64,7 +64,9 @@ warmup iterations, then prints shape, timing, output-count, and compact numeric
 fingerprint summaries. They do not write large outputs by default. The voting
 benchmarks report seed selection separately from end-to-end voting and accept
 `--candidate-density` and `--d` to control candidate density and suppression
-distance.
+distance. The skinning benchmark reports both single-seed growth and full
+reference-like `find_skins` orchestration, including accepted-occupancy seed
+rejections and the dense mask's storage size.
 
 Use `--help` to inspect tunable sizes and repetition counts. With Numba enabled,
 the first call to a kernel may include JIT compilation cost; keep at least one
