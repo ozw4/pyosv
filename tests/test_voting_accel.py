@@ -352,7 +352,11 @@ def test_numba_3d_seed_order_determinism_is_preserved(
         FaultCell(6, 5, 6, 0.8, 0.0, 90.0),
     ]
 
-    monkeypatch.setattr(voter, "pick_seeds", lambda *_args, **_kwargs: list(seeds))
+    monkeypatch.setattr(
+        voter,
+        "_pick_seeds_validated",
+        lambda *_args, **_kwargs: list(seeds),
+    )
     monkeypatch.setattr(voting3d, "NUMBA_AVAILABLE", True)
 
     first = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)

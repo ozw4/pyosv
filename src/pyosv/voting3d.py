@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -29,9 +29,11 @@ from pyosv._voting3d.models import (
 from pyosv._voting3d.config import SurfaceVoterConfig
 from pyosv._voting3d.context import SurfaceVotingContext
 from pyosv._voting3d.normalization import (
-    _normalize_and_power_3d,
+    _normalize_and_power_3d as _normalize_and_power_3d,  # noqa: F401
+    _normalize_and_power_3d_validated,
     _normalize_unit_range_in_place as _normalize_unit_range_in_place,
-    _smooth_fault_likelihood_3d,
+    _smooth_fault_likelihood_3d as _smooth_fault_likelihood_3d,  # noqa: F401
+    _smooth_fault_likelihood_3d_validated,
 )
 from pyosv._voting3d.orientation import (
     _smooth_surface_for_orientation as _smooth_surface_for_orientation,
@@ -269,6 +271,30 @@ class OptimalSurfaceVoter:
             ("ft", "pt", "tt"),
         )
         threshold = np.float32(fm)
+        return self._pick_seeds_validated(
+            distance,
+            threshold,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
+
+    def _pick_seeds_validated(
+        self,
+        distance: int,
+        threshold: np.float32,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> list[FaultCell]:
+        """Pick seeds from validated matching finite float32 3D volumes.
+
+        ``distance`` must be a validated nonnegative integer and ``threshold``
+        must already have been converted to ``float32``. The three arrays must
+        have identical shapes; this helper performs no array validation.
+        """
+
+        ft_array, pt_array, tt_array = ft, pt, tt
         _, n2, n1 = ft_array.shape
         plane_size = n2 * n1
         accepted_indices = _select_voter_seed_indices_3d(
@@ -343,8 +369,21 @@ class OptimalSurfaceVoter:
             (ft, pt, tt),
             ("ft", "pt", "tt"),
         )
-        seeds = self.pick_seeds(d, fm, ft_array, pt_array, tt_array)
-        return self.apply_voting_from_seeds(seeds, ft_array, pt_array, tt_array)
+        distance = _validate_nonnegative_int(d, "d")
+        threshold = np.float32(fm)
+        seeds = self._pick_seeds_validated(
+            distance,
+            threshold,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
+        return self._apply_voting_from_seeds_validated(
+            seeds,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
 
     def apply_voting_from_seeds(
         self,
@@ -361,27 +400,66 @@ class OptimalSurfaceVoter:
             (ft, pt, tt),
             ("ft", "pt", "tt"),
         )
-        n3, n2, n1 = ft_array.shape
+        self._validate_seeds(seeds, ft_array.shape)
+        return self._apply_voting_from_seeds_validated(
+            seeds,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
+
+    @staticmethod
+    def _validate_seeds(
+        seeds: Sequence[FaultCell],
+        shape: tuple[int, int, int],
+    ) -> None:
+        """Validate seed types and coordinates once for one voting case."""
+
+        n3, n2, n1 = shape
         for seed in seeds:
             if not isinstance(seed, FaultCell):
                 raise TypeError("seeds must contain FaultCell instances")
             if not (0 <= seed.i1 < n1 and 0 <= seed.i2 < n2 and 0 <= seed.i3 < n3):
                 raise ValueError("seed coordinates must be inside the image bounds")
-        fs = _smooth_fault_likelihood_3d(ft_array)
 
-        fe = np.zeros_like(ft_array, dtype=np.float32)
-        vp = np.zeros_like(ft_array, dtype=np.float32)
-        vt = np.zeros_like(ft_array, dtype=np.float32)
-        vm = np.zeros_like(ft_array, dtype=np.float32)
+    def _apply_voting_from_seeds_validated(
+        self,
+        seeds: Sequence[FaultCell],
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Vote using validated volumes and seeds without rescanning arrays.
+
+        The volumes must be matching finite 3D ``float32`` arrays. Every seed
+        must be a :class:`FaultCell` inside their shared bounds, either produced
+        by :meth:`_pick_seeds_validated` or checked by :meth:`_validate_seeds`.
+        """
+
+        self._last_surface_voting_diagnostics = ()
+        self._last_surface_voting_policy = self.surface_voting_boundary_policy
+        del pt, tt
+        fs = _smooth_fault_likelihood_3d_validated(ft, sigma=1.0)
+
+        fe = np.zeros_like(ft, dtype=np.float32)
+        vp = np.zeros_like(ft, dtype=np.float32)
+        vt = np.zeros_like(ft, dtype=np.float32)
+        vm = np.zeros_like(ft, dtype=np.float32)
 
         diagnostics: list[_SurfaceVotingDiagnostic] = []
+        handler = self._validated_surface_voting_handler()
         for seed in seeds:
-            diagnostics.append(self._surface_voting(seed, fs, fe, vp, vt, vm))
+            diagnostics.append(self._surface_voting_validated(seed, fs, fe, vp, vt, vm, handler))
         self._last_surface_voting_diagnostics = tuple(diagnostics)
 
-        fv = _normalize_and_power_3d(
+        normalization_sigma = _validate_nonnegative_float(
+            self.final_normalization_smoothing,
+            "final_normalization_smoothing",
+        )
+        fv = _normalize_and_power_3d_validated(
             fe,
-            sigma=self.final_normalization_smoothing,
+            sigma=normalization_sigma,
+            power=8,
         )
         return fv, vp, vt
 
@@ -610,21 +688,53 @@ class OptimalSurfaceVoter:
         if not 0 <= c3 < n3:
             raise ValueError("cell.i3 must be inside the image bounds")
 
-        policy = SURFACE_VOTING_POLICY_REGISTRY.get(self.surface_voting_boundary_policy)
-        if policy is None:
-            allowed = ", ".join(repr(value) for value in _SURFACE_VOTING_BOUNDARY_POLICIES)
-            raise ValueError(f"policy must be one of: {allowed}")
-        handler = {
-            "reference": self._surface_voting_reference,
-            "masked_in_bounds": self._surface_voting_masked_in_bounds,
-        }[self.surface_voting_boundary_policy]
-        return handler(
+        return self._surface_voting_validated(
             cell,
             ft_array,
             fe_array,
             vp_array,
             vt_array,
             vm_array,
+            self._validated_surface_voting_handler(),
+        )
+
+    def _validated_surface_voting_handler(
+        self,
+    ) -> Callable[..., _SurfaceVotingDiagnostic]:
+        """Validate the configured policy and return its case-level handler."""
+
+        policy = SURFACE_VOTING_POLICY_REGISTRY.get(self.surface_voting_boundary_policy)
+        if policy is None:
+            allowed = ", ".join(repr(value) for value in _SURFACE_VOTING_BOUNDARY_POLICIES)
+            raise ValueError(f"policy must be one of: {allowed}")
+        return {
+            "reference": self._surface_voting_reference,
+            "masked_in_bounds": self._surface_voting_masked_in_bounds,
+        }[self.surface_voting_boundary_policy]
+
+    def _surface_voting_validated(
+        self,
+        cell: FaultCell,
+        ft: np.ndarray,
+        fe: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        vm: np.ndarray,
+        handler: Callable[..., _SurfaceVotingDiagnostic],
+    ) -> _SurfaceVotingDiagnostic:
+        """Accumulate one validated seed into matching validated case arrays.
+
+        The caller must validate the seed type and bounds, all five matching 3D
+        array shapes, and the selected policy handler at case level.
+        """
+
+        return handler(
+            cell,
+            ft,
+            fe,
+            vp,
+            vt,
+            vm,
             cell.fault_normal(),
             cell.fault_dip_vector(),
             cell.fault_strike_vector(),

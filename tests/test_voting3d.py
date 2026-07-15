@@ -1198,10 +1198,16 @@ def test_apply_voting_from_seeds_matches_apply_voting_for_same_seed_set() -> Non
 
     seeds = voter.pick_seeds(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
     default = voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+    default_diagnostics = voter.surface_voting_diagnostics
     explicit = voter.apply_voting_from_seeds(seeds, ft=ft, pt=pt, tt=tt)
+    explicit_diagnostics = voter.surface_voting_diagnostics
 
     for default_array, explicit_array in zip(default, explicit):
         np.testing.assert_array_equal(default_array, explicit_array)
+    assert default_diagnostics == explicit_diagnostics
+    assert [diagnostic.seed_index for diagnostic in default_diagnostics] == [
+        (seed.i1, seed.i2, seed.i3) for seed in seeds
+    ]
 
 
 def test_apply_voting_surface_support_default_policy_is_no_op() -> None:
@@ -1252,7 +1258,7 @@ def test_apply_voting_passes_configured_final_normalization_smoothing(
         sigmas.append(sigma)
         return np.zeros_like(volume, dtype=np.float32)
 
-    monkeypatch.setattr(voting3d, "_normalize_and_power_3d", normalize_stub)
+    monkeypatch.setattr(voting3d, "_normalize_and_power_3d_validated", normalize_stub)
 
     ft = np.zeros((2, 3, 4), dtype=np.float32)
     pt = np.zeros_like(ft)
@@ -1382,6 +1388,83 @@ def test_apply_voting_rejects_nonfinite_inputs(
 
     with pytest.raises(ValueError, match=message):
         voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+
+def test_apply_voting_scans_each_input_volume_for_finiteness_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((3, 3, 3), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.zeros_like(ft)
+    input_ids = {id(ft), id(pt), id(tt)}
+    scan_counts = {array_id: 0 for array_id in input_ids}
+    original_isfinite = np.isfinite
+
+    def isfinite_spy(value: object) -> np.ndarray:
+        if id(value) in scan_counts:
+            scan_counts[id(value)] += 1
+        return original_isfinite(value)
+
+    monkeypatch.setattr(np, "isfinite", isfinite_spy)
+
+    voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
+
+    assert scan_counts == {array_id: 1 for array_id in input_ids}
+
+
+@pytest.mark.parametrize(
+    ("bad_name", "bad_value"),
+    [("ft", np.nan), ("pt", np.inf), ("tt", -np.inf)],
+)
+def test_apply_voting_from_seeds_rejects_nonfinite_inputs(
+    bad_name: str,
+    bad_value: float,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    arrays = {
+        "ft": np.zeros((3, 3, 3), dtype=np.float32),
+        "pt": np.zeros((3, 3, 3), dtype=np.float32),
+        "tt": np.zeros((3, 3, 3), dtype=np.float32),
+    }
+    arrays[bad_name][1, 1, 1] = bad_value
+
+    with pytest.raises(ValueError, match=bad_name):
+        voter.apply_voting_from_seeds(
+            [],
+            ft=arrays["ft"],
+            pt=arrays["pt"],
+            tt=arrays["tt"],
+        )
+
+
+def test_apply_voting_from_seeds_rejects_mismatched_shapes() -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((2, 3, 4), dtype=np.float32)
+    pt = np.zeros((2, 4, 3), dtype=np.float32)
+    tt = np.zeros_like(ft)
+
+    with pytest.raises(ValueError, match="shapes must match"):
+        voter.apply_voting_from_seeds([], ft=ft, pt=pt, tt=tt)
+
+
+@pytest.mark.parametrize(
+    ("seeds", "exception", "message"),
+    [
+        ([object()], TypeError, "FaultCell"),
+        ([FaultCell(3, 1, 1, 1.0, 0.0, 90.0)], ValueError, "image bounds"),
+    ],
+)
+def test_apply_voting_from_seeds_rejects_invalid_seeds(
+    seeds: list[object],
+    exception: type[Exception],
+    message: str,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    ft = np.zeros((3, 3, 3), dtype=np.float32)
+
+    with pytest.raises(exception, match=message):
+        voter.apply_voting_from_seeds(seeds, ft=ft, pt=ft, tt=ft)  # type: ignore[arg-type]
 
 
 def test_thin_returns_finite_float32_volume_without_modifying_inputs() -> None:
