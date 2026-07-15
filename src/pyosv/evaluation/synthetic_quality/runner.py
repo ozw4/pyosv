@@ -86,9 +86,7 @@ def _oracle_attribute_stage_key(
     case: Synthetic3DCase, oracle: OrientationField3D
 ) -> AttributeStageKey | None:
     if not (
-        oracle.ft is case.ft_oracle
-        and oracle.pt is case.pt_oracle
-        and oracle.tt is case.tt_oracle
+        oracle.ft is case.ft_oracle and oracle.pt is case.pt_oracle and oracle.tt is case.tt_oracle
     ):
         return None
     return AttributeStageKey(
