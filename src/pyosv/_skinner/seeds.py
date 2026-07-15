@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import operator
-
 import numpy as np
 
+from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._seed_selection import _select_skinner_seed_indices_3d
 from pyosv._skinner.models import _SkinCell
 from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.validation import (
@@ -106,48 +106,27 @@ def _find_reference_seeds_validated(
     threshold = fm
     planarity_threshold = min_ep
     ep_array, ft_array, pt_array, tt_array = ep, ft, pt, tt
-    n3, n2, n1 = ft_array.shape
-
-    candidates: list[tuple[float, int, int, int]] = []
-    candidate_mask = (ep_array > np.float32(planarity_threshold)) & (
-        ft_array > np.float32(threshold)
+    _, n2, n1 = ft_array.shape
+    plane_size = n2 * n1
+    accepted_indices = _select_skinner_seed_indices_3d(
+        ep_array,
+        ft_array,
+        np.float32(planarity_threshold),
+        np.float32(threshold),
+        distance,
+        use_numba=NUMBA_AVAILABLE,
     )
-    for i3, i2, i1 in np.argwhere(candidate_mask):
-        candidates.append(
-            (
-                float(ft_array[i3, i2, i1]),
-                operator.index(i3),
-                operator.index(i2),
-                operator.index(i1),
-            ),
+    ft_flat = ft_array.ravel()
+    pt_flat = pt_array.ravel()
+    tt_flat = tt_array.ravel()
+    return [
+        _SkinCell(
+            int(flat_index) % n1,
+            int(flat_index) % plane_size // n1,
+            int(flat_index) // plane_size,
+            ft_flat[flat_index],
+            pt_flat[flat_index],
+            tt_flat[flat_index],
         )
-
-    candidates.sort(
-        key=lambda candidate: (-candidate[0], candidate[1], candidate[2], candidate[3]),
-    )
-
-    mark = np.zeros((n3, n2, n1), dtype=np.bool_)
-    seeds: list[_SkinCell] = []
-    for _, i3, i2, i1 in candidates:
-        b1 = max(i1 - distance, 0)
-        b2 = max(i2 - distance, 0)
-        b3 = max(i3 - distance, 0)
-        e1 = min(i1 + distance, n1 - 1)
-        e2 = min(i2 + distance, n2 - 1)
-        e3 = min(i3 + distance, n3 - 1)
-        if mark[b3 : e3 + 1, b2 : e2 + 1, b1 : e1 + 1].any():
-            continue
-
-        seeds.append(
-            _SkinCell(
-                i1,
-                i2,
-                i3,
-                ft_array[i3, i2, i1],
-                pt_array[i3, i2, i1],
-                tt_array[i3, i2, i1],
-            ),
-        )
-        mark[i3, i2, i1] = True
-
-    return seeds
+        for flat_index in accepted_indices
+    ]

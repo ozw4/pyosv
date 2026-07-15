@@ -10,6 +10,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from pyosv._accel import NUMBA_AVAILABLE, njit
+from pyosv._seed_selection import _select_voter_seed_indices_2d
 from pyosv.cells import FaultCell2
 from pyosv.dp import find_path_2d, shift_range, strain_to_bstrain, update_shift_ranges
 from pyosv.filters import smooth2d
@@ -68,32 +69,24 @@ class OptimalPathVoter:
         distance = _validate_nonnegative_int(d, "d")
         ft_array, pt_array = _validate_matching_2d_arrays(ft, pt, "ft", "pt")
         threshold = np.float32(fm)
-        n2, n1 = ft_array.shape
-
-        candidates = [
-            FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1])
-            for i2 in range(n2)
-            for i1 in range(n1)
-            if ft_array[i2, i1] > threshold
+        _, n1 = ft_array.shape
+        accepted_indices = _select_voter_seed_indices_2d(
+            ft_array,
+            threshold,
+            distance,
+            use_numba=NUMBA_AVAILABLE,
+        )
+        ft_flat = ft_array.ravel()
+        pt_flat = pt_array.ravel()
+        return [
+            FaultCell2(
+                int(flat_index) % n1,
+                int(flat_index) // n1,
+                ft_flat[flat_index],
+                pt_flat[flat_index],
+            )
+            for flat_index in accepted_indices
         ]
-        candidates.sort(key=operator.attrgetter("fl"))
-
-        mark = np.zeros((n2, n1), dtype=np.bool_)
-        seeds: list[FaultCell2] = []
-        for cell in reversed(candidates):
-            i1 = cell.i1
-            i2 = cell.i2
-            b1 = max(i1 - distance, 0)
-            b2 = max(i2 - distance, 0)
-            e1 = min(i1 + distance, n1 - 1)
-            e2 = min(i2 + distance, n2 - 1)
-            if mark[b2 : e2 + 1, b1 : e1 + 1].any():
-                continue
-
-            seeds.append(cell)
-            mark[i2, i1] = True
-
-        return seeds
 
     def get_seeds(
         self,

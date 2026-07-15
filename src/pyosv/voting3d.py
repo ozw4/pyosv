@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import operator
 from collections.abc import Sequence
 
 import numpy as np
 
 from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._seed_selection import _select_voter_seed_indices_3d
 from pyosv._voting3d.accumulation import (
     _accumulate_surface_votes as _accumulate_surface_votes_impl,
     _accumulate_surface_votes_masked as _accumulate_surface_votes_masked_impl,
@@ -269,43 +269,28 @@ class OptimalSurfaceVoter:
             ("ft", "pt", "tt"),
         )
         threshold = np.float32(fm)
-        n3, n2, n1 = ft_array.shape
-
-        candidates = [
+        _, n2, n1 = ft_array.shape
+        plane_size = n2 * n1
+        accepted_indices = _select_voter_seed_indices_3d(
+            ft_array,
+            threshold,
+            distance,
+            use_numba=NUMBA_AVAILABLE,
+        )
+        ft_flat = ft_array.ravel()
+        pt_flat = pt_array.ravel()
+        tt_flat = tt_array.ravel()
+        return [
             FaultCell(
-                i1,
-                i2,
-                i3,
-                ft_array[i3, i2, i1],
-                pt_array[i3, i2, i1],
-                tt_array[i3, i2, i1],
+                int(flat_index) % n1,
+                int(flat_index) % plane_size // n1,
+                int(flat_index) // plane_size,
+                ft_flat[flat_index],
+                pt_flat[flat_index],
+                tt_flat[flat_index],
             )
-            for i3 in range(n3)
-            for i2 in range(n2)
-            for i1 in range(n1)
-            if ft_array[i3, i2, i1] > threshold
+            for flat_index in accepted_indices
         ]
-        candidates.sort(key=operator.attrgetter("fl"))
-
-        mark = np.zeros((n3, n2, n1), dtype=np.bool_)
-        seeds: list[FaultCell] = []
-        for cell in reversed(candidates):
-            i1 = cell.i1
-            i2 = cell.i2
-            i3 = cell.i3
-            b1 = max(i1 - distance, 0)
-            b2 = max(i2 - distance, 0)
-            b3 = max(i3 - distance, 0)
-            e1 = min(i1 + distance, n1 - 1)
-            e2 = min(i2 + distance, n2 - 1)
-            e3 = min(i3 + distance, n3 - 1)
-            if mark[b3 : e3 + 1, b2 : e2 + 1, b1 : e1 + 1].any():
-                continue
-
-            seeds.append(cell)
-            mark[i3, i2, i1] = True
-
-        return seeds
 
     def get_seeds(
         self,
