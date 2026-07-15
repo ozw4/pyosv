@@ -39,14 +39,24 @@ def _mark_occupied_skin(
     radius: int = 5,
 ) -> None:
     radius_int = _validate_nonnegative_int(radius, "accepted_occupancy_radius")
+    _mark_occupied_skin_validated(occupied, skin, radius_int)
+
+
+def _mark_occupied_skin_validated(
+    occupied: _SkinOccupancyMask,
+    skin: FaultSkin,
+    radius: int,
+) -> None:
+    """Mark a skin using a previously validated nonnegative radius."""
+
     for cell in skin:
         occupied.mark_box(
             cell.i1,
             cell.i2,
             cell.i3,
-            radius_int,
-            radius_int,
-            radius_int,
+            radius,
+            radius,
+            radius,
         )
 
 
@@ -69,6 +79,33 @@ def _find_reference_seeds(
         (ep, ft, pt, tt),
         ("ep", "ft", "pt", "tt"),
     )
+    return _find_reference_seeds_validated(
+        d=distance,
+        fm=threshold,
+        ep=ep_array,
+        ft=ft_array,
+        pt=pt_array,
+        tt=tt_array,
+        min_ep=planarity_threshold,
+    )
+
+
+def _find_reference_seeds_validated(
+    d: int,
+    fm: float,
+    ep: np.ndarray,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+    *,
+    min_ep: float = _REFERENCE_SEED_MIN_EP,
+) -> list[_SkinCell]:
+    """Select seeds from validated native-float32, finite, matching 3D arrays."""
+
+    distance = d
+    threshold = fm
+    planarity_threshold = min_ep
+    ep_array, ft_array, pt_array, tt_array = ep, ft, pt, tt
     n3, n2, n1 = ft_array.shape
 
     candidates: list[tuple[float, int, int, int]] = []
