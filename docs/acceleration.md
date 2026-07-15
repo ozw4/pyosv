@@ -58,6 +58,7 @@ python benchmarks/benchmark_voting3d.py
 python benchmarks/benchmark_dp.py
 python benchmarks/benchmark_skinning3d.py --shape 25 --warmup 1 --repeat 3
 python benchmarks/benchmark_orient3d.py --shape 25 --warmup 1 --repeat 3
+python benchmarks/benchmark_synthetic_quality_cache.py --shape 9 --repeat 3
 ```
 
 Each script builds a deterministic synthetic `float32` input, runs one or more
@@ -74,6 +75,9 @@ and output-difference statistics after warmup. The skinning benchmark reports
 both single-seed growth and full
 reference-like `find_skins` orchestration, including accepted-occupancy seed
 rejections and the dense mask's storage size.
+The synthetic-quality cache benchmark runs the quality-matrix variants with
+and without the case-local cache and reports elapsed time plus traced peak
+memory for both paths.
 
 Use `--help` to inspect tunable sizes and repetition counts. With Numba enabled,
 the first call to a kernel may include JIT compilation cost; keep at least one

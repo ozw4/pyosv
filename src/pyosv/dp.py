@@ -9,6 +9,14 @@ import math
 import numpy as np
 
 from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._dp.batch_numba import (
+    accumulate_2d_batch as _accumulate_2d_batch_numba,
+    smooth_fault_attributes_batch as _smooth_fault_attributes_batch_numba,
+)
+from pyosv._dp.batch_python import (
+    accumulate_2d_batch as _accumulate_2d_batch_python,
+    smooth_fault_attributes_batch as _smooth_fault_attributes_batch_python,
+)
 from pyosv._dp.masked_numba import (
     _accumulate_2d_masked_numba,
     _backtrack_2d_masked_numba,

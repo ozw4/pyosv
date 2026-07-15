@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pyosv._accel import NUMBA_AVAILABLE  # noqa: E402
-from pyosv.dp import accumulate_forward_2d, find_path_2d, find_surface_3d  # noqa: E402
+from pyosv.dp import (  # noqa: E402
+    accumulate_forward_2d,
+    find_path_2d,
+    find_surface_3d,
+    smooth_fault_attributes_2d,
+    smooth_fault_attributes_3d,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +72,39 @@ def main(argv: list[str] | None = None) -> int:
         repeat=args.repeat,
         warmup=args.warmup,
     )
+    staged_smoothing_times, staged_smoothed = time_repeated(
+        lambda: staged_smooth_fault_attributes_3d(
+            cost3d,
+            bstrain1=args.bstrain,
+            bstrain2=2,
+        ),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    batch_smoothing_times, batch_smoothed = time_repeated(
+        lambda: smooth_fault_attributes_3d(
+            cost3d,
+            bstrain1=args.bstrain,
+            bstrain2=2,
+        ),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    np.testing.assert_array_equal(batch_smoothed, staged_smoothed)
+    staged_peak_bytes = measure_peak_bytes(
+        lambda: staged_smooth_fault_attributes_3d(
+            cost3d,
+            bstrain1=args.bstrain,
+            bstrain2=2,
+        )
+    )
+    batch_peak_bytes = measure_peak_bytes(
+        lambda: smooth_fault_attributes_3d(
+            cost3d,
+            bstrain1=args.bstrain,
+            bstrain2=2,
+        )
+    )
 
     print(f"benchmark=dp_kernels numba_available={NUMBA_AVAILABLE}")
     print(
@@ -83,7 +123,40 @@ def main(argv: list[str] | None = None) -> int:
     print(timing_summary("accumulate_forward_2d", accumulate_times))
     print(timing_summary("find_path_2d", path_times))
     print(timing_summary("find_surface_3d", surface_times))
+    print(timing_summary("smooth_fault_attributes_3d_staged_before", staged_smoothing_times))
+    print(timing_summary("smooth_fault_attributes_3d_batched_after", batch_smoothing_times))
+    print(
+        " ".join(
+            [
+                f"staged_public_2d_calls={args.nw + args.nv}",
+                "batched_public_2d_calls=0",
+                "batched_kernel_calls=2",
+                f"staged_peak_bytes={staged_peak_bytes}",
+                f"batched_peak_bytes={batch_peak_bytes}",
+            ]
+        )
+    )
     return 0
+
+
+def staged_smooth_fault_attributes_3d(
+    cost: np.ndarray,
+    *,
+    bstrain1: int,
+    bstrain2: int,
+) -> np.ndarray:
+    """Reproduce the pre-batch 3D smoothing path for comparison."""
+
+    nw, nv, nu = cost.shape
+    smoothed_v = np.empty((nw, nv, nu), dtype=np.float32)
+    for iw in range(nw):
+        smoothed_v[iw] = smooth_fault_attributes_2d(cost[iw], bstrain=bstrain1)
+    smoothed_w = np.empty_like(smoothed_v)
+    for iv in range(nv):
+        smoothed_w[:, iv, :] = smooth_fault_attributes_2d(
+            smoothed_v[:, iv, :], bstrain=bstrain2
+        )
+    return smoothed_w
 
 
 def synthetic_cost_2d(ni: int, nl: int) -> np.ndarray:
@@ -124,6 +197,16 @@ def time_repeated(
         times.append(time.perf_counter() - start)
 
     return times, result
+
+
+def measure_peak_bytes(func) -> int:
+    tracemalloc.start()
+    try:
+        func()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak
 
 
 def timing_summary(name: str, times: list[float]) -> str:

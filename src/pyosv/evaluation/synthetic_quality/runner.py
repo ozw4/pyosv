@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -37,6 +37,10 @@ from pyosv.evaluation.synthetic_quality.scanner import (
     ScannerAttributes,
     scanner_attributes_from_case,
 )
+from pyosv.evaluation.synthetic_quality.stage_cache import (
+    AttributeStageKey,
+    PipelineStageCache,
+)
 from pyosv.evaluation.synthetic_quality.variants import (
     BASELINE_VARIANT,
     VariantSpec,
@@ -61,6 +65,12 @@ class PreparedScannerInput:
     config: SyntheticScannerConfig
     selected: ScannerAttributes
     by_backend: Mapping[str, ScannerAttributes]
+    _attribute_stage_keys: tuple[tuple[str, AttributeStageKey], ...] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +80,57 @@ class PreparedCaseInputs:
     case: Synthetic3DCase
     oracle: OrientationField3D
     scanner: PreparedScannerInput | None
+
+
+def _oracle_attribute_stage_key(
+    case: Synthetic3DCase, oracle: OrientationField3D
+) -> AttributeStageKey | None:
+    if not (
+        oracle.ft is case.ft_oracle and oracle.pt is case.pt_oracle and oracle.tt is case.tt_oracle
+    ):
+        return None
+    return AttributeStageKey(
+        case_id=case.case_id,
+        shape=case.shape,
+        source="oracle",
+    )
+
+
+def _scanner_attribute_stage_key(
+    case: Synthetic3DCase, scanner_config: SyntheticScannerConfig
+) -> AttributeStageKey:
+    input_config = scanner_config.input_config
+    return AttributeStageKey(
+        case_id=case.case_id,
+        shape=case.shape,
+        source="scanner",
+        settings=(
+            ("backend", scanner_config.backend),
+            ("phi_min", float(scanner_config.phi_min)),
+            ("phi_max", float(scanner_config.phi_max)),
+            ("theta_min", float(scanner_config.theta_min)),
+            ("theta_max", float(scanner_config.theta_max)),
+            ("sigma1", float(scanner_config.sigma1)),
+            ("sigma2", float(scanner_config.sigma2)),
+            ("refinement_factor", int(scanner_config.refinement_factor)),
+            ("scanner_thin_mode", scanner_config.scanner_thin_mode),
+            ("remove_edge_effects", scanner_config.remove_edge_effects),
+            ("input_background", float(input_config.background)),
+            ("input_fault_contrast", float(input_config.fault_contrast)),
+            ("input_noise_sigma", float(input_config.noise_sigma)),
+            ("input_seed", int(input_config.seed)),
+            ("input_clip_min", float(input_config.clip_min)),
+            ("input_clip_max", float(input_config.clip_max)),
+        ),
+    )
+
+
+def _prepared_scanner_attribute_stage_key(
+    prepared: PreparedScannerInput, backend: str
+) -> AttributeStageKey | None:
+    if prepared._attribute_stage_keys is None:
+        return None
+    return dict(prepared._attribute_stage_keys).get(backend)
 
 
 def validate_input_mode(input_mode: str) -> str:
@@ -103,14 +164,29 @@ def prepare_case_inputs(
                 by_backend[backend] = scanner_attributes_from_case(
                     case, replace(scanner_config, backend=backend)
                 )
+    prepared_scanner = PreparedScannerInput(
+        config=scanner_config,
+        selected=selected,
+        by_backend=by_backend,
+    )
+    object.__setattr__(
+        prepared_scanner,
+        "_attribute_stage_keys",
+        tuple(
+            (
+                backend,
+                _scanner_attribute_stage_key(
+                    case,
+                    replace(scanner_config, backend=backend),
+                ),
+            )
+            for backend in by_backend
+        ),
+    )
     return PreparedCaseInputs(
         case=case,
         oracle=oracle,
-        scanner=PreparedScannerInput(
-            config=scanner_config,
-            selected=selected,
-            by_backend=by_backend,
-        ),
+        scanner=prepared_scanner,
     )
 
 
@@ -127,6 +203,7 @@ def run_oracle_pipeline(
         fvt_recenter_target_distance_diagnostics
     ),
     prepared_oracle: OrientationField3D | None = None,
+    stage_cache: PipelineStageCache | None = None,
 ) -> PipelineEvaluation:
     oracle = (
         OrientationField3D(ft=case.ft_oracle, pt=case.pt_oracle, tt=case.tt_oracle)
@@ -147,6 +224,8 @@ def run_oracle_pipeline(
         fvt_recenter_target_source="oracle_ft",
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
+        stage_cache=stage_cache,
+        attribute_stage_key=_oracle_attribute_stage_key(case, oracle),
     )
 
 
@@ -173,12 +252,16 @@ def run_scanner_pipeline(
         build_scanner_boundary_stage_diagnostics
     ),
     prepared_scanner: PreparedScannerInput | None = None,
+    stage_cache: PipelineStageCache | None = None,
 ) -> PipelineEvaluation:
-    scanner = (
-        scanner_attributes_from_case(case, scanner_config)
-        if prepared_scanner is None
-        else _prepared_scanner_attributes(prepared_scanner, scanner_config)
-    )
+    if prepared_scanner is None:
+        scanner = scanner_attributes_from_case(case, scanner_config)
+        attribute_stage_key = _scanner_attribute_stage_key(case, scanner_config)
+    else:
+        scanner = _prepared_scanner_attributes(prepared_scanner, scanner_config)
+        attribute_stage_key = _prepared_scanner_attribute_stage_key(
+            prepared_scanner, scanner_config.backend
+        )
     scanner_volumes = dict(scanner.volumes)
     evaluation = run_voting_from_attributes(
         case,
@@ -198,6 +281,8 @@ def run_scanner_pipeline(
         fvt_recenter_target_source="scanner_fet",
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
+        stage_cache=stage_cache,
+        attribute_stage_key=attribute_stage_key,
     )
     report = dict(evaluation.report_payload)
     volumes = dict(evaluation.artifacts.volumes)
@@ -258,6 +343,7 @@ def run_scanner_pipeline(
             thinning_diagnostic_runner=thinning_diagnostic_runner,
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
             prepared_scanner=prepared_scanner,
+            stage_cache=stage_cache,
         )
     volumes.update(scanner_volumes)
     return PipelineEvaluation(
@@ -293,6 +379,7 @@ def run_case_variant(
         build_scanner_boundary_stage_diagnostics
     ),
     prepared_inputs: PreparedCaseInputs | None = None,
+    stage_cache: PipelineStageCache | None = None,
 ) -> PipelineEvaluation:
     variant_spec = get_variant_spec(variant)
     valid_input_mode = validate_input_mode(input_mode)
@@ -317,6 +404,7 @@ def run_case_variant(
             thinning_diagnostic_runner=thinning_diagnostic_runner,
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
             prepared_oracle=prepared_inputs.oracle,
+            stage_cache=stage_cache,
         )
 
     outputs: dict[str, PipelineEvaluation] = {}
@@ -331,6 +419,7 @@ def run_case_variant(
             thinning_diagnostic_runner=thinning_diagnostic_runner,
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
             prepared_oracle=prepared_inputs.oracle,
+            stage_cache=stage_cache,
         )
     outputs["scanner"] = run_scanner_pipeline(
         case,
@@ -349,6 +438,7 @@ def run_case_variant(
         scanner_stage_loss_diagnostic_runner=scanner_stage_loss_diagnostic_runner,
         scanner_boundary_stage_diagnostic_runner=scanner_boundary_stage_diagnostic_runner,
         prepared_scanner=prepared_inputs.scanner,
+        stage_cache=stage_cache,
     )
     active = "scanner" if valid_input_mode == "scanner" else "oracle"
     active_output = outputs[active]
@@ -539,6 +629,7 @@ def _scanner_backend_matrix_report(
     thinning_diagnostic_runner: Callable[..., Any],
     recenter_distance_diagnostic_runner: Callable[..., Any],
     prepared_scanner: PreparedScannerInput | None,
+    stage_cache: PipelineStageCache | None,
 ) -> dict[str, Any]:
     reports = {}
     backends = SCANNER_BACKEND_MATRIX_BACKENDS
@@ -563,6 +654,7 @@ def _scanner_backend_matrix_report(
                     thinning_diagnostic_runner=thinning_diagnostic_runner,
                     recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
                     prepared_scanner=prepared_scanner,
+                    stage_cache=stage_cache,
                 ).report_payload
             )
     return {

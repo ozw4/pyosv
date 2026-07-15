@@ -14,7 +14,9 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticVotingConfig,
     _validate_nonnegative_finite_scalar,
 )
-from pyosv.evaluation.synthetic_quality.diagnostics import _run_voter_thinning_diagnostic
+from pyosv.evaluation.synthetic_quality.diagnostics import (
+    _run_voter_thinning_diagnostic,
+)
 from pyosv.evaluation.synthetic_quality.models import (
     OrientationField3D,
     PipelineArtifacts,
@@ -23,6 +25,19 @@ from pyosv.evaluation.synthetic_quality.models import (
     SkinningResult3D,
     ThinningResult3D,
     VotingResult3D,
+)
+from pyosv.evaluation.synthetic_quality.stage_cache import (
+    AttributeStageKey,
+    PipelineStageCache,
+    PrimarySkinningStageKey,
+    PrimarySkinningStageResult,
+    SeedStageKey,
+    SeedStageResult,
+    ThinningStageKey,
+    ThinningStageResult,
+    VotingStageKey,
+    VotingStageResult,
+    diagnostic_items,
 )
 from pyosv.evaluation.synthetic_quality.variants import VariantSpec, effective_thin_mode
 from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
@@ -54,6 +69,15 @@ from pyosv.voting3d import OptimalSurfaceVoter
 EDGE_FALSE_POSITIVE_MARGIN = quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
 FORMAT_VERSION = 1
 NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
+THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD = 8.0
+THIN_HYBRID_V2_EDGE_MARGIN = 2
+THIN_PLATEAU_TOLERANCE = 1.0e-6
+
+# Case-local cache DAG (variant-specific work remains outside cached nodes):
+# attributes -> seeds -> voting(fv/vp/vt) -> base thinning(fvt)
+#   -> post-thinning -> primary skinning/min-size -> fallback -> metrics -> artifacts.
+# Primary snapshots are cloned before diagnostics and fallback so mutable skins,
+# cell links, and diagnostics never cross a variant boundary.
 
 
 def _positive_candidate_mask(values: np.ndarray) -> np.ndarray:
@@ -70,7 +94,7 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
     return {
         "shape": [int(size) for size in values.shape],
         "finite_count": int(np.count_nonzero(finite)),
-        "finite_fraction": float(np.count_nonzero(finite) / values.size) if values.size else 0.0,
+        "finite_fraction": (float(np.count_nonzero(finite) / values.size) if values.size else 0.0),
         "min": minimum,
         "max": maximum,
         "mean": mean,
@@ -147,8 +171,12 @@ def run_voting_from_attributes(
     recenter_distance_diagnostic_runner: Callable[
         ..., dict[str, float | None]
     ] = fvt_recenter_target_distance_diagnostics,
+    stage_cache: PipelineStageCache | None = None,
+    attribute_stage_key: AttributeStageKey | None = None,
 ) -> PipelineEvaluation:
     OrientationField3D(ft=ft, pt=pt, tt=tt)
+    if stage_cache is not None:
+        stage_cache.bind_case(case)
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
         rv=voting_config.rv,
@@ -176,12 +204,53 @@ def run_voting_from_attributes(
         voter.set_surface_orientation_smoothing(voting_patch.orientation_smoothing)
     if voting_patch.final_normalization_smoothing is not None:
         voter.set_final_normalization_smoothing(voting_patch.final_normalization_smoothing)
-    boundary_seed_retention_diagnostic: dict[str, Any] | None = None
+    cache_enabled = stage_cache is not None and attribute_stage_key is not None
+    if (
+        variant_spec.seed_policy == "boundary_seed_retention_v1"
+        and fvt_recenter_target is not None
+        and fvt_recenter_target is not ft
+    ):
+        # A caller-provided target needs its own semantic token. The report
+        # runners use the attribute likelihood itself; unknown combinations
+        # conservatively bypass both dependent stages.
+        cache_enabled = False
+    primary_skinning_cache_enabled = cache_enabled and not (
+        variant_spec.post_thinning_policy != "none"
+        and fvt_recenter_target is not None
+        and fvt_recenter_target is not ft
+    )
+    boundary_target_source = None
+    boundary_edge_margin = None
     if variant_spec.seed_policy == "boundary_seed_retention_v1":
-        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
+        boundary_edge_margin = EDGE_FALSE_POSITIVE_MARGIN
+    seed_key = (
+        SeedStageKey(
+            attributes=attribute_stage_key,
+            seed_policy=variant_spec.seed_policy,
+            seed_distance=int(voting_config.seed_distance),
+            seed_threshold=float(voting_config.seed_threshold),
+            ru=int(voting_config.ru),
+            rv=int(voting_config.rv),
+            rw=int(voting_config.rw),
+            boundary_target_source=boundary_target_source,
+            boundary_edge_margin=boundary_edge_margin,
+        )
+        if attribute_stage_key is not None
+        else None
+    )
+    cached_seed = (
+        stage_cache.get_seed(seed_key)
+        if cache_enabled and stage_cache is not None and seed_key is not None
+        else None
+    )
+    if cached_seed is not None:
+        seeds = cached_seed.seeds
+        boundary_seed_retention_diagnostic = cached_seed.diagnostics()
+    elif variant_spec.seed_policy == "boundary_seed_retention_v1":
+        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         seed_result = select_boundary_seed_retention_v1(
             voting_config=voting_config,
             ft=ft,
@@ -191,15 +260,30 @@ def run_voting_from_attributes(
             target_source=boundary_target_source,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
-        seeds = list(seed_result.selected_seeds)
-        boundary_seed_retention_diagnostic = seed_result.diagnostics
+        seeds = tuple(seed_result.selected_seeds)
+        boundary_seed_retention_diagnostic = dict(seed_result.diagnostics)
     else:
-        seeds = voter.pick_seeds(
-            d=voting_config.seed_distance,
-            fm=voting_config.seed_threshold,
-            ft=ft,
-            pt=pt,
-            tt=tt,
+        seeds = tuple(
+            voter.pick_seeds(
+                d=voting_config.seed_distance,
+                fm=voting_config.seed_threshold,
+                ft=ft,
+                pt=pt,
+                tt=tt,
+            )
+        )
+        boundary_seed_retention_diagnostic = None
+    if cached_seed is None and cache_enabled and stage_cache is not None and seed_key is not None:
+        stage_cache.put_seed(
+            seed_key,
+            SeedStageResult(
+                seeds=tuple(seeds),
+                diagnostic_items=(
+                    None
+                    if boundary_seed_retention_diagnostic is None
+                    else diagnostic_items(boundary_seed_retention_diagnostic)
+                ),
+            ),
         )
     seed_candidate_mask: np.ndarray | None = None
     seed_selected_mask: np.ndarray | None = None
@@ -208,13 +292,51 @@ def run_voting_from_attributes(
         seed_selected_mask = np.zeros(seed_candidate_mask.shape, dtype=bool)
         for seed in seeds:
             seed_selected_mask[seed.i3, seed.i2, seed.i1] = True
-    fv, vp, vt = voter.apply_voting_from_seeds(
-        seeds,
-        ft=ft,
-        pt=pt,
-        tt=tt,
+    voting_key = (
+        VotingStageKey(
+            seed=seed_key,
+            ru=int(voter.ru),
+            rv=int(voter.rv),
+            rw=int(voter.rw),
+            bstrain1=int(voter.bstrain1),
+            bstrain2=int(voter.bstrain2),
+            attribute_smoothing=int(voter.attribute_smoothing),
+            surface_smoothing1=float(voter.surface_smoothing1),
+            surface_smoothing2=float(voter.surface_smoothing2),
+            boundary_policy=voter.surface_voting_boundary_policy,
+            support_min_fraction=float(voter.surface_support_min_fraction),
+            support_exponent=float(voter.surface_support_exponent),
+            orientation_smoothing=float(voter.surface_orientation_smoothing),
+            orientation_backend=voter.surface_orientation_backend,
+            final_normalization_smoothing=float(voter.final_normalization_smoothing),
+        )
+        if seed_key is not None
+        else None
     )
-    surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
+    cached_voting = (
+        stage_cache.get_voting(voting_key)
+        if cache_enabled and stage_cache is not None and voting_key is not None
+        else None
+    )
+    if cached_voting is None:
+        fv, vp, vt = voter.apply_voting_from_seeds(
+            seeds,
+            ft=ft,
+            pt=pt,
+            tt=tt,
+        )
+        surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
+        if cache_enabled and stage_cache is not None and voting_key is not None:
+            voting_result = VotingStageResult(
+                fv=fv,
+                vp=vp,
+                vt=vt,
+                diagnostic_items=diagnostic_items(surface_voting_diagnostic_summary),
+            )
+            stage_cache.put_voting(voting_key, voting_result)
+    else:
+        fv, vp, vt = cached_voting.fv, cached_voting.vp, cached_voting.vt
+        surface_voting_diagnostic_summary = cached_voting.diagnostics()
     VotingResult3D(
         fv=fv,
         vp=vp,
@@ -223,14 +345,43 @@ def run_voting_from_attributes(
     )
     thin_mode = effective_thin_mode(variant_spec, voting_config)
     plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
-    fvt = voter.thin(
-        fv,
-        vp,
-        vt,
-        mode=thin_mode,
-        reference_sigma=voting_config.reference_thin_sigma,
-        plateau_tie_breaker=plateau_tie_breaker,
+    thinning_key = (
+        ThinningStageKey(
+            voting=voting_key,
+            thin_mode=thin_mode,
+            reference_sigma=float(voting_config.reference_thin_sigma),
+            hybrid_orientation_gradient_threshold=(THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD),
+            hybrid_v2_edge_margin=THIN_HYBRID_V2_EDGE_MARGIN,
+            orientation_source="voting_vp_vt",
+            tie_break_policy=("attribute_ft" if plateau_tie_breaker is not None else "voting_fv"),
+            plateau_tolerance=THIN_PLATEAU_TOLERANCE,
+        )
+        if voting_key is not None
+        else None
     )
+    cached_thinning = (
+        stage_cache.get_thinning(thinning_key)
+        if cache_enabled and stage_cache is not None and thinning_key is not None
+        else None
+    )
+    if cached_thinning is None:
+        fvt = voter.thin(
+            fv,
+            vp,
+            vt,
+            mode=thin_mode,
+            reference_sigma=voting_config.reference_thin_sigma,
+            hybrid_orientation_gradient_threshold=(THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD),
+            hybrid_v2_edge_margin=THIN_HYBRID_V2_EDGE_MARGIN,
+            plateau_tie_breaker=plateau_tie_breaker,
+            plateau_tolerance=THIN_PLATEAU_TOLERANCE,
+        )
+        if cache_enabled and stage_cache is not None and thinning_key is not None:
+            thinning_result = ThinningStageResult(fvt=fvt)
+            stage_cache.put_thinning(thinning_key, thinning_result)
+            fvt = thinning_result.fvt
+    else:
+        fvt = cached_thinning.fvt
     fvt_recenter_diagnostic: dict[str, Any] | None = None
     fvt_recenter_before_positive: np.ndarray | None = None
     boundary_edge_thin_diagnostic: dict[str, Any] | None = None
@@ -435,15 +586,75 @@ def run_voting_from_attributes(
         )
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
-        skin_diagnostics: dict[str, Any] = {}
-        skins = find_synthetic_skins(
-            fv,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_config,
-            diagnostics=skin_diagnostics,
+        post_thinning_target_source = None
+        if variant_spec.post_thinning_policy != "none":
+            post_thinning_target_source = (
+                "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
+            )
+        primary_skinning_key = (
+            PrimarySkinningStageKey(
+                thinning=thinning_key,
+                post_thinning_policy=variant_spec.post_thinning_policy,
+                post_thinning_target_source=post_thinning_target_source,
+                post_thinning_max_shift=(
+                    FVT_RECENTER_MAX_SHIFT
+                    if variant_spec.post_thinning_policy == "recenter_scanner_target"
+                    else None
+                ),
+                post_thinning_edge_margin=(
+                    EDGE_FALSE_POSITIVE_MARGIN
+                    if variant_spec.post_thinning_policy != "none"
+                    else None
+                ),
+                method=skinning_config.method,
+                growth_source=skinning_config.growth_source,
+                min_likelihood=skinning_config.min_likelihood,
+                min_skin_size=skinning_config.min_skin_size,
+                d=skinning_config.d,
+                ru=skinning_config.ru,
+                rv=skinning_config.rv,
+                rw=skinning_config.rw,
+                max_steps=skinning_config.max_steps,
+                du=skinning_config.du,
+                max_delta_strike=skinning_config.max_delta_strike,
+                reskin=skinning_config.reskin,
+                accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
+                small_skin_size=skinning_config.small_skin_size,
+            )
+            if thinning_key is not None
+            else None
         )
+        primary_result = (
+            stage_cache.get_primary_skinning(primary_skinning_key)
+            if primary_skinning_cache_enabled
+            and stage_cache is not None
+            and primary_skinning_key is not None
+            else None
+        )
+        if primary_result is None:
+            primary_diagnostics: dict[str, Any] = {}
+            primary_skins = find_synthetic_skins(
+                fv,
+                fvt,
+                vp,
+                vt,
+                skinning_config=skinning_config,
+                diagnostics=primary_diagnostics,
+            )
+            if (
+                primary_skinning_cache_enabled
+                and stage_cache is not None
+                and primary_skinning_key is not None
+            ):
+                primary_result = PrimarySkinningStageResult.from_skins(
+                    primary_skins, primary_diagnostics
+                )
+                stage_cache.put_primary_skinning(primary_skinning_key, primary_result)
+        if primary_result is None:
+            skins = primary_skins
+            skin_diagnostics = primary_diagnostics
+        else:
+            skins, skin_diagnostics = primary_result.clone()
         primary_skin_mask = skin_mask_from_skins(skins, case.shape) if capture_stage_trace else None
         add_primary_skin_diagnostics(
             skin_diagnostics,
