@@ -18,9 +18,16 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
 )
-from pyosv.evaluation.synthetic_quality.runner import run_case_variant
-from pyosv.evaluation.synthetic_quality.stage_cache import PipelineStageCache
+from pyosv.evaluation.synthetic_quality.models import OrientationField3D
+from pyosv.evaluation.synthetic_quality.runner import (
+    PreparedCaseInputs,
+    PreparedScannerInput,
+    prepare_case_inputs,
+    run_case_variant,
+)
+from pyosv.evaluation.synthetic_quality.stage_cache import AttributeStageKey, PipelineStageCache
 from pyosv.evaluation.synthetic_quality.stage_cache import PrimarySkinningStageResult
+from pyosv.evaluation.synthetic_quality.variants import get_variant_spec
 from pyosv.evaluation.reporting.artifacts import write_case_skins_json, write_case_volumes
 from pyosv.evaluation.reporting.csv_v1 import write_summary_csv
 from pyosv.evaluation.reporting.json_v1 import write_metrics_json
@@ -95,6 +102,121 @@ def test_identical_seed_and_voting_stages_are_called_once(
     assert calls == {"seed": 1, "voting": 1}
     assert cache.stats.seed_hits == 1
     assert cache.stats.voting_hits == 1
+
+
+def test_replaced_prepared_oracle_bypasses_stage_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = pipeline.OptimalSurfaceVoter.pick_seeds
+
+    def count_seed(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.OptimalSurfaceVoter, "pick_seeds", count_seed)
+    case = make_single_vertical_plane_case((9, 9, 9))
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=SyntheticScannerConfig(),
+        input_mode="oracle",
+        scanner_backend_matrix=False,
+    )
+    custom_oracle = OrientationField3D(
+        ft=np.zeros_like(prepared.oracle.ft),
+        pt=prepared.oracle.pt.copy(),
+        tt=prepared.oracle.tt.copy(),
+    )
+    common = dict(
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=SyntheticScannerConfig(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant="current_default",
+        input_mode="oracle",
+        scanner_backend_matrix=False,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=False,
+    )
+    cache = PipelineStageCache(case)
+
+    run_case_variant(case, prepared_inputs=prepared, stage_cache=cache, **common)
+    run_case_variant(
+        case,
+        prepared_inputs=PreparedCaseInputs(case, custom_oracle, None),
+        stage_cache=cache,
+        **common,
+    )
+
+    assert calls == 2
+
+
+def test_replaced_prepared_scanner_bypasses_stage_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = pipeline.OptimalSurfaceVoter.pick_seeds
+
+    def count_seed(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.OptimalSurfaceVoter, "pick_seeds", count_seed)
+    case = make_single_vertical_plane_case((9, 9, 9))
+    scanner_config = SyntheticScannerConfig()
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=scanner_config,
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+    )
+    assert prepared.scanner is not None
+    custom_volumes = dict(prepared.scanner.selected.volumes)
+    custom_volumes["scanner_fet"] = np.zeros_like(custom_volumes["scanner_fet"])
+    custom_attributes = replace(prepared.scanner.selected, volumes=custom_volumes)
+    custom_scanner = PreparedScannerInput(
+        config=scanner_config,
+        selected=custom_attributes,
+        by_backend={scanner_config.backend: custom_attributes},
+    )
+    common = dict(
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=scanner_config,
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=False,
+    )
+    cache = PipelineStageCache(case)
+
+    run_case_variant(
+        case,
+        variant="current_default",
+        prepared_inputs=prepared,
+        stage_cache=cache,
+        **common,
+    )
+    run_case_variant(
+        case,
+        variant="voter_thin_normal",
+        prepared_inputs=prepared,
+        stage_cache=cache,
+        **common,
+    )
+    assert calls == 1
+    run_case_variant(
+        case,
+        variant="current_default",
+        prepared_inputs=replace(prepared, scanner=custom_scanner),
+        stage_cache=cache,
+        **common,
+    )
+
+    assert calls == 2
 
 
 def test_identical_base_thinning_is_called_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,6 +333,48 @@ def test_post_thinning_policy_does_not_share_primary_skinning() -> None:
 
     assert cache.stats.thinning_hits == 1
     assert cache.stats.primary_skinning_misses == 2
+
+
+def test_custom_post_thinning_target_bypasses_primary_skinning_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = pipeline.find_synthetic_skins
+
+    def count_primary(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "find_synthetic_skins", count_primary)
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = PipelineStageCache(case)
+    common = dict(
+        ft=case.ft_oracle,
+        pt=case.pt_oracle,
+        tt=case.tt_oracle,
+        voting_config=SyntheticVotingConfig(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(),
+        variant_spec=get_variant_spec("voter_thin_hybrid_v2_recenter_scanner_target"),
+        fvt_recenter_target_source="custom_target",
+        stage_cache=cache,
+        attribute_stage_key=AttributeStageKey(case.case_id, case.shape, "oracle"),
+    )
+
+    pipeline.run_voting_from_attributes(
+        case,
+        fvt_recenter_target=np.zeros(case.shape, dtype=np.float32),
+        **common,
+    )
+    pipeline.run_voting_from_attributes(
+        case,
+        fvt_recenter_target=np.ones(case.shape, dtype=np.float32),
+        **common,
+    )
+
+    assert calls == 2
+    assert cache.stats.voting_hits == 1
 
 
 def test_primary_skinning_snapshot_clones_cells_links_skins_and_diagnostics() -> None:

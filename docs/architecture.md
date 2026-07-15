@@ -51,6 +51,9 @@ array identity alone is never a key. Only fully identical completed voting
 outputs are shared. Cached voting arrays are read-only, diagnostics are copied
 on retrieval, and the cache is discarded after each case's variant loop. A
 cache is bound to the exact case instance and rejects reuse for another case.
+Prepared attributes retain these keys only when produced by the case preparation
+stage; caller-supplied replacements and custom post-thinning targets bypass the
+dependent cache stages unless they have a validated semantic identity.
 
 ## Reports and experimental code
 

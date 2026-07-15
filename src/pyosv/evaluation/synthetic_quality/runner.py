@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -65,6 +65,12 @@ class PreparedScannerInput:
     config: SyntheticScannerConfig
     selected: ScannerAttributes
     by_backend: Mapping[str, ScannerAttributes]
+    _attribute_stage_keys: tuple[tuple[str, AttributeStageKey], ...] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +82,15 @@ class PreparedCaseInputs:
     scanner: PreparedScannerInput | None
 
 
-def _oracle_attribute_stage_key(case: Synthetic3DCase) -> AttributeStageKey:
+def _oracle_attribute_stage_key(
+    case: Synthetic3DCase, oracle: OrientationField3D
+) -> AttributeStageKey | None:
+    if not (
+        oracle.ft is case.ft_oracle
+        and oracle.pt is case.pt_oracle
+        and oracle.tt is case.tt_oracle
+    ):
+        return None
     return AttributeStageKey(
         case_id=case.case_id,
         shape=case.shape,
@@ -113,6 +127,14 @@ def _scanner_attribute_stage_key(
     )
 
 
+def _prepared_scanner_attribute_stage_key(
+    prepared: PreparedScannerInput, backend: str
+) -> AttributeStageKey | None:
+    if prepared._attribute_stage_keys is None:
+        return None
+    return dict(prepared._attribute_stage_keys).get(backend)
+
+
 def validate_input_mode(input_mode: str) -> str:
     if input_mode not in {"oracle", "scanner", "both"}:
         raise ValueError("input_mode must be 'oracle', 'scanner', or 'both'")
@@ -144,14 +166,29 @@ def prepare_case_inputs(
                 by_backend[backend] = scanner_attributes_from_case(
                     case, replace(scanner_config, backend=backend)
                 )
+    prepared_scanner = PreparedScannerInput(
+        config=scanner_config,
+        selected=selected,
+        by_backend=by_backend,
+    )
+    object.__setattr__(
+        prepared_scanner,
+        "_attribute_stage_keys",
+        tuple(
+            (
+                backend,
+                _scanner_attribute_stage_key(
+                    case,
+                    replace(scanner_config, backend=backend),
+                ),
+            )
+            for backend in by_backend
+        ),
+    )
     return PreparedCaseInputs(
         case=case,
         oracle=oracle,
-        scanner=PreparedScannerInput(
-            config=scanner_config,
-            selected=selected,
-            by_backend=by_backend,
-        ),
+        scanner=prepared_scanner,
     )
 
 
@@ -190,7 +227,7 @@ def run_oracle_pipeline(
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         stage_cache=stage_cache,
-        attribute_stage_key=_oracle_attribute_stage_key(case),
+        attribute_stage_key=_oracle_attribute_stage_key(case, oracle),
     )
 
 
@@ -219,11 +256,14 @@ def run_scanner_pipeline(
     prepared_scanner: PreparedScannerInput | None = None,
     stage_cache: PipelineStageCache | None = None,
 ) -> PipelineEvaluation:
-    scanner = (
-        scanner_attributes_from_case(case, scanner_config)
-        if prepared_scanner is None
-        else _prepared_scanner_attributes(prepared_scanner, scanner_config)
-    )
+    if prepared_scanner is None:
+        scanner = scanner_attributes_from_case(case, scanner_config)
+        attribute_stage_key = _scanner_attribute_stage_key(case, scanner_config)
+    else:
+        scanner = _prepared_scanner_attributes(prepared_scanner, scanner_config)
+        attribute_stage_key = _prepared_scanner_attribute_stage_key(
+            prepared_scanner, scanner_config.backend
+        )
     scanner_volumes = dict(scanner.volumes)
     evaluation = run_voting_from_attributes(
         case,
@@ -244,7 +284,7 @@ def run_scanner_pipeline(
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         stage_cache=stage_cache,
-        attribute_stage_key=_scanner_attribute_stage_key(case, scanner_config),
+        attribute_stage_key=attribute_stage_key,
     )
     report = dict(evaluation.report_payload)
     volumes = dict(evaluation.artifacts.volumes)

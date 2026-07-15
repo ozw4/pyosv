@@ -214,6 +214,11 @@ def run_voting_from_attributes(
         # runners use the attribute likelihood itself; unknown combinations
         # conservatively bypass both dependent stages.
         cache_enabled = False
+    primary_skinning_cache_enabled = cache_enabled and not (
+        variant_spec.post_thinning_policy != "none"
+        and fvt_recenter_target is not None
+        and fvt_recenter_target is not ft
+    )
     boundary_target_source = None
     boundary_edge_margin = None
     if variant_spec.seed_policy == "boundary_seed_retention_v1":
@@ -621,7 +626,9 @@ def run_voting_from_attributes(
         )
         primary_result = (
             stage_cache.get_primary_skinning(primary_skinning_key)
-            if cache_enabled and stage_cache is not None and primary_skinning_key is not None
+            if primary_skinning_cache_enabled
+            and stage_cache is not None
+            and primary_skinning_key is not None
             else None
         )
         if primary_result is None:
@@ -634,7 +641,11 @@ def run_voting_from_attributes(
                 skinning_config=skinning_config,
                 diagnostics=primary_diagnostics,
             )
-            if cache_enabled and stage_cache is not None and primary_skinning_key is not None:
+            if (
+                primary_skinning_cache_enabled
+                and stage_cache is not None
+                and primary_skinning_key is not None
+            ):
                 primary_result = PrimarySkinningStageResult.from_skins(
                     primary_skins, primary_diagnostics
                 )
