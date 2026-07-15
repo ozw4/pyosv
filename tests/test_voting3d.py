@@ -2922,8 +2922,12 @@ def test_reference_policy_uses_only_combined_uvw_sampler(
         "_samples_in_uvw_box_reference_with_support_validated",
         sample_combined,
     )
-    monkeypatch.setattr(voter, "samples_in_uvw_box", unexpected_sampler)
-    monkeypatch.setattr(voter, "_samples_in_uvw_box_masked", unexpected_sampler)
+    monkeypatch.setattr(voter, "_samples_in_uvw_box_validated", unexpected_sampler)
+    monkeypatch.setattr(
+        voter,
+        "_samples_in_uvw_box_masked_validated",
+        unexpected_sampler,
+    )
     ft = np.ones((3, 3, 3), dtype=np.float32)
     arrays = tuple(np.zeros_like(ft) for _ in range(4))
 
