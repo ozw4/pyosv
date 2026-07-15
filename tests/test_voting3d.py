@@ -1,3 +1,5 @@
+from copy import copy
+
 import numpy as np
 import pytest
 
@@ -11,6 +13,12 @@ from pyosv.geometry import (
     strike_and_dip_from_local_surface_derivatives,
 )
 from pyosv.orient3d import FaultOrientScanner3
+from pyosv._voting3d.orientation import (
+    _gaussian_weights_nearest,
+    _smooth_surface_center_patch_separable,
+    _surface_center_derivatives_center_separable,
+    _surface_center_derivatives_full_surface,
+)
 from pyosv.thinning3d import reference_like_3d_thin_values, remove_reference_edge_effects_3d
 from pyosv.voting3d import (
     OptimalSurfaceVoter,
@@ -91,6 +99,7 @@ def test_constructor_initializes_range_and_default_configuration() -> None:
     assert voter.surface_smoothing1 == 2.0
     assert voter.surface_smoothing2 == 2.0
     assert voter.surface_orientation_smoothing == 2.0
+    assert voter.surface_orientation_backend == "full_surface"
     assert voter.final_normalization_smoothing == 0.0
     assert voter.surface_support_min_fraction == 0.0
     assert voter.surface_support_exponent == 0.0
@@ -300,6 +309,36 @@ def test_set_surface_orientation_smoothing_rejects_invalid_values(
         voter.set_surface_orientation_smoothing(
             surface_orientation_smoothing,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize("backend", ["full_surface", "center_separable"])
+def test_set_surface_orientation_backend_accepts_supported_values(backend: str) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    voter.set_surface_orientation_backend(backend)
+
+    assert voter.surface_orientation_backend == backend
+
+
+@pytest.mark.parametrize("backend", ["center", "", None, True])
+def test_set_surface_orientation_backend_rejects_invalid_values(backend: object) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+
+    with pytest.raises(ValueError, match="surface_orientation_backend"):
+        voter.set_surface_orientation_backend(backend)  # type: ignore[arg-type]
+
+
+def test_surface_orientation_backend_is_independent_between_instances_and_copies() -> None:
+    configured = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    other = OptimalSurfaceVoter(ru=3, rv=2, rw=2)
+    configured.set_surface_orientation_backend("center_separable")
+    copied = copy(configured)
+
+    copied.set_surface_orientation_backend("full_surface")
+
+    assert configured.surface_orientation_backend == "center_separable"
+    assert copied.surface_orientation_backend == "full_surface"
+    assert other.surface_orientation_backend == "full_surface"
 
 
 @pytest.mark.parametrize("final_normalization_smoothing", [0.0, 1.0, np.float32(2.0)])
@@ -772,14 +811,17 @@ def test_surface_voting_adds_votes_on_high_likelihood_plane() -> None:
     ("surface_orientation_smoothing", "expected_sigma"),
     [(None, 3.0), (0.0, 0.0)],
 )
+@pytest.mark.parametrize("backend", ["full_surface", "center_separable"])
 def test_surface_voting_passes_configured_orientation_smoothing(
     monkeypatch: pytest.MonkeyPatch,
     surface_orientation_smoothing: float | None,
     expected_sigma: float,
+    backend: str,
 ) -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=3, rw=2)
     voter.set_attribute_smoothing(0)
     voter.set_surface_smoothing(0.0, 0.0)
+    voter.set_surface_orientation_backend(backend)
     if surface_orientation_smoothing is not None:
         voter.set_surface_orientation_smoothing(surface_orientation_smoothing)
     ft = np.zeros((11, 11, 11), dtype=np.float32)
@@ -788,7 +830,7 @@ def test_surface_voting_passes_configured_orientation_smoothing(
     vp = np.full_like(ft, -1.0)
     vt = np.full_like(ft, -1.0)
     vm = np.zeros_like(ft)
-    sigmas: list[float | None] = []
+    calls: list[tuple[float | None, str]] = []
 
     def wrapped_surface_strike_and_dip(
         normal: np.ndarray,
@@ -797,14 +839,16 @@ def test_surface_voting_passes_configured_orientation_smoothing(
         surface: np.ndarray,
         *,
         sigma: float | None = None,
+        backend: str = "full_surface",
     ) -> tuple[float, float]:
-        sigmas.append(sigma)
+        calls.append((sigma, backend))
         return _surface_strike_and_dip(
             normal,
             dip,
             strike,
             surface,
             sigma=sigma,
+            backend=backend,
         )
 
     monkeypatch.setattr(
@@ -815,7 +859,7 @@ def test_surface_voting_passes_configured_orientation_smoothing(
 
     voter._surface_voting(FaultCell(5, 5, 5, 0.8, 0.0, 90.0), ft, fe, vp, vt, vm)
 
-    assert sigmas == [expected_sigma]
+    assert calls == [(expected_sigma, backend)]
     assert np.isfinite(vp[fe > 0.0]).all()
     assert np.isfinite(vt[fe > 0.0]).all()
 
@@ -2548,9 +2592,11 @@ def test_surface_strike_and_dip_does_not_mutate_surface() -> None:
     np.testing.assert_array_equal(surface, expected)
 
 
+@pytest.mark.parametrize("backend", ["full_surface", "center_separable"])
 @pytest.mark.parametrize("shape", [(2, 3), (3, 2)])
 def test_surface_strike_and_dip_rejects_too_small_surfaces(
     shape: tuple[int, int],
+    backend: str,
 ) -> None:
     normal = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
     dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -2558,7 +2604,14 @@ def test_surface_strike_and_dip_rejects_too_small_surfaces(
     surface = np.zeros(shape, dtype=np.float32)
 
     with pytest.raises(ValueError, match="at least three samples"):
-        _surface_strike_and_dip(normal, dip, strike, surface, sigma=None)
+        _surface_strike_and_dip(
+            normal,
+            dip,
+            strike,
+            surface,
+            sigma=None,
+            backend=backend,
+        )
 
 
 @pytest.mark.parametrize("sigma", [-0.1, np.nan, np.inf, True])
@@ -2576,6 +2629,141 @@ def test_surface_strike_and_dip_rejects_invalid_sigma(sigma: object) -> None:
             surface,
             sigma=sigma,  # type: ignore[arg-type]
         )
+
+
+def _orientation_test_surface(shape: tuple[int, int], kind: str) -> np.ndarray:
+    w, v = np.indices(shape, dtype=np.float32)
+    center_w = np.float32(shape[0] // 2)
+    center_v = np.float32(shape[1] // 2)
+    if kind == "flat":
+        return np.zeros(shape, dtype=np.float32)
+    if kind == "tilted":
+        return (0.17 * (v - center_v) - 0.23 * (w - center_w)).astype(np.float32)
+    if kind == "curved":
+        return (
+            0.11 * (v - center_v)
+            - 0.19 * (w - center_w)
+            + 0.03 * (v - center_v) ** 2
+            - 0.02 * (w - center_w) ** 2
+            + 0.01 * (v - center_v) * (w - center_w)
+        ).astype(np.float32)
+    rng = np.random.default_rng(397 + 10 * shape[0] + shape[1])
+    return rng.normal(size=shape).astype(np.float32)
+
+
+@pytest.mark.parametrize("shape", [(3, 3), (5, 7), (11, 9)])
+@pytest.mark.parametrize("sigma", [None, 0.0, 0.25, 8.0])
+@pytest.mark.parametrize("kind", ["flat", "tilted", "curved", "random"])
+def test_center_separable_matches_full_surface_center_patch_and_orientation(
+    shape: tuple[int, int],
+    sigma: float | None,
+    kind: str,
+) -> None:
+    surface = _orientation_test_surface(shape, kind)
+    full_surface = voting3d._smooth_surface_for_orientation(surface, sigma)
+    iw = shape[0] // 2
+    iv = shape[1] // 2
+    expected_patch = full_surface[iw - 1 : iw + 2, iv - 1 : iv + 2]
+
+    center_patch = _smooth_surface_center_patch_separable(surface, sigma)
+    full_derivatives = _surface_center_derivatives_full_surface(surface, sigma)
+    center_derivatives = _surface_center_derivatives_center_separable(surface, sigma)
+
+    np.testing.assert_allclose(center_patch, expected_patch, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(center_derivatives, full_derivatives, rtol=0.0, atol=1e-6)
+
+    normal = fault_normal_vector_from_strike_and_dip(359.0, 75.0)
+    dip = fault_dip_vector_from_strike_and_dip(359.0, 75.0)
+    strike = fault_strike_vector_from_strike_and_dip(359.0, 75.0)
+    full_angles = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=sigma,
+        backend="full_surface",
+    )
+    center_angles = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=sigma,
+        backend="center_separable",
+    )
+    assert _angle_distance_degrees(center_angles[0], full_angles[0]) <= 1e-6
+    assert abs(center_angles[1] - full_angles[1]) <= 1e-6
+
+
+def test_full_surface_backend_is_exactly_the_existing_default() -> None:
+    surface = _orientation_test_surface((9, 7), "random")
+    normal = fault_normal_vector_from_strike_and_dip(42.0, 61.0)
+    dip = fault_dip_vector_from_strike_and_dip(42.0, 61.0)
+    strike = fault_strike_vector_from_strike_and_dip(42.0, 61.0)
+
+    implicit = _surface_strike_and_dip(normal, dip, strike, surface, sigma=2.5)
+    explicit = _surface_strike_and_dip(
+        normal,
+        dip,
+        strike,
+        surface,
+        sigma=2.5,
+        backend="full_surface",
+    )
+
+    assert explicit == implicit
+
+
+def test_surface_strike_and_dip_rejects_invalid_backend() -> None:
+    axes = np.eye(3, dtype=np.float32)
+
+    with pytest.raises(ValueError, match="surface orientation backend"):
+        _surface_strike_and_dip(
+            axes[0],
+            axes[1],
+            axes[2],
+            np.zeros((3, 3), dtype=np.float32),
+            backend="unknown",
+        )
+
+
+def test_orientation_gaussian_weight_cache_is_bounded() -> None:
+    _gaussian_weights_nearest.cache_clear()
+    for size in range(3, 143):
+        center = size // 2
+        _gaussian_weights_nearest(size, 1.0, 4.0, (center - 1, center, center + 1))
+
+    cache_info = _gaussian_weights_nearest.cache_info()
+    assert cache_info.maxsize == 128
+    assert cache_info.currsize == 128
+    _gaussian_weights_nearest.cache_clear()
+
+
+def test_apply_voting_center_separable_stays_close_to_full_surface() -> None:
+    i3, i2, i1 = np.indices((9, 9, 9), dtype=np.float32)
+    center2 = np.float32(4.0) + np.float32(0.35) * np.sin(
+        np.float32(0.7) * i3,
+    )
+    ft = np.exp(-0.5 * ((i2 - center2) / np.float32(0.9)) ** 2).astype(np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+
+    outputs: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    for backend in ("full_surface", "center_separable"):
+        voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+        voter.set_attribute_smoothing(0)
+        voter.set_surface_smoothing(0.0, 0.0)
+        voter.set_surface_orientation_backend(backend)
+        outputs.append(voter.apply_voting(d=3, fm=0.7, ft=ft, pt=pt, tt=tt))
+
+    (full_fv, full_vp, full_vt), (center_fv, center_vp, center_vt) = outputs
+    np.testing.assert_allclose(center_fv, full_fv, rtol=0.0, atol=1e-6)
+    support = full_fv > 0.0
+    strike_difference = np.abs(
+        ((center_vp[support] - full_vp[support] + 180.0) % 360.0) - 180.0,
+    )
+    assert np.max(strike_difference, initial=0.0) <= 1e-5
+    np.testing.assert_allclose(center_vt[support], full_vt[support], rtol=0.0, atol=1e-5)
 
 
 def _expected_masked_uvw_samples(

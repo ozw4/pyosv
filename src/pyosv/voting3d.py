@@ -37,6 +37,7 @@ from pyosv._voting3d.normalization import (
     _smooth_fault_likelihood_3d_validated,
 )
 from pyosv._voting3d.orientation import (
+    _SURFACE_ORIENTATION_BACKENDS,
     _smooth_surface_for_orientation as _smooth_surface_for_orientation,
     _surface_center_derivatives as _surface_center_derivatives,
     _surface_strike_and_dip,
@@ -125,6 +126,7 @@ class OptimalSurfaceVoter:
         self.surface_smoothing1 = 2.0
         self.surface_smoothing2 = 2.0
         self.surface_orientation_smoothing = float(max(self.rv, self.rw))
+        self.surface_orientation_backend = "full_surface"
         self.final_normalization_smoothing = 0.0
         self.surface_support_min_fraction = 0.0
         self.surface_support_exponent = 0.0
@@ -179,6 +181,16 @@ class OptimalSurfaceVoter:
             surface_orientation_smoothing,
             "surface_orientation_smoothing",
         )
+
+    def set_surface_orientation_backend(self, backend: str) -> None:
+        """Select how smoothed center derivatives are computed."""
+
+        if not isinstance(backend, str) or backend not in _SURFACE_ORIENTATION_BACKENDS:
+            raise ValueError(
+                "surface_orientation_backend must be one of "
+                f"{_SURFACE_ORIENTATION_BACKENDS}, got {backend!r}",
+            )
+        self.surface_orientation_backend = backend
 
     def set_final_normalization_smoothing(self, sigma: float) -> None:
         """Set smoothing for final vote map normalization before power transform."""
@@ -872,6 +884,7 @@ class OptimalSurfaceVoter:
                 surface_smoothing1=self.surface_smoothing1,
                 surface_smoothing2=self.surface_smoothing2,
                 surface_orientation_smoothing=self.surface_orientation_smoothing,
+                surface_orientation_backend=self.surface_orientation_backend,
                 surface_support_min_fraction=self.surface_support_min_fraction,
                 surface_support_exponent=self.surface_support_exponent,
             ),

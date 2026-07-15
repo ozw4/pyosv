@@ -100,6 +100,7 @@ class ReferenceSurfaceVotingPolicy:
             context.strike,
             surface,
             sigma=config.surface_orientation_smoothing,
+            backend=config.surface_orientation_backend,
         )
         align_i3 = abs(context.normal[2]) > abs(context.normal[1])
         context.accumulate_reference(
@@ -261,6 +262,7 @@ class MaskedInBoundsSurfaceVotingPolicy:
                 context.strike,
                 surface,
                 sigma=config.surface_orientation_smoothing,
+                backend=config.surface_orientation_backend,
             )
             orientation_source = "surface"
         else:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pyosv._accel import NUMBA_AVAILABLE  # noqa: E402
 from pyosv._seed_selection import _select_voter_seed_indices_3d  # noqa: E402
+from pyosv._voting3d.orientation import _surface_strike_and_dip  # noqa: E402
 from pyosv.voting3d import OptimalSurfaceVoter  # noqa: E402
 
 
@@ -36,6 +37,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fraction of samples generated above the seed threshold.",
     )
     parser.add_argument("--seed", type=int, default=20250389, help="Synthetic input RNG seed.")
+    parser.add_argument(
+        "--orientation-nw",
+        type=int,
+        default=65,
+        help="Orientation microbenchmark surface w sample count.",
+    )
+    parser.add_argument(
+        "--orientation-nv",
+        type=int,
+        default=65,
+        help="Orientation microbenchmark surface v sample count.",
+    )
+    parser.add_argument(
+        "--orientation-sigma",
+        type=float,
+        default=16.0,
+        help="Orientation microbenchmark Gaussian sigma.",
+    )
+    parser.add_argument(
+        "--orientation-iterations",
+        type=int,
+        default=100,
+        help="Orientation calls per measured repetition.",
+    )
     return parser
 
 
@@ -53,6 +78,43 @@ def main(argv: list[str] | None = None) -> int:
     voter = OptimalSurfaceVoter(ru=args.ru, rv=args.rv, rw=args.rw)
     voter.set_attribute_smoothing(0)
     voter.set_surface_smoothing(0.0, 0.0)
+
+    orientation_surface = np.random.default_rng(args.seed + 1).normal(
+        size=(args.orientation_nw, args.orientation_nv),
+    ).astype(np.float32)
+    orientation_axes = np.eye(3, dtype=np.float32)
+    if args.orientation_iterations <= 0:
+        raise ValueError("orientation-iterations must be positive")
+
+    def run_orientation(backend: str) -> tuple[float, float]:
+        result = (0.0, 0.0)
+        for _ in range(args.orientation_iterations):
+            result = _surface_strike_and_dip(
+                orientation_axes[0],
+                orientation_axes[1],
+                orientation_axes[2],
+                orientation_surface,
+                sigma=args.orientation_sigma,
+                backend=backend,
+            )
+        return result
+
+    full_orientation_times, full_orientation = time_repeated(
+        lambda: run_orientation("full_surface"),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    center_orientation_times, center_orientation = time_repeated(
+        lambda: run_orientation("center_separable"),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    full_orientation_times = [
+        value / args.orientation_iterations for value in full_orientation_times
+    ]
+    center_orientation_times = [
+        value / args.orientation_iterations for value in center_orientation_times
+    ]
 
     seed_times, seeds = time_repeated(
         lambda: voter.pick_seeds(args.d, args.fm, ft, pt, tt),
@@ -130,6 +192,27 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     print(f"repeat={args.repeat} warmup={args.warmup}")
+    orientation_strike_difference = abs(
+        ((center_orientation[0] - full_orientation[0] + 180.0) % 360.0) - 180.0,
+    )
+    orientation_dip_difference = abs(center_orientation[1] - full_orientation[1])
+    orientation_speedup = float(np.median(full_orientation_times)) / float(
+        np.median(center_orientation_times),
+    )
+    print(
+        " ".join(
+            [
+                f"orientation_surface_shape={orientation_surface.shape}",
+                f"orientation_sigma={args.orientation_sigma:.6g}",
+                f"orientation_iterations={args.orientation_iterations}",
+                f"strike_difference_degrees={orientation_strike_difference:.9g}",
+                f"dip_difference_degrees={orientation_dip_difference:.9g}",
+            ],
+        ),
+    )
+    print(timing_summary("orientation_full_surface_per_call", full_orientation_times))
+    print(timing_summary("orientation_center_separable_per_call", center_orientation_times))
+    print(f"orientation_center_speedup={orientation_speedup:.3f}")
     print(
         f"{timing_summary('pick_seeds', seed_times)} "
         f"output_count={len(seeds)} {array_fingerprint('seed_indices', seed_indices)}",
