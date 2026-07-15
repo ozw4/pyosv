@@ -6,8 +6,8 @@ import operator
 
 import numpy as np
 
-from pyosv._skinner.grid import _SkinCellGrid
 from pyosv._skinner.models import _SkinCell
+from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.validation import (
     _validate_matching_finite_arrays3_many,
     _validate_nonnegative_finite_float,
@@ -33,11 +33,17 @@ def _adaptive_skin_likelihood_threshold(values: np.ndarray) -> float:
     return float(np.clip(np.percentile(positive, 70.0), 0.25, 0.75))
 
 
-def _mark_occupied_skin(occupied: _SkinCellGrid, skin: FaultSkin, radius: int = 5) -> None:
+def _mark_occupied_skin(
+    occupied: _SkinOccupancyMask,
+    skin: FaultSkin,
+    radius: int = 5,
+) -> None:
     radius_int = _validate_nonnegative_int(radius, "accepted_occupancy_radius")
     for cell in skin:
-        occupied.set_cells_in_box(
-            _SkinCell(cell.x1, cell.x2, cell.x3, cell.fl, cell.fp, cell.ft),
+        occupied.mark_box(
+            cell.i1,
+            cell.i2,
+            cell.i3,
             radius_int,
             radius_int,
             radius_int,

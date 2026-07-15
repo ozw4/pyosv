@@ -2,7 +2,13 @@ import numpy as np
 import pytest
 
 from pyosv.cells import FaultCell
-from pyosv.skinner import _SkinCell, _SkinCellGrid, link_above_below, link_left_right
+from pyosv.skinner import (
+    _SkinCell,
+    _SkinCellGrid,
+    _SkinOccupancyMask,
+    link_above_below,
+    link_left_right,
+)
 
 
 def test_skin_cell_matches_public_fault_cell_rounding_and_vectors() -> None:
@@ -93,3 +99,110 @@ def test_skin_cell_grid_rejects_invalid_box_radius(radius_name: str) -> None:
 
     with pytest.raises(ValueError, match=radius_name):
         grid.set_cells_in_box(cell, **radii)
+
+
+def test_skin_occupancy_mask_has_dense_c_contiguous_bool_storage() -> None:
+    occupied = _SkinOccupancyMask((2, 3, 4))
+
+    assert occupied._mask.shape == (2, 3, 4)
+    assert occupied._mask.dtype == np.bool_
+    assert occupied._mask.flags.c_contiguous
+    assert occupied._mask.nbytes == 2 * 3 * 4
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [(), (1, 2), (1, 2, 3, 4), (0, 2, 3), (1, -1, 3), (1, True, 3), (1, 2.5, 3)],
+)
+def test_skin_occupancy_mask_rejects_invalid_shape(shape: tuple[object, ...]) -> None:
+    with pytest.raises(ValueError, match="shape"):
+        _SkinOccupancyMask(shape)  # type: ignore[arg-type]
+
+
+def test_skin_occupancy_mask_matches_sparse_grid_truthiness() -> None:
+    shape = (2, 3, 4)
+    centers = [
+        (i1, i2, i3) for i3 in range(shape[0]) for i2 in range(shape[1]) for i1 in range(shape[2])
+    ]
+    query_centers = centers + [
+        (-1, 0, 0),
+        (shape[2], 0, 0),
+        (0, -1, 0),
+        (0, shape[1], 0),
+        (0, 0, -1),
+        (0, 0, shape[0]),
+        (-1, -1, 0),
+        (shape[2], shape[1], 0),
+        (-1, -1, -1),
+        (shape[2], shape[1], shape[0]),
+        (-max(shape) - 1, 0, 0),
+        (shape[2] + max(shape), 0, 0),
+    ]
+    radii = (0, 1, max(shape) + 1)
+
+    for marked_i1, marked_i2, marked_i3 in centers:
+        cell = _SkinCell(marked_i1, marked_i2, marked_i3, 0.8, 30.0, 60.0)
+        for marked_radius in radii:
+            grid = _SkinCellGrid()
+            grid.set_cells_in_box(cell, marked_radius, marked_radius, marked_radius)
+            occupied = _SkinOccupancyMask(shape)
+            occupied.mark_box(
+                marked_i1,
+                marked_i2,
+                marked_i3,
+                marked_radius,
+                marked_radius,
+                marked_radius,
+            )
+
+            for query_i1, query_i2, query_i3 in query_centers:
+                for query_radius in radii:
+                    expected = bool(
+                        grid.find_cells_in_box(
+                            query_i1,
+                            query_i2,
+                            query_i3,
+                            query_radius,
+                            query_radius,
+                            query_radius,
+                        )
+                    )
+                    assert (
+                        occupied.any_in_box(
+                            query_i1,
+                            query_i2,
+                            query_i3,
+                            query_radius,
+                            query_radius,
+                            query_radius,
+                        )
+                        is expected
+                    )
+
+
+def test_skin_occupancy_mask_handles_marks_and_queries_at_volume_boundaries() -> None:
+    occupied = _SkinOccupancyMask((3, 4, 5))
+
+    occupied.mark_box(-1, 1, 1, 1, 0, 0)
+    occupied.mark_box(5, 2, 1, 1, 0, 0)
+    occupied.mark_box(2, -5, 1, 0, 1, 0)
+
+    assert occupied.any_in_box(0, 1, 1, 0, 0, 0)
+    assert occupied.any_in_box(4, 2, 1, 0, 0, 0)
+    assert occupied.any_in_box(-1, 1, 1, 1, 0, 0)
+    assert occupied.any_in_box(-1, 1, 1, 0, 0, 0)
+    assert occupied.any_in_box(5, 2, 1, 0, 0, 0)
+    assert occupied.any_in_box(2, -5, 1, 0, 1, 0)
+    assert not occupied.any_in_box(100, 100, 100, 0, 0, 0)
+
+
+def test_skin_occupancy_mask_unions_multiple_box_marks() -> None:
+    occupied = _SkinOccupancyMask((3, 4, 5))
+
+    occupied.mark_box(0, 0, 0, 1, 0, 0)
+    occupied.mark_box(4, 3, 2, 0, 1, 0)
+
+    assert occupied.any_in_box(1, 0, 0, 0, 0, 0)
+    assert occupied.any_in_box(4, 2, 2, 0, 0, 0)
+    assert occupied.any_in_box(4, 3, 2, 0, 0, 0)
+    assert not occupied.any_in_box(2, 2, 1, 0, 0, 0)

@@ -16,13 +16,13 @@ from pyosv._skinner.candidate_path import (
     _pick_candidate_local_u_path_numba,
     _pick_candidate_local_u_path_python,
 )
-from pyosv._skinner.grid import _SkinCellGrid
 from pyosv._skinner.models import (
     _LocalTransformMap,
     _SkinCell,
     link_above_below,
     link_left_right,
 )
+from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.reskin import _reskin_reference
 from pyosv._skinner.transforms import (
     _local_index_to_world,
@@ -155,7 +155,7 @@ def _grow_reference_skin(
     max_steps: int = 10,
     du: float = 5.0,
     max_delta_strike: float = 30.0,
-    collision_grid: _SkinCellGrid | None = None,
+    collision_grid: _SkinOccupancyMask | None = None,
     reskin: bool = True,
 ) -> FaultSkin:
     """Grow one skin in a seed-local fault-coordinate grid."""
@@ -216,7 +216,7 @@ def _grow_reference_skin(
         world_index = _world_index(world)
         if world_index in accepted_world_indices:
             continue
-        if collision_grid is not None and collision_grid.find_cells_in_box(
+        if collision_grid is not None and collision_grid.any_in_box(
             world_index[0],
             world_index[1],
             world_index[2],
@@ -282,7 +282,7 @@ def _grow_reference_direction(
     du: float,
     max_delta_strike: float,
     max_steps: int,
-    collision_grid: _SkinCellGrid | None,
+    collision_grid: _SkinOccupancyMask | None,
 ) -> int:
     if not _link_slot_is_empty(cell, axis, direction):
         return sequence
@@ -363,7 +363,7 @@ def _grow_reference_direction(
         world_index = _world_index(world)
         if world_index in accepted_world_indices:
             break
-        if collision_grid is not None and collision_grid.find_cells_in_box(
+        if collision_grid is not None and collision_grid.any_in_box(
             world_index[0],
             world_index[1],
             world_index[2],
