@@ -143,6 +143,13 @@ def _validate_interpolation_order(order: int) -> int:
     return order_int
 
 
+def _validate_interpolation_backend(backend: str) -> str:
+    if not isinstance(backend, str) or backend not in {"scipy", "structured_linear"}:
+        raise ValueError("interpolation_backend must be 'scipy' or 'structured_linear'")
+
+    return backend
+
+
 def _validate_optional_nonnegative_float(
     value: float | None,
     name: str,

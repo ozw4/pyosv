@@ -9,6 +9,12 @@ from scipy import ndimage
 
 from pyosv._orient3d.geometry import _coordinate_grids3
 from pyosv._orient3d.interpolation import _sample2_with_constant, _sample3_with_constant
+from pyosv._orient3d.structured_linear import (
+    _rotate3_axis1_structured,
+    _shear2_structured,
+    _unrotate3_axis1_structured,
+    _unshear2_structured,
+)
 
 
 def _rotate3_axis1(
@@ -16,6 +22,7 @@ def _rotate3_axis1(
     phi_degrees: float,
     *,
     interpolation_order: int,
+    interpolation_backend: str = "scipy",
 ) -> np.ndarray:
     """Rotate a volume around axis 1 so strike is aligned with rotated axis 3."""
 
@@ -30,9 +37,23 @@ def _rotate3_axis1(
         cos_phi=float(cos_phi),
     )
     rotated_shape = (nrot3, nrot2, volume.shape[2])
-    i1, j2, j3 = _coordinate_grids3(rotated_shape)
     center2 = np.float32(0.5 * (n2 - 1))
     center3 = np.float32(0.5 * (n3 - 1))
+    if interpolation_backend == "structured_linear":
+        return _rotate3_axis1_structured(
+            volume,
+            nrot3,
+            nrot2,
+            origin2,
+            origin3,
+            center2,
+            center3,
+            sin_phi,
+            cos_phi,
+            np.float32(1.0),
+        )
+
+    i1, j2, j3 = _coordinate_grids3(rotated_shape)
     d2 = j2 + origin2
     d3 = j3 + origin3
     source_x2 = center2 + d2 * cos_phi + d3 * sin_phi
@@ -55,11 +76,11 @@ def _unrotate3_axis1(
     *,
     interpolation_order: int,
     fill_value: float = 0.0,
+    interpolation_backend: str = "scipy",
 ) -> np.ndarray:
     """Unrotate an axis-1 rotated volume back to global coordinates."""
 
     n3, n2, _ = shape
-    i1, i2, i3 = _coordinate_grids3(shape)
     center2 = np.float32(0.5 * (n2 - 1))
     center3 = np.float32(0.5 * (n3 - 1))
     phi = math.radians(phi_degrees)
@@ -71,6 +92,20 @@ def _unrotate3_axis1(
         sin_phi=float(sin_phi),
         cos_phi=float(cos_phi),
     )
+    if interpolation_backend == "structured_linear":
+        return _unrotate3_axis1_structured(
+            rotated,
+            shape,
+            origin2,
+            origin3,
+            center2,
+            center3,
+            sin_phi,
+            cos_phi,
+            np.float32(fill_value),
+        )
+
+    i1, i2, i3 = _coordinate_grids3(shape)
     d2 = i2 - center2
     d3 = i3 - center3
     source_x2 = d2 * cos_phi - d3 * sin_phi - origin2
@@ -133,12 +168,21 @@ def _shear2(
     shear: float,
     *,
     interpolation_order: int,
+    interpolation_backend: str = "scipy",
 ) -> np.ndarray:
     """Shear a ``(n2, n1)`` slice in axis 2 by ``shear * axis1``."""
 
     n2, n1 = image.shape
-    i2, i1 = np.indices((n2, n1), dtype=np.float32)
     center1 = np.float32(0.5 * (n1 - 1))
+    if interpolation_backend == "structured_linear":
+        return _shear2_structured(
+            image,
+            np.float32(shear),
+            center1,
+            np.float32(1.0),
+        )
+
+    i2, i1 = np.indices((n2, n1), dtype=np.float32)
     source_x2 = i2 - np.float32(shear) * (i1 - center1)
     sheared = _sample2_with_constant(
         image,
@@ -155,8 +199,18 @@ def _unshear2(
     shear: float,
     *,
     interpolation_order: int,
+    interpolation_backend: str = "scipy",
 ) -> np.ndarray:
     """Restore a same-shape slice previously transformed by :func:`_shear2`."""
+
+    if interpolation_backend == "structured_linear":
+        center1 = np.float32(0.5 * (sheared.shape[1] - 1))
+        return _unshear2_structured(
+            sheared,
+            np.float32(shear),
+            center1,
+            np.float32(1.0),
+        )
 
     return _shear2(sheared, -shear, interpolation_order=interpolation_order)
 
@@ -166,6 +220,7 @@ def _shear_rotated_volume(
     shear: float,
     *,
     interpolation_order: int,
+    interpolation_backend: str = "scipy",
 ) -> np.ndarray:
     sheared = np.empty_like(rotated, dtype=np.float32)
     for i3 in range(rotated.shape[0]):
@@ -173,6 +228,7 @@ def _shear_rotated_volume(
             rotated[i3],
             shear,
             interpolation_order=interpolation_order,
+            interpolation_backend=interpolation_backend,
         )
     return sheared
 
@@ -182,6 +238,7 @@ def _unshear_rotated_volume(
     shear: float,
     *,
     interpolation_order: int,
+    interpolation_backend: str = "scipy",
 ) -> np.ndarray:
     unsheared = np.empty_like(sheared, dtype=np.float32)
     for i3 in range(sheared.shape[0]):
@@ -189,6 +246,7 @@ def _unshear_rotated_volume(
             sheared[i3],
             shear,
             interpolation_order=interpolation_order,
+            interpolation_backend=interpolation_backend,
         )
     return unsheared
 

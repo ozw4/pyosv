@@ -44,10 +44,11 @@ replacement and does not add a runtime dependency on the JVM, Jython, Gradle,
 or Mines JTK.
 
 The default implementation uses NumPy and SciPy interpolation and smoothing
-operations as an intentional approximation of the Java/JTK workflow. Outputs
-may differ from the reference implementation because of filter kernels,
-boundary handling, interpolation behavior, sampled angle density, angle
-tie-breaking, and floating-point accumulation order.
+operations as an intentional approximation of the Java/JTK workflow. The
+rotate/shear path also has an opt-in structured linear interpolation backend;
+SciPy remains the default. Outputs may differ from the reference implementation
+because of filter kernels, boundary handling, interpolation behavior, sampled
+angle density, angle tie-breaking, and floating-point accumulation order.
 
 Tests and examples should check shape correctness, finite values, value ranges,
 synthetic localization, and deterministic Python behavior. They should not
@@ -75,6 +76,35 @@ each dip, smooths along the dip axis, unshears, converts planarity to
 likelihood, unrotates the candidate likelihood back to global coordinates, clips
 it to `[0, 1]`, and keeps the best strike/dip. Dip angles are clipped to the
 requested dip range in the returned `tt` volume.
+
+Interpolation defaults to `interpolation_backend="scipy"`, preserving the
+existing `scipy.ndimage.map_coordinates` path and outputs. The opt-in
+`interpolation_backend="structured_linear"` path directly performs bilinear
+axis-1 rotation/unrotation and linear slice shear/unshear without allocating
+full-volume coordinate grids. It supports only `interpolation_order=1` and
+`backend="rotate_shear"`; other combinations raise `ValueError` instead of
+silently falling back to SciPy. Both implementations use constant-fill
+boundary semantics. Small float32 rounding differences from SciPy are expected,
+so practical comparisons should use a tight tolerance rather than bitwise
+equality.
+
+```python
+ft, pt, tt = scanner.scan_reference_like(
+    phi_min=0.0,
+    phi_max=90.0,
+    theta_min=45.0,
+    theta_max=90.0,
+    g=image,
+    interpolation_order=1,
+    interpolation_backend="structured_linear",
+)
+```
+
+`scan()`, `scan_with_confidence()`, and `scan_quality()` propagate the same
+interpolation backend selection. When Numba is installed, the structured
+kernels are JIT compiled; otherwise the same backend remains available through
+the pure Python kernels. Numba is optional and the default SciPy path does not
+depend on it.
 
 `backend="directional"` keeps the previous practical approximation. It samples
 in an orientation-dependent coordinate system and smooths the input planarity
@@ -210,7 +240,8 @@ synthetic regression coverage. Current limitations include:
 - `scan_fast()` remains a derivative-bank approximation, not a Java/JTK
   equivalent;
 - no committed real-data 3D reference thresholds;
-- sequential execution without acceleration-specific dependencies.
+- structured linear transform acceleration is optional and limited to linear
+  interpolation in the rotate/shear scanner path.
 
 Use reference-data comparisons as practical reports unless a future issue
 defines feature-specific 3D acceptance thresholds.

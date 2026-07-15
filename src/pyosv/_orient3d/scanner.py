@@ -31,6 +31,7 @@ from pyosv._orient3d.sampling import (
     _refined_reference_like_sampling,
     _validate_bool,
     _validate_finite_image3,
+    _validate_interpolation_backend,
     _validate_interpolation_order,
     _validate_matching_finite_images3,
     _validate_optional_nonnegative_float,
@@ -231,6 +232,8 @@ class FaultOrientScanner3:
         theta_min: float,
         theta_max: float,
         g: np.ndarray,
+        *,
+        interpolation_backend: str = "scipy",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Scan a 3D image with the reference-like backend.
 
@@ -239,7 +242,14 @@ class FaultOrientScanner3:
         dip in degrees.
         """
 
-        return self.scan_reference_like(phi_min, phi_max, theta_min, theta_max, g)
+        return self.scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            g,
+            interpolation_backend=interpolation_backend,
+        )
 
     def scan_fast(
         self,
@@ -278,6 +288,7 @@ class FaultOrientScanner3:
         *,
         backend: str = "rotate_shear",
         interpolation_order: int = 1,
+        interpolation_backend: str = "scipy",
         smoothing_sigma: float | None = None,
         normalize: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -302,6 +313,7 @@ class FaultOrientScanner3:
             g,
             backend=backend,
             interpolation_order=interpolation_order,
+            interpolation_backend=interpolation_backend,
             smoothing_sigma=smoothing_sigma,
             normalize=normalize,
             include_confidence=False,
@@ -318,6 +330,7 @@ class FaultOrientScanner3:
         *,
         backend: str = "rotate_shear",
         interpolation_order: int = 1,
+        interpolation_backend: str = "scipy",
         smoothing_sigma: float | None = None,
         normalize: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -337,6 +350,7 @@ class FaultOrientScanner3:
             g,
             backend=backend,
             interpolation_order=interpolation_order,
+            interpolation_backend=interpolation_backend,
             smoothing_sigma=smoothing_sigma,
             normalize=normalize,
             include_confidence=True,
@@ -353,6 +367,7 @@ class FaultOrientScanner3:
         backend: str = "rotate_shear",
         refinement_factor: int = 2,
         interpolation_order: int = 1,
+        interpolation_backend: str = "scipy",
         smoothing_sigma: float | None = None,
         normalize: bool = True,
         return_confidence: bool = False,
@@ -379,6 +394,7 @@ class FaultOrientScanner3:
             g,
             backend=backend,
             interpolation_order=interpolation_order,
+            interpolation_backend=interpolation_backend,
             smoothing_sigma=smoothing_sigma,
             normalize=normalize,
             include_confidence=include_confidence,
@@ -394,6 +410,7 @@ class FaultOrientScanner3:
         *,
         backend: str,
         interpolation_order: int,
+        interpolation_backend: str,
         smoothing_sigma: float | None,
         normalize: bool,
         include_confidence: bool,
@@ -409,6 +426,7 @@ class FaultOrientScanner3:
             g,
             backend=backend,
             interpolation_order=interpolation_order,
+            interpolation_backend=interpolation_backend,
             smoothing_sigma=smoothing_sigma,
             normalize=normalize,
             include_confidence=include_confidence,
@@ -422,6 +440,7 @@ class FaultOrientScanner3:
         *,
         backend: str,
         interpolation_order: int,
+        interpolation_backend: str,
         smoothing_sigma: float | None,
         normalize: bool,
         include_confidence: bool,
@@ -432,6 +451,15 @@ class FaultOrientScanner3:
         image = self.validate_image(g, "g")
         backend_name = _validate_reference_like_backend(backend)
         order = _validate_interpolation_order(interpolation_order)
+        interpolation_backend_name = _validate_interpolation_backend(interpolation_backend)
+        if interpolation_backend_name == "structured_linear" and order != 1:
+            raise ValueError(
+                "interpolation_backend='structured_linear' requires interpolation_order=1"
+            )
+        if interpolation_backend_name == "structured_linear" and backend_name != "rotate_shear":
+            raise ValueError(
+                "interpolation_backend='structured_linear' requires backend='rotate_shear'"
+            )
         sigma = _validate_optional_nonnegative_float(
             smoothing_sigma,
             "smoothing_sigma",
@@ -453,6 +481,7 @@ class FaultOrientScanner3:
                 theta_sampling,
                 image,
                 interpolation_order=order,
+                interpolation_backend=interpolation_backend_name,
                 smoothing_sigma=sigma,
                 normalize=normalize_output,
                 include_confidence=include_confidence,
@@ -600,6 +629,7 @@ class FaultOrientScanner3:
         image: np.ndarray,
         *,
         interpolation_order: int,
+        interpolation_backend: str,
         smoothing_sigma: float,
         normalize: bool,
         include_confidence: bool,
@@ -616,6 +646,7 @@ class FaultOrientScanner3:
                 image,
                 float(phi),
                 interpolation_order=interpolation_order,
+                interpolation_backend=interpolation_backend,
             )
             strike_smoothed = _smooth_rotated_strike_axis(
                 rotated,
@@ -625,6 +656,7 @@ class FaultOrientScanner3:
                 theta_sampling,
                 strike_smoothed,
                 interpolation_order=interpolation_order,
+                interpolation_backend=interpolation_backend,
                 smoothing_sigma=smoothing_sigma,
             )
             for itheta, (theta, rotated_score) in enumerate(
@@ -635,6 +667,7 @@ class FaultOrientScanner3:
                     image.shape,
                     float(phi),
                     interpolation_order=interpolation_order,
+                    interpolation_backend=interpolation_backend,
                 )
                 score = np.clip(score, np.float32(0.0), np.float32(1.0)).astype(
                     np.float32,
@@ -681,6 +714,7 @@ class FaultOrientScanner3:
         rotated: np.ndarray,
         *,
         interpolation_order: int,
+        interpolation_backend: str = "scipy",
         smoothing_sigma: float,
     ) -> Iterator[np.ndarray]:
         for theta in theta_sampling:
@@ -689,6 +723,7 @@ class FaultOrientScanner3:
                 rotated,
                 shear,
                 interpolation_order=interpolation_order,
+                interpolation_backend=interpolation_backend,
             )
             dip_smoothed = _smooth_sheared_dip_axis(
                 sheared,
@@ -699,6 +734,7 @@ class FaultOrientScanner3:
                 dip_smoothed,
                 shear,
                 interpolation_order=interpolation_order,
+                interpolation_backend=interpolation_backend,
             )
             yield _reference_like_planarity_to_likelihood(unsheared)
 

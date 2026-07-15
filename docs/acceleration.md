@@ -27,6 +27,7 @@ Current accelerated code paths include parts of:
 - 2D dynamic-programming accumulation and backtracking;
 - 2D voting local sampling and vote accumulation;
 - 3D voting local sampling and vote accumulation.
+- 3D orientation-scanner structured linear rotation and shear transforms.
 
 Fallback behavior is part of the supported runtime path. Normal tests and user
 workflows should not require Numba.
@@ -67,7 +68,10 @@ benchmarks report seed selection separately from end-to-end voting and accept
 distance. The 3D benchmark also compares the default full-surface orientation
 smoothing with the opt-in center-separable backend; use `--orientation-nw`,
 `--orientation-nv`, and `--orientation-sigma` to select its surface and sigma.
-The skinning benchmark reports both single-seed growth and full
+The orientation benchmark compares the default SciPy interpolation backend with
+the opt-in structured linear backend and reports timing, traced allocations,
+and output-difference statistics after warmup. The skinning benchmark reports
+both single-seed growth and full
 reference-like `find_skins` orchestration, including accepted-occupancy seed
 rejections and the dense mask's storage size.
 

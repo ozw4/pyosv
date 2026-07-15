@@ -68,14 +68,36 @@ def main(argv: list[str] | None = None) -> int:
     phi_sampling = scanner.reference_like_strike_sampling(phi_min, phi_max)
     theta_sampling = scanner.reference_like_dip_sampling(theta_min, theta_max)
 
-    def scan_without_confidence() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return scanner.scan_reference_like(phi_min, phi_max, theta_min, theta_max, image)
+    def scan_scipy() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return scanner.scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            image,
+            interpolation_backend="scipy",
+        )
+
+    def scan_structured_linear() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return scanner.scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            image,
+            interpolation_backend="structured_linear",
+        )
 
     def scan_with_confidence() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         return scanner.scan_with_confidence(phi_min, phi_max, theta_min, theta_max, image)
 
-    without_confidence_times, without_confidence_result = time_repeated(
-        scan_without_confidence,
+    scipy_times, scipy_result = time_repeated(
+        scan_scipy,
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    structured_times, structured_result = time_repeated(
+        scan_structured_linear,
         repeat=args.repeat,
         warmup=args.warmup,
     )
@@ -84,9 +106,11 @@ def main(argv: list[str] | None = None) -> int:
         repeat=args.repeat,
         warmup=args.warmup,
     )
-    without_confidence_peak_bytes = peak_traced_allocation(scan_without_confidence)
+    scipy_peak_bytes = peak_traced_allocation(scan_scipy)
+    structured_peak_bytes = peak_traced_allocation(scan_structured_linear)
     with_confidence_peak_bytes = peak_traced_allocation(scan_with_confidence)
-    ft, pt, tt = without_confidence_result
+    ft, pt, tt = scipy_result
+    structured_ft, structured_pt, structured_tt = structured_result
     confidence = with_confidence_result[3]
     orientation_count = len(phi_sampling) * len(theta_sampling)
     orientation_code_dtype = _orientation_code_dtype(orientation_count)
@@ -116,12 +140,20 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     print(
-        f"{timing_summary('without_confidence', without_confidence_times)} "
+        f"{timing_summary('scipy', scipy_times)} "
         f"estimated_peak_state_bytes={score_bytes + code_bytes} "
         f"previous_estimated_peak_state_bytes={score_bytes + previous_angle_bytes} "
-        f"peak_traced_bytes={without_confidence_peak_bytes} "
+        f"peak_traced_bytes={scipy_peak_bytes} "
         f"output_count={ft.size} {array_fingerprint('ft', ft)}",
     )
+    print(
+        f"{timing_summary('structured_linear', structured_times)} "
+        f"estimated_peak_state_bytes={score_bytes + code_bytes} "
+        f"peak_traced_bytes={structured_peak_bytes} "
+        f"output_count={structured_ft.size} "
+        f"{array_fingerprint('ft', structured_ft)}",
+    )
+    print(interpolation_difference_summary(scipy_result, structured_result))
     print(
         f"{timing_summary('with_confidence', with_confidence_times)} "
         f"estimated_peak_state_bytes={2 * score_bytes + code_bytes} "
@@ -198,6 +230,29 @@ def array_fingerprint(name: str, array: np.ndarray) -> str:
             f"{name}_min={float(np.min(values)):.9g}",
             f"{name}_max={float(np.max(values)):.9g}",
         ],
+    )
+
+
+def interpolation_difference_summary(
+    scipy_result: tuple[np.ndarray, np.ndarray, np.ndarray],
+    structured_result: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> str:
+    scipy_ft, scipy_pt, scipy_tt = scipy_result
+    structured_ft, structured_pt, structured_tt = structured_result
+    likelihood_diff = np.abs(scipy_ft - structured_ft)
+    raw_strike_diff = np.abs(scipy_pt - structured_pt)
+    strike_diff = np.minimum(raw_strike_diff, np.float32(180.0) - raw_strike_diff)
+    dip_diff = np.abs(scipy_tt - structured_tt)
+    orientation_changed = (strike_diff > 0.0) | (dip_diff > 0.0)
+    return " ".join(
+        [
+            "comparison=scipy_vs_structured_linear",
+            f"likelihood_max_abs_diff={float(np.max(likelihood_diff)):.9g}",
+            f"likelihood_mean_abs_diff={float(np.mean(likelihood_diff)):.9g}",
+            f"strike_periodic_max_abs_diff={float(np.max(strike_diff)):.9g}",
+            f"dip_max_abs_diff={float(np.max(dip_diff)):.9g}",
+            f"orientation_bin_change_rate={float(np.mean(orientation_changed)):.9g}",
+        ]
     )
 
 
