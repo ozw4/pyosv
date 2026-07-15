@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -66,22 +67,34 @@ def main(argv: list[str] | None = None) -> int:
     phi_sampling = scanner.reference_like_strike_sampling(phi_min, phi_max)
     theta_sampling = scanner.reference_like_dip_sampling(theta_min, theta_max)
 
-    def scan_once() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return scanner.scan(phi_min, phi_max, theta_min, theta_max, image)
+    def scan_without_confidence() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return scanner.scan_reference_like(phi_min, phi_max, theta_min, theta_max, image)
 
-    scan_times, result = time_repeated(
-        scan_once,
+    def scan_with_confidence() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        return scanner.scan_with_confidence(phi_min, phi_max, theta_min, theta_max, image)
+
+    without_confidence_times, without_confidence_result = time_repeated(
+        scan_without_confidence,
         repeat=args.repeat,
         warmup=args.warmup,
     )
-    ft, pt, tt = result
+    with_confidence_times, with_confidence_result = time_repeated(
+        scan_with_confidence,
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    without_confidence_peak_bytes = peak_traced_allocation(scan_without_confidence)
+    with_confidence_peak_bytes = peak_traced_allocation(scan_with_confidence)
+    ft, pt, tt = without_confidence_result
+    confidence = with_confidence_result[3]
 
-    print("benchmark=orient3d scanner=FaultOrientScanner3.scan backend=reference_like")
+    print("benchmark=orient3d scanner=FaultOrientScanner3 backend=reference_like")
     print(
         " ".join(
             [
                 f"input_shape={image.shape}",
-                f"output_shapes={(ft.shape, pt.shape, tt.shape)}",
+                f"output_shapes_without_confidence={(ft.shape, pt.shape, tt.shape)}",
+                f"output_shape_confidence={confidence.shape}",
                 f"dtype={ft.dtype}",
                 f"phi_samples={len(phi_sampling)}",
                 f"theta_samples={len(theta_sampling)}",
@@ -93,8 +106,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     print(
-        f"{timing_summary('scan', scan_times)} "
+        f"{timing_summary('without_confidence', without_confidence_times)} "
+        f"peak_traced_bytes={without_confidence_peak_bytes} "
         f"output_count={ft.size} {array_fingerprint('ft', ft)}",
+    )
+    print(
+        f"{timing_summary('with_confidence', with_confidence_times)} "
+        f"peak_traced_bytes={with_confidence_peak_bytes} "
+        f"output_count={confidence.size} {array_fingerprint('confidence', confidence)}",
     )
     print(array_fingerprint("pt", pt))
     print(array_fingerprint("tt", tt))
@@ -136,6 +155,18 @@ def time_repeated(func, *, repeat: int, warmup: int):
         times.append(time.perf_counter() - start)
 
     return times, result
+
+
+def peak_traced_allocation(func) -> int:
+    """Return peak Python-traced bytes for one scan (not process peak RSS)."""
+
+    tracemalloc.start()
+    try:
+        func()
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak_bytes
 
 
 def timing_summary(name: str, times: list[float]) -> str:

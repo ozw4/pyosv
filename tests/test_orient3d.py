@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import pyosv
+import pyosv._orient3d.scanner as scanner_module
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.metrics import buffered_ridge_overlap, strike_dip_angle_error
 from pyosv.orient3d import (
@@ -466,6 +467,124 @@ def test_scan_with_confidence_first_three_arrays_match_reference_like() -> None:
         np.testing.assert_array_equal(reference_array, confidence_array)
 
 
+@pytest.mark.parametrize("backend", ["rotate_shear", "directional"])
+def test_scans_without_confidence_skip_confidence_work(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image = np.linspace(0.0, 1.0, 4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+
+    def fail_confidence(*args: object, **kwargs: object) -> None:
+        raise AssertionError("confidence calculation must be skipped")
+
+    def fail_second_best(*args: object, **kwargs: object) -> None:
+        raise AssertionError("second-best update must be skipped")
+
+    monkeypatch.setattr(
+        scanner_module,
+        "_orientation_confidence_from_scores",
+        fail_confidence,
+    )
+    monkeypatch.setattr(
+        scanner_module,
+        "_update_best_second_orientation",
+        fail_second_best,
+    )
+
+    reference_like = scanner.scan_reference_like(
+        0.0,
+        20.0,
+        50.0,
+        55.0,
+        image,
+        backend=backend,
+        smoothing_sigma=0.5,
+    )
+    quality = scanner.scan_quality(
+        0.0,
+        20.0,
+        50.0,
+        55.0,
+        image,
+        backend=backend,
+        refinement_factor=1,
+        smoothing_sigma=0.5,
+        return_confidence=False,
+    )
+
+    assert len(reference_like) == 3
+    assert len(quality) == 3
+
+
+def test_theta_shear_scores_are_generated_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    theta_sampling = np.array([45.0, 50.0, 55.0], dtype=np.float32)
+    rotated = np.linspace(0.0, 1.0, 4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    original_likelihood = scanner_module._reference_like_planarity_to_likelihood
+    calls = 0
+
+    def count_likelihood(smoothed: np.ndarray) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return original_likelihood(smoothed)
+
+    monkeypatch.setattr(
+        scanner_module,
+        "_reference_like_planarity_to_likelihood",
+        count_likelihood,
+    )
+
+    scores = scanner._scan_theta_shear_reference_like(
+        theta_sampling,
+        rotated,
+        interpolation_order=1,
+        smoothing_sigma=0.5,
+    )
+
+    assert iter(scores) is scores
+    assert calls == 0
+    first = next(scores)
+    first_copy = first.copy()
+    assert calls == 1
+    second = next(scores)
+    assert calls == 2
+    assert not np.shares_memory(first, second)
+    np.testing.assert_array_equal(first, first_copy)
+    assert len(list(scores)) == 1
+    assert calls == len(theta_sampling)
+
+
+def test_reference_like_strict_ties_keep_first_orientation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image = np.linspace(0.0, 1.0, 4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+
+    def tied_score(
+        image: np.ndarray,
+        **kwargs: object,
+    ) -> np.ndarray:
+        return np.ones_like(image, dtype=np.float32)
+
+    monkeypatch.setattr(scanner_module, "_reference_like_orientation_score", tied_score)
+
+    ft, pt, tt = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        backend="directional",
+    )
+
+    np.testing.assert_array_equal(ft, np.ones_like(image, dtype=np.float32))
+    np.testing.assert_array_equal(pt, np.zeros_like(image, dtype=np.float32))
+    np.testing.assert_array_equal(tt, np.full_like(image, 50.0, dtype=np.float32))
+
+
 def test_scan_with_confidence_constant_input_returns_zero_confidence() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     image = np.full((5, 6, 7), 3.0, dtype=np.float64)
@@ -532,7 +651,17 @@ def test_scan_quality_can_return_confidence() -> None:
     scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
     image, _ = _low_planarity_fault(40.0, 55.0, shape=(8, 9, 10), width=1.0)
 
-    ft, pt, tt, confidence = scanner.scan_quality(
+    without_confidence = scanner.scan_quality(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        refinement_factor=2,
+        smoothing_sigma=0.75,
+        return_confidence=False,
+    )
+    with_confidence = scanner.scan_quality(
         0.0,
         40.0,
         50.0,
@@ -542,7 +671,12 @@ def test_scan_quality_can_return_confidence() -> None:
         smoothing_sigma=0.75,
         return_confidence=True,
     )
+    ft, pt, tt, confidence = with_confidence
 
+    assert len(without_confidence) == 3
+    assert len(with_confidence) == 4
+    for plain_array, confidence_array in zip(without_confidence, with_confidence[:3]):
+        np.testing.assert_array_equal(plain_array, confidence_array)
     for array in (ft, pt, tt, confidence):
         assert array.shape == image.shape
         assert array.dtype == np.float32
