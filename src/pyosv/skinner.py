@@ -38,6 +38,7 @@ from pyosv._skinner.models import (
     link_above_below as link_above_below,
     link_left_right as link_left_right,
 )
+from pyosv._skinner.occupancy import _SkinOccupancyMask as _SkinOccupancyMask
 from pyosv._skinner.reference import (
     FaultSkinner,
     _QUALITY_DEFAULT_GROW_MIN_LIKELIHOOD as _QUALITY_DEFAULT_GROW_MIN_LIKELIHOOD,

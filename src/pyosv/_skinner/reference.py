@@ -10,8 +10,8 @@ from pyosv._skinner.connected import (
     ConnectedComponentSkinner,
     find_connected_component_skins,
 )
-from pyosv._skinner.grid import _SkinCellGrid
 from pyosv._skinner.growth import _grow_reference_skin
+from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.seeds import (
     _adaptive_skin_likelihood_threshold,
     _find_reference_seeds,
@@ -367,7 +367,7 @@ def _find_reference_skins(
         min_ep=planarity_threshold,
     )
     skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
-    occupied = _SkinCellGrid()
+    occupied = _SkinOccupancyMask(fv_array.shape)
     skins: list[FaultSkin] = []
     seed_count_rejected_by_occupied = 0
     grow_attempt_count = 0
@@ -376,7 +376,7 @@ def _find_reference_skins(
     discarded_small_skin_count = 0
 
     for seed in seeds:
-        if occupied.find_cells_in_box(seed.i1, seed.i2, seed.i3, 2, 2, 2):
+        if occupied.any_in_box(seed.i1, seed.i2, seed.i3, 2, 2, 2):
             seed_count_rejected_by_occupied += 1
             continue
 

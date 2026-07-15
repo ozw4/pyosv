@@ -18,7 +18,7 @@ from pyosv.skinner import (
     _pick_candidate_us,
     _reskin_reference,
     _sample_volume_nearest_java_round,
-    _SkinCellGrid,
+    _SkinOccupancyMask,
     _update_transform_map,
     find_connected_component_skins,
     find_skins,
@@ -931,13 +931,19 @@ def test_reference_find_skins_populates_diagnostics_without_changing_result() ->
 
 
 def test_mark_occupied_skin_registers_accepted_cells_with_box_radius() -> None:
-    occupied = _SkinCellGrid()
-    skin = FaultSkin.from_cells([FaultCell(10.0, 10.0, 10.0, 0.9, 0.0, 90.0)])
+    occupied = _SkinOccupancyMask((21, 21, 21))
+    skin = FaultSkin.from_cells(
+        [
+            FaultCell(10.0, 10.0, 10.0, 0.9, 0.0, 90.0),
+            FaultCell(2.0, 2.0, 2.0, 0.8, 0.0, 90.0),
+        ]
+    )
 
     _mark_occupied_skin(occupied, skin, radius=5)
 
-    assert occupied.find_cells_in_box(10, 15, 10, 0, 0, 0)
-    assert occupied.find_cells_in_box(10, 16, 10, 0, 0, 0) == []
+    assert occupied.any_in_box(10, 15, 10, 0, 0, 0)
+    assert occupied.any_in_box(2, 7, 2, 0, 0, 0)
+    assert not occupied.any_in_box(10, 16, 10, 0, 0, 0)
 
 
 def test_reference_find_skins_box_marks_accepted_skin_to_skip_nearby_seed() -> None:

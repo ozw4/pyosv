@@ -3,23 +3,32 @@
 from __future__ import annotations
 
 import heapq
-import math
 import operator
 
 import numpy as np
 
-from pyosv._skinner.grid import _SkinCellGrid
+from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._skinner.candidate_sampling import (
+    _candidate_slice_numba,
+    _candidate_slice_python,
+)
+from pyosv._skinner.candidate_path import (
+    _pick_candidate_local_u_path_numba,
+    _pick_candidate_local_u_path_python,
+)
 from pyosv._skinner.models import (
     _LocalTransformMap,
     _SkinCell,
     link_above_below,
     link_left_right,
 )
+from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.reskin import _reskin_reference
 from pyosv._skinner.transforms import (
     _local_index_to_world,
     _sample_validated_volume_nearest_java_round,
     _update_transform_map,
+    _validate_origin3,
     _validate_transform_index,
 )
 from pyosv._skinner.validation import (
@@ -108,55 +117,12 @@ def _pick_candidate_local_u_path(
     max_jump: int = 2,
     jump_penalty: float = 0.1,
 ) -> np.ndarray:
-    nrow, nu = candidate_slice.shape
-    if nrow == 0:
-        return np.empty(0, dtype=np.int32)
-    if nu == 1:
-        return np.zeros(nrow, dtype=np.int32)
-
-    max_jump_int = min(max_jump, nu - 1)
-    jump_penalty_float = float(jump_penalty)
-    accumulated = np.empty((nrow, nu), dtype=np.float32)
-    predecessor = np.full((nrow, nu), -1, dtype=np.int32)
-    accumulated[0] = candidate_slice[0]
-
-    for irow in range(1, nrow):
-        for iu in range(nu):
-            ib = max(0, iu - max_jump_int)
-            ie = min(nu, iu + max_jump_int + 1)
-            best_score = -math.inf
-            best_previous = ib
-            best_jump = nu
-            for ju in range(ib, ie):
-                jump = abs(iu - ju)
-                score = float(accumulated[irow - 1, ju]) - jump_penalty_float * jump
-                if score > best_score or (
-                    score == best_score
-                    and (
-                        jump < best_jump
-                        or (
-                            jump == best_jump
-                            and _candidate_u_tie_key(ju, nu)
-                            < _candidate_u_tie_key(best_previous, nu)
-                        )
-                    )
-                ):
-                    best_score = score
-                    best_previous = ju
-                    best_jump = jump
-
-            accumulated[irow, iu] = candidate_slice[irow, iu] + best_score
-            predecessor[irow, iu] = best_previous
-
-    path = np.empty(nrow, dtype=np.int32)
-    iu = _best_candidate_u(accumulated[-1], nu)
-    for irow in range(nrow - 1, -1, -1):
-        path[irow] = iu
-        previous = predecessor[irow, iu]
-        if previous >= 0:
-            iu = int(previous)
-
-    return path
+    kernel = (
+        _pick_candidate_local_u_path_numba
+        if NUMBA_AVAILABLE
+        else _pick_candidate_local_u_path_python
+    )
+    return kernel(candidate_slice, max_jump, jump_penalty)
 
 
 def _best_candidate_u(scores: np.ndarray, nu: int) -> int:
@@ -189,7 +155,7 @@ def _grow_reference_skin(
     max_steps: int = 10,
     du: float = 5.0,
     max_delta_strike: float = 30.0,
-    collision_grid: _SkinCellGrid | None = None,
+    collision_grid: _SkinOccupancyMask | None = None,
     reskin: bool = True,
 ) -> FaultSkin:
     """Grow one skin in a seed-local fault-coordinate grid."""
@@ -250,7 +216,7 @@ def _grow_reference_skin(
         world_index = _world_index(world)
         if world_index in accepted_world_indices:
             continue
-        if collision_grid is not None and collision_grid.find_cells_in_box(
+        if collision_grid is not None and collision_grid.any_in_box(
             world_index[0],
             world_index[1],
             world_index[2],
@@ -316,7 +282,7 @@ def _grow_reference_direction(
     du: float,
     max_delta_strike: float,
     max_steps: int,
-    collision_grid: _SkinCellGrid | None,
+    collision_grid: _SkinOccupancyMask | None,
 ) -> int:
     if not _link_slot_is_empty(cell, axis, direction):
         return sequence
@@ -397,7 +363,7 @@ def _grow_reference_direction(
         world_index = _world_index(world)
         if world_index in accepted_world_indices:
             break
-        if collision_grid is not None and collision_grid.find_cells_in_box(
+        if collision_grid is not None and collision_grid.any_in_box(
             world_index[0],
             world_index[1],
             world_index[2],
@@ -572,8 +538,10 @@ def _candidate_slice(
     step_limit = None if max_steps is None else _validate_nonnegative_int(max_steps, "max_steps")
 
     if axis == "v":
+        axis_code = 0
         distance_to_edge = v_center if step_sign < 0 else transform_map.vs.shape[1] - 1 - v_center
     elif axis == "w":
+        axis_code = 1
         distance_to_edge = w_center if step_sign < 0 else transform_map.ws.shape[1] - 1 - w_center
     else:
         raise ValueError("axis must be 'v' or 'w'")
@@ -582,20 +550,24 @@ def _candidate_slice(
     if step_limit is not None:
         row_count = min(row_count, step_limit + 1)
 
-    samples = np.zeros((row_count, u_stop - u_start + 1), dtype=np.float32)
-    for row in range(row_count):
-        iv = v_center + step_sign * row if axis == "v" else v_center
-        iw = w_center + step_sign * row if axis == "w" else w_center
-        for col, iu in enumerate(range(u_start, u_stop + 1)):
-            x1, x2, x3 = _local_index_to_world(iu, iv, iw, origin, transform_map)
-            samples[row, col] = _sample_validated_volume_nearest_java_round(
-                fv_array,
-                x1,
-                x2,
-                x3,
-            )
-
-    return samples
+    o1, o2, o3 = _validate_origin3(origin)
+    kernel = _candidate_slice_numba if NUMBA_AVAILABLE else _candidate_slice_python
+    return kernel(
+        fv_array,
+        transform_map.us,
+        transform_map.vs,
+        transform_map.ws,
+        o1,
+        o2,
+        o3,
+        u_start,
+        u_stop,
+        v_center,
+        w_center,
+        step_sign,
+        axis_code,
+        row_count,
+    )
 
 
 def _validate_direction(direction: int) -> int:
