@@ -15,7 +15,7 @@ from pyosv._dp.rounding import (
 )
 
 
-@njit(cache=True)
+@njit(cache=False)
 def _smooth_fault_attributes_2d_masked_numba(
     cost: np.ndarray,
     valid_mask: np.ndarray,
