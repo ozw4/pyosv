@@ -70,6 +70,12 @@ crop = read_dat_region(
 crop[0, 0, 0] = 0.0  # independent from volume.dat
 ```
 
+The F3 crop validation uses these two access modes directly: automatic center
+selection searches only an `fv.dat` memory map, while an explicit `--center`
+skips that search. After center selection, each required reference crop is read
+with `read_dat_region`; the optional `fl.dat` crop is read only for figure
+output.
+
 ## Writing
 
 `write_dat(path, array, *, endian="big", dtype=np.float32, create_parents=True)`

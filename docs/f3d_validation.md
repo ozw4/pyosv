@@ -93,8 +93,11 @@ when crop-level Python `.dat` outputs are needed.
 
 Default crop selection is margin-aware: when a crop shape is used to pick
 centers, candidates too close to the volume boundary are skipped instead of
-being silently shifted by `crop_slices()`. Pass `--center i3,i2,i1` to validate
-a specific manual crop.
+being silently shifted by `crop_slices()`. Automatic selection searches
+`fv.dat` through a read-only memory map, then copies only the selected regions
+from each reference file. Pass `--center i3,i2,i1` to validate a specific
+manual crop without a full-volume search; this path reads the required regions
+directly. `fl.dat` is read only when `--save-figures` is enabled.
 
 Final vote-map normalization defaults to the reference-like path with no final
 vote-map smoothing. F3 validation and report scripts record

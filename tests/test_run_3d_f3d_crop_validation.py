@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from pyosv.f3d_reference import F3D_ENV_VAR
+from pyosv.io import write_dat
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,21 @@ def _synthetic_reference_arrays(shape: tuple[int, int, int] = (6, 6, 6)) -> dict
     fv[3, 3, 3] = 1.0
     fvt[3, 3, 3] = 1.0
     return {"ep.dat": ep, "fl.dat": fl, "fv.dat": fv, "fvt.dat": fvt}
+
+
+def _write_synthetic_reference_files(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+    data_root: Path,
+    *,
+    shape: tuple[int, int, int] = (6, 6, 6),
+) -> dict[str, np.ndarray]:
+    arrays = _synthetic_reference_arrays(shape)
+    data_root.mkdir(parents=True)
+    for name, array in arrays.items():
+        write_dat(data_root / name, array, endian="big")
+    monkeypatch.setattr(module, "F3D_SHAPE", shape)
+    return arrays
 
 
 def _synthetic_outputs(shape: tuple[int, int, int] = (6, 6, 6)) -> dict[str, np.ndarray]:
@@ -175,6 +191,151 @@ def test_interior_margin_rejects_impossible_configuration(
         )
 
 
+def test_reference_region_matches_full_read_then_crop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    shape = (8, 9, 10)
+    arrays = _write_synthetic_reference_files(
+        module,
+        monkeypatch,
+        data_root,
+        shape=shape,
+    )
+    region = module._reference_crop_slices((0, 8, 9), (4, 5, 6))
+
+    actual = module._read_reference_region(
+        module.f3d_file_paths(data_root),
+        region,
+        include_fl=True,
+    )
+
+    assert region == (slice(0, 4), slice(4, 9), slice(4, 10))
+    for name, full_array in arrays.items():
+        expected = module._crop(full_array, region)
+        assert np.array_equal(actual[name], expected)
+        assert actual[name].dtype == np.float32
+        assert actual[name].flags.c_contiguous
+
+
+def test_explicit_center_reads_only_reference_regions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    shape = (8, 9, 10)
+    monkeypatch.setattr(module, "F3D_SHAPE", shape)
+    calls: list[tuple[str, tuple[int, int, int], tuple[slice, slice, slice]]] = []
+
+    def fake_read_region(
+        path: Path,
+        full_shape: tuple[int, int, int],
+        region: tuple[slice, slice, slice],
+        **kwargs: object,
+    ) -> np.ndarray:
+        del kwargs
+        calls.append((Path(path).name, full_shape, region))
+        return np.zeros(tuple(axis.stop - axis.start for axis in region), dtype=np.float32)
+
+    monkeypatch.setattr(module, "read_dat_region", fake_read_region)
+    monkeypatch.setattr(
+        module,
+        "open_dat_memmap",
+        lambda *args, **kwargs: pytest.fail("explicit center must not open a search volume"),
+    )
+    monkeypatch.setattr(
+        module,
+        "read_reference_arrays",
+        lambda root: pytest.fail("explicit center must not read full reference arrays"),
+    )
+    monkeypatch.setattr(
+        module,
+        "read_f3d_file",
+        lambda *args, **kwargs: pytest.fail("explicit center must not call full-file I/O"),
+    )
+    monkeypatch.setattr(module, "run_pipeline", lambda ep, **kwargs: _synthetic_outputs(ep.shape))
+
+    module.run_example(
+        data_root_arg=data_root,
+        crop_shape=(4, 5, 6),
+        center=(3, 4, 5),
+        interior_margin=1,
+    )
+
+    expected_region = (slice(1, 5), slice(2, 7), slice(2, 8))
+    assert calls == [
+        ("ep.dat", shape, expected_region),
+        ("fv.dat", shape, expected_region),
+        ("fvt.dat", shape, expected_region),
+    ]
+
+    calls.clear()
+    monkeypatch.setattr(module, "require_figure_support", lambda: None)
+    monkeypatch.setattr(module, "write_crop_figures", lambda *args, **kwargs: {})
+    module.run_example(
+        data_root_arg=data_root,
+        output_dir=tmp_path / "output",
+        save_figures=True,
+        crop_shape=(4, 5, 6),
+        center=(3, 4, 5),
+        interior_margin=1,
+    )
+    assert [name for name, _, _ in calls] == ["ep.dat", "fv.dat", "fvt.dat", "fl.dat"]
+
+
+def test_auto_center_memmaps_only_selection_volume_and_reads_regions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_validation_module(monkeypatch)
+    data_root = tmp_path / "f3_reference"
+    arrays = _synthetic_reference_arrays()
+    monkeypatch.setattr(module, "F3D_SHAPE", arrays["fv.dat"].shape)
+    opened: list[str] = []
+    read_names: list[str] = []
+
+    def fake_open(path: Path, *args: object, **kwargs: object) -> np.ndarray:
+        del args, kwargs
+        opened.append(Path(path).name)
+        return arrays["fv.dat"]
+
+    def fake_read_region(
+        path: Path,
+        full_shape: tuple[int, int, int],
+        region: tuple[slice, slice, slice],
+        **kwargs: object,
+    ) -> np.ndarray:
+        del full_shape, kwargs
+        name = Path(path).name
+        read_names.append(name)
+        return module._crop(arrays[name], region)
+
+    monkeypatch.setattr(module, "open_dat_memmap", fake_open)
+    monkeypatch.setattr(module, "read_dat_region", fake_read_region)
+    monkeypatch.setattr(
+        module,
+        "read_reference_arrays",
+        lambda root: pytest.fail("auto center must not read full reference arrays"),
+    )
+    monkeypatch.setattr(module, "run_pipeline", lambda ep, **kwargs: _synthetic_outputs(ep.shape))
+
+    report = module.run_example(
+        data_root_arg=data_root,
+        crop_shape=(6, 6, 6),
+        max_crops=1,
+        percentile=99.0,
+        min_separation=1.0,
+        interior_margin=1,
+    )
+
+    assert opened == ["fv.dat"]
+    assert read_names == ["ep.dat", "fv.dat", "fvt.dat"]
+    assert report["crops"][0]["crop_center"] == [3, 3, 3]
+
+
 def test_metrics_helper_on_synthetic_arrays(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _import_validation_module(monkeypatch)
     outputs = _synthetic_outputs()
@@ -235,7 +396,7 @@ def test_run_example_writes_metrics_json_to_output_dir(
     data_root = tmp_path / "f3_reference"
     output_dir = tmp_path / "outputs"
     monkeypatch.setenv(F3D_ENV_VAR, str(data_root))
-    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    _write_synthetic_reference_files(module, monkeypatch, data_root)
     monkeypatch.setattr(module, "run_pipeline", lambda ep, **kwargs: _synthetic_outputs(ep.shape))
 
     report = module.run_example(
@@ -281,7 +442,7 @@ def test_run_example_records_selected_thinning_modes(
     data_root = tmp_path / "f3_reference"
     output_dir = tmp_path / "outputs"
     received_kwargs = {}
-    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    _write_synthetic_reference_files(module, monkeypatch, data_root)
 
     def fake_run_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
         received_kwargs.update(kwargs)
@@ -330,7 +491,7 @@ def test_quality_workflow_defaults_and_explicit_voter_override(
     module = _import_validation_module(monkeypatch)
     data_root = tmp_path / "f3_reference"
     received_kwargs: list[dict[str, object]] = []
-    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    _write_synthetic_reference_files(module, monkeypatch, data_root)
 
     def fake_run_pipeline(ep: np.ndarray, **kwargs: object) -> dict[str, np.ndarray]:
         received_kwargs.append(dict(kwargs))
@@ -489,7 +650,7 @@ def test_save_volumes_writes_crop_outputs(
     module = _import_validation_module(monkeypatch)
     data_root = tmp_path / "f3_reference"
     output_dir = tmp_path / "outputs"
-    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    _write_synthetic_reference_files(module, monkeypatch, data_root)
     monkeypatch.setattr(module, "run_pipeline", lambda ep, **kwargs: _synthetic_outputs(ep.shape))
 
     module.run_example(
@@ -556,7 +717,7 @@ def test_save_figures_writes_expected_pngs_and_metrics(
     module = _import_validation_module(monkeypatch)
     data_root = tmp_path / "f3_reference"
     output_dir = tmp_path / "outputs"
-    monkeypatch.setattr(module, "read_reference_arrays", lambda root: _synthetic_reference_arrays())
+    _write_synthetic_reference_files(module, monkeypatch, data_root)
     monkeypatch.setattr(module, "run_pipeline", lambda ep, **kwargs: _synthetic_outputs(ep.shape))
 
     report = module.run_example(
