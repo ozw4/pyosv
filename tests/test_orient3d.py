@@ -4,6 +4,10 @@ import numpy as np
 import pytest
 
 import pyosv
+import pyosv._orient3d.rotate_shear as rotate_shear_module
+import pyosv._orient3d.scanner as scanner_module
+import pyosv._orient3d.structured_linear as structured_linear_module
+from pyosv._accel import NUMBA_AVAILABLE
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip
 from pyosv.metrics import buffered_ridge_overlap, strike_dip_angle_error
 from pyosv.orient3d import (
@@ -65,6 +69,82 @@ def test_sampling_single_angle_returns_one_endpoint_sample() -> None:
 
     np.testing.assert_array_equal(phis, np.array([12.5], dtype=np.float32))
     np.testing.assert_array_equal(thetas, np.array([45.0], dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    ("orientation_count", "expected_dtype"),
+    [
+        (1, np.uint8),
+        (256, np.uint8),
+        (257, np.uint16),
+        (65_536, np.uint16),
+        (65_537, np.uint32),
+    ],
+)
+def test_orientation_code_dtype_uses_smallest_supported_unsigned_type(
+    orientation_count: int,
+    expected_dtype: type[np.unsignedinteger],
+) -> None:
+    assert scanner_module._orientation_code_dtype(orientation_count) == np.dtype(expected_dtype)
+
+
+def test_orientation_code_decode_round_trip_returns_independent_contiguous_float32() -> None:
+    phis = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+    thetas = np.array([40.0, 50.0], dtype=np.float32)
+    codes = np.array(
+        [
+            scanner_module._encode_orientation_code(iphi, itheta, len(thetas))
+            for iphi in range(len(phis))
+            for itheta in range(len(thetas))
+        ],
+        dtype=np.uint8,
+    ).reshape(2, 3)
+
+    decoded_phi, decoded_theta = scanner_module._decode_orientation_codes(
+        codes,
+        phis,
+        thetas,
+    )
+
+    np.testing.assert_array_equal(
+        decoded_phi,
+        np.array([[10.0, 10.0, 20.0], [20.0, 30.0, 30.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        decoded_theta,
+        np.array([[40.0, 50.0, 40.0], [50.0, 40.0, 50.0]], dtype=np.float32),
+    )
+    for decoded in (decoded_phi, decoded_theta):
+        assert decoded.dtype == np.float32
+        assert decoded.flags.c_contiguous
+        assert not np.shares_memory(decoded, phis)
+        assert not np.shares_memory(decoded, thetas)
+
+
+@pytest.mark.parametrize("include_confidence", [False, True])
+def test_orientation_code_updates_keep_strict_ties_and_first_middle_last_best(
+    include_confidence: bool,
+) -> None:
+    best_score = np.zeros(4, dtype=np.float32)
+    second_score = np.zeros(4, dtype=np.float32) if include_confidence else None
+    best_code = np.zeros(4, dtype=np.uint8)
+    scores = (
+        np.array([3.0, 1.0, 1.0, 2.0], dtype=np.float32),
+        np.array([2.0, 4.0, 1.0, 2.0], dtype=np.float32),
+        np.array([1.0, 3.0, 5.0, 2.0], dtype=np.float32),
+    )
+
+    for code, score in enumerate(scores):
+        scanner_module._update_best_orientation(
+            score,
+            code,
+            best_score,
+            second_score,
+            best_code,
+        )
+
+    np.testing.assert_array_equal(best_code, np.array([0, 1, 2, 0], dtype=np.uint8))
+    np.testing.assert_array_equal(best_score, np.array([3.0, 4.0, 5.0, 2.0], dtype=np.float32))
 
 
 def test_reference_like_sampling_uses_java_inspired_angle_grid() -> None:
@@ -339,6 +419,50 @@ def test_scan_reference_like_validates_interpolation_order(
         )
 
 
+@pytest.mark.parametrize("interpolation_backend", ["missing", 1, None])
+def test_scan_reference_like_validates_interpolation_backend(
+    interpolation_backend: object,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="interpolation_backend"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            interpolation_backend=interpolation_backend,  # type: ignore[arg-type]
+        )
+
+
+def test_structured_linear_backend_requires_order_one_and_rotate_shear() -> None:
+    scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="requires interpolation_order=1"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            interpolation_order=0,
+            interpolation_backend="structured_linear",
+        )
+    with pytest.raises(ValueError, match="requires backend='rotate_shear'"):
+        scanner.scan_reference_like(
+            0.0,
+            90.0,
+            35.0,
+            85.0,
+            image,
+            backend="directional",
+            interpolation_backend="structured_linear",
+        )
+
+
 @pytest.mark.parametrize("smoothing_sigma", [-1.0, np.nan, np.inf, True, "1.0"])
 def test_scan_reference_like_validates_smoothing_sigma(smoothing_sigma: object) -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
@@ -466,6 +590,124 @@ def test_scan_with_confidence_first_three_arrays_match_reference_like() -> None:
         np.testing.assert_array_equal(reference_array, confidence_array)
 
 
+@pytest.mark.parametrize("backend", ["rotate_shear", "directional"])
+def test_scans_without_confidence_skip_confidence_work(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image = np.linspace(0.0, 1.0, 4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+
+    def fail_confidence(*args: object, **kwargs: object) -> None:
+        raise AssertionError("confidence calculation must be skipped")
+
+    def fail_second_best(*args: object, **kwargs: object) -> None:
+        raise AssertionError("second-best update must be skipped")
+
+    monkeypatch.setattr(
+        scanner_module,
+        "_orientation_confidence_from_scores",
+        fail_confidence,
+    )
+    monkeypatch.setattr(
+        scanner_module,
+        "_update_best_second_orientation",
+        fail_second_best,
+    )
+
+    reference_like = scanner.scan_reference_like(
+        0.0,
+        20.0,
+        50.0,
+        55.0,
+        image,
+        backend=backend,
+        smoothing_sigma=0.5,
+    )
+    quality = scanner.scan_quality(
+        0.0,
+        20.0,
+        50.0,
+        55.0,
+        image,
+        backend=backend,
+        refinement_factor=1,
+        smoothing_sigma=0.5,
+        return_confidence=False,
+    )
+
+    assert len(reference_like) == 3
+    assert len(quality) == 3
+
+
+def test_theta_shear_scores_are_generated_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    theta_sampling = np.array([45.0, 50.0, 55.0], dtype=np.float32)
+    rotated = np.linspace(0.0, 1.0, 4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    original_likelihood = scanner_module._reference_like_planarity_to_likelihood
+    calls = 0
+
+    def count_likelihood(smoothed: np.ndarray) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return original_likelihood(smoothed)
+
+    monkeypatch.setattr(
+        scanner_module,
+        "_reference_like_planarity_to_likelihood",
+        count_likelihood,
+    )
+
+    scores = scanner._scan_theta_shear_reference_like(
+        theta_sampling,
+        rotated,
+        interpolation_order=1,
+        smoothing_sigma=0.5,
+    )
+
+    assert iter(scores) is scores
+    assert calls == 0
+    first = next(scores)
+    first_copy = first.copy()
+    assert calls == 1
+    second = next(scores)
+    assert calls == 2
+    assert not np.shares_memory(first, second)
+    np.testing.assert_array_equal(first, first_copy)
+    assert len(list(scores)) == 1
+    assert calls == len(theta_sampling)
+
+
+def test_reference_like_strict_ties_keep_first_orientation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image = np.linspace(0.0, 1.0, 4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+
+    def tied_score(
+        image: np.ndarray,
+        **kwargs: object,
+    ) -> np.ndarray:
+        return np.ones_like(image, dtype=np.float32)
+
+    monkeypatch.setattr(scanner_module, "_reference_like_orientation_score", tied_score)
+
+    ft, pt, tt = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        backend="directional",
+    )
+
+    np.testing.assert_array_equal(ft, np.ones_like(image, dtype=np.float32))
+    np.testing.assert_array_equal(pt, np.zeros_like(image, dtype=np.float32))
+    np.testing.assert_array_equal(tt, np.full_like(image, 50.0, dtype=np.float32))
+
+
 def test_scan_with_confidence_constant_input_returns_zero_confidence() -> None:
     scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
     image = np.full((5, 6, 7), 3.0, dtype=np.float64)
@@ -532,7 +774,17 @@ def test_scan_quality_can_return_confidence() -> None:
     scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
     image, _ = _low_planarity_fault(40.0, 55.0, shape=(8, 9, 10), width=1.0)
 
-    ft, pt, tt, confidence = scanner.scan_quality(
+    without_confidence = scanner.scan_quality(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        refinement_factor=2,
+        smoothing_sigma=0.75,
+        return_confidence=False,
+    )
+    with_confidence = scanner.scan_quality(
         0.0,
         40.0,
         50.0,
@@ -542,7 +794,12 @@ def test_scan_quality_can_return_confidence() -> None:
         smoothing_sigma=0.75,
         return_confidence=True,
     )
+    ft, pt, tt, confidence = with_confidence
 
+    assert len(without_confidence) == 3
+    assert len(with_confidence) == 4
+    for plain_array, confidence_array in zip(without_confidence, with_confidence[:3]):
+        np.testing.assert_array_equal(plain_array, confidence_array)
     for array in (ft, pt, tt, confidence):
         assert array.shape == image.shape
         assert array.dtype == np.float32
@@ -599,6 +856,224 @@ def test_rotate3_axis1_unrotate3_axis1_return_finite_float32_shapes() -> None:
     assert unrotated.dtype == np.float32
     assert np.isfinite(rotated).all()
     assert np.isfinite(unrotated).all()
+
+
+@pytest.mark.parametrize("shape", [(2, 2, 2), (3, 5, 4)])
+@pytest.mark.parametrize("angle", [0.0, 27.5, -35.0])
+def test_structured_rotation_primitives_match_scipy(
+    shape: tuple[int, int, int],
+    angle: float,
+) -> None:
+    volume = np.linspace(0.0, 1.0, np.prod(shape), dtype=np.float32).reshape(shape)
+
+    scipy_rotated = _rotate3_axis1(volume, angle, interpolation_order=1)
+    structured_rotated = _rotate3_axis1(
+        volume,
+        angle,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+    scipy_unrotated = _unrotate3_axis1(
+        scipy_rotated,
+        shape,
+        angle,
+        interpolation_order=1,
+        fill_value=0.375,
+    )
+    structured_unrotated = _unrotate3_axis1(
+        scipy_rotated,
+        shape,
+        angle,
+        interpolation_order=1,
+        fill_value=0.375,
+        interpolation_backend="structured_linear",
+    )
+
+    np.testing.assert_allclose(structured_rotated, scipy_rotated, atol=1.0e-6, rtol=0.0)
+    np.testing.assert_allclose(
+        structured_unrotated,
+        scipy_unrotated,
+        atol=1.0e-6,
+        rtol=0.0,
+    )
+
+
+@pytest.mark.parametrize("shape", [(2, 2), (5, 6)])
+@pytest.mark.parametrize("shear", [0.0, 0.5, -0.375])
+def test_structured_shear_primitives_match_scipy_boundary_coordinates(
+    shape: tuple[int, int],
+    shear: float,
+) -> None:
+    image = np.linspace(0.0, 1.0, np.prod(shape), dtype=np.float32).reshape(shape)
+
+    scipy_sheared = _shear2(image, shear, interpolation_order=1)
+    structured_sheared = _shear2(
+        image,
+        shear,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+    scipy_unsheared = _unshear2(image, shear, interpolation_order=1)
+    structured_unsheared = _unshear2(
+        image,
+        shear,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+
+    np.testing.assert_allclose(structured_sheared, scipy_sheared, atol=1.0e-6, rtol=0.0)
+    np.testing.assert_allclose(
+        structured_unsheared,
+        scipy_unsheared,
+        atol=1.0e-6,
+        rtol=0.0,
+    )
+
+
+def test_structured_linear_sampling_matches_known_boundary_values() -> None:
+    image = np.repeat(
+        np.array([[10.0], [20.0], [30.0], [40.0]], dtype=np.float32),
+        5,
+        axis=1,
+    )
+
+    sheared = _shear2(
+        image,
+        0.5,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+
+    np.testing.assert_array_equal(
+        sheared[0],
+        np.array([20.0, 15.0, 10.0, 1.0, 1.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        sheared[2],
+        np.array([40.0, 35.0, 30.0, 25.0, 20.0], dtype=np.float32),
+    )
+
+
+def test_structured_unrotation_matches_scipy_with_nonzero_cval() -> None:
+    rotated = np.arange(2 * 2 * 3, dtype=np.float32).reshape(2, 2, 3)
+    shape = (4, 5, 3)
+
+    scipy = _unrotate3_axis1(
+        rotated,
+        shape,
+        27.5,
+        interpolation_order=1,
+        fill_value=0.375,
+    )
+    structured = _unrotate3_axis1(
+        rotated,
+        shape,
+        27.5,
+        interpolation_order=1,
+        fill_value=0.375,
+        interpolation_backend="structured_linear",
+    )
+
+    assert np.any(scipy == np.float32(0.375))
+    np.testing.assert_allclose(structured, scipy, atol=1.0e-6, rtol=0.0)
+
+
+def test_structured_transforms_do_not_build_coordinate_grids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    volume = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+
+    def fail_grid(*args: object, **kwargs: object) -> None:
+        raise AssertionError("structured transforms must not build coordinate grids")
+
+    monkeypatch.setattr(rotate_shear_module, "_coordinate_grids3", fail_grid)
+    monkeypatch.setattr(rotate_shear_module.np, "indices", fail_grid)
+    rotated = _rotate3_axis1(
+        volume,
+        27.5,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+    _unrotate3_axis1(
+        rotated,
+        volume.shape,
+        27.5,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+    _shear2(
+        volume[0],
+        0.5,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+    _unshear2(
+        volume[0],
+        0.5,
+        interpolation_order=1,
+        interpolation_backend="structured_linear",
+    )
+
+
+@pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba is not installed")
+def test_structured_python_and_numba_primitives_are_identical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    volume = np.linspace(0.0, 1.0, 3 * 5 * 4, dtype=np.float32).reshape(3, 5, 4)
+
+    def transformed_with(kernels: tuple[object, object, object, object]):
+        monkeypatch.setattr(rotate_shear_module, "_rotate3_axis1_structured", kernels[0])
+        monkeypatch.setattr(rotate_shear_module, "_unrotate3_axis1_structured", kernels[1])
+        monkeypatch.setattr(rotate_shear_module, "_shear2_structured", kernels[2])
+        monkeypatch.setattr(rotate_shear_module, "_unshear2_structured", kernels[3])
+        rotated = _rotate3_axis1(
+            volume,
+            -27.5,
+            interpolation_order=1,
+            interpolation_backend="structured_linear",
+        )
+        return (
+            rotated,
+            _unrotate3_axis1(
+                rotated,
+                volume.shape,
+                -27.5,
+                interpolation_order=1,
+                interpolation_backend="structured_linear",
+            ),
+            _shear2(
+                volume[0],
+                0.375,
+                interpolation_order=1,
+                interpolation_backend="structured_linear",
+            ),
+            _unshear2(
+                volume[0],
+                0.375,
+                interpolation_order=1,
+                interpolation_backend="structured_linear",
+            ),
+        )
+
+    python_outputs = transformed_with(
+        (
+            structured_linear_module._rotate3_axis1_structured_python,
+            structured_linear_module._unrotate3_axis1_structured_python,
+            structured_linear_module._shear2_structured_python,
+            structured_linear_module._unshear2_structured_python,
+        )
+    )
+    numba_outputs = transformed_with(
+        (
+            structured_linear_module._rotate3_axis1_structured_numba,
+            structured_linear_module._unrotate3_axis1_structured_numba,
+            structured_linear_module._shear2_structured_numba,
+            structured_linear_module._unshear2_structured_numba,
+        )
+    )
+
+    for python_output, numba_output in zip(python_outputs, numba_outputs):
+        np.testing.assert_array_equal(python_output, numba_output)
 
 
 @pytest.mark.parametrize("shape", [(4, 6, 5), (5, 5, 6)])
@@ -913,6 +1388,114 @@ def test_scan_matches_reference_like_default_backend() -> None:
 
     for default_array, reference_array in zip(default, reference_like):
         np.testing.assert_array_equal(default_array, reference_array)
+
+
+def test_default_scipy_interpolation_backend_is_exactly_unchanged() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(40.0, 55.0, shape=(6, 7, 8), width=1.0)
+
+    implicit = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        smoothing_sigma=0.75,
+    )
+    explicit = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        interpolation_backend="scipy",
+        smoothing_sigma=0.75,
+    )
+
+    for implicit_array, explicit_array in zip(implicit, explicit):
+        np.testing.assert_array_equal(implicit_array, explicit_array)
+
+
+def test_structured_backend_end_to_end_metrics_and_public_entry_propagation() -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image, _ = _low_planarity_fault(40.0, 55.0, shape=(6, 7, 8), width=1.0)
+    options = {
+        "interpolation_backend": "structured_linear",
+        "smoothing_sigma": 0.75,
+    }
+
+    scipy = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        interpolation_backend="scipy",
+        smoothing_sigma=0.75,
+    )
+    structured = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        **options,
+    )
+    scan = scanner.scan(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        interpolation_backend="structured_linear",
+    )
+    confidence = scanner.scan_with_confidence(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        **options,
+    )
+    quality = scanner.scan_quality(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        refinement_factor=1,
+        **options,
+    )
+
+    likelihood_max_abs_diff = float(np.max(np.abs(scipy[0] - structured[0])))
+    strike_periodic_diff = np.minimum(
+        np.abs(scipy[1] - structured[1]),
+        np.float32(180.0) - np.abs(scipy[1] - structured[1]),
+    )
+    dip_diff = np.abs(scipy[2] - structured[2])
+    orientation_bin_change_rate = float(np.mean((strike_periodic_diff > 0.0) | (dip_diff > 0.0)))
+
+    assert likelihood_max_abs_diff <= 1.0e-6
+    assert float(np.max(strike_periodic_diff)) == 0.0
+    assert float(np.max(dip_diff)) == 0.0
+    assert orientation_bin_change_rate == 0.0
+    for structured_array, confidence_array, quality_array in zip(
+        structured,
+        confidence[:3],
+        quality,
+    ):
+        np.testing.assert_array_equal(structured_array, confidence_array)
+        np.testing.assert_array_equal(structured_array, quality_array)
+    explicit_scan = scanner.scan_reference_like(
+        0.0,
+        40.0,
+        50.0,
+        60.0,
+        image,
+        interpolation_backend="structured_linear",
+    )
+    for scan_array, explicit_array in zip(scan, explicit_scan):
+        np.testing.assert_array_equal(scan_array, explicit_array)
 
 
 def test_scan_constant_input_returns_zero_likelihood_and_finite_angles() -> None:

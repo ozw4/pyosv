@@ -19,5 +19,6 @@ class SurfaceVoterConfig:
     surface_smoothing1: float
     surface_smoothing2: float
     surface_orientation_smoothing: float
+    surface_orientation_backend: str
     surface_support_min_fraction: float
     surface_support_exponent: float

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pyosv._accel import NUMBA_AVAILABLE  # noqa: E402
+from pyosv._orient3d.scanner import _orientation_code_dtype  # noqa: E402
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip  # noqa: E402
 from pyosv.orient3d import FaultOrientScanner3  # noqa: E402
 
@@ -66,26 +68,71 @@ def main(argv: list[str] | None = None) -> int:
     phi_sampling = scanner.reference_like_strike_sampling(phi_min, phi_max)
     theta_sampling = scanner.reference_like_dip_sampling(theta_min, theta_max)
 
-    def scan_once() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return scanner.scan(phi_min, phi_max, theta_min, theta_max, image)
+    def scan_scipy() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return scanner.scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            image,
+            interpolation_backend="scipy",
+        )
 
-    scan_times, result = time_repeated(
-        scan_once,
+    def scan_structured_linear() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return scanner.scan_reference_like(
+            phi_min,
+            phi_max,
+            theta_min,
+            theta_max,
+            image,
+            interpolation_backend="structured_linear",
+        )
+
+    def scan_with_confidence() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        return scanner.scan_with_confidence(phi_min, phi_max, theta_min, theta_max, image)
+
+    scipy_times, scipy_result = time_repeated(
+        scan_scipy,
         repeat=args.repeat,
         warmup=args.warmup,
     )
-    ft, pt, tt = result
+    structured_times, structured_result = time_repeated(
+        scan_structured_linear,
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    with_confidence_times, with_confidence_result = time_repeated(
+        scan_with_confidence,
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    scipy_peak_bytes = peak_traced_allocation(scan_scipy)
+    structured_peak_bytes = peak_traced_allocation(scan_structured_linear)
+    with_confidence_peak_bytes = peak_traced_allocation(scan_with_confidence)
+    ft, pt, tt = scipy_result
+    structured_ft, structured_pt, structured_tt = structured_result
+    confidence = with_confidence_result[3]
+    orientation_count = len(phi_sampling) * len(theta_sampling)
+    orientation_code_dtype = _orientation_code_dtype(orientation_count)
+    voxel_count = image.size
+    score_bytes = voxel_count * np.dtype(np.float32).itemsize
+    code_bytes = voxel_count * orientation_code_dtype.itemsize
+    previous_angle_bytes = 2 * score_bytes
 
-    print("benchmark=orient3d scanner=FaultOrientScanner3.scan backend=reference_like")
+    print("benchmark=orient3d scanner=FaultOrientScanner3 backend=reference_like")
     print(
         " ".join(
             [
                 f"input_shape={image.shape}",
-                f"output_shapes={(ft.shape, pt.shape, tt.shape)}",
+                f"output_shapes_without_confidence={(ft.shape, pt.shape, tt.shape)}",
+                f"output_shape_confidence={confidence.shape}",
                 f"dtype={ft.dtype}",
                 f"phi_samples={len(phi_sampling)}",
                 f"theta_samples={len(theta_sampling)}",
-                f"orientations={len(phi_sampling) * len(theta_sampling)}",
+                f"orientations={orientation_count}",
+                f"orientation_state_dtype={orientation_code_dtype.name}",
+                f"orientation_code_bytes={code_bytes}",
+                f"previous_orientation_angle_bytes={previous_angle_bytes}",
                 f"rng_seed={args.seed}",
                 f"repeat={args.repeat}",
                 f"warmup={args.warmup}",
@@ -93,8 +140,26 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     print(
-        f"{timing_summary('scan', scan_times)} "
+        f"{timing_summary('scipy', scipy_times)} "
+        f"estimated_peak_state_bytes={score_bytes + code_bytes} "
+        f"previous_estimated_peak_state_bytes={score_bytes + previous_angle_bytes} "
+        f"peak_traced_bytes={scipy_peak_bytes} "
         f"output_count={ft.size} {array_fingerprint('ft', ft)}",
+    )
+    print(
+        f"{timing_summary('structured_linear', structured_times)} "
+        f"estimated_peak_state_bytes={score_bytes + code_bytes} "
+        f"peak_traced_bytes={structured_peak_bytes} "
+        f"output_count={structured_ft.size} "
+        f"{array_fingerprint('ft', structured_ft)}",
+    )
+    print(interpolation_difference_summary(scipy_result, structured_result))
+    print(
+        f"{timing_summary('with_confidence', with_confidence_times)} "
+        f"estimated_peak_state_bytes={2 * score_bytes + code_bytes} "
+        f"previous_estimated_peak_state_bytes={2 * score_bytes + previous_angle_bytes} "
+        f"peak_traced_bytes={with_confidence_peak_bytes} "
+        f"output_count={confidence.size} {array_fingerprint('confidence', confidence)}",
     )
     print(array_fingerprint("pt", pt))
     print(array_fingerprint("tt", tt))
@@ -138,6 +203,18 @@ def time_repeated(func, *, repeat: int, warmup: int):
     return times, result
 
 
+def peak_traced_allocation(func) -> int:
+    """Return peak Python-traced bytes for one scan (not process peak RSS)."""
+
+    tracemalloc.start()
+    try:
+        func()
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak_bytes
+
+
 def timing_summary(name: str, times: list[float]) -> str:
     return (
         f"name={name} min_seconds={min(times):.6f} "
@@ -153,6 +230,29 @@ def array_fingerprint(name: str, array: np.ndarray) -> str:
             f"{name}_min={float(np.min(values)):.9g}",
             f"{name}_max={float(np.max(values)):.9g}",
         ],
+    )
+
+
+def interpolation_difference_summary(
+    scipy_result: tuple[np.ndarray, np.ndarray, np.ndarray],
+    structured_result: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> str:
+    scipy_ft, scipy_pt, scipy_tt = scipy_result
+    structured_ft, structured_pt, structured_tt = structured_result
+    likelihood_diff = np.abs(scipy_ft - structured_ft)
+    raw_strike_diff = np.abs(scipy_pt - structured_pt)
+    strike_diff = np.minimum(raw_strike_diff, np.float32(180.0) - raw_strike_diff)
+    dip_diff = np.abs(scipy_tt - structured_tt)
+    orientation_changed = (strike_diff > 0.0) | (dip_diff > 0.0)
+    return " ".join(
+        [
+            "comparison=scipy_vs_structured_linear",
+            f"likelihood_max_abs_diff={float(np.max(likelihood_diff)):.9g}",
+            f"likelihood_mean_abs_diff={float(np.mean(likelihood_diff)):.9g}",
+            f"strike_periodic_max_abs_diff={float(np.max(strike_diff)):.9g}",
+            f"dip_max_abs_diff={float(np.max(dip_diff)):.9g}",
+            f"orientation_bin_change_rate={float(np.mean(orientation_changed)):.9g}",
+        ]
     )
 
 

@@ -87,6 +87,20 @@ JTK clone. This setting is separate from `surface_smoothing1` and
 smoothing for diagnostics that need raw-surface behavior; negative, nonfinite,
 boolean, and nonnumeric values are rejected.
 
+The orientation smoothing backend defaults to `"full_surface"`, which retains
+the existing full-surface SciPy filtering path and its numerical output. A
+center-only separable backend is available as an explicit opt-in:
+
+```python
+voter.set_surface_orientation_backend("center_separable")
+```
+
+The opt-in backend reproduces SciPy's Gaussian kernel truncation and nearest-edge
+behavior while computing only the center patch needed for strike/dip. Tiny
+floating-point differences remain possible. It is not selected by default or by
+the default synthetic-quality variants. Only `"full_surface"` and
+`"center_separable"` are accepted.
+
 Surface voting defaults to `surface_voting_boundary_policy="reference"`.
 This keeps the Java-reference-oriented boundary behavior unchanged:
 `samples_in_uvw_box` rounds with Java-style `floor(x + 0.5)` and clamps sampled
