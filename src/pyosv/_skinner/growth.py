@@ -8,6 +8,11 @@ import operator
 
 import numpy as np
 
+from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._skinner.candidate_sampling import (
+    _candidate_slice_numba,
+    _candidate_slice_python,
+)
 from pyosv._skinner.grid import _SkinCellGrid
 from pyosv._skinner.models import (
     _LocalTransformMap,
@@ -20,6 +25,7 @@ from pyosv._skinner.transforms import (
     _local_index_to_world,
     _sample_validated_volume_nearest_java_round,
     _update_transform_map,
+    _validate_origin3,
     _validate_transform_index,
 )
 from pyosv._skinner.validation import (
@@ -572,8 +578,10 @@ def _candidate_slice(
     step_limit = None if max_steps is None else _validate_nonnegative_int(max_steps, "max_steps")
 
     if axis == "v":
+        axis_code = 0
         distance_to_edge = v_center if step_sign < 0 else transform_map.vs.shape[1] - 1 - v_center
     elif axis == "w":
+        axis_code = 1
         distance_to_edge = w_center if step_sign < 0 else transform_map.ws.shape[1] - 1 - w_center
     else:
         raise ValueError("axis must be 'v' or 'w'")
@@ -582,20 +590,24 @@ def _candidate_slice(
     if step_limit is not None:
         row_count = min(row_count, step_limit + 1)
 
-    samples = np.zeros((row_count, u_stop - u_start + 1), dtype=np.float32)
-    for row in range(row_count):
-        iv = v_center + step_sign * row if axis == "v" else v_center
-        iw = w_center + step_sign * row if axis == "w" else w_center
-        for col, iu in enumerate(range(u_start, u_stop + 1)):
-            x1, x2, x3 = _local_index_to_world(iu, iv, iw, origin, transform_map)
-            samples[row, col] = _sample_validated_volume_nearest_java_round(
-                fv_array,
-                x1,
-                x2,
-                x3,
-            )
-
-    return samples
+    o1, o2, o3 = _validate_origin3(origin)
+    kernel = _candidate_slice_numba if NUMBA_AVAILABLE else _candidate_slice_python
+    return kernel(
+        fv_array,
+        transform_map.us,
+        transform_map.vs,
+        transform_map.ws,
+        o1,
+        o2,
+        o3,
+        u_start,
+        u_stop,
+        v_center,
+        w_center,
+        step_sign,
+        axis_code,
+        row_count,
+    )
 
 
 def _validate_direction(direction: int) -> int:

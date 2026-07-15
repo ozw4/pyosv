@@ -13,6 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pyosv._accel import NUMBA_AVAILABLE  # noqa: E402
+from pyosv._skinner.candidate_sampling import (  # noqa: E402
+    _candidate_slice_numba,
+    _candidate_slice_python,
+)
 from pyosv.cells import FaultCell  # noqa: E402
 from pyosv.skinner import (  # noqa: E402
     FaultSkinner,
@@ -54,6 +58,22 @@ def main(argv: list[str] | None = None) -> int:
         strike=np.array([0.0, 0.0, 1.0], dtype=np.float32),
     )
     center = float((args.shape - 1) // 2)
+    candidate_args = (
+        fv,
+        transform_map.us,
+        transform_map.vs,
+        transform_map.ws,
+        center,
+        center,
+        center,
+        0,
+        2 * local_radius,
+        tangent_radius,
+        tangent_radius,
+        1,
+        0,
+        min(tangent_radius + 1, args.max_steps + 1),
+    )
 
     def generate_candidate_slice() -> np.ndarray:
         return _candidate_slice_above_below(
@@ -68,11 +88,26 @@ def main(argv: list[str] | None = None) -> int:
             max_steps=args.max_steps,
         )
 
-    candidate_times, candidate_slice = time_repeated(
+    python_candidate_times, python_candidate_slice = time_repeated(
+        lambda: _candidate_slice_python(*candidate_args),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    numba_candidate_times, numba_candidate_slice = time_repeated(
+        lambda: _candidate_slice_numba(*candidate_args),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    dispatch_candidate_times, candidate_slice = time_repeated(
         generate_candidate_slice,
         repeat=args.repeat,
         warmup=args.warmup,
     )
+    if not (
+        np.array_equal(python_candidate_slice, numba_candidate_slice)
+        and np.array_equal(python_candidate_slice, candidate_slice)
+    ):
+        raise RuntimeError("candidate slice benchmark paths produced different outputs")
     path_times, local_u_path = time_repeated(
         lambda: _pick_candidate_local_u_path(candidate_slice),
         repeat=args.repeat,
@@ -118,7 +153,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     print(
-        f"{timing_summary('candidate_slice', candidate_times)} "
+        f"{timing_summary('candidate_slice_python', python_candidate_times)} "
+        f"output_count={candidate_slice.size} output_shape={candidate_slice.shape} "
+        f"{array_fingerprint('candidate', candidate_slice)}",
+    )
+    print(
+        f"{timing_summary('candidate_slice_numba', numba_candidate_times)} "
+        f"output_count={candidate_slice.size} output_shape={candidate_slice.shape} "
+        f"{array_fingerprint('candidate', candidate_slice)}",
+    )
+    print(
+        f"{timing_summary('candidate_slice_dispatch', dispatch_candidate_times)} "
         f"output_count={candidate_slice.size} output_shape={candidate_slice.shape} "
         f"{array_fingerprint('candidate', candidate_slice)}",
     )
