@@ -15,6 +15,8 @@ from pyosv._seed_selection import (
     _select_skinner_seed_indices_3d,
     _select_voter_seed_indices_2d,
     _select_voter_seed_indices_3d,
+    _sorted_skinner_flat_indices,
+    _sorted_voter_flat_indices,
 )
 from pyosv._skinner.models import _SkinCell
 from pyosv._skinner.seeds import _find_reference_seeds
@@ -29,7 +31,10 @@ def _oracle(sorted_indices: np.ndarray, shape: tuple[int, ...], distance: int) -
     for flat_index in sorted_indices:
         index = np.unravel_index(flat_index, shape)
         slices = tuple(
-            slice(max(coordinate - distance, 0), min(coordinate + distance + 1, size))
+            slice(
+                max(int(coordinate) - distance, 0),
+                min(int(coordinate) + distance + 1, size),
+            )
             for coordinate, size in zip(index, shape)
         )
         if mark[slices].any():
@@ -83,7 +88,7 @@ def _cell_values(cell: FaultCell2 | FaultCell | _SkinCell) -> tuple[float, ...]:
     return (cell.i1, cell.i2, cell.i3, cell.fl, cell.fp, cell.ft)
 
 
-@pytest.mark.parametrize("distance", [0, 1, 100])
+@pytest.mark.parametrize("distance", [0, 1, 100, int(np.iinfo(np.int64).max)])
 def test_suppression_kernels_cover_empty_all_candidate_and_large_distance_cases(
     distance: int,
 ) -> None:
@@ -103,6 +108,56 @@ def test_suppression_kernels_cover_empty_all_candidate_and_large_distance_cases(
             numba = _greedy_suppress_3d_numba(candidates, shape, distance)
         np.testing.assert_array_equal(python, expected)
         np.testing.assert_array_equal(numba, expected)
+
+
+@pytest.mark.parametrize(
+    "distance",
+    [int(np.iinfo(np.int64).max), int(np.iinfo(np.int64).max) + 1],
+)
+def test_public_seed_apis_accept_arbitrarily_large_distances(
+    distance: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ft2 = np.ones((1, 3), dtype=np.float32)
+    ft3 = ft2.reshape(1, 1, 3)
+
+    for use_numba in (False, True):
+        monkeypatch.setattr(voting2d_module, "NUMBA_AVAILABLE", use_numba)
+        seeds2 = OptimalPathVoter(0, 0).pick_seeds(distance, 0.5, ft2, ft2)
+        assert [seed.index for seed in seeds2] == [(2, 0)]
+
+        monkeypatch.setattr(voting3d_module, "NUMBA_AVAILABLE", use_numba)
+        seeds3 = OptimalSurfaceVoter(0, 0, 0).pick_seeds(
+            distance,
+            0.5,
+            ft3,
+            ft3,
+            ft3,
+        )
+        assert [seed.index for seed in seeds3] == [(2, 0, 0)]
+
+        monkeypatch.setattr(skinner_seeds_module, "NUMBA_AVAILABLE", use_numba)
+        skin_seeds = _find_reference_seeds(distance, 0.5, ft3, ft3, ft3, ft3)
+        assert [seed.index for seed in skin_seeds] == [(0, 0, 0)]
+
+
+def test_sorting_noncontiguous_scores_does_not_ravel_score_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scores = np.arange(24, dtype=np.float32).reshape(4, 3, 2).transpose(2, 1, 0)
+    mask = scores > np.float32(10.0)
+    original_ravel = np.ravel
+
+    def tracked_ravel(array: np.ndarray, *args: object, **kwargs: object) -> np.ndarray:
+        if array is scores:
+            raise AssertionError("the score volume must not be raveled")
+        return original_ravel(array, *args, **kwargs)
+
+    monkeypatch.setattr(np, "ravel", tracked_ravel)
+    voter_indices = _sorted_voter_flat_indices(mask, scores)
+    skinner_indices = _sorted_skinner_flat_indices(mask, scores)
+
+    assert voter_indices.size == skinner_indices.size == np.count_nonzero(mask)
 
 
 def test_voter_and_skinner_use_opposite_flat_index_ties() -> None:

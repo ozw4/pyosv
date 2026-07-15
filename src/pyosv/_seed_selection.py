@@ -11,7 +11,7 @@ def _sorted_voter_flat_indices(candidate_mask: np.ndarray, scores: np.ndarray) -
     """Return score-descending candidates with descending flat-index ties."""
 
     candidate_indices = np.flatnonzero(candidate_mask)
-    candidate_scores = np.ravel(scores)[candidate_indices]
+    candidate_scores = scores.flat[candidate_indices]
     order = np.argsort(candidate_scores, kind="stable")[::-1]
     return np.asarray(candidate_indices[order], dtype=np.int64)
 
@@ -20,9 +20,15 @@ def _sorted_skinner_flat_indices(candidate_mask: np.ndarray, scores: np.ndarray)
     """Return score-descending candidates with ascending flat-index ties."""
 
     candidate_indices = np.flatnonzero(candidate_mask)
-    candidate_scores = np.ravel(scores)[candidate_indices]
+    candidate_scores = scores.flat[candidate_indices]
     order = np.argsort(-candidate_scores, kind="stable")
     return np.asarray(candidate_indices[order], dtype=np.int64)
+
+
+def _bounded_suppression_distance(shape: tuple[int, ...], distance: int) -> int:
+    """Clamp distance to the largest value distinguishable for ``shape``."""
+
+    return min(distance, max(max(shape) - 1, 0))
 
 
 def _greedy_suppress_2d_python(
@@ -38,10 +44,10 @@ def _greedy_suppress_2d_python(
     accepted_count = 0
     for flat_index in sorted_flat_indices:
         i2, i1 = divmod(int(flat_index), n1)
-        b1 = max(i1 - distance, 0)
-        b2 = max(i2 - distance, 0)
-        e1 = min(i1 + distance, n1 - 1)
-        e2 = min(i2 + distance, n2 - 1)
+        b1 = 0 if distance >= i1 else i1 - distance
+        b2 = 0 if distance >= i2 else i2 - distance
+        e1 = n1 - 1 if distance >= n1 - 1 - i1 else i1 + distance
+        e2 = n2 - 1 if distance >= n2 - 1 - i2 else i2 + distance
         if mark[b2 : e2 + 1, b1 : e1 + 1].any():
             continue
         accepted[accepted_count] = flat_index
@@ -65,10 +71,10 @@ def _greedy_suppress_2d_numba(
     for flat_index in sorted_flat_indices:
         i2 = flat_index // n1
         i1 = flat_index - i2 * n1
-        b1 = max(i1 - distance, 0)
-        b2 = max(i2 - distance, 0)
-        e1 = min(i1 + distance, n1 - 1)
-        e2 = min(i2 + distance, n2 - 1)
+        b1 = 0 if distance >= i1 else i1 - distance
+        b2 = 0 if distance >= i2 else i2 - distance
+        e1 = n1 - 1 if distance >= n1 - 1 - i1 else i1 + distance
+        e2 = n2 - 1 if distance >= n2 - 1 - i2 else i2 + distance
         occupied = False
         for j2 in range(b2, e2 + 1):
             for j1 in range(b1, e1 + 1):
@@ -100,12 +106,12 @@ def _greedy_suppress_3d_python(
     for flat_index in sorted_flat_indices:
         i3, remainder = divmod(int(flat_index), plane_size)
         i2, i1 = divmod(remainder, n1)
-        b1 = max(i1 - distance, 0)
-        b2 = max(i2 - distance, 0)
-        b3 = max(i3 - distance, 0)
-        e1 = min(i1 + distance, n1 - 1)
-        e2 = min(i2 + distance, n2 - 1)
-        e3 = min(i3 + distance, n3 - 1)
+        b1 = 0 if distance >= i1 else i1 - distance
+        b2 = 0 if distance >= i2 else i2 - distance
+        b3 = 0 if distance >= i3 else i3 - distance
+        e1 = n1 - 1 if distance >= n1 - 1 - i1 else i1 + distance
+        e2 = n2 - 1 if distance >= n2 - 1 - i2 else i2 + distance
+        e3 = n3 - 1 if distance >= n3 - 1 - i3 else i3 + distance
         if mark[b3 : e3 + 1, b2 : e2 + 1, b1 : e1 + 1].any():
             continue
         accepted[accepted_count] = flat_index
@@ -132,12 +138,12 @@ def _greedy_suppress_3d_numba(
         remainder = flat_index - i3 * plane_size
         i2 = remainder // n1
         i1 = remainder - i2 * n1
-        b1 = max(i1 - distance, 0)
-        b2 = max(i2 - distance, 0)
-        b3 = max(i3 - distance, 0)
-        e1 = min(i1 + distance, n1 - 1)
-        e2 = min(i2 + distance, n2 - 1)
-        e3 = min(i3 + distance, n3 - 1)
+        b1 = 0 if distance >= i1 else i1 - distance
+        b2 = 0 if distance >= i2 else i2 - distance
+        b3 = 0 if distance >= i3 else i3 - distance
+        e1 = n1 - 1 if distance >= n1 - 1 - i1 else i1 + distance
+        e2 = n2 - 1 if distance >= n2 - 1 - i2 else i2 + distance
+        e3 = n3 - 1 if distance >= n3 - 1 - i3 else i3 + distance
         occupied = False
         for j3 in range(b3, e3 + 1):
             for j2 in range(b2, e2 + 1):
@@ -169,7 +175,8 @@ def _select_voter_seed_indices_2d(
     candidate_mask = scores > threshold
     sorted_indices = _sorted_voter_flat_indices(candidate_mask, scores)
     kernel = _greedy_suppress_2d_numba if use_numba else _greedy_suppress_2d_python
-    return kernel(sorted_indices, scores.shape, distance)
+    bounded_distance = _bounded_suppression_distance(scores.shape, distance)
+    return kernel(sorted_indices, scores.shape, bounded_distance)
 
 
 def _select_voter_seed_indices_3d(
@@ -184,7 +191,8 @@ def _select_voter_seed_indices_3d(
     candidate_mask = scores > threshold
     sorted_indices = _sorted_voter_flat_indices(candidate_mask, scores)
     kernel = _greedy_suppress_3d_numba if use_numba else _greedy_suppress_3d_python
-    return kernel(sorted_indices, scores.shape, distance)
+    bounded_distance = _bounded_suppression_distance(scores.shape, distance)
+    return kernel(sorted_indices, scores.shape, bounded_distance)
 
 
 def _select_skinner_seed_indices_3d(
@@ -201,4 +209,5 @@ def _select_skinner_seed_indices_3d(
     candidate_mask = (planarity > planarity_threshold) & (scores > threshold)
     sorted_indices = _sorted_skinner_flat_indices(candidate_mask, scores)
     kernel = _greedy_suppress_3d_numba if use_numba else _greedy_suppress_3d_python
-    return kernel(sorted_indices, scores.shape, distance)
+    bounded_distance = _bounded_suppression_distance(scores.shape, distance)
+    return kernel(sorted_indices, scores.shape, bounded_distance)

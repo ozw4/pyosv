@@ -76,17 +76,11 @@ class OptimalPathVoter:
             distance,
             use_numba=NUMBA_AVAILABLE,
         )
-        ft_flat = ft_array.ravel()
-        pt_flat = pt_array.ravel()
-        return [
-            FaultCell2(
-                int(flat_index) % n1,
-                int(flat_index) // n1,
-                ft_flat[flat_index],
-                pt_flat[flat_index],
-            )
-            for flat_index in accepted_indices
-        ]
+        seeds: list[FaultCell2] = []
+        for flat_index in accepted_indices:
+            i2, i1 = divmod(int(flat_index), n1)
+            seeds.append(FaultCell2(i1, i2, ft_array[i2, i1], pt_array[i2, i1]))
+        return seeds
 
     def get_seeds(
         self,

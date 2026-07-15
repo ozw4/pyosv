@@ -116,17 +116,18 @@ def _find_reference_seeds_validated(
         distance,
         use_numba=NUMBA_AVAILABLE,
     )
-    ft_flat = ft_array.ravel()
-    pt_flat = pt_array.ravel()
-    tt_flat = tt_array.ravel()
-    return [
-        _SkinCell(
-            int(flat_index) % n1,
-            int(flat_index) % plane_size // n1,
-            int(flat_index) // plane_size,
-            ft_flat[flat_index],
-            pt_flat[flat_index],
-            tt_flat[flat_index],
+    seeds: list[_SkinCell] = []
+    for flat_index in accepted_indices:
+        i3, remainder = divmod(int(flat_index), plane_size)
+        i2, i1 = divmod(remainder, n1)
+        seeds.append(
+            _SkinCell(
+                i1,
+                i2,
+                i3,
+                ft_array[i3, i2, i1],
+                pt_array[i3, i2, i1],
+                tt_array[i3, i2, i1],
+            )
         )
-        for flat_index in accepted_indices
-    ]
+    return seeds
