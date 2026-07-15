@@ -9,6 +9,10 @@ from pyosv._skinner.candidate_sampling import (
     _candidate_slice_numba,
     _candidate_slice_python,
 )
+from pyosv._skinner.candidate_path import (
+    _pick_candidate_local_u_path_numba,
+    _pick_candidate_local_u_path_python,
+)
 from pyosv._skinner.models import _LocalTransformMap
 from pyosv._skinner.transforms import (
     _local_index_to_world,
@@ -52,6 +56,106 @@ def _candidate_oracle(
             world = _local_index_to_world(iu, iv, iw, origin, transform_map)
             samples[row, col] = _sample_validated_volume_nearest_java_round(fv, *world)
     return samples
+
+
+def _candidate_path_oracle(
+    candidate_slice: np.ndarray,
+    max_jump: int,
+    jump_penalty: float,
+) -> np.ndarray:
+    nrow, nu = candidate_slice.shape
+    if nrow == 0:
+        return np.empty(0, dtype=np.int32)
+    if nu == 1:
+        return np.zeros(nrow, dtype=np.int32)
+
+    max_jump_int = min(max_jump, nu - 1)
+    accumulated = np.empty((nrow, nu), dtype=np.float32)
+    predecessor = np.full((nrow, nu), -1, dtype=np.int32)
+    accumulated[0] = candidate_slice[0]
+    for irow in range(1, nrow):
+        for iu in range(nu):
+            ib = max(0, iu - max_jump_int)
+            ie = min(nu, iu + max_jump_int + 1)
+            best_score = -math.inf
+            best_previous = ib
+            best_jump = nu
+            for ju in range(ib, ie):
+                jump = abs(iu - ju)
+                score = float(accumulated[irow - 1, ju]) - float(jump_penalty) * jump
+                if score > best_score or (
+                    score == best_score
+                    and (
+                        jump < best_jump
+                        or (
+                            jump == best_jump
+                            and (abs(2 * ju - (nu - 1)), ju)
+                            < (abs(2 * best_previous - (nu - 1)), best_previous)
+                        )
+                    )
+                ):
+                    best_score = score
+                    best_previous = ju
+                    best_jump = jump
+            accumulated[irow, iu] = candidate_slice[irow, iu] + best_score
+            predecessor[irow, iu] = best_previous
+
+    best_u = 0
+    best_score = float(accumulated[-1, 0])
+    for iu in range(1, nu):
+        score = float(accumulated[-1, iu])
+        if score > best_score or (
+            score == best_score
+            and (abs(2 * iu - (nu - 1)), iu) < (abs(2 * best_u - (nu - 1)), best_u)
+        ):
+            best_u = iu
+            best_score = score
+
+    path = np.empty(nrow, dtype=np.int32)
+    iu = best_u
+    for irow in range(nrow - 1, -1, -1):
+        path[irow] = iu
+        previous = predecessor[irow, iu]
+        if previous >= 0:
+            iu = int(previous)
+    return path
+
+
+_PATH_CASES = [
+    ("empty", np.empty((0, 4), dtype=np.float32), 2, 0.1),
+    ("one_column", np.array([[1.0], [-2.0], [3.0]], dtype=np.float32), 2, 0.1),
+    ("one_row_even", np.array([[-2.0, 1.0, 1.0, -2.0]], dtype=np.float32), 2, 0.1),
+    ("one_row_odd", np.array([[-2.0, 1.0, 2.0, 1.0, -2.0]], dtype=np.float32), 2, 0.1),
+    ("all_equal_even", np.ones((4, 4), dtype=np.float32), 2, 0.1),
+    ("all_equal_odd", np.ones((4, 5), dtype=np.float32), 2, 0.1),
+    (
+        "symmetric",
+        np.array([[0.0, 2.0, 0.0, 2.0, 0.0], [1.0, 0.0, 3.0, 0.0, 1.0]], dtype=np.float32),
+        2,
+        0.1,
+    ),
+    (
+        "negative_scores",
+        np.array([[-4.0, -2.0, -3.0], [-5.0, -1.0, -6.0]], dtype=np.float32),
+        2,
+        0.1,
+    ),
+    (
+        "large_penalty",
+        np.array([[5.0, 0.0, 0.0], [0.0, 0.0, 9.0], [5.0, 0.0, 0.0]], dtype=np.float32),
+        2,
+        1.0e12,
+    ),
+    (
+        "zero_penalty",
+        np.array([[1.0, 4.0, 2.0, 4.0], [5.0, 0.0, 5.0, 0.0]], dtype=np.float32),
+        2,
+        0.0,
+    ),
+    ("max_jump_zero", np.arange(15, dtype=np.float32).reshape(3, 5), 0, 0.1),
+    ("max_jump_one", np.arange(15, dtype=np.float32).reshape(3, 5), 1, 0.1),
+    ("max_jump_nu", np.arange(15, dtype=np.float32).reshape(3, 5), 5, 0.1),
+]
 
 
 @pytest.mark.parametrize("axis", ["v", "w"])
@@ -165,3 +269,174 @@ def test_candidate_slice_validation_is_preserved(
 
     with pytest.raises(ValueError, match=message):
         skinner._candidate_slice(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("candidate_slice", "max_jump", "jump_penalty"),
+    [(case[1], case[2], case[3]) for case in _PATH_CASES],
+    ids=[case[0] for case in _PATH_CASES],
+)
+def test_candidate_path_python_matches_previous_implementation(
+    candidate_slice: np.ndarray,
+    max_jump: int,
+    jump_penalty: float,
+) -> None:
+    expected = _candidate_path_oracle(candidate_slice, max_jump, jump_penalty)
+    actual = _pick_candidate_local_u_path_python(candidate_slice, max_jump, jump_penalty)
+
+    assert actual.dtype == np.int32
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba is not installed")
+@pytest.mark.parametrize(
+    ("candidate_slice", "max_jump", "jump_penalty"),
+    [(case[1], case[2], case[3]) for case in _PATH_CASES],
+    ids=[case[0] for case in _PATH_CASES],
+)
+def test_candidate_path_numba_matches_python_and_previous_implementation(
+    candidate_slice: np.ndarray,
+    max_jump: int,
+    jump_penalty: float,
+) -> None:
+    expected = _candidate_path_oracle(candidate_slice, max_jump, jump_penalty)
+    python_path = _pick_candidate_local_u_path_python(
+        candidate_slice,
+        max_jump,
+        jump_penalty,
+    )
+    numba_path = _pick_candidate_local_u_path_numba(
+        candidate_slice,
+        max_jump,
+        jump_penalty,
+    )
+
+    assert numba_path.dtype == np.int32
+    np.testing.assert_array_equal(numba_path, expected)
+    np.testing.assert_array_equal(numba_path, python_path)
+
+
+@pytest.mark.parametrize(
+    ("candidate_slice", "expected"),
+    [
+        (
+            np.array([[1.0, 1.0, 1.0], [-100.0, 10.0, -100.0]], dtype=np.float32),
+            np.array([1, 1], dtype=np.int32),
+        ),
+        (
+            np.array(
+                [
+                    [-100.0, -100.0, 1.0, -100.0, 1.0, -100.0],
+                    [-100.0, -100.0, -100.0, 10.0, -100.0, -100.0],
+                ],
+                dtype=np.float32,
+            ),
+            np.array([2, 3], dtype=np.int32),
+        ),
+        (
+            np.array(
+                [[-100.0, 1.0, -100.0, 1.0, -100.0], [-100.0, -100.0, 10.0, -100.0, -100.0]],
+                dtype=np.float32,
+            ),
+            np.array([1, 2], dtype=np.int32),
+        ),
+    ],
+    ids=["smaller_jump", "central_predecessor", "smaller_u_predecessor"],
+)
+def test_candidate_path_predecessor_tie_break_stages(
+    candidate_slice: np.ndarray,
+    expected: np.ndarray,
+) -> None:
+    python_path = _pick_candidate_local_u_path_python(candidate_slice, 1, 0.0)
+    np.testing.assert_array_equal(python_path, expected)
+    if NUMBA_AVAILABLE:
+        numba_path = _pick_candidate_local_u_path_numba(candidate_slice, 1, 0.0)
+        np.testing.assert_array_equal(numba_path, expected)
+
+
+@pytest.mark.parametrize("use_numba", [False, True])
+def test_candidate_path_dispatch_uses_default_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+    use_numba: bool,
+) -> None:
+    if use_numba and not NUMBA_AVAILABLE:
+        pytest.skip("Numba is not installed")
+    candidate_slice = np.array(
+        [[0.0, 2.0, 1.0, 2.0], [3.0, 0.0, 3.0, 0.0], [0.0, 4.0, 0.0, 4.0]],
+        dtype=np.float32,
+    )
+    monkeypatch.setattr("pyosv._skinner.growth.NUMBA_AVAILABLE", use_numba)
+
+    actual = skinner._pick_candidate_local_u_path(candidate_slice)
+    expected = _candidate_path_oracle(candidate_slice, 2, 0.1)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_pick_candidate_us_preserves_offset_dtype_and_input_conversion() -> None:
+    candidate_slice = np.array([[0.0, 3.0, 0.0], [1.0, 0.0, 2.0]], dtype=np.float64)
+
+    actual = skinner._pick_candidate_us(ub=7, candidate_slice=candidate_slice)
+
+    assert actual.dtype == np.int32
+    np.testing.assert_array_equal(actual, np.array([8, 9], dtype=np.int32))
+
+
+@pytest.mark.parametrize(
+    ("ub", "candidate_slice", "message"),
+    [
+        (-1, np.ones((2, 2), dtype=np.float32), "ub must be a nonnegative integer"),
+        (0, np.ones(2, dtype=np.float32), "candidate_slice must be a 2D array"),
+        (
+            0,
+            np.empty((2, 0), dtype=np.float32),
+            "candidate_slice must contain at least one u sample",
+        ),
+        (
+            0,
+            np.array([[1.0, np.nan]], dtype=np.float32),
+            "candidate_slice must contain only finite values",
+        ),
+    ],
+)
+def test_pick_candidate_us_validation_is_preserved(
+    ub: int,
+    candidate_slice: np.ndarray,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        skinner._pick_candidate_us(ub, candidate_slice)
+
+
+@pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba is not installed")
+def test_reference_skinning_candidate_backends_preserve_cells_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fv = np.zeros((13, 13, 13), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:10, 6, 3:10] = 0.9
+    fault_skinner = skinner.FaultSkinner(min_skin_size=1)
+
+    def run(use_numba: bool) -> tuple[list[list[tuple[int, int, int]]], dict[str, object]]:
+        monkeypatch.setattr("pyosv._skinner.growth.NUMBA_AVAILABLE", use_numba)
+        diagnostics: dict[str, object] = {}
+        skins = fault_skinner.find_skins(
+            fv,
+            vp,
+            vt,
+            min_likelihood=0.5,
+            ru=5,
+            rv=6,
+            rw=6,
+            max_steps=6,
+            reskin=False,
+            diagnostics=diagnostics,
+        )
+        return [[cell.index for cell in skin] for skin in skins], diagnostics
+
+    python_cells, python_diagnostics = run(False)
+    numba_cells, numba_diagnostics = run(True)
+
+    assert numba_cells == python_cells
+    assert numba_diagnostics == python_diagnostics

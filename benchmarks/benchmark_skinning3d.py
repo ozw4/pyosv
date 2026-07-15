@@ -17,6 +17,10 @@ from pyosv._skinner.candidate_sampling import (  # noqa: E402
     _candidate_slice_numba,
     _candidate_slice_python,
 )
+from pyosv._skinner.candidate_path import (  # noqa: E402
+    _pick_candidate_local_u_path_numba,
+    _pick_candidate_local_u_path_python,
+)
 from pyosv.cells import FaultCell  # noqa: E402
 from pyosv.skinner import (  # noqa: E402
     FaultSkinner,
@@ -108,11 +112,27 @@ def main(argv: list[str] | None = None) -> int:
         and np.array_equal(python_candidate_slice, candidate_slice)
     ):
         raise RuntimeError("candidate slice benchmark paths produced different outputs")
-    path_times, local_u_path = time_repeated(
+    path_args = (candidate_slice, 2, 0.1)
+    python_path_times, python_local_u_path = time_repeated(
+        lambda: _pick_candidate_local_u_path_python(*path_args),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    numba_path_times, numba_local_u_path = time_repeated(
+        lambda: _pick_candidate_local_u_path_numba(*path_args),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    dispatch_path_times, local_u_path = time_repeated(
         lambda: _pick_candidate_local_u_path(candidate_slice),
         repeat=args.repeat,
         warmup=args.warmup,
     )
+    if not (
+        np.array_equal(python_local_u_path, numba_local_u_path)
+        and np.array_equal(python_local_u_path, local_u_path)
+    ):
+        raise RuntimeError("local-u path benchmark paths produced different outputs")
 
     skinner = FaultSkinner(method="reference")
 
@@ -168,7 +188,15 @@ def main(argv: list[str] | None = None) -> int:
         f"{array_fingerprint('candidate', candidate_slice)}",
     )
     print(
-        f"{timing_summary('local_u_path', path_times)} "
+        f"{timing_summary('local_u_path_python', python_path_times)} "
+        f"output_count={local_u_path.size} {array_fingerprint('local_u', local_u_path)}",
+    )
+    print(
+        f"{timing_summary('local_u_path_numba', numba_path_times)} "
+        f"output_count={local_u_path.size} {array_fingerprint('local_u', local_u_path)}",
+    )
+    print(
+        f"{timing_summary('local_u_path_dispatch', dispatch_path_times)} "
         f"output_count={local_u_path.size} {array_fingerprint('local_u', local_u_path)}",
     )
     print(
