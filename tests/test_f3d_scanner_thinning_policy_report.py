@@ -357,6 +357,8 @@ def test_mock_run_builds_policy_report_volumes_markdown_and_validation(
     assert config["quality_downstream"]["surface_support_exponent"] == 0.0
     assert config["quality_downstream"]["surface_voting_boundary_policy"] == "reference"
     assert config["quality_downstream"]["final_normalization_smoothing"] == 0.0
+    assert "diagnostics" not in config
+    assert "context_diagnostics" not in report
 
     policies = report["scanner_policies"]
     assert tuple(policies) == policy_evaluation.POLICY_ROLES
@@ -404,6 +406,12 @@ def test_mock_run_builds_policy_report_volumes_markdown_and_validation(
             assert {path.name for path in volume_dir.glob("*.dat")} == set(
                 policy_evaluation.OUTPUT_NAMES
             )
+        assert not (
+            output_json.parent
+            / f"crop_{crop_index:03d}"
+            / "policy_comparison"
+            / "outlier_diagnostics"
+        ).exists()
 
     report_text = output_json.read_text(encoding="utf-8")
     loaded = json.loads(report_text)
@@ -422,6 +430,8 @@ def test_mock_run_builds_policy_report_volumes_markdown_and_validation(
     assert "crop_001/candidate/figures/fvt_ref_vs_py_i3.png" in markdown
     assert "candidate-only / baseline-only masks" in markdown
     assert "edge-shell ridge overlay" in markdown
+    assert "## Public-FVT Distance Outlier Review" not in markdown
+    assert "top 5% ridge (display)" not in markdown
 
 
 def test_main_returns_two_for_requested_validation_failure(
@@ -633,6 +643,19 @@ def test_outlier_diagnostics_are_opt_in_and_preserve_validation(
     base_direct = base_report["consensus"]["candidate_minus_baseline"]["crops"][0]
     assert "public_fvt_distance_outliers" not in base_direct
 
+    diagnostic_metrics_report = module.run_example(
+        data_root_arg=data_root,
+        outlier_diagnostics=True,
+        centers=[center],
+        crop_shape=(13, 13, 13),
+        interior_margin=1,
+    )
+    metrics_only_diagnostic = diagnostic_metrics_report["consensus"]["candidate_minus_baseline"][
+        "crops"
+    ][0]["public_fvt_distance_outliers"]
+    assert read_names == ["xs.dat", "fl.dat"]
+    assert "figures" not in metrics_only_diagnostic["components"][0]
+
     monkeypatch.setattr(module.crop_validation, "require_figure_support", lambda: None)
     monkeypatch.setattr(
         module.crop_validation,
@@ -690,8 +713,9 @@ def test_outlier_diagnostics_are_opt_in_and_preserve_validation(
         pretty=True,
     )
 
-    assert read_names == ["xs.dat", "fl.dat"]
+    assert read_names == ["xs.dat", "fl.dat", "xs.dat", "fl.dat"]
     assert diagnostic_report["policy_validation"] == base_report["policy_validation"]
+    assert diagnostic_report["policy_validation"] == diagnostic_metrics_report["policy_validation"]
     assert diagnostic_report["policy_validation"]["passed"] is False
     assert len(diagnostic_report["policy_validation"]["checks"]) == 8
     assert diagnostic_report["manual_review"]["status"] == "pending"
@@ -703,22 +727,305 @@ def test_outlier_diagnostics_are_opt_in_and_preserve_validation(
     assert diagnostic["summary"]["outlier_count"] == 1
     assert diagnostic["summary"]["component_count"] == 1
     assert diagnostic["points"][0]["values"]["xs"] < 0.0
+    assert diagnostic["definition"] == metrics_only_diagnostic["definition"]
+    assert diagnostic["distance_metrics"] == metrics_only_diagnostic["distance_metrics"]
+    assert diagnostic["summary"] == metrics_only_diagnostic["summary"]
+    assert diagnostic["points"] == metrics_only_diagnostic["points"]
+    assert [
+        {key: value for key, value in component.items() if key != "figures"}
+        for component in diagnostic["components"]
+    ] == metrics_only_diagnostic["components"]
     assert outlier_figure_calls[0]["coordinate"] == [1, 1, 1]
     assert outlier_figure_calls[0]["crop_index"] == 1
-    orthogonal = diagnostic["components"][0]["figures"]["orthogonal_amplitude_overlay"]
+    component_figures = diagnostic["components"][0]["figures"]
+    assert set(component_figures) == {
+        "orthogonal_amplitude_overlay",
+        "adjacent_i3",
+        "adjacent_i2",
+        "adjacent_i1",
+    }
+    orthogonal = component_figures["orthogonal_amplitude_overlay"]
     assert orthogonal.endswith(
         "crop_001/policy_comparison/outlier_diagnostics/component_001/"
         "orthogonal_amplitude_overlay.png"
     )
+    diagnostic_config = diagnostic_report["config"]["diagnostics"]["public_fvt_distance_outliers"]
+    assert diagnostic_config["ridge_percentile"] == 99.0
+    assert diagnostic_config["metric_ridge_percentile"] == 99.0
+    assert diagnostic_config["display_ridges"] == {
+        "public_percentile": 99.0,
+        "baseline_percentile": 99.0,
+        "candidate_percentile": 95.0,
+        "public_linewidth": 0.8,
+        "baseline_linewidth": 0.8,
+        "candidate_linewidth": 2.0,
+        "positive_only": True,
+    }
 
     report_text = output_json.read_text(encoding="utf-8")
     json.loads(report_text, parse_constant=lambda value: pytest.fail(value))
+    assert "candidate_detail_amplitude_overlay" not in report_text
     assert report_text.endswith("\n")
     markdown = (output_json.parent / "visual_report.md").read_text(encoding="utf-8")
     assert "## Public-FVT Distance Outlier Review" in markdown
     assert f"![crop 1 component 1 orthogonal amplitude review]({orthogonal})" in markdown
+    assert "candidate ridge detail" not in markdown
     assert "adjacent_i3.png" in markdown
     assert markdown.endswith("\n")
+
+
+def test_outlier_display_ridge_masks_dispatch_metric_and_candidate_percentiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    shape = (5, 5, 5)
+    calls: list[tuple[tuple[int, ...], float, bool]] = []
+
+    def fake_top_percentile_mask(
+        values: np.ndarray,
+        percentile: float,
+        *,
+        positive_only: bool,
+    ) -> np.ndarray:
+        calls.append((values.shape, percentile, positive_only))
+        return np.ones(values.shape, dtype=bool)
+
+    monkeypatch.setattr(module, "top_percentile_mask", fake_top_percentile_mask)
+    masks = module._outlier_display_ridge_masks(
+        {
+            "public": np.ones(shape, dtype=np.float32),
+            "baseline": np.ones(shape, dtype=np.float32),
+            "candidate": np.ones(shape, dtype=np.float32),
+        },
+        metric_ridge_percentile=99.0,
+        interior_margin=1,
+    )
+
+    assert calls == [
+        ((3, 3, 3), 99.0, True),
+        ((3, 3, 3), 99.0, True),
+        ((3, 3, 3), 95.0, True),
+    ]
+    assert set(masks) == {"public", "baseline", "candidate"}
+    for mask in masks.values():
+        assert mask.dtype == np.bool_
+        assert np.all(mask[1:-1, 1:-1, 1:-1])
+        assert not np.any(mask[0])
+
+
+def test_context_display_ridge_masks_use_candidate_percentile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_report_module(monkeypatch)
+    calls: list[tuple[float, bool]] = []
+
+    def fake_top_percentile_mask(
+        values: np.ndarray,
+        percentile: float,
+        *,
+        positive_only: bool,
+    ) -> np.ndarray:
+        calls.append((percentile, positive_only))
+        return np.zeros(values.shape, dtype=bool)
+
+    monkeypatch.setattr(module, "top_percentile_mask", fake_top_percentile_mask)
+    shape = (5, 5, 5)
+    masks = module._outlier_display_ridge_masks(
+        {
+            "base_candidate": np.ones(shape, dtype=np.float32),
+            "context_candidate": np.ones(shape, dtype=np.float32),
+        },
+        metric_ridge_percentile=99.0,
+        interior_margin=1,
+    )
+
+    assert calls == [(95.0, True), (95.0, True)]
+    assert set(masks) == {"base_candidate", "context_candidate"}
+
+
+def test_context_figure_writer_uses_95_percentile_and_existing_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyosv import viz
+
+    module = _import_report_module(monkeypatch)
+    original_top_percentile_mask = module.top_percentile_mask
+    percentile_calls: list[tuple[float, bool]] = []
+
+    def recording_top_percentile_mask(
+        values: np.ndarray,
+        percentile: float,
+        *,
+        positive_only: bool,
+    ) -> np.ndarray:
+        percentile_calls.append((percentile, positive_only))
+        return original_top_percentile_mask(
+            values,
+            percentile,
+            positive_only=positive_only,
+        )
+
+    monkeypatch.setattr(module, "top_percentile_mask", recording_top_percentile_mask)
+    context_calls: list[dict[str, Any]] = []
+
+    def fake_context_figure(path: str | Path, **kwargs: Any) -> Path:
+        context_calls.append(kwargs)
+        return Path(path)
+
+    monkeypatch.setattr(viz, "save_context_orthogonal_amplitude_comparison", fake_context_figure)
+    shape = (7, 7, 7)
+    base = np.zeros(shape, dtype=np.float32)
+    context = np.zeros(shape, dtype=np.float32)
+    base[3, 3, 4] = 1.0
+    context[3, 3, 5] = 1.0
+    outlier_report = {
+        "definition": {"ridge_percentile": 99.0, "interior_margin": 1},
+        "components": [
+            {
+                "component_id": 1,
+                "representative_point": {
+                    "crop_local_coordinate": [3, 3, 4],
+                    "nearest_public_fvt": {"crop_local_coordinate": [3, 3, 2]},
+                },
+            }
+        ],
+    }
+    metrics_dir = tmp_path / "outputs"
+    figures = module.write_context_diagnostic_figures(
+        metrics_dir / "crop_001" / "policy_comparison" / "context_diagnostics",
+        metrics_base_dir=metrics_dir,
+        xs=np.ones(shape, dtype=np.float32),
+        base_candidate_fvt=base,
+        context_candidate_fvt=context,
+        crop_slices=(slice(10, 17), slice(20, 27), slice(30, 37)),
+        crop_index=1,
+        outlier_report=outlier_report,
+        window_radius=24,
+        amplitude_clip_percentile=99.0,
+    )
+
+    assert percentile_calls == [(95.0, True), (95.0, True)]
+    assert len(context_calls) == 1
+    assert context_calls[0]["base_candidate_fvt_mask"][3, 3, 4]
+    assert context_calls[0]["context_candidate_fvt_mask"][3, 3, 5]
+    assert figures[1]["context_comparison"] == (
+        "crop_001/policy_comparison/context_diagnostics/component_001/"
+        "base_context_amplitude_overlay.png"
+    )
+
+
+def test_outlier_figure_writer_displays_95_only_voxel_without_changing_outliers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyosv import viz
+
+    module = _import_report_module(monkeypatch)
+    shape = (7, 7, 7)
+    amplitude = np.linspace(-2.0, 2.0, np.prod(shape), dtype=np.float32).reshape(shape)
+    public = np.zeros(shape, dtype=np.float32)
+    baseline = np.zeros(shape, dtype=np.float32)
+    candidate = np.zeros(shape, dtype=np.float32)
+    public[1, 1, 1] = 1.0
+    baseline[1, 1, 1] = 1.0
+    candidate[1:-1, 1:-1, 1:-1] = np.arange(1, 126, dtype=np.float32).reshape(5, 5, 5)
+    crop_slices = (slice(10, 17), slice(20, 27), slice(30, 37))
+    outlier_report = module.policy_diagnostics.build_public_fvt_distance_outlier_report(
+        reference_fvt=public,
+        baseline_outputs=_outputs_from_fvt(baseline),
+        candidate_outputs=_outputs_from_fvt(candidate),
+        crop_slices=crop_slices,
+        interior_margin=1,
+        allowed_p95_delta=0.0,
+    )
+    assert outlier_report["status"] == "available"
+    outlier_report_before_figures = json.loads(json.dumps(outlier_report))
+    candidate_before_figures = candidate.copy()
+
+    metric_candidate_mask = module._full_sparse_ridge_mask(
+        candidate,
+        percentile=99.0,
+        interior_margin=1,
+    )
+    display_masks = module._outlier_display_ridge_masks(
+        {
+            "public": public,
+            "baseline": baseline,
+            "candidate": candidate,
+        },
+        metric_ridge_percentile=99.0,
+        interior_margin=1,
+    )
+    display_only_coordinates = np.argwhere(display_masks["candidate"] & ~metric_candidate_mask)
+    assert display_only_coordinates.size > 0
+    display_only = tuple(int(value) for value in display_only_coordinates[0])
+    outlier_coordinates = {
+        tuple(point["crop_local_coordinate"]) for point in outlier_report["points"]
+    }
+    assert display_only not in outlier_coordinates
+    assert all(
+        not all(
+            component["crop_local_bounding_box"]["minimum"][axis]
+            <= display_only[axis]
+            <= component["crop_local_bounding_box"]["maximum"][axis]
+            for axis in range(3)
+        )
+        for component in outlier_report["components"]
+    )
+    assert outlier_report["summary"]["outlier_count"] == int(
+        np.count_nonzero(metric_candidate_mask)
+    )
+
+    orthogonal_calls: list[dict[str, Any]] = []
+
+    def fake_figure(path: str | Path, **kwargs: Any) -> Path:
+        del kwargs
+        return Path(path)
+
+    def fake_orthogonal(path: str | Path, **kwargs: Any) -> Path:
+        orthogonal_calls.append(kwargs)
+        return Path(path)
+
+    monkeypatch.setattr(viz, "save_outlier_orthogonal_amplitude_overlay", fake_orthogonal)
+    monkeypatch.setattr(viz, "save_outlier_adjacent_slice_overlay", fake_figure)
+
+    metrics_dir = tmp_path / "outputs"
+    figures = module.write_outlier_diagnostic_figures(
+        metrics_dir / "crop_001" / "policy_comparison" / "outlier_diagnostics",
+        metrics_base_dir=metrics_dir,
+        xs=amplitude,
+        reference_fvt=public,
+        baseline_fvt=baseline,
+        candidate_fvt=candidate,
+        crop_slices=crop_slices,
+        crop_index=1,
+        outlier_report=outlier_report,
+        window_radius=24,
+        adjacent_slice_radius=3,
+        amplitude_clip_percentile=99.0,
+    )
+
+    assert outlier_report == outlier_report_before_figures
+    np.testing.assert_array_equal(candidate, candidate_before_figures)
+    assert len(orthogonal_calls) == 1
+    call = orthogonal_calls[0]
+    np.testing.assert_array_equal(call["public_fvt_mask"], display_masks["public"])
+    np.testing.assert_array_equal(call["baseline_fvt_mask"], display_masks["baseline"])
+    np.testing.assert_array_equal(call["candidate_fvt_mask"], display_masks["candidate"])
+    assert call["candidate_fvt_mask"][display_only]
+    assert not metric_candidate_mask[display_only]
+    assert set(figures[1]) == {
+        "amplitude_clip",
+        "orthogonal_amplitude_overlay",
+        "adjacent_i3",
+        "adjacent_i2",
+        "adjacent_i1",
+    }
+    assert figures[1]["orthogonal_amplitude_overlay"] == (
+        "crop_001/policy_comparison/outlier_diagnostics/component_001/"
+        "orthogonal_amplitude_overlay.png"
+    )
 
 
 def test_outlier_free_crop_does_not_call_amplitude_writer(
@@ -1085,6 +1392,16 @@ def test_context_figure_path_is_relative_and_linked_from_outlier_markdown(
 
     monkeypatch.setattr(module, "run_shared_scan_policy_pipeline", fake_pipeline)
 
+    metrics_only_report = module.run_example(
+        data_root_arg=data_root,
+        outlier_diagnostics=True,
+        context_crop_shape=(15, 15, 15),
+        context_crop_indices=[1],
+        centers=[(7, 7, 7)],
+        crop_shape=(13, 13, 13),
+        interior_margin=1,
+    )
+
     def fake_outlier_writer(
         output_dir: str | Path,
         *,
@@ -1132,15 +1449,41 @@ def test_context_figure_path_is_relative_and_linked_from_outlier_markdown(
     assert len(context_calls) == 1
     assert context_calls[0]["base_candidate_fvt"].shape == (13, 13, 13)
     assert context_calls[0]["context_candidate_fvt"].shape == (13, 13, 13)
+    assert report["policy_validation"] == metrics_only_report["policy_validation"]
+    assert report["policy_validation"]["scanner_execution_count"] == 1
+    assert report["context_diagnostics"]["context_scanner_execution_count"] == 1
+    assert (
+        report["context_diagnostics"]["context_scanner_execution_count"]
+        == metrics_only_report["context_diagnostics"]["context_scanner_execution_count"]
+    )
+    metrics_context_crop = metrics_only_report["context_diagnostics"]["crops"][0]
+    figure_context_crop = report["context_diagnostics"]["crops"][0]
+    assert figure_context_crop["outlier_persistence"] == metrics_context_crop["outlier_persistence"]
+    assert figure_context_crop["policies"] == metrics_context_crop["policies"]
+    assert {
+        key: value for key, value in figure_context_crop.items() if key != "figures"
+    } == metrics_context_crop
+    assert figure_context_crop["policies"]["baseline"]["definition"]["ridge_percentile"] == 99.0
+    assert figure_context_crop["policies"]["candidate"]["definition"]["ridge_percentile"] == 99.0
+    assert figure_context_crop["outlier_persistence"]["definition"]["ridge_percentile"] == 99.0
     component = report["consensus"]["candidate_minus_baseline"]["crops"][0][
         "public_fvt_distance_outliers"
     ]["components"][0]
+    metrics_component = metrics_only_report["consensus"]["candidate_minus_baseline"]["crops"][0][
+        "public_fvt_distance_outliers"
+    ]["components"][0]
+    assert {key: value for key, value in component.items() if key != "figures"} == metrics_component
     context_path = component["figures"]["context_comparison"]
     assert context_path == (
         "crop_001/policy_comparison/context_diagnostics/component_001/"
         "base_context_amplitude_overlay.png"
     )
+    assert set(component["figures"]) == {
+        "orthogonal_amplitude_overlay",
+        "context_comparison",
+    }
     markdown = (output_json.parent / "visual_report.md").read_text(encoding="utf-8")
+    assert "candidate ridge detail" not in markdown
     assert f"[same-global-ROI context comparison]({context_path})" in markdown
 
 

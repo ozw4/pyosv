@@ -22,6 +22,8 @@ _RIDGE_BUFFERED_MATCH_RGB = np.array([0.0, 1.0, 1.0], dtype=np.float32)
 _PUBLIC_FVT_COLOR = "#ff453a"
 _BASELINE_FVT_COLOR = "#00c7ff"
 _CANDIDATE_FVT_COLOR = "#ffd60a"
+_STANDARD_FVT_LINEWIDTH = 0.8
+_CANDIDATE_FVT_LINEWIDTH = 2.0
 _CONTEXT_FVT_COLOR = "#ff9f0a"
 _RIDGE_OVERLAP_COLOR = "#ffffff"
 _OUTLIER_POINT_COLOR = "#ff2dff"
@@ -434,10 +436,10 @@ def save_outlier_orthogonal_amplitude_overlay(
     """Save a 3-by-5 signed-amplitude review at an outlier's three planes.
 
     All coordinates are ordered ``(i3, i2, i1)``. Ridge inputs are precomputed
-    boolean masks so this visualization helper cannot drift from the metric's
-    percentile or interior-ROI definition. The nearest-public marker is projected
-    onto each representative-point plane; the fixed-axis offset is shown in the
-    corresponding row label.
+    boolean display masks; their metric-versus-display percentile convention and
+    interior ROI are selected by the report orchestrator. The nearest-public
+    marker is projected onto each representative-point plane; the fixed-axis
+    offset is shown in the corresponding row label.
     """
 
     values, masks = _validate_amplitude_and_masks(
@@ -476,15 +478,20 @@ def save_outlier_orthogonal_amplitude_overlay(
     )
     columns: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("seismic amplitude", ()),
-        ("seismic + public FVT", ("public",)),
-        ("seismic + baseline FVT", ("baseline",)),
-        ("seismic + candidate FVT", ("candidate",)),
+        ("seismic + public FVT top 1% ridge", ("public",)),
+        ("seismic + baseline FVT top 1% ridge", ("baseline",)),
+        ("seismic + candidate FVT top 5% ridge (display)", ("candidate",)),
         ("seismic + combined ridges", ("public", "baseline", "candidate")),
     )
     colors = {
         "public": _PUBLIC_FVT_COLOR,
         "baseline": _BASELINE_FVT_COLOR,
         "candidate": _CANDIDATE_FVT_COLOR,
+    }
+    linewidths = {
+        "public": _STANDARD_FVT_LINEWIDTH,
+        "baseline": _STANDARD_FVT_LINEWIDTH,
+        "candidate": _CANDIDATE_FVT_LINEWIDTH,
     }
     global_representative = _global_coordinate(representative, global_start)
     try:
@@ -526,6 +533,7 @@ def save_outlier_orthogonal_amplitude_overlay(
                         column_slice=column_slice,
                         global_start=global_start,
                         color=colors[overlay_name],
+                        linewidth=linewidths[overlay_name],
                     )
                 _draw_projected_point_markers(
                     ax,
@@ -636,6 +644,11 @@ def save_outlier_adjacent_slice_overlay(
         "baseline": _BASELINE_FVT_COLOR,
         "candidate": _CANDIDATE_FVT_COLOR,
     }
+    linewidths = {
+        "public": _STANDARD_FVT_LINEWIDTH,
+        "baseline": _STANDARD_FVT_LINEWIDTH,
+        "candidate": _CANDIDATE_FVT_LINEWIDTH,
+    }
     try:
         fig.suptitle(
             f"crop {crop_number:03d}, component {component_number:03d}; "
@@ -663,6 +676,7 @@ def save_outlier_adjacent_slice_overlay(
                     column_slice=column_slice,
                     global_start=global_start,
                     color=colors[overlay_name],
+                    linewidth=linewidths[overlay_name],
                 )
             _draw_projected_point_markers(
                 ax,
@@ -758,10 +772,16 @@ def save_context_orthogonal_amplitude_comparison(
             )
             fixed_index = representative[fixed_axis]
             panels: tuple[tuple[str, tuple[tuple[np.ndarray, str], ...]], ...] = (
-                ("base candidate FVT", ((masks["base"], _BASELINE_FVT_COLOR),)),
-                ("context-derived candidate FVT", ((masks["context"], _CONTEXT_FVT_COLOR),)),
                 (
-                    "base/context combined",
+                    "base candidate FVT top 5% ridge (display)",
+                    ((masks["base"], _BASELINE_FVT_COLOR),),
+                ),
+                (
+                    "context candidate FVT top 5% ridge (display)",
+                    ((masks["context"], _CONTEXT_FVT_COLOR),),
+                ),
+                (
+                    "base/context top 5% combined",
                     (
                         (base_only, _BASELINE_FVT_COLOR),
                         (context_only, _CONTEXT_FVT_COLOR),
@@ -769,7 +789,7 @@ def save_context_orthogonal_amplitude_comparison(
                     ),
                 ),
                 (
-                    "base-only / context-only",
+                    "base-only / context-only top 5%",
                     (
                         (base_only, _BASELINE_FVT_COLOR),
                         (context_only, _CONTEXT_FVT_COLOR),
@@ -798,6 +818,7 @@ def save_context_orthogonal_amplitude_comparison(
                         column_slice=column_slice,
                         global_start=global_start,
                         color=color,
+                        linewidth=_CANDIDATE_FVT_LINEWIDTH,
                     )
                 _draw_projected_point_markers(
                     ax,
@@ -1209,7 +1230,9 @@ def _draw_mask_plane(
     column_slice: slice,
     global_start: tuple[int, int, int],
     color: str,
+    linewidth: float = 0.8,
 ) -> None:
+    line_width = _validate_positive_finite_value(linewidth, "linewidth")
     _, row_axis, column_axis = _PLANE_AXES[axis_name]
     panel = slice_2d(mask, axis_name, fixed_index)[row_slice, column_slice].astype(
         bool,
@@ -1229,7 +1252,7 @@ def _draw_mask_plane(
             panel.astype(np.float32, copy=False),
             levels=(0.5,),
             colors=(color,),
-            linewidths=0.8,
+            linewidths=line_width,
             alpha=0.95,
         )
         return
@@ -1244,7 +1267,7 @@ def _draw_mask_plane(
         marker="s",
         facecolors="none",
         edgecolors=color,
-        linewidths=0.7,
+        linewidths=line_width,
         zorder=3,
     )
 
@@ -1299,20 +1322,26 @@ def _outlier_legend_handles(*, include_all_ridges: bool) -> list[Any]:
     if include_all_ridges:
         handles.extend(
             [
-                Line2D([0], [0], color=_PUBLIC_FVT_COLOR, lw=1.2, label="public FVT ridge"),
+                Line2D(
+                    [0],
+                    [0],
+                    color=_PUBLIC_FVT_COLOR,
+                    lw=_STANDARD_FVT_LINEWIDTH,
+                    label="public FVT top 1% ridge",
+                ),
                 Line2D(
                     [0],
                     [0],
                     color=_BASELINE_FVT_COLOR,
-                    lw=1.2,
-                    label="baseline FVT ridge",
+                    lw=_STANDARD_FVT_LINEWIDTH,
+                    label="baseline FVT top 1% ridge",
                 ),
                 Line2D(
                     [0],
                     [0],
                     color=_CANDIDATE_FVT_COLOR,
-                    lw=1.2,
-                    label="candidate FVT ridge",
+                    lw=_CANDIDATE_FVT_LINEWIDTH,
+                    label="candidate FVT top 5% ridge (display)",
                 ),
             ]
         )
@@ -1323,6 +1352,8 @@ def _outlier_legend_handles(*, include_all_ridges: bool) -> list[Any]:
                 [0],
                 color=_OUTLIER_POINT_COLOR,
                 marker="*",
+                markerfacecolor=_OUTLIER_POINT_COLOR,
+                markeredgecolor="#111111",
                 linestyle="none",
                 markersize=9,
                 label="representative outlier",
@@ -1345,9 +1376,27 @@ def _context_legend_handles() -> list[Any]:
     from matplotlib.lines import Line2D
 
     return [
-        Line2D([0], [0], color=_BASELINE_FVT_COLOR, lw=1.2, label="base candidate FVT"),
-        Line2D([0], [0], color=_CONTEXT_FVT_COLOR, lw=1.2, label="context candidate FVT"),
-        Line2D([0], [0], color=_RIDGE_OVERLAP_COLOR, lw=1.2, label="exact mask overlap"),
+        Line2D(
+            [0],
+            [0],
+            color=_BASELINE_FVT_COLOR,
+            lw=_CANDIDATE_FVT_LINEWIDTH,
+            label="base candidate FVT top 5% ridge (display)",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=_CONTEXT_FVT_COLOR,
+            lw=_CANDIDATE_FVT_LINEWIDTH,
+            label="context candidate FVT top 5% ridge (display)",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=_RIDGE_OVERLAP_COLOR,
+            lw=_CANDIDATE_FVT_LINEWIDTH,
+            label="exact top 5% mask overlap",
+        ),
         *_outlier_legend_handles(include_all_ridges=False),
     ]
 

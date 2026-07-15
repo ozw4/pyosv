@@ -35,6 +35,9 @@ DEFAULT_OUTLIER_MAX_COMPONENTS = 8
 DEFAULT_OUTLIER_WINDOW_RADIUS = 24
 DEFAULT_OUTLIER_ADJACENT_SLICE_RADIUS = 3
 DEFAULT_AMPLITUDE_CLIP_PERCENTILE = 99.0
+OUTLIER_CANDIDATE_DISPLAY_RIDGE_PERCENTILE = 95.0
+OUTLIER_STANDARD_DISPLAY_RIDGE_LINEWIDTH = 0.8
+OUTLIER_CANDIDATE_DISPLAY_RIDGE_LINEWIDTH = 2.0
 REFERENCE_OSV_DIR = Path(__file__).resolve().parents[1] / "reference_osv"
 ISSUE_FORGE_DIR = Path(__file__).resolve().parents[1] / "vendor" / "issue_forge"
 
@@ -626,7 +629,17 @@ def run_example(
             "public_fvt_distance_outliers": {
                 "enabled": True,
                 "ridge_percentile": policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+                "metric_ridge_percentile": policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
                 "positive_only": True,
+                "display_ridges": {
+                    "public_percentile": policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+                    "baseline_percentile": policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+                    "candidate_percentile": OUTLIER_CANDIDATE_DISPLAY_RIDGE_PERCENTILE,
+                    "public_linewidth": OUTLIER_STANDARD_DISPLAY_RIDGE_LINEWIDTH,
+                    "baseline_linewidth": OUTLIER_STANDARD_DISPLAY_RIDGE_LINEWIDTH,
+                    "candidate_linewidth": OUTLIER_CANDIDATE_DISPLAY_RIDGE_LINEWIDTH,
+                    "positive_only": True,
+                },
                 "allowed_p95_delta": (policy_evaluation.DEFAULT_SPARSE_DISTANCE_P95_MAX_DELTA),
                 "max_points": int(outlier_max_points),
                 "max_components": int(outlier_max_components),
@@ -1186,14 +1199,11 @@ def write_outlier_diagnostic_figures(
         or policy_evaluation.DEFAULT_RIDGE_PERCENTILE
     )
     interior_margin = int(_nested(outlier_report, "definition", "interior_margin") or 0)
-    masks = {
-        name: _full_sparse_ridge_mask(
-            values,
-            percentile=percentile,
-            interior_margin=interior_margin,
-        )
-        for name, values in arrays.items()
-    }
+    masks = _outlier_display_ridge_masks(
+        arrays,
+        metric_ridge_percentile=percentile,
+        interior_margin=interior_margin,
+    )
     clip = symmetric_amplitude_clip(amplitude, amplitude_clip_percentile)
     directory = Path(output_dir)
     base_dir = Path(metrics_base_dir)
@@ -1296,14 +1306,12 @@ def write_context_diagnostic_figures(
         or policy_evaluation.DEFAULT_RIDGE_PERCENTILE
     )
     interior_margin = int(_nested(outlier_report, "definition", "interior_margin") or 0)
-    base_mask = _full_sparse_ridge_mask(
-        base_fvt,
-        percentile=percentile,
-        interior_margin=interior_margin,
-    )
-    context_mask = _full_sparse_ridge_mask(
-        context_fvt,
-        percentile=percentile,
+    masks = _outlier_display_ridge_masks(
+        {
+            "base_candidate": base_fvt,
+            "context_candidate": context_fvt,
+        },
+        metric_ridge_percentile=percentile,
         interior_margin=interior_margin,
     )
     clip = symmetric_amplitude_clip(amplitude, amplitude_clip_percentile)
@@ -1329,8 +1337,8 @@ def write_context_diagnostic_figures(
         path = viz.save_context_orthogonal_amplitude_comparison(
             component_dir / "base_context_amplitude_overlay.png",
             amplitude=amplitude,
-            base_candidate_fvt_mask=base_mask,
-            context_candidate_fvt_mask=context_mask,
+            base_candidate_fvt_mask=masks["base_candidate"],
+            context_candidate_fvt_mask=masks["context_candidate"],
             representative_coordinate=coordinate,
             nearest_public_coordinate=nearest,
             crop_global_start=global_start,
@@ -1381,6 +1389,38 @@ def _full_sparse_ridge_mask(
         positive_only=True,
     )
     return mask
+
+
+def _outlier_display_ridge_masks(
+    values_by_role: Mapping[str, np.ndarray],
+    *,
+    interior_margin: int,
+    metric_ridge_percentile: float = policy_evaluation.DEFAULT_RIDGE_PERCENTILE,
+) -> dict[str, np.ndarray]:
+    """Build metric-compatible public/baseline and broader candidate display masks."""
+
+    supported_roles = {
+        "public",
+        "baseline",
+        "candidate",
+        "base_candidate",
+        "context_candidate",
+    }
+    unknown_roles = sorted(set(values_by_role) - supported_roles)
+    if unknown_roles:
+        raise ValueError("unsupported outlier display ridge roles: " + ", ".join(unknown_roles))
+    return {
+        role: _full_sparse_ridge_mask(
+            values,
+            percentile=(
+                metric_ridge_percentile
+                if role in {"public", "baseline"}
+                else OUTLIER_CANDIDATE_DISPLAY_RIDGE_PERCENTILE
+            ),
+            interior_margin=interior_margin,
+        )
+        for role, values in values_by_role.items()
+    }
 
 
 def _attach_component_figures(
@@ -1539,7 +1579,9 @@ def visual_report_markdown(report: Mapping[str, Any]) -> str:
                 "",
                 "Public FVT is a comparison reference, not independent truth. The rows below "
                 "preserve the automatic distance failure and provide amplitude/context "
-                "evidence for human adjudication.",
+                "evidence for human adjudication. Public and baseline display their top-1% "
+                "metric ridges; the yellow candidate top-5% ridge is a display aid only, while "
+                "the metric and outlier coordinates remain top 1%.",
                 "",
                 "| Crop | Status | Baseline p95 | Candidate p95 | Delta | Allowed candidate "
                 "p95 | Outliers | Components | Crop-face distance min/max |",

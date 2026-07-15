@@ -382,8 +382,15 @@ PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
 `--outlier-diagnostics` reads signed `xs.dat` and adds
 `consensus.candidate_minus_baseline.crops[].public_fvt_distance_outliers`.
 With `--save-figures`, it writes orthogonal and adjacent-slice amplitude
-overlays at the actual component representative coordinates. Without this
-opt-in flag, the existing JSON, Markdown, and output layout remain unchanged.
+overlays at the actual component representative coordinates. The metric remains
+positive-only 99th percentile for public, baseline, and candidate FVT. Display
+masks are deliberately separate: public and baseline remain at the 99th
+percentile with `0.8`-point contours, while candidate-policy FVT uses a
+positive-only 95th-percentile `2.0`-point yellow contour so a reviewer can trace
+more of the candidate surface. The broader yellow line is a display convention,
+not the metric ridge, and does not affect points, components, persistence, or
+validation. Without this opt-in flag, the existing JSON, Markdown, and output
+layout remain unchanged.
 
 To recompute crop 1 using a larger crop while comparing exactly the original
 global `64 x 64 x 64` ROI, run:

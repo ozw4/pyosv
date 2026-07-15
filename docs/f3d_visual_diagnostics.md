@@ -195,20 +195,29 @@ change diagnostic detail only, not validation thresholds.
 The orthogonal review passes the representative outlier's actual `i3`, `i2`,
 and `i1` slices, rather than only the crop-center slice. Its columns separate
 amplitude-only, public-FVT, baseline-FVT, candidate-FVT, and combined overlays.
-Thin contours preserve the underlying amplitude, and the legend distinguishes
-public, baseline, candidate, the representative outlier, and its nearest public
-point. The three adjacent-slice figures show the same overlay from `index-R`
-through `index+R` for each axis (default `R=3`), omitting out-of-crop slices and
-labelling the global index actually shown. Use them to distinguish a continuous
-ridge trend from a single-slice speck.
+The metric and display masks are intentionally different. Public and baseline
+use their positive-only 99th-percentile metric masks and `0.8`-point contours.
+Candidate uses a positive-only 95th-percentile display mask and a `2.0`-point
+yellow contour. This top-5% line is broader than the candidate top-1% metric
+ridge so that it can be followed across amplitude panels; it is not used for
+distance, outlier selection, components, or validation. The magenta star stays
+at the original top-1% metric outlier coordinate, and the green cross stays at
+the nearest public top-1% point. The three adjacent-slice figures show the same
+display convention from `index-R` through `index+R` for each axis (default
+`R=3`), omitting out-of-crop slices and labelling the global index actually
+shown. Use them to distinguish a continuous ridge trend from a single-slice
+speck.
 
 Context figures use the same seismic amplitude, representative coordinate, and
 global base ROI to compare base candidate FVT, context-derived candidate FVT,
-their combined overlay, and base-only/context-only sparse masks. A persistent
-ridge within two samples is evidence about context sensitivity only; it is not
-an automatic geological judgment. Preliminary outliers being 19--25 samples
-inside a crop does not itself eliminate context dependence because voting uses
-`rw=30` and clamps out-of-crop surface samples to the crop edge.
+their combined overlay, and base-only/context-only display masks. Both are
+candidate-policy outputs, so both display masks use the positive-only 95th
+percentile and `2.0`-point contours. Context persistence itself remains based on
+the 99th-percentile metric masks. A persistent ridge within two samples is
+evidence about context sensitivity only; it is not an automatic geological
+judgment. Preliminary outliers being 19--25 samples inside a crop does not
+itself eliminate context dependence because voting uses `rw=30` and clamps
+out-of-crop surface samples to the crop edge.
 
 The generated files live under paths such as:
 
@@ -218,9 +227,8 @@ crop_001/policy_comparison/context_diagnostics/component_001/
 ```
 
 `visual_report.md` includes a `Public-FVT Distance Outlier Review` section only
-when diagnostics are enabled. It embeds the orthogonal amplitude image and
-links the adjacent-slice and context images using paths relative to
-`metrics.json`.
+when diagnostics are enabled. It embeds the orthogonal amplitude image and links
+the adjacent-slice and context images using paths relative to `metrics.json`.
 
 The currently recorded formal `3 x 64^3` automatic validation still passes
 seven of eight checks and fails the crop-1 public-FVT sparse-distance p95 check.
