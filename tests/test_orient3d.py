@@ -68,6 +68,82 @@ def test_sampling_single_angle_returns_one_endpoint_sample() -> None:
     np.testing.assert_array_equal(thetas, np.array([45.0], dtype=np.float32))
 
 
+@pytest.mark.parametrize(
+    ("orientation_count", "expected_dtype"),
+    [
+        (1, np.uint8),
+        (256, np.uint8),
+        (257, np.uint16),
+        (65_536, np.uint16),
+        (65_537, np.uint32),
+    ],
+)
+def test_orientation_code_dtype_uses_smallest_supported_unsigned_type(
+    orientation_count: int,
+    expected_dtype: type[np.unsignedinteger],
+) -> None:
+    assert scanner_module._orientation_code_dtype(orientation_count) == np.dtype(expected_dtype)
+
+
+def test_orientation_code_decode_round_trip_returns_independent_contiguous_float32() -> None:
+    phis = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+    thetas = np.array([40.0, 50.0], dtype=np.float32)
+    codes = np.array(
+        [
+            scanner_module._encode_orientation_code(iphi, itheta, len(thetas))
+            for iphi in range(len(phis))
+            for itheta in range(len(thetas))
+        ],
+        dtype=np.uint8,
+    ).reshape(2, 3)
+
+    decoded_phi, decoded_theta = scanner_module._decode_orientation_codes(
+        codes,
+        phis,
+        thetas,
+    )
+
+    np.testing.assert_array_equal(
+        decoded_phi,
+        np.array([[10.0, 10.0, 20.0], [20.0, 30.0, 30.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        decoded_theta,
+        np.array([[40.0, 50.0, 40.0], [50.0, 40.0, 50.0]], dtype=np.float32),
+    )
+    for decoded in (decoded_phi, decoded_theta):
+        assert decoded.dtype == np.float32
+        assert decoded.flags.c_contiguous
+        assert not np.shares_memory(decoded, phis)
+        assert not np.shares_memory(decoded, thetas)
+
+
+@pytest.mark.parametrize("include_confidence", [False, True])
+def test_orientation_code_updates_keep_strict_ties_and_first_middle_last_best(
+    include_confidence: bool,
+) -> None:
+    best_score = np.zeros(4, dtype=np.float32)
+    second_score = np.zeros(4, dtype=np.float32) if include_confidence else None
+    best_code = np.zeros(4, dtype=np.uint8)
+    scores = (
+        np.array([3.0, 1.0, 1.0, 2.0], dtype=np.float32),
+        np.array([2.0, 4.0, 1.0, 2.0], dtype=np.float32),
+        np.array([1.0, 3.0, 5.0, 2.0], dtype=np.float32),
+    )
+
+    for code, score in enumerate(scores):
+        scanner_module._update_best_orientation(
+            score,
+            code,
+            best_score,
+            second_score,
+            best_code,
+        )
+
+    np.testing.assert_array_equal(best_code, np.array([0, 1, 2, 0], dtype=np.uint8))
+    np.testing.assert_array_equal(best_score, np.array([3.0, 4.0, 5.0, 2.0], dtype=np.float32))
+
+
 def test_reference_like_sampling_uses_java_inspired_angle_grid() -> None:
     scanner = FaultOrientScanner3(sigma1=8.0, sigma2=8.0)
 

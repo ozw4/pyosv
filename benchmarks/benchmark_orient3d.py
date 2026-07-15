@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pyosv._accel import NUMBA_AVAILABLE  # noqa: E402
+from pyosv._orient3d.scanner import _orientation_code_dtype  # noqa: E402
 from pyosv.geometry import fault_normal_vector_from_strike_and_dip  # noqa: E402
 from pyosv.orient3d import FaultOrientScanner3  # noqa: E402
 
@@ -87,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     with_confidence_peak_bytes = peak_traced_allocation(scan_with_confidence)
     ft, pt, tt = without_confidence_result
     confidence = with_confidence_result[3]
+    orientation_count = len(phi_sampling) * len(theta_sampling)
+    orientation_code_dtype = _orientation_code_dtype(orientation_count)
+    voxel_count = image.size
+    score_bytes = voxel_count * np.dtype(np.float32).itemsize
+    code_bytes = voxel_count * orientation_code_dtype.itemsize
+    previous_angle_bytes = 2 * score_bytes
 
     print("benchmark=orient3d scanner=FaultOrientScanner3 backend=reference_like")
     print(
@@ -98,7 +105,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"dtype={ft.dtype}",
                 f"phi_samples={len(phi_sampling)}",
                 f"theta_samples={len(theta_sampling)}",
-                f"orientations={len(phi_sampling) * len(theta_sampling)}",
+                f"orientations={orientation_count}",
+                f"orientation_state_dtype={orientation_code_dtype.name}",
+                f"orientation_code_bytes={code_bytes}",
+                f"previous_orientation_angle_bytes={previous_angle_bytes}",
                 f"rng_seed={args.seed}",
                 f"repeat={args.repeat}",
                 f"warmup={args.warmup}",
@@ -107,11 +117,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"{timing_summary('without_confidence', without_confidence_times)} "
+        f"estimated_peak_state_bytes={score_bytes + code_bytes} "
+        f"previous_estimated_peak_state_bytes={score_bytes + previous_angle_bytes} "
         f"peak_traced_bytes={without_confidence_peak_bytes} "
         f"output_count={ft.size} {array_fingerprint('ft', ft)}",
     )
     print(
         f"{timing_summary('with_confidence', with_confidence_times)} "
+        f"estimated_peak_state_bytes={2 * score_bytes + code_bytes} "
+        f"previous_estimated_peak_state_bytes={2 * score_bytes + previous_angle_bytes} "
         f"peak_traced_bytes={with_confidence_peak_bytes} "
         f"output_count={confidence.size} {array_fingerprint('confidence', confidence)}",
     )

@@ -51,32 +51,75 @@ from pyosv.thinning3d import reference_like_3d_thin_values, remove_reference_edg
 __all__ = ["FaultOrientScanner3"]
 
 
+def _orientation_code_dtype(orientation_count: int) -> np.dtype:
+    """Return the smallest supported unsigned dtype for orientation codes."""
+
+    if orientation_count <= 0:
+        raise ValueError("orientation_count must be positive")
+    if orientation_count <= np.iinfo(np.uint8).max + 1:
+        return np.dtype(np.uint8)
+    if orientation_count <= np.iinfo(np.uint16).max + 1:
+        return np.dtype(np.uint16)
+    if orientation_count <= np.iinfo(np.uint32).max + 1:
+        return np.dtype(np.uint32)
+    raise ValueError("orientation_count exceeds uint32 code capacity")
+
+
+def _new_orientation_codes(
+    shape: tuple[int, ...],
+    phi_sampling: np.ndarray,
+    theta_sampling: np.ndarray,
+) -> np.ndarray:
+    orientation_count = len(phi_sampling) * len(theta_sampling)
+    return np.zeros(shape, dtype=_orientation_code_dtype(orientation_count))
+
+
+def _encode_orientation_code(phi_index: int, theta_index: int, theta_count: int) -> int:
+    return phi_index * theta_count + theta_index
+
+
+def _decode_orientation_codes(
+    codes: np.ndarray,
+    phi_sampling: np.ndarray,
+    theta_sampling: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Decode sweep-order codes into independent contiguous angle volumes."""
+
+    theta_count = len(theta_sampling)
+    phi_indices = codes // theta_count
+    theta_indices = codes % theta_count
+    phis = np.asarray(phi_sampling, dtype=np.float32)[phi_indices]
+    thetas = np.asarray(theta_sampling, dtype=np.float32)[theta_indices]
+    return (
+        np.ascontiguousarray(phis, dtype=np.float32),
+        np.ascontiguousarray(thetas, dtype=np.float32),
+    )
+
+
 def _update_best_orientation(
     score: np.ndarray,
-    phi: np.float32,
-    theta: np.float32,
+    orientation_code: int,
     best_score: np.ndarray,
     second_score: np.ndarray | None,
-    best_phi: np.ndarray,
-    best_theta: np.ndarray,
+    best_code: np.ndarray,
 ) -> None:
     if second_score is not None:
+        code = best_code.dtype.type(orientation_code)
         _update_best_second_orientation(
             score,
-            phi,
-            theta,
+            code,
+            code,
             best_score,
             second_score,
-            best_phi,
-            best_theta,
+            best_code,
+            best_code,
         )
         return
 
     score_float32 = np.maximum(score.astype(np.float32, copy=False), np.float32(0.0))
     better = score_float32 > best_score
     best_score[better] = score_float32[better]
-    best_phi[better] = phi
-    best_theta[better] = theta
+    best_code[better] = orientation_code
 
 
 class FaultOrientScanner3:
@@ -503,11 +546,10 @@ class FaultOrientScanner3:
         d1, d2, d3, d11, d22, d33, d12, d13, d23 = derivatives
 
         best_score = np.zeros_like(image, dtype=np.float32)
-        best_phi = np.full_like(image, phi_sampling[0], dtype=np.float32)
-        best_theta = np.full_like(image, theta_sampling[0], dtype=np.float32)
+        best_code = _new_orientation_codes(image.shape, phi_sampling, theta_sampling)
 
-        for phi in phi_sampling:
-            for theta in theta_sampling:
+        for iphi, phi in enumerate(phi_sampling):
+            for itheta, theta in enumerate(theta_sampling):
                 w1, w2, w3 = fault_normal_vector_from_strike_and_dip(
                     float(phi),
                     float(theta),
@@ -526,15 +568,29 @@ class FaultOrientScanner3:
                     copy=False,
                 )
 
-                better = score > best_score
-                best_score[better] = score[better]
-                best_phi[better] = phi
-                best_theta[better] = theta
+                orientation_code = _encode_orientation_code(
+                    iphi,
+                    itheta,
+                    len(theta_sampling),
+                )
+                _update_best_orientation(
+                    score,
+                    orientation_code,
+                    best_score,
+                    None,
+                    best_code,
+                )
+
+        best_phi, best_theta = _decode_orientation_codes(
+            best_code,
+            phi_sampling,
+            theta_sampling,
+        )
 
         return (
             _normalize_likelihood(best_score),
-            best_phi.astype(np.float32, copy=False),
-            best_theta.astype(np.float32, copy=False),
+            best_phi,
+            best_theta,
         )
 
     def _scan_rotate_shear_reference_like(
@@ -553,10 +609,9 @@ class FaultOrientScanner3:
     ):
         best_score = np.zeros_like(image, dtype=np.float32)
         second_score = np.zeros_like(image, dtype=np.float32) if include_confidence else None
-        best_phi = np.full_like(image, phi_sampling[0], dtype=np.float32)
-        best_theta = np.full_like(image, theta_sampling[0], dtype=np.float32)
+        best_code = _new_orientation_codes(image.shape, phi_sampling, theta_sampling)
 
-        for phi in phi_sampling:
+        for iphi, phi in enumerate(phi_sampling):
             rotated = _rotate3_axis1(
                 image,
                 float(phi),
@@ -572,7 +627,9 @@ class FaultOrientScanner3:
                 interpolation_order=interpolation_order,
                 smoothing_sigma=smoothing_sigma,
             )
-            for theta, rotated_score in zip(theta_sampling, rotated_scores):
+            for itheta, (theta, rotated_score) in enumerate(
+                zip(theta_sampling, rotated_scores),
+            ):
                 score = _unrotate3_axis1(
                     rotated_score,
                     image.shape,
@@ -583,14 +640,17 @@ class FaultOrientScanner3:
                     np.float32,
                     copy=False,
                 )
+                orientation_code = _encode_orientation_code(
+                    iphi,
+                    itheta,
+                    len(theta_sampling),
+                )
                 _update_best_orientation(
                     score,
-                    phi,
-                    theta,
+                    orientation_code,
                     best_score,
                     second_score,
-                    best_phi,
-                    best_theta,
+                    best_code,
                 )
 
         if normalize:
@@ -598,11 +658,16 @@ class FaultOrientScanner3:
         else:
             ft = np.maximum(best_score, np.float32(0.0)).astype(np.float32, copy=False)
 
+        best_phi, best_theta = _decode_orientation_codes(
+            best_code,
+            phi_sampling,
+            theta_sampling,
+        )
         theta_min = np.float32(theta_sampling[0])
         theta_max = np.float32(theta_sampling[-1])
         result = (
             ft,
-            best_phi.astype(np.float32, copy=False),
+            best_phi,
             np.clip(best_theta, theta_min, theta_max).astype(np.float32, copy=False),
         )
         if second_score is None:
@@ -653,12 +718,11 @@ class FaultOrientScanner3:
     ):
         best_score = np.zeros_like(image, dtype=np.float32)
         second_score = np.zeros_like(image, dtype=np.float32) if include_confidence else None
-        best_phi = np.full_like(image, phi_sampling[0], dtype=np.float32)
-        best_theta = np.full_like(image, theta_sampling[0], dtype=np.float32)
+        best_code = _new_orientation_codes(image.shape, phi_sampling, theta_sampling)
         grids = _coordinate_grids3(image.shape)
 
-        for phi in phi_sampling:
-            for theta in theta_sampling:
+        for iphi, phi in enumerate(phi_sampling):
+            for itheta, theta in enumerate(theta_sampling):
                 _, strike, dip = _orientation_basis_from_strike_and_dip(
                     float(phi),
                     float(theta),
@@ -671,24 +735,32 @@ class FaultOrientScanner3:
                     interpolation_order=interpolation_order,
                     smoothing_sigma=smoothing_sigma,
                 )
+                orientation_code = _encode_orientation_code(
+                    iphi,
+                    itheta,
+                    len(theta_sampling),
+                )
                 _update_best_orientation(
                     score,
-                    phi,
-                    theta,
+                    orientation_code,
                     best_score,
                     second_score,
-                    best_phi,
-                    best_theta,
+                    best_code,
                 )
 
         if normalize:
             ft = _normalize_reference_like_likelihood(best_score)
         else:
             ft = np.maximum(best_score, np.float32(0.0)).astype(np.float32, copy=False)
+        best_phi, best_theta = _decode_orientation_codes(
+            best_code,
+            phi_sampling,
+            theta_sampling,
+        )
         result = (
             ft,
-            best_phi.astype(np.float32, copy=False),
-            best_theta.astype(np.float32, copy=False),
+            best_phi,
+            best_theta,
         )
         if second_score is None:
             return result
