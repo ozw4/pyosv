@@ -24,6 +24,15 @@ from pyosv.evaluation.synthetic_quality.models import (
     ThinningResult3D,
     VotingResult3D,
 )
+from pyosv.evaluation.synthetic_quality.stage_cache import (
+    AttributeStageKey,
+    PipelineStageCache,
+    SeedStageKey,
+    SeedStageResult,
+    VotingStageKey,
+    VotingStageResult,
+    diagnostic_items,
+)
 from pyosv.evaluation.synthetic_quality.variants import VariantSpec, effective_thin_mode
 from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
 from pyosv.experimental.boundary_skinning import (
@@ -147,8 +156,12 @@ def run_voting_from_attributes(
     recenter_distance_diagnostic_runner: Callable[
         ..., dict[str, float | None]
     ] = fvt_recenter_target_distance_diagnostics,
+    stage_cache: PipelineStageCache | None = None,
+    attribute_stage_key: AttributeStageKey | None = None,
 ) -> PipelineEvaluation:
     OrientationField3D(ft=ft, pt=pt, tt=tt)
+    if stage_cache is not None:
+        stage_cache.bind_case(case)
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
         rv=voting_config.rv,
@@ -176,12 +189,48 @@ def run_voting_from_attributes(
         voter.set_surface_orientation_smoothing(voting_patch.orientation_smoothing)
     if voting_patch.final_normalization_smoothing is not None:
         voter.set_final_normalization_smoothing(voting_patch.final_normalization_smoothing)
-    boundary_seed_retention_diagnostic: dict[str, Any] | None = None
+    cache_enabled = stage_cache is not None and attribute_stage_key is not None
+    if (
+        variant_spec.seed_policy == "boundary_seed_retention_v1"
+        and fvt_recenter_target is not None
+        and fvt_recenter_target is not ft
+    ):
+        # A caller-provided target needs its own semantic token. The report
+        # runners use the attribute likelihood itself; unknown combinations
+        # conservatively bypass both dependent stages.
+        cache_enabled = False
+    boundary_target_source = None
+    boundary_edge_margin = None
     if variant_spec.seed_policy == "boundary_seed_retention_v1":
-        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         boundary_target_source = (
             "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
         )
+        boundary_edge_margin = EDGE_FALSE_POSITIVE_MARGIN
+    seed_key = (
+        SeedStageKey(
+            attributes=attribute_stage_key,
+            seed_policy=variant_spec.seed_policy,
+            seed_distance=int(voting_config.seed_distance),
+            seed_threshold=float(voting_config.seed_threshold),
+            ru=int(voting_config.ru),
+            rv=int(voting_config.rv),
+            rw=int(voting_config.rw),
+            boundary_target_source=boundary_target_source,
+            boundary_edge_margin=boundary_edge_margin,
+        )
+        if attribute_stage_key is not None
+        else None
+    )
+    cached_seed = (
+        stage_cache.get_seed(seed_key)
+        if cache_enabled and stage_cache is not None and seed_key is not None
+        else None
+    )
+    if cached_seed is not None:
+        seeds = cached_seed.seeds
+        boundary_seed_retention_diagnostic = cached_seed.diagnostics()
+    elif variant_spec.seed_policy == "boundary_seed_retention_v1":
+        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
         seed_result = select_boundary_seed_retention_v1(
             voting_config=voting_config,
             ft=ft,
@@ -191,15 +240,30 @@ def run_voting_from_attributes(
             target_source=boundary_target_source,
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
         )
-        seeds = list(seed_result.selected_seeds)
-        boundary_seed_retention_diagnostic = seed_result.diagnostics
+        seeds = tuple(seed_result.selected_seeds)
+        boundary_seed_retention_diagnostic = dict(seed_result.diagnostics)
     else:
-        seeds = voter.pick_seeds(
-            d=voting_config.seed_distance,
-            fm=voting_config.seed_threshold,
-            ft=ft,
-            pt=pt,
-            tt=tt,
+        seeds = tuple(
+            voter.pick_seeds(
+                d=voting_config.seed_distance,
+                fm=voting_config.seed_threshold,
+                ft=ft,
+                pt=pt,
+                tt=tt,
+            )
+        )
+        boundary_seed_retention_diagnostic = None
+    if cached_seed is None and cache_enabled and stage_cache is not None and seed_key is not None:
+        stage_cache.put_seed(
+            seed_key,
+            SeedStageResult(
+                seeds=tuple(seeds),
+                diagnostic_items=(
+                    None
+                    if boundary_seed_retention_diagnostic is None
+                    else diagnostic_items(boundary_seed_retention_diagnostic)
+                ),
+            ),
         )
     seed_candidate_mask: np.ndarray | None = None
     seed_selected_mask: np.ndarray | None = None
@@ -208,13 +272,51 @@ def run_voting_from_attributes(
         seed_selected_mask = np.zeros(seed_candidate_mask.shape, dtype=bool)
         for seed in seeds:
             seed_selected_mask[seed.i3, seed.i2, seed.i1] = True
-    fv, vp, vt = voter.apply_voting_from_seeds(
-        seeds,
-        ft=ft,
-        pt=pt,
-        tt=tt,
+    voting_key = (
+        VotingStageKey(
+            seed=seed_key,
+            ru=int(voter.ru),
+            rv=int(voter.rv),
+            rw=int(voter.rw),
+            bstrain1=int(voter.bstrain1),
+            bstrain2=int(voter.bstrain2),
+            attribute_smoothing=int(voter.attribute_smoothing),
+            surface_smoothing1=float(voter.surface_smoothing1),
+            surface_smoothing2=float(voter.surface_smoothing2),
+            boundary_policy=voter.surface_voting_boundary_policy,
+            support_min_fraction=float(voter.surface_support_min_fraction),
+            support_exponent=float(voter.surface_support_exponent),
+            orientation_smoothing=float(voter.surface_orientation_smoothing),
+            orientation_backend=voter.surface_orientation_backend,
+            final_normalization_smoothing=float(voter.final_normalization_smoothing),
+        )
+        if seed_key is not None
+        else None
     )
-    surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
+    cached_voting = (
+        stage_cache.get_voting(voting_key)
+        if cache_enabled and stage_cache is not None and voting_key is not None
+        else None
+    )
+    if cached_voting is None:
+        fv, vp, vt = voter.apply_voting_from_seeds(
+            seeds,
+            ft=ft,
+            pt=pt,
+            tt=tt,
+        )
+        surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
+        if cache_enabled and stage_cache is not None and voting_key is not None:
+            voting_result = VotingStageResult(
+                fv=fv,
+                vp=vp,
+                vt=vt,
+                diagnostic_items=diagnostic_items(surface_voting_diagnostic_summary),
+            )
+            stage_cache.put_voting(voting_key, voting_result)
+    else:
+        fv, vp, vt = cached_voting.fv, cached_voting.vp, cached_voting.vt
+        surface_voting_diagnostic_summary = cached_voting.diagnostics()
     VotingResult3D(
         fv=fv,
         vp=vp,

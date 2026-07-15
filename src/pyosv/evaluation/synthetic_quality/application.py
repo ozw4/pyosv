@@ -35,6 +35,7 @@ from pyosv.evaluation.synthetic_quality.runner import (
     run_case_variant,
     validate_input_mode,
 )
+from pyosv.evaluation.synthetic_quality.stage_cache import PipelineStageCache
 from pyosv.evaluation.synthetic_quality.variants import (
     DEFAULT_VARIANTS,
     validate_variant_preset,
@@ -130,6 +131,7 @@ def _build_report_outputs(
     scanner_downstream_diagnostic_runner: Callable[..., Any] | None = None,
     scanner_stage_loss_diagnostic_runner: Callable[..., Any] | None = None,
     scanner_boundary_stage_diagnostic_runner: Callable[..., Any] | None = None,
+    use_stage_cache: bool = True,
 ) -> tuple[
     dict[str, Any],
     dict[str, dict[str, dict[str, np.ndarray]]],
@@ -197,6 +199,7 @@ def _build_report_outputs(
             input_mode=valid_input_mode,
             scanner_backend_matrix=effective_scanner_backend_matrix,
         )
+        stage_cache = PipelineStageCache(case) if use_stage_cache else None
         for variant in valid_variants:
             diagnostic_runners = {
                 name: runner
@@ -238,6 +241,7 @@ def _build_report_outputs(
                     effective_scanner_boundary_stage_diagnostics
                 ),
                 prepared_inputs=prepared_inputs,
+                stage_cache=stage_cache,
                 **diagnostic_runners,
             )
             variant_reports[variant] = dict(evaluation.report_payload)

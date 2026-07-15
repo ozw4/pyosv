@@ -44,6 +44,14 @@ configuration. Within that scope, a prepared scanner input may be shared by
 variants and backend-matrix evaluation. Scanner arrays must not be reused
 across a different case, shape, or scanner configuration.
 
+Seed selection and completed voting outputs (`fv`, `vp`, and `vt`) use the same
+case-local lifetime. Their immutable keys contain the semantic oracle/scanner
+attribute source and every effective setting that affects the stage output;
+array identity alone is never a key. Only fully identical completed voting
+outputs are shared. Cached voting arrays are read-only, diagnostics are copied
+on retrieval, and the cache is discarded after each case's variant loop. A
+cache is bound to the exact case instance and rejects reuse for another case.
+
 ## Reports and experimental code
 
 The immutable reporting models are the internal handoff between evaluation and
