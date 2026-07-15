@@ -15,12 +15,36 @@ python -m pip install -e ".[accel]"
 The default package dependencies do not include Numba. Runtime workflows must
 not require a JVM, Jython, Gradle, or Mines JTK.
 
+## Import Mode
+
+Set `PYOSV_ACCEL` before importing `pyosv` modules to select how the optional
+Numba dependency is handled:
+
+- `auto` (the default) tries to import Numba and uses the Python fallback if
+  the import fails;
+- `off` does not import Numba and always uses the Python fallback;
+- `required` imports Numba and immediately raises `ImportError` if it is not
+  available.
+
+Values are case-insensitive and surrounding whitespace is ignored. Any other
+value, including an empty value, raises `ValueError` instead of silently using
+`auto`. For example:
+
+```bash
+PYOSV_ACCEL=off python -m your_workflow
+PYOSV_ACCEL=required python -m your_workflow
+```
+
+The mode is read once when `pyosv._accel` is imported. Changing the environment
+variable afterward does not change the active mode; use a new process or
+explicitly reload the module and all consumers that imported its globals.
+
 ## Fallback Behavior
 
-The acceleration adapter lives in `pyosv._accel`. If Numba imports
-successfully, decorated kernels use `numba.njit(cache=True)`. If Numba is not
-available, the same decorators become no-ops and public APIs run the Python and
-NumPy fallback implementations.
+The acceleration adapter lives in `pyosv._accel`. In `auto` or `required` mode,
+if Numba imports successfully, decorated kernels use `numba.njit(cache=True)`.
+In `off` mode, or in `auto` mode when Numba is unavailable, the same decorators
+become no-ops and public APIs run the Python and NumPy fallback implementations.
 
 Current accelerated code paths include parts of:
 
