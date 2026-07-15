@@ -55,12 +55,19 @@ are not part of normal pytest collection. Run them from the repository root:
 python benchmarks/benchmark_voting2d.py
 python benchmarks/benchmark_voting3d.py
 python benchmarks/benchmark_dp.py
+python benchmarks/benchmark_skinning3d.py --shape 25 --warmup 1 --repeat 3
+python benchmarks/benchmark_orient3d.py --shape 25 --warmup 1 --repeat 3
 ```
 
-Each script builds a small synthetic `float32` input, runs one or more warmup
-iterations, then prints shape and timing summaries. They do not write large
-outputs by default.
+Each script builds a deterministic synthetic `float32` input, runs one or more
+warmup iterations, then prints shape, timing, output-count, and compact numeric
+fingerprint summaries. They do not write large outputs by default. The voting
+benchmarks report seed selection separately from end-to-end voting and accept
+`--candidate-density` and `--d` to control candidate density and suppression
+distance.
 
 Use `--help` to inspect tunable sizes and repetition counts. With Numba enabled,
 the first call to a kernel may include JIT compilation cost; keep at least one
-warmup repetition when comparing steady-state timings.
+warmup repetition when comparing steady-state timings. Performance values are
+environment-dependent measurements for before/after comparison; they are not
+pytest pass/fail criteria.
