@@ -46,6 +46,58 @@ def test_numba_backtrack_reverse_2d_matches_python_fallback() -> None:
     np.testing.assert_allclose(accelerated, fallback, rtol=1e-6, atol=1e-6)
 
 
+@pytest.mark.parametrize("batch", [1, 3])
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_numba_batch_accumulation_matches_python(
+    batch: int,
+    direction: int,
+) -> None:
+    cost = np.random.default_rng(404).normal(size=(batch, 6, 5)).astype(np.float32)
+
+    fallback = dp._accumulate_2d_batch_python(cost, 4, direction)
+    accelerated = dp._accumulate_2d_batch_numba(cost, 4, direction)
+
+    np.testing.assert_array_equal(accelerated, fallback)
+
+
+@pytest.mark.parametrize("bstrain", [1, 2, 8])
+def test_numba_batch_smoothing_matches_python_exactly(bstrain: int) -> None:
+    cost = np.random.default_rng(405).normal(size=(3, 5, 7)).astype(np.float32)
+
+    fallback = dp._smooth_fault_attributes_batch_python(cost, bstrain)
+    accelerated = dp._smooth_fault_attributes_batch_numba(cost, bstrain)
+
+    np.testing.assert_array_equal(accelerated, fallback)
+
+
+def test_numba_batch_smoothing_ties_and_repeated_calls_are_stable() -> None:
+    ties = np.zeros((2, 4, 5), dtype=np.float32)
+    other = np.random.default_rng(407).normal(size=ties.shape).astype(np.float32)
+    original = ties.copy()
+    expected = dp._smooth_fault_attributes_batch_python(ties, 2)
+
+    first = dp._smooth_fault_attributes_batch_numba(ties, 2)
+    dp._smooth_fault_attributes_batch_numba(other, 2)
+    repeated = dp._smooth_fault_attributes_batch_numba(ties, 2)
+
+    np.testing.assert_array_equal(first, expected)
+    np.testing.assert_array_equal(repeated, expected)
+    np.testing.assert_array_equal(ties, original)
+
+
+def test_numba_public_3d_smoothing_matches_python_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cost = np.random.default_rng(406).normal(size=(3, 4, 7)).astype(np.float32)
+
+    monkeypatch.setattr(dp, "NUMBA_AVAILABLE", False)
+    fallback = dp.smooth_fault_attributes_3d(cost, bstrain1=2, bstrain2=3)
+    monkeypatch.setattr(dp, "NUMBA_AVAILABLE", True)
+    accelerated = dp.smooth_fault_attributes_3d(cost, bstrain1=2, bstrain2=3)
+
+    np.testing.assert_array_equal(accelerated, fallback)
+
+
 def test_numba_public_path_pipeline_matches_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

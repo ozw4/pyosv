@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from pyosv._dp.batch_numba import (
+    smooth_fault_attributes_batch_into as smooth_fault_attributes_batch_into_numba,
+)
+from pyosv._dp.batch_python import (
+    smooth_fault_attributes_batch_into as smooth_fault_attributes_batch_into_python,
+)
 from pyosv._dp.path2d import accumulate_2d
 from pyosv._dp.validation import (
     validate_cost_2d,
@@ -54,15 +60,13 @@ def smooth_fault_attributes_3d(
     cost_array = validate_cost_3d(cost)
     bstrain1_int = validate_positive_int(bstrain1, "bstrain1")
     bstrain2_int = validate_positive_int(bstrain2, "bstrain2")
-    nw, nv, nu = cost_array.shape
-    smoothed_v = np.empty((nw, nv, nu), dtype=np.float32)
-    for iw in range(nw):
-        smoothed_v[iw] = smooth_fault_attributes_2d(
-            cost_array[iw], bstrain=bstrain1_int, use_numba=use_numba
-        )
-    smoothed_w = np.empty_like(smoothed_v, dtype=np.float32)
-    for iv in range(nv):
-        smoothed_w[:, iv, :] = smooth_fault_attributes_2d(
-            smoothed_v[:, iv, :], bstrain=bstrain2_int, use_numba=use_numba
-        )
-    return smoothed_w
+    batch_kernel_into = (
+        smooth_fault_attributes_batch_into_numba
+        if use_numba
+        else smooth_fault_attributes_batch_into_python
+    )
+    smoothed_v = np.empty(cost_array.shape, dtype=np.float32)
+    batch_kernel_into(cost_array, bstrain1_int, smoothed_v)
+    transposed_v = smoothed_v.transpose(1, 0, 2).copy(order="C")
+    batch_kernel_into(transposed_v, bstrain2_int, smoothed_v.transpose(1, 0, 2))
+    return smoothed_v

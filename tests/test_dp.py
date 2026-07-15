@@ -1203,6 +1203,89 @@ def test_smooth_fault_attributes_3d_matches_staged_2d_smoothing() -> None:
     np.testing.assert_allclose(smoothed, expected)
 
 
+@pytest.mark.parametrize(
+    ("cost", "bstrain1", "bstrain2"),
+    [
+        (np.zeros((1, 1, 1), dtype=np.float32), 1, 1),
+        (np.full((2, 3, 4), 3.0, dtype=np.float32), 2, 3),
+        (np.arange(20, dtype=np.float32).reshape(1, 5, 4), 7, 5),
+        (
+            np.random.default_rng(401).normal(size=(3, 4, 7)).astype(np.float32),
+            3,
+            2,
+        ),
+        (
+            np.array(
+                [
+                    [[0.0, 1.0, 0.0], [1.0, 0.0, 1.0]],
+                    [[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+                ],
+                dtype=np.float32,
+            ),
+            1,
+            1,
+        ),
+    ],
+)
+def test_smooth_fault_attributes_3d_batch_matches_staged_oracle_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+    cost: np.ndarray,
+    bstrain1: int,
+    bstrain2: int,
+) -> None:
+    original = cost.copy()
+    expected_v = np.empty_like(cost)
+    for iw in range(cost.shape[0]):
+        expected_v[iw] = dp._smooth_fault_attributes_2d_impl(
+            cost[iw], bstrain=bstrain1, use_numba=False
+        )
+    expected = np.empty_like(cost)
+    for iv in range(cost.shape[1]):
+        expected[:, iv, :] = dp._smooth_fault_attributes_2d_impl(
+            expected_v[:, iv, :], bstrain=bstrain2, use_numba=False
+        )
+
+    monkeypatch.setattr(dp, "NUMBA_AVAILABLE", False)
+    actual = smooth_fault_attributes_3d(
+        cost,
+        bstrain1=bstrain1,
+        bstrain2=bstrain2,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(cost, original)
+    assert actual.dtype == np.float32
+    assert actual.flags.c_contiguous
+
+
+@pytest.mark.parametrize("batch", [1, 4])
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_python_batch_accumulation_matches_individual_kernels(
+    batch: int,
+    direction: int,
+) -> None:
+    cost = np.random.default_rng(402).normal(size=(batch, 5, 7)).astype(np.float32)
+    expected = np.stack(
+        [dp._accumulate_2d_python(item, 3, direction) for item in cost],
+    )
+
+    actual = dp._accumulate_2d_batch_python(cost, 3, direction)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_python_batch_smoothing_repeated_calls_do_not_leak_scratch() -> None:
+    rng = np.random.default_rng(403)
+    first = rng.normal(size=(3, 4, 5)).astype(np.float32)
+    second = np.zeros_like(first)
+    expected = dp._smooth_fault_attributes_batch_python(first, 2)
+
+    dp._smooth_fault_attributes_batch_python(second, 2)
+    repeated = dp._smooth_fault_attributes_batch_python(first, 2)
+
+    np.testing.assert_array_equal(repeated, expected)
+
+
 def test_smooth_fault_attributes_3d_keeps_synthetic_surface_within_lag_bounds() -> None:
     nw, nv, nu = 5, 7, 9
     lmin = -4
