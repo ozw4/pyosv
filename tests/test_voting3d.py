@@ -1394,6 +1394,7 @@ def test_apply_voting_scans_each_input_volume_for_finiteness_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+    monkeypatch.setattr(voting3d, "NUMBA_AVAILABLE", False)
     ft = np.zeros((3, 3, 3), dtype=np.float32)
     pt = np.zeros_like(ft)
     tt = np.zeros_like(ft)
@@ -1411,6 +1412,37 @@ def test_apply_voting_scans_each_input_volume_for_finiteness_once(
     voter.apply_voting(d=1, fm=0.5, ft=ft, pt=pt, tt=tt)
 
     assert scan_counts == {array_id: 1 for array_id in input_ids}
+
+
+@pytest.mark.parametrize("policy", ["reference", "masked_in_bounds"])
+def test_apply_voting_from_seeds_does_not_revalidate_uvw_volume_per_seed(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: str,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
+    voter.set_surface_voting_boundary_policy(policy)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    ft = np.ones((4, 4, 4), dtype=np.float32)
+    pt = np.zeros_like(ft)
+    tt = np.full_like(ft, 90.0)
+    seeds = [
+        FaultCell(1, 1, 1, 1.0, 0.0, 90.0),
+        FaultCell(2, 2, 2, 1.0, 0.0, 90.0),
+    ]
+    validation_calls = 0
+    original_validate = voting3d._validate_uvw_sampling_origin
+
+    def validate_spy(*args: object) -> tuple[int, int, int, np.ndarray]:
+        nonlocal validation_calls
+        validation_calls += 1
+        return original_validate(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(voting3d, "_validate_uvw_sampling_origin", validate_spy)
+
+    voter.apply_voting_from_seeds(seeds, ft, pt, tt)
+
+    assert validation_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -2874,7 +2906,7 @@ def test_reference_policy_uses_only_combined_uvw_sampler(
     voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
     voter.set_attribute_smoothing(0)
     voter.set_surface_smoothing(0.0, 0.0)
-    combined = voter._samples_in_uvw_box_reference_with_support
+    combined = voter._samples_in_uvw_box_reference_with_support_validated
     combined_calls = 0
 
     def sample_combined(*args: object) -> object:
@@ -2885,7 +2917,11 @@ def test_reference_policy_uses_only_combined_uvw_sampler(
     def unexpected_sampler(*args: object) -> object:
         raise AssertionError("reference policy called a legacy UVW sampler")
 
-    monkeypatch.setattr(voter, "_samples_in_uvw_box_reference_with_support", sample_combined)
+    monkeypatch.setattr(
+        voter,
+        "_samples_in_uvw_box_reference_with_support_validated",
+        sample_combined,
+    )
     monkeypatch.setattr(voter, "samples_in_uvw_box", unexpected_sampler)
     monkeypatch.setattr(voter, "_samples_in_uvw_box_masked", unexpected_sampler)
     ft = np.ones((3, 3, 3), dtype=np.float32)
@@ -2923,7 +2959,7 @@ def test_reference_policy_combined_sampling_preserves_votes_and_diagnostics(
 
     monkeypatch.setattr(
         legacy_voter,
-        "_samples_in_uvw_box_reference_with_support",
+        "_samples_in_uvw_box_reference_with_support_validated",
         legacy_sample_with_support,
     )
     combined_result = combined_voter.apply_voting_from_seeds(

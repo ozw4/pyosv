@@ -591,33 +591,54 @@ class OptimalSurfaceVoter:
         """Sample ``1 - fx`` in the seed-centered local ``(w, v, u)`` box."""
 
         i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
+        return self._samples_in_uvw_box_validated(
+            i1,
+            i2,
+            i3,
+            normal,
+            dip,
+            strike,
+            fx_array,
+        )
+
+    def _samples_in_uvw_box_validated(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> np.ndarray:
+        """Sample a validated seed and finite native-float32 3D volume."""
 
         if NUMBA_AVAILABLE:
             return _samples_in_uvw_box_numba(
-                i1,
-                i2,
-                i3,
+                c1,
+                c2,
+                c3,
                 self.ru,
                 self.rv,
                 self.rw,
                 normal,
                 dip,
                 strike,
-                fx_array,
+                fx,
                 self.lmins,
                 self.lmaxs,
             )
         return _samples_in_uvw_box_python(
-            i1,
-            i2,
-            i3,
+            c1,
+            c2,
+            c3,
             self.ru,
             self.rv,
             self.rw,
             normal,
             dip,
             strike,
-            fx_array,
+            fx,
             self.lmins,
             self.lmaxs,
         )
@@ -635,6 +656,27 @@ class OptimalSurfaceVoter:
         """Sample a full UVW box without treating out-of-bounds lags as evidence."""
 
         i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
+        return self._samples_in_uvw_box_masked_validated(
+            i1,
+            i2,
+            i3,
+            normal,
+            dip,
+            strike,
+            fx_array,
+        )
+
+    def _samples_in_uvw_box_masked_validated(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> _MaskedUVWBoxSamples:
+        """Sample a validated seed and finite native-float32 3D volume."""
 
         sampler = (
             _samples_in_uvw_box_masked_numba
@@ -642,16 +684,16 @@ class OptimalSurfaceVoter:
             else _samples_in_uvw_box_masked_python
         )
         costs, valid_lag_mask, admissible_count, in_bounds_count = sampler(
-            i1,
-            i2,
-            i3,
+            c1,
+            c2,
+            c3,
             self.ru,
             self.rv,
             self.rw,
             normal,
             dip,
             strike,
-            fx_array,
+            fx,
             self.lmins,
             self.lmaxs,
         )
@@ -678,22 +720,44 @@ class OptimalSurfaceVoter:
         """Sample reference costs while counting rounded in-bounds support."""
 
         i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
+        return self._samples_in_uvw_box_reference_with_support_validated(
+            i1,
+            i2,
+            i3,
+            normal,
+            dip,
+            strike,
+            fx_array,
+        )
+
+    def _samples_in_uvw_box_reference_with_support_validated(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> _ReferenceUVWBoxSamples:
+        """Sample a validated seed and finite native-float32 3D volume."""
+
         sampler = (
             _samples_in_uvw_box_reference_with_support_numba
             if NUMBA_AVAILABLE
             else _samples_in_uvw_box_reference_with_support_python
         )
         cost, admissible_count, in_bounds_count = sampler(
-            i1,
-            i2,
-            i3,
+            c1,
+            c2,
+            c3,
             self.ru,
             self.rv,
             self.rw,
             normal,
             dip,
             strike,
-            fx_array,
+            fx,
             self.lmins,
             self.lmaxs,
         )
@@ -819,9 +883,11 @@ class OptimalSurfaceVoter:
             normal=normal,
             dip=dip,
             strike=strike,
-            sample_reference=self.samples_in_uvw_box,
-            sample_reference_with_support=self._samples_in_uvw_box_reference_with_support,
-            sample_masked=self._samples_in_uvw_box_masked,
+            sample_reference=self._samples_in_uvw_box_validated,
+            sample_reference_with_support=(
+                self._samples_in_uvw_box_reference_with_support_validated
+            ),
+            sample_masked=self._samples_in_uvw_box_masked_validated,
             find_surface=find_surface_3d,
             find_surface_masked=_find_surface_3d_masked,
             score_reference=_surface_vote_average,
