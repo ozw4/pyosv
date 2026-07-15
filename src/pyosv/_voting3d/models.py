@@ -8,6 +8,15 @@ import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
+class _ReferenceUVWBoxSamples:
+    """Reference-clamped costs and scalar support diagnostics."""
+
+    cost: np.ndarray
+    admissible_lag_count: int
+    in_bounds_lag_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class _MaskedUVWBoxSamples:
     """Seed-local samples plus validity and full-box coordinate metadata."""
 

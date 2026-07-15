@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pyosv._accel import NUMBA_AVAILABLE  # noqa: E402
+from pyosv._seed_selection import _select_voter_seed_indices_2d  # noqa: E402
 from pyosv.voting2d import OptimalPathVoter  # noqa: E402
 
 
@@ -55,6 +56,29 @@ def main(argv: list[str] | None = None) -> int:
         repeat=args.repeat,
         warmup=args.warmup,
     )
+    threshold = np.float32(args.fm)
+    python_seed_times, python_seed_indices = time_repeated(
+        lambda: _select_voter_seed_indices_2d(
+            ft,
+            threshold,
+            args.d,
+            use_numba=False,
+        ),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    numba_seed_times, numba_seed_indices = time_repeated(
+        lambda: _select_voter_seed_indices_2d(
+            ft,
+            threshold,
+            args.d,
+            use_numba=True,
+        ),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    if not np.array_equal(python_seed_indices, numba_seed_indices):
+        raise RuntimeError("Python and Numba seed selectors produced different outputs")
 
     def run_once() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return voter.apply_voting(d=args.d, fm=args.fm, ft=ft, pt=pt)
@@ -83,6 +107,14 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"{timing_summary('pick_seeds', seed_times)} "
         f"output_count={len(seeds)} {array_fingerprint('seed_indices', seed_indices)}",
+    )
+    print(
+        f"{timing_summary('seed_selector_python', python_seed_times)} "
+        f"candidate_count={candidate_count} accepted_count={python_seed_indices.size}",
+    )
+    print(
+        f"{timing_summary('seed_selector_numba', numba_seed_times)} "
+        f"candidate_count={candidate_count} accepted_count={numba_seed_indices.size}",
     )
     print(
         f"{timing_summary('apply_voting', voting_times)} "

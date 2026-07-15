@@ -10,12 +10,13 @@ from pyosv._skinner.connected import (
     ConnectedComponentSkinner,
     find_connected_component_skins,
 )
-from pyosv._skinner.growth import _grow_reference_skin
+from pyosv._skinner.growth import _grow_reference_skin, _grow_reference_skin_validated
 from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.seeds import (
     _adaptive_skin_likelihood_threshold,
     _find_reference_seeds,
-    _mark_occupied_skin,
+    _find_reference_seeds_validated,
+    _mark_occupied_skin_validated,
 )
 from pyosv._skinner.validation import (
     _validate_bool,
@@ -346,19 +347,34 @@ def _find_reference_skins(
         accepted_occupancy_radius,
         "accepted_occupancy_radius",
     )
+    distance = _validate_nonnegative_int(d, "d")
+    skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
     fv_array, vp_array, vt_array, ep_array, ft_array, pt_array, tt_array = (
         _validate_matching_finite_arrays3_many(
             (fv, vp, vt, ep, ft, pt, tt),
             ("fv", "vp", "vt", "ep", "ft", "pt", "tt"),
         )
     )
+    radius_u = _validate_nonnegative_int(ru, "ru")
+    step_limit = _validate_nonnegative_int(max_steps, "max_steps")
+    max_delta_u = _validate_nonnegative_finite_float(du, "du")
+    max_delta_fp = _validate_nonnegative_finite_float(max_delta_strike, "max_delta_strike")
+    n3, n2, _ = fv_array.shape
+    radius_v = max(n2, n3) if rv is None else _validate_nonnegative_int(rv, "rv")
+    radius_w = max(n2, n3) if rw is None else _validate_nonnegative_int(rw, "rw")
+    if radius_u < 2:
+        raise ValueError("ru must be at least 2")
+    if radius_v < 2:
+        raise ValueError("rv must be at least 2")
+    if radius_w < 2:
+        raise ValueError("rw must be at least 2")
     seed_candidate_count_before_spacing = int(
         np.count_nonzero(
             (ep_array > np.float32(planarity_threshold)) & (ft_array > np.float32(seed_threshold))
         )
     )
-    seeds = _find_reference_seeds(
-        d=d,
+    seeds = _find_reference_seeds_validated(
+        d=distance,
         fm=seed_threshold,
         ep=ep_array,
         ft=ft_array,
@@ -366,7 +382,6 @@ def _find_reference_skins(
         tt=tt_array,
         min_ep=planarity_threshold,
     )
-    skin_size = _validate_optional_nonnegative_int(min_skin_size, "min_skin_size")
     occupied = _SkinOccupancyMask(fv_array.shape)
     skins: list[FaultSkin] = []
     seed_count_rejected_by_occupied = 0
@@ -381,18 +396,18 @@ def _find_reference_skins(
             continue
 
         grow_attempt_count += 1
-        skin = _grow_reference_skin(
+        skin = _grow_reference_skin_validated(
             seed,
             fv_array,
             vp_array,
             vt_array,
             fmin=grow_threshold,
-            ru=ru,
-            rv=rv,
-            rw=rw,
-            max_steps=max_steps,
-            du=du,
-            max_delta_strike=max_delta_strike,
+            ru=radius_u,
+            rv=radius_v,
+            rw=radius_w,
+            max_steps=step_limit,
+            du=max_delta_u,
+            max_delta_strike=max_delta_fp,
             collision_grid=occupied,
             reskin=should_reskin,
         )
@@ -408,7 +423,7 @@ def _find_reference_skins(
             continue
 
         skins.append(skin)
-        _mark_occupied_skin(occupied, skin, radius=occupancy_radius)
+        _mark_occupied_skin_validated(occupied, skin, radius=occupancy_radius)
 
     if diagnostics is not None:
         diagnostics.clear()

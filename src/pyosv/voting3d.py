@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import operator
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
 from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._seed_selection import _select_voter_seed_indices_3d
 from pyosv._voting3d.accumulation import (
     _accumulate_surface_votes as _accumulate_surface_votes_impl,
     _accumulate_surface_votes_masked as _accumulate_surface_votes_masked_impl,
@@ -23,15 +23,18 @@ from pyosv._voting3d.accumulation import (
 )
 from pyosv._voting3d.models import (
     _MaskedUVWBoxSamples,
+    _ReferenceUVWBoxSamples,
     _SurfaceVotingDiagnostic,
     _TangentialRectangle as _TangentialRectangle,
 )
 from pyosv._voting3d.config import SurfaceVoterConfig
 from pyosv._voting3d.context import SurfaceVotingContext
 from pyosv._voting3d.normalization import (
-    _normalize_and_power_3d,
+    _normalize_and_power_3d as _normalize_and_power_3d,  # noqa: F401
+    _normalize_and_power_3d_validated,
     _normalize_unit_range_in_place as _normalize_unit_range_in_place,
-    _smooth_fault_likelihood_3d,
+    _smooth_fault_likelihood_3d as _smooth_fault_likelihood_3d,  # noqa: F401
+    _smooth_fault_likelihood_3d_validated,
 )
 from pyosv._voting3d.orientation import (
     _smooth_surface_for_orientation as _smooth_surface_for_orientation,
@@ -66,10 +69,12 @@ from pyosv._voting3d.thinning import (
 from pyosv._voting3d.uvw_numba import (
     _samples_in_uvw_box_masked_numba,
     _samples_in_uvw_box_numba,
+    _samples_in_uvw_box_reference_with_support_numba,
 )
 from pyosv._voting3d.uvw_python import (
     _samples_in_uvw_box_masked_python,
     _samples_in_uvw_box_python,
+    _samples_in_uvw_box_reference_with_support_python,
 )
 from pyosv._voting3d.uvw_sampling import (
     _crop_masked_uvw_box,
@@ -269,42 +274,52 @@ class OptimalSurfaceVoter:
             ("ft", "pt", "tt"),
         )
         threshold = np.float32(fm)
-        n3, n2, n1 = ft_array.shape
+        return self._pick_seeds_validated(
+            distance,
+            threshold,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
 
-        candidates = [
-            FaultCell(
-                i1,
-                i2,
-                i3,
-                ft_array[i3, i2, i1],
-                pt_array[i3, i2, i1],
-                tt_array[i3, i2, i1],
-            )
-            for i3 in range(n3)
-            for i2 in range(n2)
-            for i1 in range(n1)
-            if ft_array[i3, i2, i1] > threshold
-        ]
-        candidates.sort(key=operator.attrgetter("fl"))
+    def _pick_seeds_validated(
+        self,
+        distance: int,
+        threshold: np.float32,
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> list[FaultCell]:
+        """Pick seeds from validated matching finite float32 3D volumes.
 
-        mark = np.zeros((n3, n2, n1), dtype=np.bool_)
+        ``distance`` must be a validated nonnegative integer and ``threshold``
+        must already have been converted to ``float32``. The three arrays must
+        have identical shapes; this helper performs no array validation.
+        """
+
+        ft_array, pt_array, tt_array = ft, pt, tt
+        _, n2, n1 = ft_array.shape
+        plane_size = n2 * n1
+        accepted_indices = _select_voter_seed_indices_3d(
+            ft_array,
+            threshold,
+            distance,
+            use_numba=NUMBA_AVAILABLE,
+        )
         seeds: list[FaultCell] = []
-        for cell in reversed(candidates):
-            i1 = cell.i1
-            i2 = cell.i2
-            i3 = cell.i3
-            b1 = max(i1 - distance, 0)
-            b2 = max(i2 - distance, 0)
-            b3 = max(i3 - distance, 0)
-            e1 = min(i1 + distance, n1 - 1)
-            e2 = min(i2 + distance, n2 - 1)
-            e3 = min(i3 + distance, n3 - 1)
-            if mark[b3 : e3 + 1, b2 : e2 + 1, b1 : e1 + 1].any():
-                continue
-
-            seeds.append(cell)
-            mark[i3, i2, i1] = True
-
+        for flat_index in accepted_indices:
+            i3, remainder = divmod(int(flat_index), plane_size)
+            i2, i1 = divmod(remainder, n1)
+            seeds.append(
+                FaultCell(
+                    i1,
+                    i2,
+                    i3,
+                    ft_array[i3, i2, i1],
+                    pt_array[i3, i2, i1],
+                    tt_array[i3, i2, i1],
+                )
+            )
         return seeds
 
     def get_seeds(
@@ -358,8 +373,21 @@ class OptimalSurfaceVoter:
             (ft, pt, tt),
             ("ft", "pt", "tt"),
         )
-        seeds = self.pick_seeds(d, fm, ft_array, pt_array, tt_array)
-        return self.apply_voting_from_seeds(seeds, ft_array, pt_array, tt_array)
+        distance = _validate_nonnegative_int(d, "d")
+        threshold = np.float32(fm)
+        seeds = self._pick_seeds_validated(
+            distance,
+            threshold,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
+        return self._apply_voting_from_seeds_validated(
+            seeds,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
 
     def apply_voting_from_seeds(
         self,
@@ -376,27 +404,66 @@ class OptimalSurfaceVoter:
             (ft, pt, tt),
             ("ft", "pt", "tt"),
         )
-        n3, n2, n1 = ft_array.shape
+        self._validate_seeds(seeds, ft_array.shape)
+        return self._apply_voting_from_seeds_validated(
+            seeds,
+            ft_array,
+            pt_array,
+            tt_array,
+        )
+
+    @staticmethod
+    def _validate_seeds(
+        seeds: Sequence[FaultCell],
+        shape: tuple[int, int, int],
+    ) -> None:
+        """Validate seed types and coordinates once for one voting case."""
+
+        n3, n2, n1 = shape
         for seed in seeds:
             if not isinstance(seed, FaultCell):
                 raise TypeError("seeds must contain FaultCell instances")
             if not (0 <= seed.i1 < n1 and 0 <= seed.i2 < n2 and 0 <= seed.i3 < n3):
                 raise ValueError("seed coordinates must be inside the image bounds")
-        fs = _smooth_fault_likelihood_3d(ft_array)
 
-        fe = np.zeros_like(ft_array, dtype=np.float32)
-        vp = np.zeros_like(ft_array, dtype=np.float32)
-        vt = np.zeros_like(ft_array, dtype=np.float32)
-        vm = np.zeros_like(ft_array, dtype=np.float32)
+    def _apply_voting_from_seeds_validated(
+        self,
+        seeds: Sequence[FaultCell],
+        ft: np.ndarray,
+        pt: np.ndarray,
+        tt: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Vote using validated volumes and seeds without rescanning arrays.
+
+        The volumes must be matching finite 3D ``float32`` arrays. Every seed
+        must be a :class:`FaultCell` inside their shared bounds, either produced
+        by :meth:`_pick_seeds_validated` or checked by :meth:`_validate_seeds`.
+        """
+
+        self._last_surface_voting_diagnostics = ()
+        self._last_surface_voting_policy = self.surface_voting_boundary_policy
+        del pt, tt
+        fs = _smooth_fault_likelihood_3d_validated(ft, sigma=1.0)
+
+        fe = np.zeros_like(ft, dtype=np.float32)
+        vp = np.zeros_like(ft, dtype=np.float32)
+        vt = np.zeros_like(ft, dtype=np.float32)
+        vm = np.zeros_like(ft, dtype=np.float32)
 
         diagnostics: list[_SurfaceVotingDiagnostic] = []
+        handler = self._validated_surface_voting_handler()
         for seed in seeds:
-            diagnostics.append(self._surface_voting(seed, fs, fe, vp, vt, vm))
+            diagnostics.append(self._surface_voting_validated(seed, fs, fe, vp, vt, vm, handler))
         self._last_surface_voting_diagnostics = tuple(diagnostics)
 
-        fv = _normalize_and_power_3d(
+        normalization_sigma = _validate_nonnegative_float(
+            self.final_normalization_smoothing,
+            "final_normalization_smoothing",
+        )
+        fv = _normalize_and_power_3d_validated(
             fe,
-            sigma=self.final_normalization_smoothing,
+            sigma=normalization_sigma,
+            power=8,
         )
         return fv, vp, vt
 
@@ -525,33 +592,54 @@ class OptimalSurfaceVoter:
         """Sample ``1 - fx`` in the seed-centered local ``(w, v, u)`` box."""
 
         i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
+        return self._samples_in_uvw_box_validated(
+            i1,
+            i2,
+            i3,
+            normal,
+            dip,
+            strike,
+            fx_array,
+        )
+
+    def _samples_in_uvw_box_validated(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> np.ndarray:
+        """Sample a validated seed and finite native-float32 3D volume."""
 
         if NUMBA_AVAILABLE:
             return _samples_in_uvw_box_numba(
-                i1,
-                i2,
-                i3,
+                c1,
+                c2,
+                c3,
                 self.ru,
                 self.rv,
                 self.rw,
                 normal,
                 dip,
                 strike,
-                fx_array,
+                fx,
                 self.lmins,
                 self.lmaxs,
             )
         return _samples_in_uvw_box_python(
-            i1,
-            i2,
-            i3,
+            c1,
+            c2,
+            c3,
             self.ru,
             self.rv,
             self.rw,
             normal,
             dip,
             strike,
-            fx_array,
+            fx,
             self.lmins,
             self.lmaxs,
         )
@@ -569,6 +657,27 @@ class OptimalSurfaceVoter:
         """Sample a full UVW box without treating out-of-bounds lags as evidence."""
 
         i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
+        return self._samples_in_uvw_box_masked_validated(
+            i1,
+            i2,
+            i3,
+            normal,
+            dip,
+            strike,
+            fx_array,
+        )
+
+    def _samples_in_uvw_box_masked_validated(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> _MaskedUVWBoxSamples:
+        """Sample a validated seed and finite native-float32 3D volume."""
 
         sampler = (
             _samples_in_uvw_box_masked_numba
@@ -576,16 +685,16 @@ class OptimalSurfaceVoter:
             else _samples_in_uvw_box_masked_python
         )
         costs, valid_lag_mask, admissible_count, in_bounds_count = sampler(
-            i1,
-            i2,
-            i3,
+            c1,
+            c2,
+            c3,
             self.ru,
             self.rv,
             self.rw,
             normal,
             dip,
             strike,
-            fx_array,
+            fx,
             self.lmins,
             self.lmaxs,
         )
@@ -595,6 +704,66 @@ class OptimalSurfaceVoter:
             w_offset=0,
             v_offset=0,
             full_tangential_shape=costs.shape[:2],
+            admissible_lag_count=int(admissible_count),
+            in_bounds_lag_count=int(in_bounds_count),
+        )
+
+    def _samples_in_uvw_box_reference_with_support(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> _ReferenceUVWBoxSamples:
+        """Sample reference costs while counting rounded in-bounds support."""
+
+        i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
+        return self._samples_in_uvw_box_reference_with_support_validated(
+            i1,
+            i2,
+            i3,
+            normal,
+            dip,
+            strike,
+            fx_array,
+        )
+
+    def _samples_in_uvw_box_reference_with_support_validated(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> _ReferenceUVWBoxSamples:
+        """Sample a validated seed and finite native-float32 3D volume."""
+
+        sampler = (
+            _samples_in_uvw_box_reference_with_support_numba
+            if NUMBA_AVAILABLE
+            else _samples_in_uvw_box_reference_with_support_python
+        )
+        cost, admissible_count, in_bounds_count = sampler(
+            c1,
+            c2,
+            c3,
+            self.ru,
+            self.rv,
+            self.rw,
+            normal,
+            dip,
+            strike,
+            fx,
+            self.lmins,
+            self.lmaxs,
+        )
+        return _ReferenceUVWBoxSamples(
+            cost=cost,
             admissible_lag_count=int(admissible_count),
             in_bounds_lag_count=int(in_bounds_count),
         )
@@ -625,21 +794,53 @@ class OptimalSurfaceVoter:
         if not 0 <= c3 < n3:
             raise ValueError("cell.i3 must be inside the image bounds")
 
-        policy = SURFACE_VOTING_POLICY_REGISTRY.get(self.surface_voting_boundary_policy)
-        if policy is None:
-            allowed = ", ".join(repr(value) for value in _SURFACE_VOTING_BOUNDARY_POLICIES)
-            raise ValueError(f"policy must be one of: {allowed}")
-        handler = {
-            "reference": self._surface_voting_reference,
-            "masked_in_bounds": self._surface_voting_masked_in_bounds,
-        }[self.surface_voting_boundary_policy]
-        return handler(
+        return self._surface_voting_validated(
             cell,
             ft_array,
             fe_array,
             vp_array,
             vt_array,
             vm_array,
+            self._validated_surface_voting_handler(),
+        )
+
+    def _validated_surface_voting_handler(
+        self,
+    ) -> Callable[..., _SurfaceVotingDiagnostic]:
+        """Validate the configured policy and return its case-level handler."""
+
+        policy = SURFACE_VOTING_POLICY_REGISTRY.get(self.surface_voting_boundary_policy)
+        if policy is None:
+            allowed = ", ".join(repr(value) for value in _SURFACE_VOTING_BOUNDARY_POLICIES)
+            raise ValueError(f"policy must be one of: {allowed}")
+        return {
+            "reference": self._surface_voting_reference,
+            "masked_in_bounds": self._surface_voting_masked_in_bounds,
+        }[self.surface_voting_boundary_policy]
+
+    def _surface_voting_validated(
+        self,
+        cell: FaultCell,
+        ft: np.ndarray,
+        fe: np.ndarray,
+        vp: np.ndarray,
+        vt: np.ndarray,
+        vm: np.ndarray,
+        handler: Callable[..., _SurfaceVotingDiagnostic],
+    ) -> _SurfaceVotingDiagnostic:
+        """Accumulate one validated seed into matching validated case arrays.
+
+        The caller must validate the seed type and bounds, all five matching 3D
+        array shapes, and the selected policy handler at case level.
+        """
+
+        return handler(
+            cell,
+            ft,
+            fe,
+            vp,
+            vt,
+            vm,
             cell.fault_normal(),
             cell.fault_dip_vector(),
             cell.fault_strike_vector(),
@@ -683,8 +884,11 @@ class OptimalSurfaceVoter:
             normal=normal,
             dip=dip,
             strike=strike,
-            sample_reference=self.samples_in_uvw_box,
-            sample_masked=self._samples_in_uvw_box_masked,
+            sample_reference=self._samples_in_uvw_box_validated,
+            sample_reference_with_support=(
+                self._samples_in_uvw_box_reference_with_support_validated
+            ),
+            sample_masked=self._samples_in_uvw_box_masked_validated,
             find_surface=find_surface_3d,
             find_surface_masked=_find_surface_3d_masked,
             score_reference=_surface_vote_average,

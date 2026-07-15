@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import operator
-
 import numpy as np
 
+from pyosv._accel import NUMBA_AVAILABLE
+from pyosv._seed_selection import _select_skinner_seed_indices_3d
 from pyosv._skinner.models import _SkinCell
 from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.validation import (
@@ -39,14 +39,24 @@ def _mark_occupied_skin(
     radius: int = 5,
 ) -> None:
     radius_int = _validate_nonnegative_int(radius, "accepted_occupancy_radius")
+    _mark_occupied_skin_validated(occupied, skin, radius_int)
+
+
+def _mark_occupied_skin_validated(
+    occupied: _SkinOccupancyMask,
+    skin: FaultSkin,
+    radius: int,
+) -> None:
+    """Mark a skin using a previously validated nonnegative radius."""
+
     for cell in skin:
         occupied.mark_box(
             cell.i1,
             cell.i2,
             cell.i3,
-            radius_int,
-            radius_int,
-            radius_int,
+            radius,
+            radius,
+            radius,
         )
 
 
@@ -69,38 +79,47 @@ def _find_reference_seeds(
         (ep, ft, pt, tt),
         ("ep", "ft", "pt", "tt"),
     )
-    n3, n2, n1 = ft_array.shape
-
-    candidates: list[tuple[float, int, int, int]] = []
-    candidate_mask = (ep_array > np.float32(planarity_threshold)) & (
-        ft_array > np.float32(threshold)
-    )
-    for i3, i2, i1 in np.argwhere(candidate_mask):
-        candidates.append(
-            (
-                float(ft_array[i3, i2, i1]),
-                operator.index(i3),
-                operator.index(i2),
-                operator.index(i1),
-            ),
-        )
-
-    candidates.sort(
-        key=lambda candidate: (-candidate[0], candidate[1], candidate[2], candidate[3]),
+    return _find_reference_seeds_validated(
+        d=distance,
+        fm=threshold,
+        ep=ep_array,
+        ft=ft_array,
+        pt=pt_array,
+        tt=tt_array,
+        min_ep=planarity_threshold,
     )
 
-    mark = np.zeros((n3, n2, n1), dtype=np.bool_)
+
+def _find_reference_seeds_validated(
+    d: int,
+    fm: float,
+    ep: np.ndarray,
+    ft: np.ndarray,
+    pt: np.ndarray,
+    tt: np.ndarray,
+    *,
+    min_ep: float = _REFERENCE_SEED_MIN_EP,
+) -> list[_SkinCell]:
+    """Select seeds from validated native-float32, finite, matching 3D arrays."""
+
+    distance = d
+    threshold = fm
+    planarity_threshold = min_ep
+    ep_array, ft_array, pt_array, tt_array = ep, ft, pt, tt
+    _, n2, n1 = ft_array.shape
+    plane_size = n2 * n1
+    accepted_indices = _select_skinner_seed_indices_3d(
+        ep_array,
+        ft_array,
+        np.float32(planarity_threshold),
+        np.float32(threshold),
+        distance,
+        use_numba=NUMBA_AVAILABLE,
+    )
     seeds: list[_SkinCell] = []
-    for _, i3, i2, i1 in candidates:
-        b1 = max(i1 - distance, 0)
-        b2 = max(i2 - distance, 0)
-        b3 = max(i3 - distance, 0)
-        e1 = min(i1 + distance, n1 - 1)
-        e2 = min(i2 + distance, n2 - 1)
-        e3 = min(i3 + distance, n3 - 1)
-        if mark[b3 : e3 + 1, b2 : e2 + 1, b1 : e1 + 1].any():
-            continue
-
+    for flat_index in accepted_indices:
+        i3, remainder = divmod(int(flat_index), plane_size)
+        i2, i1 = divmod(remainder, n1)
         seeds.append(
             _SkinCell(
                 i1,
@@ -109,8 +128,6 @@ def _find_reference_seeds(
                 ft_array[i3, i2, i1],
                 pt_array[i3, i2, i1],
                 tt_array[i3, i2, i1],
-            ),
+            )
         )
-        mark[i3, i2, i1] = True
-
     return seeds

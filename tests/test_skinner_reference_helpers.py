@@ -1,6 +1,14 @@
 import numpy as np
 import pytest
 
+import pyosv._skinner.growth as growth_module
+import pyosv._skinner.reference as reference_module
+import pyosv._skinner.seeds as seeds_module
+from pyosv._skinner.growth import _grow_reference_skin, _grow_reference_skin_validated
+from pyosv._skinner.seeds import (
+    _find_reference_seeds,
+    _find_reference_seeds_validated,
+)
 from pyosv.cells import FaultCell
 from pyosv.skinner import (
     _SkinCell,
@@ -31,6 +39,189 @@ def test_skin_cell_to_fault_cell_returns_public_immutable_cell() -> None:
 
     assert isinstance(fault_cell, FaultCell)
     assert fault_cell == FaultCell(1.2, 2.5, 3.7, 0.8, 30.0, 60.0)
+
+
+def test_validated_seed_helper_matches_validating_wrapper() -> None:
+    ep = np.ones((3, 3, 4), dtype=np.float32)
+    ft = np.zeros_like(ep)
+    pt = np.full_like(ep, 25.0)
+    tt = np.full_like(ep, 70.0)
+    ft[1, 1, 1] = 0.9
+    ft[1, 1, 3] = 0.8
+
+    wrapped = _find_reference_seeds(0, 0.5, ep, ft, pt, tt)
+    validated = _find_reference_seeds_validated(0, 0.5, ep, ft, pt, tt)
+
+    assert [(cell.index, cell.fl, cell.fp, cell.ft) for cell in validated] == [
+        (cell.index, cell.fl, cell.fp, cell.ft) for cell in wrapped
+    ]
+
+
+def test_validated_growth_helper_matches_validating_wrapper() -> None:
+    fv = np.zeros((9, 9, 9), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:6, 4, 3:6] = 0.9
+    seed = _SkinCell(4.0, 4.0, 4.0, 0.9, 0.0, 90.0)
+
+    wrapped = _grow_reference_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        fmin=0.5,
+        ru=3,
+        rv=4,
+        rw=4,
+        max_steps=2,
+        reskin=False,
+    )
+    validated = _grow_reference_skin_validated(
+        seed,
+        fv,
+        vp,
+        vt,
+        fmin=0.5,
+        ru=3,
+        rv=4,
+        rw=4,
+        max_steps=2,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+    )
+
+    assert validated.cells == wrapped.cells
+
+
+@pytest.mark.parametrize("name", ["fv", "vp", "vt"])
+def test_growth_wrapper_rejects_non_finite_volumes(name: str) -> None:
+    volumes = {
+        "fv": np.zeros((5, 5, 5), dtype=np.float32),
+        "vp": np.zeros((5, 5, 5), dtype=np.float32),
+        "vt": np.zeros((5, 5, 5), dtype=np.float32),
+    }
+    volumes[name][2, 2, 2] = np.nan
+    seed = _SkinCell(2.0, 2.0, 2.0, 0.9, 0.0, 90.0)
+
+    with pytest.raises(ValueError, match=f"{name} must contain only finite values"):
+        _grow_reference_skin(
+            seed,
+            volumes["fv"],
+            volumes["vp"],
+            volumes["vt"],
+            fmin=0.5,
+            ru=2,
+            rv=2,
+            rw=2,
+            reskin=False,
+        )
+
+
+def test_growth_wrapper_rejects_mismatched_volume_shapes() -> None:
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    seed = _SkinCell(2.0, 2.0, 2.0, 0.9, 0.0, 90.0)
+
+    with pytest.raises(ValueError, match="fv and vp shapes must match"):
+        _grow_reference_skin(
+            seed,
+            fv,
+            np.zeros((5, 5, 4), dtype=np.float32),
+            np.zeros_like(fv),
+            fmin=0.5,
+            ru=2,
+            rv=2,
+            rw=2,
+            reskin=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"fmin": np.nan}, "fmin"),
+        ({"ru": 1}, "ru must be at least 2"),
+        ({"rv": 1}, "rv must be at least 2"),
+        ({"rw": 1}, "rw must be at least 2"),
+        ({"max_steps": -1}, "max_steps"),
+        ({"du": np.inf}, "du"),
+        ({"max_delta_strike": np.nan}, "max_delta_strike"),
+        ({"reskin": 1}, "reskin"),
+    ],
+)
+def test_growth_wrapper_rejects_invalid_scalars(
+    overrides: dict[str, object],
+    match: str,
+) -> None:
+    volume = np.zeros((5, 5, 5), dtype=np.float32)
+    seed = _SkinCell(2.0, 2.0, 2.0, 0.9, 0.0, 90.0)
+    options: dict[str, object] = {
+        "fmin": 0.5,
+        "ru": 2,
+        "rv": 2,
+        "rw": 2,
+        "max_steps": 1,
+        "du": 5.0,
+        "max_delta_strike": 30.0,
+        "reskin": False,
+    }
+    options.update(overrides)
+
+    with pytest.raises(ValueError, match=match):
+        _grow_reference_skin(seed, volume, volume, volume, **options)  # type: ignore[arg-type]
+
+
+def test_reference_orchestration_scans_all_volumes_for_finiteness_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fv = np.zeros((21, 21, 21), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    ep = np.ones_like(fv)
+    fv[5, 5, 5] = 0.9
+    fv[15, 15, 15] = 0.8
+    validation_calls: list[tuple[str, ...]] = []
+    validate = reference_module._validate_matching_finite_arrays3_many
+
+    def validation_spy(
+        arrays: tuple[np.ndarray, ...],
+        names: tuple[str, ...],
+    ) -> tuple[np.ndarray, ...]:
+        validation_calls.append(names)
+        return validate(arrays, names)
+
+    for module in (reference_module, seeds_module, growth_module):
+        monkeypatch.setattr(
+            module,
+            "_validate_matching_finite_arrays3_many",
+            validation_spy,
+        )
+    diagnostics: dict[str, object] = {}
+
+    reference_module._find_reference_skins(
+        fv=fv,
+        vp=vp,
+        vt=vt,
+        ep=ep,
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        fm=0.5,
+        min_skin_size=1,
+        ru=3,
+        rv=3,
+        rw=3,
+        max_steps=0,
+        du=5.0,
+        max_delta_strike=30.0,
+        reskin=False,
+        accepted_occupancy_radius=0,
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["grow_attempt_count"] == 2
+    assert validation_calls == [("fv", "vp", "vt", "ep", "ft", "pt", "tt")]
 
 
 def test_link_helpers_set_bidirectional_links() -> None:

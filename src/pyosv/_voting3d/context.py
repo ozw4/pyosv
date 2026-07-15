@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from pyosv._voting3d.config import SurfaceVoterConfig
-from pyosv._voting3d.models import _MaskedUVWBoxSamples
+from pyosv._voting3d.models import _MaskedUVWBoxSamples, _ReferenceUVWBoxSamples
 from pyosv.cells import FaultCell
 
 
@@ -28,6 +28,7 @@ class SurfaceVotingContext:
     dip: np.ndarray
     strike: np.ndarray
     sample_reference: Callable[..., np.ndarray]
+    sample_reference_with_support: Callable[..., _ReferenceUVWBoxSamples]
     sample_masked: Callable[..., _MaskedUVWBoxSamples]
     find_surface: Callable[..., np.ndarray]
     find_surface_masked: Callable[..., tuple[np.ndarray | None, int]]

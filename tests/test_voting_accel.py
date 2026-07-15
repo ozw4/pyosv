@@ -352,7 +352,11 @@ def test_numba_3d_seed_order_determinism_is_preserved(
         FaultCell(6, 5, 6, 0.8, 0.0, 90.0),
     ]
 
-    monkeypatch.setattr(voter, "pick_seeds", lambda *_args, **_kwargs: list(seeds))
+    monkeypatch.setattr(
+        voter,
+        "_pick_seeds_validated",
+        lambda *_args, **_kwargs: list(seeds),
+    )
     monkeypatch.setattr(voting3d, "NUMBA_AVAILABLE", True)
 
     first = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
@@ -457,6 +461,33 @@ def test_numba_3d_masked_sampling_matches_fallback_at_float32_half_boundary() ->
     np.testing.assert_array_equal(accelerated[0], fallback[0])
     np.testing.assert_array_equal(accelerated[1], fallback[1])
     assert accelerated[2:] == fallback[2:]
+
+
+@pytest.mark.parametrize("c1", [3, 0, -10])
+def test_numba_3d_reference_sampling_with_support_matches_python_fallback(c1: int) -> None:
+    voter = OptimalSurfaceVoter(ru=3, rv=3, rw=3)
+    i3, i2, i1 = np.indices((7, 7, 7), dtype=np.float32)
+    fx = (1.5 + 0.03 * i1 + 0.07 * i2 + 0.11 * i3).astype(np.float32)
+    args = (
+        c1,
+        3,
+        3,
+        voter.ru,
+        voter.rv,
+        voter.rw,
+        np.array([-0.47, 0.62, -0.33], dtype=np.float32),
+        np.array([-0.40, -0.71, -0.58], dtype=np.float32),
+        np.array([-0.78, -0.12, 0.61], dtype=np.float32),
+        fx,
+        voter.lmins,
+        voter.lmaxs,
+    )
+
+    fallback = voting3d._samples_in_uvw_box_reference_with_support_python(*args)
+    accelerated = voting3d._samples_in_uvw_box_reference_with_support_numba(*args)
+
+    np.testing.assert_array_equal(accelerated[0], fallback[0])
+    assert accelerated[1:] == fallback[1:]
 
 
 def test_numba_3d_masked_score_and_accumulation_match_python_fallback() -> None:

@@ -107,8 +107,14 @@ def _pick_candidate_us(ub: int, candidate_slice: np.ndarray) -> np.ndarray:
     if not np.isfinite(slice_array).all():
         raise ValueError("candidate_slice must contain only finite values")
 
-    local_us = _pick_candidate_local_u_path(slice_array)
-    return (u_start + local_us).astype(np.int32, copy=False)
+    return _pick_candidate_us_validated(u_start, slice_array)
+
+
+def _pick_candidate_us_validated(ub: int, candidate_slice: np.ndarray) -> np.ndarray:
+    """Pick a path from a validated finite float32 candidate slice."""
+
+    local_us = _pick_candidate_local_u_path(candidate_slice)
+    return (ub + local_us).astype(np.int32, copy=False)
 
 
 def _pick_candidate_local_u_path(
@@ -181,6 +187,49 @@ def _grow_reference_skin(
     if radius_w < 2:
         raise ValueError("rw must be at least 2")
 
+    return _grow_reference_skin_validated(
+        seed_cell,
+        fv_array,
+        vp_array,
+        vt_array,
+        fmin=threshold,
+        ru=radius_u,
+        rv=radius_v,
+        rw=radius_w,
+        max_steps=step_limit,
+        du=max_delta_u,
+        max_delta_strike=max_delta_fp,
+        collision_grid=collision_grid,
+        reskin=should_reskin,
+    )
+
+
+def _grow_reference_skin_validated(
+    seed: _SkinCell,
+    fv: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    *,
+    fmin: float,
+    ru: int,
+    rv: int,
+    rw: int,
+    max_steps: int,
+    du: float,
+    max_delta_strike: float,
+    collision_grid: _SkinOccupancyMask | None = None,
+    reskin: bool,
+) -> FaultSkin:
+    """Grow from normalized inputs and native-float32, finite, matching 3D volumes."""
+
+    seed_cell = seed
+    fv_array, vp_array, vt_array = fv, vp, vt
+    threshold = fmin
+    radius_u, radius_v, radius_w = ru, rv, rw
+    step_limit = max_steps
+    max_delta_u = du
+    max_delta_fp = max_delta_strike
+    should_reskin = reskin
     origin = (seed_cell.x1, seed_cell.x2, seed_cell.x3)
     transform_map = _update_transform_map(
         radius_u,
@@ -297,31 +346,19 @@ def _grow_reference_direction(
 
     ub = max(cell.i1 - 5, 0)
     ue = min(cell.i1 + 5, transform_map.us.shape[1] - 1)
-    if axis == "v":
-        candidate_slice = _candidate_slice_above_below(
-            fv,
-            transform_map,
-            origin,
-            ub=ub,
-            ue=ue,
-            vc=cell.i2,
-            wc=cell.i3,
-            direction=direction,
-            max_steps=max_steps,
-        )
-    else:
-        candidate_slice = _candidate_slice_left_right(
-            fv,
-            transform_map,
-            origin,
-            ub=ub,
-            ue=ue,
-            vc=cell.i2,
-            wc=cell.i3,
-            direction=direction,
-            max_steps=max_steps,
-        )
-    picked_us = _pick_candidate_us(ub, candidate_slice)
+    candidate_slice = _candidate_slice_validated(
+        fv,
+        transform_map,
+        origin,
+        ub,
+        ue,
+        cell.i2,
+        cell.i3,
+        direction,
+        axis,
+        max_steps,
+    )
+    picked_us = _pick_candidate_us_validated(ub, candidate_slice)
 
     previous = cell
     for row in range(1, len(picked_us)):
@@ -536,35 +573,65 @@ def _candidate_slice(
     w_center = _validate_transform_index(wc, transform_map.ws, "wc")
     step_sign = _validate_direction(direction)
     step_limit = None if max_steps is None else _validate_nonnegative_int(max_steps, "max_steps")
-
-    if axis == "v":
-        axis_code = 0
-        distance_to_edge = v_center if step_sign < 0 else transform_map.vs.shape[1] - 1 - v_center
-    elif axis == "w":
-        axis_code = 1
-        distance_to_edge = w_center if step_sign < 0 else transform_map.ws.shape[1] - 1 - w_center
-    else:
+    if axis not in {"v", "w"}:
         raise ValueError("axis must be 'v' or 'w'")
-
-    row_count = distance_to_edge + 1
-    if step_limit is not None:
-        row_count = min(row_count, step_limit + 1)
-
     o1, o2, o3 = _validate_origin3(origin)
-    kernel = _candidate_slice_numba if NUMBA_AVAILABLE else _candidate_slice_python
-    return kernel(
+
+    return _candidate_slice_validated(
         fv_array,
-        transform_map.us,
-        transform_map.vs,
-        transform_map.ws,
-        o1,
-        o2,
-        o3,
+        transform_map,
+        (o1, o2, o3),
         u_start,
         u_stop,
         v_center,
         w_center,
         step_sign,
+        axis,
+        step_limit,
+    )
+
+
+def _candidate_slice_validated(
+    fv: np.ndarray,
+    transform_map: _LocalTransformMap,
+    origin: tuple[float, float, float],
+    ub: int,
+    ue: int,
+    vc: int,
+    wc: int,
+    direction: int,
+    axis: str,
+    max_steps: int | None,
+) -> np.ndarray:
+    """Sample a slice from validated finite float32 volume and normalized inputs."""
+
+    if axis == "v":
+        axis_code = 0
+        distance_to_edge = vc if direction < 0 else transform_map.vs.shape[1] - 1 - vc
+    elif axis == "w":
+        axis_code = 1
+        distance_to_edge = wc if direction < 0 else transform_map.ws.shape[1] - 1 - wc
+    else:
+        raise ValueError("axis must be 'v' or 'w'")
+
+    row_count = distance_to_edge + 1
+    if max_steps is not None:
+        row_count = min(row_count, max_steps + 1)
+
+    kernel = _candidate_slice_numba if NUMBA_AVAILABLE else _candidate_slice_python
+    return kernel(
+        fv,
+        transform_map.us,
+        transform_map.vs,
+        transform_map.ws,
+        origin[0],
+        origin[1],
+        origin[2],
+        ub,
+        ue,
+        vc,
+        wc,
+        direction,
         axis_code,
         row_count,
     )

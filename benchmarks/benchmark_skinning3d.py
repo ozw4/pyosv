@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from pyosv._accel import NUMBA_AVAILABLE  # noqa: E402
+from pyosv._seed_selection import _select_skinner_seed_indices_3d  # noqa: E402
 from pyosv._skinner.candidate_sampling import (  # noqa: E402
     _candidate_slice_numba,
     _candidate_slice_python,
@@ -161,6 +162,32 @@ def main(argv: list[str] | None = None) -> int:
     skin_likelihoods = skin.likelihoods()
 
     seed_planarity = np.ones_like(fv)
+    python_seed_times, python_seed_indices = time_repeated(
+        lambda: _select_skinner_seed_indices_3d(
+            seed_planarity,
+            fv,
+            np.float32(0.8),
+            np.float32(0.5),
+            1,
+            use_numba=False,
+        ),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    numba_seed_times, numba_seed_indices = time_repeated(
+        lambda: _select_skinner_seed_indices_3d(
+            seed_planarity,
+            fv,
+            np.float32(0.8),
+            np.float32(0.5),
+            1,
+            use_numba=True,
+        ),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+    if not np.array_equal(python_seed_indices, numba_seed_indices):
+        raise RuntimeError("Python and Numba seed selectors produced different outputs")
     diagnostics: dict[str, object] = {}
 
     def find_reference_skins():
@@ -244,6 +271,16 @@ def main(argv: list[str] | None = None) -> int:
         f"output_count={len(skin)} {array_fingerprint('skin_likelihood', skin_likelihoods)}",
     )
     print(array_fingerprint("skin_indices", skin_indices))
+    print(
+        f"{timing_summary('seed_selector_python', python_seed_times)} "
+        f"candidate_count={diagnostics['seed_candidate_count_before_spacing']} "
+        f"accepted_count={python_seed_indices.size}",
+    )
+    print(
+        f"{timing_summary('seed_selector_numba', numba_seed_times)} "
+        f"candidate_count={diagnostics['seed_candidate_count_before_spacing']} "
+        f"accepted_count={numba_seed_indices.size}",
+    )
     print(
         f"{timing_summary('reference_skinning', reference_times)} "
         f"output_count={reference_likelihoods.size} "
