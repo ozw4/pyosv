@@ -24,15 +24,12 @@ class ReferenceSurfaceVotingPolicy:
         config = context.config
         cell = context.cell
         c1, c2, c3 = cell.index
-        support = context.sample_masked(
+        samples = context.sample_reference_with_support(
             c1, c2, c3, context.normal, context.dip, context.strike, context.ft
         )
         full_column_count = int((2 * config.rw + 1) * (2 * config.rv + 1))
-        costs = context.sample_reference(
-            c1, c2, c3, context.normal, context.dip, context.strike, context.ft
-        )
         surface = context.find_surface(
-            costs,
+            samples.cost,
             lmin=config.lmin,
             bstrain1=config.bstrain1,
             bstrain2=config.bstrain2,
@@ -61,8 +58,8 @@ class ReferenceSurfaceVotingPolicy:
                 policy="reference",
                 full_column_count=full_column_count,
                 selected_column_count=surface_size,
-                admissible_lag_count=support.admissible_lag_count,
-                in_bounds_lag_count=support.in_bounds_lag_count,
+                admissible_lag_count=samples.admissible_lag_count,
+                in_bounds_lag_count=samples.in_bounds_lag_count,
                 support_fraction=0.0,
                 surface_center_lag=surface_center_lag,
                 selected_invalid_sample_count=surface_size,
@@ -74,8 +71,8 @@ class ReferenceSurfaceVotingPolicy:
                 policy="reference",
                 full_column_count=full_column_count,
                 selected_column_count=0,
-                admissible_lag_count=support.admissible_lag_count,
-                in_bounds_lag_count=support.in_bounds_lag_count,
+                admissible_lag_count=samples.admissible_lag_count,
+                in_bounds_lag_count=samples.in_bounds_lag_count,
                 support_fraction=0.0,
                 surface_center_lag=None,
                 skip_reason="no_feasible_surface",
@@ -87,8 +84,8 @@ class ReferenceSurfaceVotingPolicy:
                 policy="reference",
                 full_column_count=full_column_count,
                 selected_column_count=surface_size,
-                admissible_lag_count=support.admissible_lag_count,
-                in_bounds_lag_count=support.in_bounds_lag_count,
+                admissible_lag_count=samples.admissible_lag_count,
+                in_bounds_lag_count=samples.in_bounds_lag_count,
                 support_fraction=support_fraction,
                 surface_center_lag=surface_center_lag,
                 selected_invalid_sample_count=surface_size - valid_count,
@@ -141,8 +138,8 @@ class ReferenceSurfaceVotingPolicy:
             policy="reference",
             full_tangential_column_count=full_column_count,
             selected_tangential_column_count=surface_size,
-            admissible_lag_count=support.admissible_lag_count,
-            in_bounds_lag_count=support.in_bounds_lag_count,
+            admissible_lag_count=samples.admissible_lag_count,
+            in_bounds_lag_count=samples.in_bounds_lag_count,
             support_fraction=support_fraction,
             surface_center_lag=surface_center_lag,
             surface_projection_count=0,

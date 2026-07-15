@@ -83,6 +83,29 @@ def main(argv: list[str] | None = None) -> int:
     if not np.array_equal(python_seed_indices, numba_seed_indices):
         raise RuntimeError("Python and Numba seed selectors produced different outputs")
 
+    if seeds:
+        sample_cell = seeds[0]
+        sample_index = sample_cell.index
+        sample_normal = sample_cell.fault_normal()
+        sample_dip = sample_cell.fault_dip_vector()
+        sample_strike = sample_cell.fault_strike_vector()
+    else:
+        sample_index = (args.n1 // 2, args.n2 // 2, args.n3 // 2)
+        sample_normal = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        sample_dip = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        sample_strike = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    sampling_times, samples = time_repeated(
+        lambda: voter._samples_in_uvw_box_reference_with_support(
+            *sample_index,
+            sample_normal,
+            sample_dip,
+            sample_strike,
+            ft,
+        ),
+        repeat=args.repeat,
+        warmup=args.warmup,
+    )
+
     def run_once() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return voter.apply_voting(d=args.d, fm=args.fm, ft=ft, pt=pt, tt=tt)
 
@@ -118,6 +141,12 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"{timing_summary('seed_selector_numba', numba_seed_times)} "
         f"candidate_count={candidate_count} accepted_count={numba_seed_indices.size}",
+    )
+    print(
+        f"{timing_summary('reference_uvw_sampling_per_seed', sampling_times)} "
+        f"admissible_lag_count={samples.admissible_lag_count} "
+        f"in_bounds_lag_count={samples.in_bounds_lag_count} "
+        f"{array_fingerprint('cost', samples.cost)}",
     )
     print(
         f"{timing_summary('apply_voting', voting_times)} "

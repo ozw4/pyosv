@@ -23,6 +23,7 @@ from pyosv._voting3d.accumulation import (
 )
 from pyosv._voting3d.models import (
     _MaskedUVWBoxSamples,
+    _ReferenceUVWBoxSamples,
     _SurfaceVotingDiagnostic,
     _TangentialRectangle as _TangentialRectangle,
 )
@@ -68,10 +69,12 @@ from pyosv._voting3d.thinning import (
 from pyosv._voting3d.uvw_numba import (
     _samples_in_uvw_box_masked_numba,
     _samples_in_uvw_box_numba,
+    _samples_in_uvw_box_reference_with_support_numba,
 )
 from pyosv._voting3d.uvw_python import (
     _samples_in_uvw_box_masked_python,
     _samples_in_uvw_box_python,
+    _samples_in_uvw_box_reference_with_support_python,
 )
 from pyosv._voting3d.uvw_sampling import (
     _crop_masked_uvw_box,
@@ -662,6 +665,44 @@ class OptimalSurfaceVoter:
             in_bounds_lag_count=int(in_bounds_count),
         )
 
+    def _samples_in_uvw_box_reference_with_support(
+        self,
+        c1: int,
+        c2: int,
+        c3: int,
+        normal: np.ndarray,
+        dip: np.ndarray,
+        strike: np.ndarray,
+        fx: np.ndarray,
+    ) -> _ReferenceUVWBoxSamples:
+        """Sample reference costs while counting rounded in-bounds support."""
+
+        i1, i2, i3, fx_array = _validate_uvw_sampling_origin(c1, c2, c3, fx)
+        sampler = (
+            _samples_in_uvw_box_reference_with_support_numba
+            if NUMBA_AVAILABLE
+            else _samples_in_uvw_box_reference_with_support_python
+        )
+        cost, admissible_count, in_bounds_count = sampler(
+            i1,
+            i2,
+            i3,
+            self.ru,
+            self.rv,
+            self.rw,
+            normal,
+            dip,
+            strike,
+            fx_array,
+            self.lmins,
+            self.lmaxs,
+        )
+        return _ReferenceUVWBoxSamples(
+            cost=cost,
+            admissible_lag_count=int(admissible_count),
+            in_bounds_lag_count=int(in_bounds_count),
+        )
+
     def _surface_voting(
         self,
         cell: FaultCell,
@@ -779,6 +820,7 @@ class OptimalSurfaceVoter:
             dip=dip,
             strike=strike,
             sample_reference=self.samples_in_uvw_box,
+            sample_reference_with_support=self._samples_in_uvw_box_reference_with_support,
             sample_masked=self._samples_in_uvw_box_masked,
             find_surface=find_surface_3d,
             find_surface_masked=_find_surface_3d_masked,

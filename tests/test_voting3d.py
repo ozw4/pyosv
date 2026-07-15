@@ -2794,6 +2794,160 @@ def test_masked_uvw_sampling_preserves_java_rounding_at_negative_half_boundary(
         assert costs[0, 0, 0] == np.float32(1.0)
 
 
+@pytest.mark.parametrize(
+    ("c1", "expected_in_bounds"),
+    [
+        (2, 3),
+        (0, 2),
+        (-10, 0),
+    ],
+)
+def test_reference_sampling_with_support_matches_legacy_cost_and_counts(
+    c1: int,
+    expected_in_bounds: int,
+) -> None:
+    fx = np.arange(5, dtype=np.float32).reshape(1, 1, 5)
+    lmins = np.array([[-1]], dtype=np.int32)
+    lmaxs = np.array([[1]], dtype=np.int32)
+    normal = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    zero = np.zeros(3, dtype=np.float32)
+    args = (c1, 0, 0, 1, 0, 0, normal, zero, zero, fx, lmins, lmaxs)
+
+    legacy_cost = voting3d._samples_in_uvw_box_python(*args)
+    _, _, legacy_admissible, legacy_in_bounds = voting3d._samples_in_uvw_box_masked_python(*args)
+    cost, admissible_count, in_bounds_count = (
+        voting3d._samples_in_uvw_box_reference_with_support_python(*args)
+    )
+
+    assert cost.dtype == np.float32
+    assert cost.shape == (1, 1, 3)
+    assert admissible_count == legacy_admissible == 3
+    assert in_bounds_count == legacy_in_bounds == expected_in_bounds
+    np.testing.assert_array_equal(cost, legacy_cost)
+
+
+@pytest.mark.parametrize(
+    ("normal_component", "expected_in_bounds"),
+    [
+        (np.float32(0.5), 3),
+        (np.nextafter(np.float32(0.5), np.float32(0.0)), 3),
+        (np.nextafter(np.float32(0.5), np.float32(1.0)), 2),
+    ],
+)
+def test_reference_sampling_with_support_preserves_rounding_boundary(
+    normal_component: np.float32,
+    expected_in_bounds: int,
+) -> None:
+    fx = np.arange(5, dtype=np.float32).reshape(1, 1, 5)
+    lmins = np.array([[-1]], dtype=np.int32)
+    lmaxs = np.array([[1]], dtype=np.int32)
+    zero = np.zeros(3, dtype=np.float32)
+    args = (
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        np.array([normal_component, 0.0, 0.0], dtype=np.float32),
+        zero,
+        zero,
+        fx,
+        lmins,
+        lmaxs,
+    )
+
+    legacy_cost = voting3d._samples_in_uvw_box_python(*args)
+    _, _, legacy_admissible, legacy_in_bounds = voting3d._samples_in_uvw_box_masked_python(*args)
+    cost, admissible_count, in_bounds_count = (
+        voting3d._samples_in_uvw_box_reference_with_support_python(*args)
+    )
+
+    np.testing.assert_array_equal(cost, legacy_cost)
+    assert admissible_count == legacy_admissible == 3
+    assert in_bounds_count == legacy_in_bounds == expected_in_bounds
+
+
+def test_reference_policy_uses_only_combined_uvw_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter = OptimalSurfaceVoter(ru=0, rv=1, rw=1)
+    voter.set_attribute_smoothing(0)
+    voter.set_surface_smoothing(0.0, 0.0)
+    combined = voter._samples_in_uvw_box_reference_with_support
+    combined_calls = 0
+
+    def sample_combined(*args: object) -> object:
+        nonlocal combined_calls
+        combined_calls += 1
+        return combined(*args)  # type: ignore[arg-type]
+
+    def unexpected_sampler(*args: object) -> object:
+        raise AssertionError("reference policy called a legacy UVW sampler")
+
+    monkeypatch.setattr(voter, "_samples_in_uvw_box_reference_with_support", sample_combined)
+    monkeypatch.setattr(voter, "samples_in_uvw_box", unexpected_sampler)
+    monkeypatch.setattr(voter, "_samples_in_uvw_box_masked", unexpected_sampler)
+    ft = np.ones((3, 3, 3), dtype=np.float32)
+    arrays = tuple(np.zeros_like(ft) for _ in range(4))
+
+    diagnostic = voter._surface_voting(FaultCell(1, 1, 1, 1.0, 0.0, 90.0), ft, *arrays)
+
+    assert combined_calls == 1
+    assert not diagnostic.skipped
+
+
+def test_reference_policy_combined_sampling_preserves_votes_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ft = _axis_aligned_ramp_volume((7, 7, 7))
+    cells = [
+        FaultCell(3, 3, 3, float(ft[3, 3, 3]), 0.0, 90.0),
+        FaultCell(3, 3, 0, float(ft[0, 3, 3]), 0.0, 90.0),
+    ]
+    combined_voter = OptimalSurfaceVoter(ru=1, rv=1, rw=1)
+    legacy_voter = OptimalSurfaceVoter(ru=1, rv=1, rw=1)
+    for voter in (combined_voter, legacy_voter):
+        voter.set_attribute_smoothing(0)
+        voter.set_surface_smoothing(0.0, 0.0)
+        voter.set_surface_orientation_smoothing(0.0)
+
+    def legacy_sample_with_support(*args: object) -> object:
+        cost = legacy_voter.samples_in_uvw_box(*args)  # type: ignore[arg-type]
+        support = legacy_voter._samples_in_uvw_box_masked(*args)  # type: ignore[arg-type]
+        return voting3d._ReferenceUVWBoxSamples(
+            cost=cost,
+            admissible_lag_count=support.admissible_lag_count,
+            in_bounds_lag_count=support.in_bounds_lag_count,
+        )
+
+    monkeypatch.setattr(
+        legacy_voter,
+        "_samples_in_uvw_box_reference_with_support",
+        legacy_sample_with_support,
+    )
+    combined_result = combined_voter.apply_voting_from_seeds(
+        cells,
+        ft,
+        np.zeros_like(ft),
+        np.full_like(ft, 90.0),
+    )
+    legacy_result = legacy_voter.apply_voting_from_seeds(
+        cells,
+        ft,
+        np.zeros_like(ft),
+        np.full_like(ft, 90.0),
+    )
+
+    assert combined_voter.surface_voting_diagnostics == legacy_voter.surface_voting_diagnostics
+    assert (
+        combined_voter.surface_voting_diagnostic_summary()
+        == legacy_voter.surface_voting_diagnostic_summary()
+    )
+    for combined_array, legacy_array in zip(combined_result, legacy_result):
+        np.testing.assert_array_equal(combined_array, legacy_array)
+
+
 def test_select_supported_origin_rectangle_returns_full_box_when_supported() -> None:
     supported = np.ones((5, 7), dtype=np.bool_)
 
