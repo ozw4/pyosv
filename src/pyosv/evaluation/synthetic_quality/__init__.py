@@ -19,6 +19,7 @@ from .models import (
     ThinningResult3D,
     VotingResult3D,
 )
+from .profiles import ResolvedWorkflowSettings, resolve_workflow_settings
 
 
 def __getattr__(name: str) -> Any:
@@ -38,9 +39,11 @@ __all__ = [
     "PipelineArtifacts",
     "PipelineEvaluation",
     "PipelineStageTrace3D",
+    "ResolvedWorkflowSettings",
     "SkinningResult3D",
     "ThinningResult3D",
     "VotingResult3D",
     "build_report",
+    "resolve_workflow_settings",
     "run_case",
 ]

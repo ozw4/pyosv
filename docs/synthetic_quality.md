@@ -96,6 +96,13 @@ The stage ownership, config/profile/variant resolution order, scanner reuse
 scope, and public/private module boundary are documented in
 [Architecture](architecture.md).
 
+`resolve_workflow_settings(...)` is the package-level, execution-free API for
+resolving the effective `SyntheticVotingConfig`, `SyntheticSkinningConfig`, and
+thinning-diagnostic flag for a workflow. Passing `voting_config=None` selects
+workflow defaults; passing an explicit `SyntheticVotingConfig`, including its
+default constructor, preserves every supplied field. Skinner explicit flags
+have the same override meaning as the report application.
+
 `pyosv.evaluation.reporting` exposes the immutable `Report`, `ReportConfig`,
 `CaseReport`, `PipelineReport`, `VariantReport`, and `VariantComparison` models,
 along with `report_to_json`, `write_metrics_json`, `summary_csv_text`,
@@ -407,8 +414,12 @@ The public factory cases are:
   skin diagnostics.
 - `boundary_plane`: a fault near the `i2` boundary; tests edge artifact
   behavior and boundary handling.
-- `weak_noisy_plane`: degraded likelihood with deterministic noise; tests
-  robustness under weak contrast.
+- `weak_noisy_plane`: degraded likelihood with seeded deterministic noise;
+  tests robustness under weak contrast. `make_weak_noisy_plane_case(shape,
+  *, seed=20260707)` accepts a non-negative integer seed and preserves the
+  legacy realization when omitted. Its registered case definition exposes
+  `build_case(shape, seed=...)`; the legacy `factory(shape)` call remains
+  unchanged. Other registered cases are deterministic.
 
 ## Case Classification And Findings
 

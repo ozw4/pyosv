@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from pyosv.evaluation.synthetic_quality.config import SyntheticSkinningConfig
+from pyosv.evaluation.synthetic_quality import (
+    ResolvedWorkflowSettings,
+    resolve_workflow_settings,
+)
+from pyosv.evaluation.synthetic_quality.config import (
+    SyntheticSkinningConfig,
+    SyntheticVotingConfig,
+)
 from pyosv.evaluation.synthetic_quality.profiles import (
     WORKFLOW_MODES,
     _effective_include_thinning_diagnostic,
@@ -93,6 +100,96 @@ def test_workflow_profile_effective_defaults(
         effective_skinning.boundary_skinner_fallback,
         effective_skinning.boundary_skinner_fallback_policy,
     ) == expected_skinning
+
+
+@pytest.mark.parametrize(
+    ("workflow_mode", "voter_mode", "skinner_method", "include_diagnostic"),
+    (
+        ("reference", "reference", "reference", False),
+        ("quality", "hybrid_v2", "quality", False),
+        ("diagnostic", "reference", "reference", True),
+    ),
+)
+def test_resolve_workflow_settings_effective_defaults(
+    workflow_mode: str,
+    voter_mode: str,
+    skinner_method: str,
+    include_diagnostic: bool,
+) -> None:
+    settings = resolve_workflow_settings(workflow_mode=workflow_mode)
+
+    assert isinstance(settings, ResolvedWorkflowSettings)
+    assert settings.workflow_mode == workflow_mode
+    assert settings.voting_config.voter_thin_mode == voter_mode
+    assert settings.voting_config.surface_support_min_fraction == 0.0
+    assert settings.voting_config.surface_support_exponent == 0.0
+    assert settings.skinning_config.method == skinner_method
+    assert settings.include_thinning_diagnostic is include_diagnostic
+
+
+def test_explicit_default_voting_config_is_not_a_workflow_default() -> None:
+    explicit_config = SyntheticVotingConfig()
+
+    default_settings = resolve_workflow_settings(workflow_mode="quality")
+    explicit_settings = resolve_workflow_settings(
+        workflow_mode="quality",
+        voting_config=explicit_config,
+    )
+
+    assert default_settings.voting_config.voter_thin_mode == "hybrid_v2"
+    assert explicit_settings.voting_config is explicit_config
+    assert explicit_settings.voting_config.voter_thin_mode == "reference"
+
+
+def test_resolve_workflow_settings_rejects_invalid_config_types() -> None:
+    with pytest.raises(ValueError, match="voting_config must be"):
+        resolve_workflow_settings(voting_config=object())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="skinning_config must be"):
+        resolve_workflow_settings(skinning_config=object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("fallback", "explicit", "expected"),
+    (
+        (False, False, True),
+        (True, True, True),
+        (False, True, False),
+    ),
+)
+def test_resolve_quality_boundary_fallback(
+    fallback: bool,
+    explicit: bool,
+    expected: bool,
+) -> None:
+    settings = resolve_workflow_settings(
+        workflow_mode="quality",
+        skinning_config=SyntheticSkinningConfig(
+            boundary_skinner_fallback=fallback,
+            boundary_skinner_fallback_policy="degraded_primary",
+        ),
+        skinner_boundary_fallback_explicit=explicit,
+    )
+
+    assert settings.skinning_config.boundary_skinner_fallback is expected
+    assert settings.skinning_config.boundary_skinner_fallback_policy == "degraded_primary"
+
+
+@pytest.mark.parametrize("workflow_mode", ("reference", "diagnostic"))
+def test_resolve_non_quality_workflow_preserves_skinning_config(
+    workflow_mode: str,
+) -> None:
+    skinning_config = SyntheticSkinningConfig(
+        method="connected_component",
+        boundary_skinner_fallback=True,
+        boundary_skinner_fallback_policy="degraded_primary",
+    )
+
+    settings = resolve_workflow_settings(
+        workflow_mode=workflow_mode,
+        skinning_config=skinning_config,
+    )
+
+    assert settings.skinning_config is skinning_config
 
 
 def test_validate_workflow_mode_rejects_unknown_mode() -> None:

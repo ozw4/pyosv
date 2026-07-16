@@ -12,8 +12,9 @@ from pyosv.evaluation.synthetic_quality.scanner import (
     scan_backend_attributes,
     scan_ensemble_attributes,
     scanner_attributes_from_case,
+    scanner_attributes_from_input,
 )
-from pyosv.synthetic3d import make_single_vertical_plane_case
+from pyosv.synthetic3d import make_scanner_input_from_case, make_single_vertical_plane_case
 
 
 def test_scanner_backends_contract() -> None:
@@ -130,6 +131,84 @@ def test_scanner_attributes_are_deterministic() -> None:
     assert first.volumes.keys() == second.volumes.keys()
     for name in first.volumes:
         np.testing.assert_array_equal(first.volumes[name], second.volumes[name])
+
+
+def test_scanner_attributes_from_case_matches_prepared_input_path() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    config = SyntheticScannerConfig(
+        backend="fast",
+        phi_min=0.0,
+        phi_max=0.0,
+        theta_min=90.0,
+        theta_max=90.0,
+        sigma1=1.0,
+        sigma2=1.0,
+        scanner_thin_mode="none",
+    )
+    scanner_input = make_scanner_input_from_case(case, config.input_config)
+
+    wrapped = scanner_attributes_from_case(case, config)
+    prepared = scanner_attributes_from_input(case, config, scanner_input)
+
+    assert wrapped.report == prepared.report
+    assert wrapped.volumes.keys() == prepared.volumes.keys()
+    for name in wrapped.volumes:
+        np.testing.assert_array_equal(wrapped.volumes[name], prepared.volumes[name])
+
+
+def test_scanner_attributes_from_input_protects_float32_input_from_write_flag_bypass() -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+    scanner_input = np.ones(case.shape, dtype=np.float32)
+    original = scanner_input.copy()
+    seen_input: np.ndarray | None = None
+
+    def backend_scan(scanner, config, input_array, backend):
+        nonlocal seen_input
+        seen_input = input_array
+        with pytest.raises(ValueError, match="cannot set WRITEABLE flag"):
+            input_array.setflags(write=True)
+        with pytest.raises(ValueError, match="read-only"):
+            input_array[0, 0, 0] = 0.0
+        volumes = tuple(np.full(case.shape, value, dtype=np.float32) for value in (1, 2, 3))
+        return *volumes, None
+
+    attributes = scanner_attributes_from_input(
+        case,
+        SyntheticScannerConfig(backend="fast", scanner_thin_mode="none"),
+        scanner_input,
+        backend_scan=backend_scan,
+    )
+
+    assert seen_input is not None
+    assert not np.shares_memory(seen_input, scanner_input)
+    assert scanner_input.flags.writeable
+    np.testing.assert_array_equal(scanner_input, original)
+    assert attributes.volumes["scanner_input"] is seen_input
+
+
+@pytest.mark.parametrize(
+    ("scanner_input", "message"),
+    (
+        (np.zeros((2, 2, 2), dtype=np.float32), "shape must match"),
+        (np.full((3, 3, 3), "x"), "numeric array"),
+        (np.full((3, 3, 3), np.nan, dtype=np.float32), "finite values"),
+    ),
+)
+def test_scanner_attributes_from_input_validates_input_before_scanning(
+    scanner_input: np.ndarray, message: str
+) -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+
+    def unexpected_scan(*args):
+        raise AssertionError("invalid input must not be scanned")
+
+    with pytest.raises(ValueError, match=message):
+        scanner_attributes_from_input(
+            case,
+            SyntheticScannerConfig(backend="fast"),
+            scanner_input,
+            backend_scan=unexpected_scan,
+        )
 
 
 @pytest.mark.parametrize("factor", (0, 5, True, 1.5))

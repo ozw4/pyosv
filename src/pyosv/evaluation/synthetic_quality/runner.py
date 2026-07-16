@@ -34,8 +34,11 @@ from pyosv.evaluation.synthetic_quality.models import (
 )
 from pyosv.evaluation.synthetic_quality.pipeline import run_voting_from_attributes
 from pyosv.evaluation.synthetic_quality.scanner import (
+    SCANNER_BACKENDS,
     ScannerAttributes,
+    _validated_scanner_input,
     scanner_attributes_from_case,
+    scanner_attributes_from_input,
 )
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
@@ -51,7 +54,7 @@ from pyosv.evaluation.reporting.json_v1 import LegacyReportV1Adapter
 from pyosv.evaluation.reporting.models import CaseReport
 from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
 from pyosv.experimental.boundary_thinning import fvt_recenter_target_distance_diagnostics
-from pyosv.synthetic3d import Synthetic3DCase
+from pyosv.synthetic3d import Synthetic3DCase, make_scanner_input_from_case
 
 PIPELINE_OUTPUTS_KEY = "__pipelines__"
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
@@ -145,25 +148,33 @@ def prepare_case_inputs(
     scanner_config: SyntheticScannerConfig,
     input_mode: str,
     scanner_backend_matrix: bool,
+    scanner_backends: Sequence[str] | None = None,
 ) -> PreparedCaseInputs:
     """Generate inputs shared by every variant in a single report build."""
 
     valid_input_mode = validate_input_mode(input_mode)
+    backends = _scanner_backends_to_prepare(
+        scanner_config,
+        scanner_backend_matrix=scanner_backend_matrix,
+        scanner_backends=scanner_backends,
+    )
     oracle = OrientationField3D(ft=case.ft_oracle, pt=case.pt_oracle, tt=case.tt_oracle)
     if valid_input_mode == "oracle":
         return PreparedCaseInputs(case=case, oracle=oracle, scanner=None)
 
-    selected = scanner_attributes_from_case(case, scanner_config)
-    by_backend = {scanner_config.backend: selected}
-    if scanner_backend_matrix:
-        backends = SCANNER_BACKEND_MATRIX_BACKENDS
-        if scanner_config.backend not in backends:
-            backends = (*backends, scanner_config.backend)
-        for backend in backends:
-            if backend not in by_backend:
-                by_backend[backend] = scanner_attributes_from_case(
-                    case, replace(scanner_config, backend=backend)
-                )
+    scanner_input = _validated_scanner_input(
+        case,
+        make_scanner_input_from_case(case, scanner_config.input_config),
+    )
+    by_backend = {
+        backend: scanner_attributes_from_input(
+            case,
+            replace(scanner_config, backend=backend),
+            scanner_input,
+        )
+        for backend in backends
+    }
+    selected = by_backend[scanner_config.backend]
     prepared_scanner = PreparedScannerInput(
         config=scanner_config,
         selected=selected,
@@ -187,6 +198,42 @@ def prepare_case_inputs(
         case=case,
         oracle=oracle,
         scanner=prepared_scanner,
+    )
+
+
+def _scanner_backends_to_prepare(
+    scanner_config: SyntheticScannerConfig,
+    *,
+    scanner_backend_matrix: bool,
+    scanner_backends: Sequence[str] | None,
+) -> tuple[str, ...]:
+    if scanner_backends is not None and scanner_backend_matrix:
+        raise ValueError("scanner_backends cannot be combined with scanner_backend_matrix=True")
+    if scanner_backends is not None:
+        explicit_backends = tuple(scanner_backends)
+        if len(set(explicit_backends)) != len(explicit_backends):
+            raise ValueError("scanner_backends must not contain duplicates")
+        unknown = tuple(backend for backend in explicit_backends if backend not in SCANNER_BACKENDS)
+        if unknown:
+            raise ValueError(f"scanner_backends contains unknown backend {unknown[0]!r}")
+        if scanner_config.backend not in explicit_backends:
+            raise ValueError(
+                "scanner_backends must include the selected scanner_config.backend "
+                f"{scanner_config.backend!r}"
+            )
+        return explicit_backends
+    if not scanner_backend_matrix:
+        return (scanner_config.backend,)
+
+    # Preserve the legacy execution order: selected first, then missing matrix
+    # backends in the established report order.
+    return (
+        scanner_config.backend,
+        *(
+            backend
+            for backend in SCANNER_BACKEND_MATRIX_BACKENDS
+            if backend != scanner_config.backend
+        ),
     )
 
 

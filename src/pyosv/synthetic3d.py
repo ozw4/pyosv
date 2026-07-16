@@ -560,8 +560,13 @@ def make_crossing_planes_case(
 
 def make_weak_noisy_plane_case(
     shape: tuple[int, int, int] = (64, 64, 64),
+    *,
+    seed: int = 20260707,
 ) -> Synthetic3DCase:
     """Return a controlled single-plane case with weak deterministic noisy likelihood."""
+    if not isinstance(seed, Integral) or isinstance(seed, bool) or seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+    seed = int(seed)
     n3, n2, n1 = validate_shape3(shape)
     spec = SyntheticPlaneSpec(
         case_id="weak_noisy_plane",
@@ -573,7 +578,7 @@ def make_weak_noisy_plane_case(
         mask_half_width=1.0,
     )
     component = _plane_component_from_spec(spec, fault_id=1)
-    rng = np.random.default_rng(20260707)
+    rng = np.random.default_rng(seed)
     base = np.exp(-0.5 * (component.signed_distance / spec.likelihood_sigma) ** 2)
     noise = rng.normal(0.0, 0.06, size=spec.shape)
     likelihood = np.clip(0.03 + 0.65 * base + noise, 0.0, 1.0).astype(np.float32)

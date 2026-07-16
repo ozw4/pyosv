@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from pyosv.synthetic3d import (
     Synthetic3DCase,
@@ -17,12 +18,40 @@ from pyosv.synthetic3d import (
 )
 
 
+class _SeededCaseFactory(Protocol):
+    def __call__(
+        self,
+        shape: tuple[int, int, int],
+        *,
+        seed: int,
+    ) -> Synthetic3DCase: ...
+
+
 @dataclass(frozen=True, slots=True)
 class SyntheticQualityCaseDefinition:
     """A controlled synthetic report case definition."""
 
     case_id: str
     factory: Callable[[tuple[int, int, int]], Synthetic3DCase]
+    seeded_factory: _SeededCaseFactory | None = None
+
+    @property
+    def is_stochastic(self) -> bool:
+        """Whether this case supports distinct seeded realizations."""
+
+        return self.seeded_factory is not None
+
+    def build_case(
+        self,
+        shape: tuple[int, int, int],
+        *,
+        seed: int | None = None,
+    ) -> Synthetic3DCase:
+        """Build a case, passing a seed only to a seed-aware factory."""
+
+        if seed is not None and self.seeded_factory is not None:
+            return self.seeded_factory(shape, seed=seed)
+        return self.factory(shape)
 
 
 MINIMAL_CASES = (
@@ -47,7 +76,11 @@ EXTENDED_CASES = (
     SyntheticQualityCaseDefinition("parallel_planes", make_parallel_planes_case),
     SyntheticQualityCaseDefinition("crossing_planes", make_crossing_planes_case),
     SyntheticQualityCaseDefinition("boundary_plane", make_boundary_plane_case),
-    SyntheticQualityCaseDefinition("weak_noisy_plane", make_weak_noisy_plane_case),
+    SyntheticQualityCaseDefinition(
+        "weak_noisy_plane",
+        make_weak_noisy_plane_case,
+        seeded_factory=make_weak_noisy_plane_case,
+    ),
 )
 CASE_SETS = {
     "minimal": MINIMAL_CASES,

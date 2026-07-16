@@ -22,7 +22,7 @@ from pyosv.evaluation.synthetic_quality.runner import (
     run_case_variant,
     run_scanner_pipeline,
 )
-from pyosv.evaluation.synthetic_quality import runner
+from pyosv.evaluation.synthetic_quality import runner, scanner
 from pyosv.cli import synthetic_quality
 from pyosv.synthetic3d import make_single_vertical_plane_case
 
@@ -371,14 +371,14 @@ def test_scanner_cache_report_build_scans_once_per_case_across_variants(
 ) -> None:
     example = _load_example_module()
     calls = 0
-    implementation = runner.scanner_attributes_from_case
+    implementation = runner.scanner_attributes_from_input
 
     def counting_scanner(*args: object, **kwargs: object) -> object:
         nonlocal calls
         calls += 1
         return implementation(*args, **kwargs)
 
-    monkeypatch.setattr(runner, "scanner_attributes_from_case", counting_scanner)
+    monkeypatch.setattr(runner, "scanner_attributes_from_input", counting_scanner)
     example.build_report(
         case_set="extended",
         shape=(9, 9, 9),
@@ -451,15 +451,28 @@ def test_prepared_backend_matrix_scans_each_backend_once(
 ) -> None:
     case = make_single_vertical_plane_case((9, 9, 9))
     backends: list[str] = []
-    implementation = runner.scanner_attributes_from_case
+    input_ids: list[int] = []
+    generated = 0
+    implementation = runner.scanner_attributes_from_input
+    make_input = runner.make_scanner_input_from_case
+
+    def counting_input(*args, **kwargs):
+        nonlocal generated
+        generated += 1
+        return make_input(*args, **kwargs)
 
     def counting_scanner(
-        case_arg: object, config: SyntheticScannerConfig, **kwargs: object
-    ) -> object:
+        case_arg: object,
+        config: SyntheticScannerConfig,
+        scanner_input: np.ndarray,
+        **kwargs,
+    ):
         backends.append(config.backend)
-        return implementation(case_arg, config, **kwargs)
+        input_ids.append(id(scanner_input))
+        return implementation(case_arg, config, scanner_input, **kwargs)
 
-    monkeypatch.setattr(runner, "scanner_attributes_from_case", counting_scanner)
+    monkeypatch.setattr(runner, "make_scanner_input_from_case", counting_input)
+    monkeypatch.setattr(runner, "scanner_attributes_from_input", counting_scanner)
     prepared = prepare_case_inputs(
         case,
         scanner_config=_fast_scanner_config(),
@@ -468,5 +481,185 @@ def test_prepared_backend_matrix_scans_each_backend_once(
     )
 
     assert prepared.scanner is not None
+    assert generated == 1
     assert backends == ["fast", "reference-like", "quality"]
+    assert len(set(input_ids)) == 1
     assert set(prepared.scanner.by_backend) == {"reference-like", "quality", "fast"}
+
+
+def test_explicit_scanner_backends_share_one_input_in_requested_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+    generated = 0
+    calls: list[tuple[str, int]] = []
+    implementation = runner.scanner_attributes_from_input
+    make_input = runner.make_scanner_input_from_case
+
+    def counting_input(*args, **kwargs):
+        nonlocal generated
+        generated += 1
+        return make_input(*args, **kwargs)
+
+    def counting_attributes(case_arg, config, scanner_input, **kwargs):
+        calls.append((config.backend, id(scanner_input)))
+        return implementation(case_arg, config, scanner_input, **kwargs)
+
+    monkeypatch.setattr(runner, "make_scanner_input_from_case", counting_input)
+    monkeypatch.setattr(runner, "scanner_attributes_from_input", counting_attributes)
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=SyntheticScannerConfig(
+            backend="quality",
+            phi_min=0.0,
+            phi_max=0.0,
+            theta_min=90.0,
+            theta_max=90.0,
+            sigma1=1.0,
+            sigma2=1.0,
+            scanner_thin_mode="none",
+        ),
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+        scanner_backends=("reference-like", "quality"),
+    )
+
+    assert prepared.scanner is not None
+    assert generated == 1
+    assert [backend for backend, _ in calls] == ["reference-like", "quality"]
+    assert len({input_id for _, input_id in calls}) == 1
+    assert list(prepared.scanner.by_backend) == ["reference-like", "quality"]
+
+
+def test_explicit_scanner_backends_scan_and_thin_once_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+    calls = {"construct": 0, "scan": 0, "scan_quality": 0, "thin": 0}
+
+    class CountingScanner:
+        def __init__(self, sigma1: float, sigma2: float) -> None:
+            calls["construct"] += 1
+
+        def scan(self, *args):
+            calls["scan"] += 1
+            return tuple(np.full(case.shape, value, dtype=np.float32) for value in (1.0, 2.0, 3.0))
+
+        def scan_quality(self, *args, refinement_factor, return_confidence):
+            calls["scan_quality"] += 1
+            assert return_confidence is True
+            return (
+                *(np.full(case.shape, value, dtype=np.float32) for value in (4.0, 5.0, 6.0)),
+                np.ones(case.shape, dtype=np.float32),
+            )
+
+        def thin(self, ft, pt, tt, **kwargs):
+            calls["thin"] += 1
+            return ft.copy(), pt.copy(), tt.copy()
+
+    monkeypatch.setattr(scanner, "FaultOrientScanner3", CountingScanner)
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=SyntheticScannerConfig(
+            backend="quality",
+            scanner_thin_mode="normal",
+        ),
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+        scanner_backends=("reference-like", "quality"),
+    )
+
+    assert prepared.scanner is not None
+    assert calls == {"construct": 2, "scan": 1, "scan_quality": 1, "thin": 2}
+
+
+def test_explicit_scanner_backend_results_do_not_depend_on_execution_order() -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+    scanner_config = SyntheticScannerConfig(
+        backend="quality",
+        phi_min=0.0,
+        phi_max=0.0,
+        theta_min=90.0,
+        theta_max=90.0,
+        sigma1=1.0,
+        sigma2=1.0,
+        scanner_thin_mode="none",
+    )
+
+    forward = prepare_case_inputs(
+        case,
+        scanner_config=scanner_config,
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+        scanner_backends=("reference-like", "quality"),
+    )
+    reverse = prepare_case_inputs(
+        case,
+        scanner_config=scanner_config,
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+        scanner_backends=("quality", "reference-like"),
+    )
+
+    assert forward.scanner is not None
+    assert reverse.scanner is not None
+    for backend in ("reference-like", "quality"):
+        assert (
+            forward.scanner.by_backend[backend].report == reverse.scanner.by_backend[backend].report
+        )
+        _assert_nested_arrays_equal(
+            forward.scanner.by_backend[backend].volumes,
+            reverse.scanner.by_backend[backend].volumes,
+        )
+
+
+@pytest.mark.parametrize(
+    ("scanner_backends", "matrix", "message"),
+    (
+        (("fast", "fast"), False, "duplicates"),
+        (("fast", "missing"), False, "unknown backend"),
+        (("reference-like", "quality"), False, "selected"),
+        (("fast",), True, "cannot be combined"),
+    ),
+)
+def test_explicit_scanner_backends_are_rejected_before_input_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    scanner_backends: tuple[str, ...],
+    matrix: bool,
+    message: str,
+) -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+
+    def unexpected_input(*args, **kwargs):
+        raise AssertionError("invalid backends must fail before input generation")
+
+    monkeypatch.setattr(runner, "make_scanner_input_from_case", unexpected_input)
+    with pytest.raises(ValueError, match=message):
+        prepare_case_inputs(
+            case,
+            scanner_config=_fast_scanner_config(),
+            input_mode="scanner",
+            scanner_backend_matrix=matrix,
+            scanner_backends=scanner_backends,
+        )
+
+
+def test_explicit_scanner_backends_do_no_scanner_work_in_oracle_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+
+    def unexpected_work(*args, **kwargs):
+        raise AssertionError("oracle mode must not generate or scan scanner input")
+
+    monkeypatch.setattr(runner, "make_scanner_input_from_case", unexpected_work)
+    monkeypatch.setattr(runner, "scanner_attributes_from_input", unexpected_work)
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=_fast_scanner_config(),
+        input_mode="oracle",
+        scanner_backend_matrix=False,
+        scanner_backends=("reference-like", "fast", "quality"),
+    )
+
+    assert prepared.scanner is None
