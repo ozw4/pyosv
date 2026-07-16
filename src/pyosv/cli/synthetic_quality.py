@@ -497,6 +497,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable reference-like reskin smoothing/reorientation.",
     )
+    boundary_fallback_group = parser.add_mutually_exclusive_group()
+    boundary_fallback_group.add_argument(
+        "--skinner-boundary-fallback",
+        dest="skinner_boundary_fallback",
+        action="store_true",
+        help="Enable boundary skinner fallback.",
+    )
+    boundary_fallback_group.add_argument(
+        "--no-skinner-boundary-fallback",
+        dest="skinner_boundary_fallback",
+        action="store_false",
+        help="Disable boundary skinner fallback, including the quality-workflow default.",
+    )
+    parser.set_defaults(skinner_boundary_fallback=None)
     parser.add_argument(
         "--skinner-accepted-occupancy-radius",
         type=parse_optional_nonnegative_int,
@@ -1155,6 +1169,7 @@ def run_example(
     skinner_min_likelihood_explicit: bool = False,
     skinner_growth_source_explicit: bool = False,
     skinner_accepted_occupancy_radius_explicit: bool = False,
+    skinner_boundary_fallback_explicit: bool = False,
     pretty: bool = False,
     save_volumes: bool = False,
     save_figures: bool = False,
@@ -1180,6 +1195,7 @@ def run_example(
         skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
         skinner_growth_source_explicit=skinner_growth_source_explicit,
         skinner_accepted_occupancy_radius_explicit=skinner_accepted_occupancy_radius_explicit,
+        skinner_boundary_fallback_explicit=skinner_boundary_fallback_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         include_scanner_downstream_diagnostics=include_scanner_downstream_diagnostics,
         include_scanner_boundary_stage_diagnostics=(include_scanner_boundary_stage_diagnostics),
@@ -1280,6 +1296,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reskin=not args.no_skinner_reskin,
                 accepted_occupancy_radius=args.skinner_accepted_occupancy_radius,
                 small_skin_size=args.small_skin_size,
+                boundary_skinner_fallback=(
+                    False
+                    if args.skinner_boundary_fallback is None
+                    else args.skinner_boundary_fallback
+                ),
             ),
             variants=variants,
             variant_preset=args.variant_preset,
@@ -1298,6 +1319,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             skinner_accepted_occupancy_radius_explicit=(
                 _argv_has_long_option(raw_argv, "--skinner-accepted-occupancy-radius")
             ),
+            skinner_boundary_fallback_explicit=args.skinner_boundary_fallback is not None,
             include_thinning_diagnostic=include_thinning_diagnostic,
             include_scanner_downstream_diagnostics=args.scanner_downstream_diagnostics,
             include_scanner_boundary_stage_diagnostics=(args.scanner_boundary_stage_diagnostics),

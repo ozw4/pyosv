@@ -74,6 +74,7 @@ def build_report(
     skinner_min_likelihood_explicit: bool = False,
     skinner_growth_source_explicit: bool = False,
     skinner_accepted_occupancy_radius_explicit: bool = False,
+    skinner_boundary_fallback_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     include_scanner_downstream_diagnostics: bool = False,
     include_scanner_boundary_stage_diagnostics: bool = False,
@@ -97,6 +98,7 @@ def build_report(
         skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
         skinner_growth_source_explicit=skinner_growth_source_explicit,
         skinner_accepted_occupancy_radius_explicit=(skinner_accepted_occupancy_radius_explicit),
+        skinner_boundary_fallback_explicit=skinner_boundary_fallback_explicit,
         include_thinning_diagnostic=include_thinning_diagnostic,
         include_scanner_downstream_diagnostics=(include_scanner_downstream_diagnostics),
         include_scanner_boundary_stage_diagnostics=(include_scanner_boundary_stage_diagnostics),
@@ -122,6 +124,7 @@ def _build_report_outputs(
     skinner_min_likelihood_explicit: bool = False,
     skinner_growth_source_explicit: bool = False,
     skinner_accepted_occupancy_radius_explicit: bool = False,
+    skinner_boundary_fallback_explicit: bool = False,
     include_thinning_diagnostic: bool = False,
     include_scanner_downstream_diagnostics: bool = False,
     include_scanner_boundary_stage_diagnostics: bool = False,
@@ -158,6 +161,7 @@ def _build_report_outputs(
         skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
         skinner_growth_source_explicit=skinner_growth_source_explicit,
         skinner_accepted_occupancy_radius_explicit=(skinner_accepted_occupancy_radius_explicit),
+        skinner_boundary_fallback_explicit=skinner_boundary_fallback_explicit,
     )
     if voting_config is None:
         support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(

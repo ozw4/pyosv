@@ -38,6 +38,11 @@ candidate set is not over-filtered for the cases under study. The quality
 workflow also retains `surface_voting_boundary_policy="reference"`; masked UVW
 boundary voting is not part of `current_default`.
 
+Omitting the boundary-fallback CLI options keeps this quality-workflow default.
+Pass `--no-skinner-boundary-fallback` to disable it explicitly, or
+`--skinner-boundary-fallback` to enable it explicitly. Reference and diagnostic
+workflows continue to preserve their configured fallback value.
+
 `diagnostic` workflow keeps the reference workflow defaults and enables
 thinning diagnostics. Use it when comparing current behavior, diagnostic
 variants, and reference-vs-normal thinning on the same synthetic truth.
@@ -53,9 +58,9 @@ filled by the workflow profile.
 ## Boundary-aware Voter Candidate
 
 `boundary_aware_voter_v1` is an explicit-only synthetic-report variant. It
-keeps the selected workflow's scanner backend, scanner thinning, seed
-selection, voter thinning, and skinner settings identical to
-`current_default`, but calls
+preserves the scanner backend and scanner thinning chosen by the run/scanner
+configuration. It keeps the selected workflow's downstream seed selection,
+voter thinning, and skinner settings identical to `current_default`, but calls
 `set_surface_voting_boundary_policy("masked_in_bounds")`. It is absent from
 the default variant list and the `quality-matrix` preset.
 
@@ -598,6 +603,8 @@ grows from the pre-thin vote volume and records
 `skinning.method`, whether the likelihood threshold is adaptive, the seed `ep`
 threshold, `growth_source`, `effective_accepted_occupancy_radius`,
 `boundary_skinner_fallback`, and `seed_planarity_source=fvt` in `metrics.json`.
+An explicit `--no-skinner-boundary-fallback` overrides the quality-workflow
+fallback default without changing its recorded fallback policy.
 
 Primary metrics to compare:
 

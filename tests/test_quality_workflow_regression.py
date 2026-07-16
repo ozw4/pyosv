@@ -218,6 +218,30 @@ def test_quality_workflow_effective_settings_are_recorded(
     assert quality["skinning"]["boundary_skinner_fallback"] is True
 
 
+def test_quality_workflow_explicitly_disabled_boundary_fallback_is_recorded() -> None:
+    module = _load_report_module()
+    report = module.build_report(
+        case_set="minimal",
+        shape=(9, 9, 9),
+        variants=("current_default", "quality_boundary_skinner_fallback"),
+        workflow_mode="quality",
+        skinning_config=module.SyntheticSkinningConfig(boundary_skinner_fallback=False),
+        skinner_boundary_fallback_explicit=True,
+    )
+
+    assert report["format_version"] == 1
+    assert report["config"]["skinning"]["boundary_skinner_fallback"] is False
+    assert report["config"]["skinning"]["boundary_skinner_fallback_policy"] == "empty_primary"
+    variants = report["cases"][0]["variants"]
+    assert variants["current_default"]["config"]["skinning"]["boundary_skinner_fallback"] is False
+    assert (
+        variants["quality_boundary_skinner_fallback"]["config"]["skinning"][
+            "boundary_skinner_fallback"
+        ]
+        is True
+    )
+
+
 def test_quality_workflow_key_metrics_are_finite(
     workflow_reports: dict[str, dict[str, Any]],
 ) -> None:

@@ -84,10 +84,18 @@ full-volume baseline/report command; this document does not imply any planned
 command or output schema.
 
 The script writes `run_config.json`, `metrics.json`, and generated Python
-volumes such as `fv_py.dat` and `fvt_py.dat` under `--output-dir`. Use
-`--skip-save-intermediates` when only final vote volumes and reports are needed.
-Use `--reuse-existing` to reuse complete stage outputs already present in that
-directory; incomplete stage output sets are rejected with a clear error. The
+volumes under `--output-dir`. Its `--reuse-existing` contract is all-or-nothing:
+all ten files in the runner's `OUTPUT_NAMES` set must already exist in that
+directory. If any file is missing, the runner reports the missing names and
+fails before reading F3 volume data or starting scanner or voter computation.
+This is reuse of a complete prior run, not resume from a completed subset of
+stages.
+
+Use `--skip-save-intermediates` when only the report volumes `ft_py.dat`,
+`fv_py.dat`, and `fvt_py.dat` are needed. Because that option does not write the
+complete ten-file set, its output directory cannot subsequently be used with
+`--reuse-existing`. This current runner contract is separate from the stage
+cache and reuse contract deferred for the planned full-volume 2×2 runner. The
 runner rejects both output directories and metrics paths inside the F3 data
 root.
 
@@ -110,10 +118,56 @@ The planned publication matrix is:
 
 Scanner backend and workflow mode are separate axes, as defined in
 [Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
-For each scanner backend, the raw full-volume scan must be computed once, and
-that same raw scan must branch into the reference and quality workflows. A raw
-scanner must not be run twice merely to compare those workflows. Implementing
-stage caching and reuse is deferred to a later change.
+
+The initial publication protocol fixes the following controls. A resolved
+value is held constant across all four cells unless the row explicitly makes
+it part of the scanner-backend definition.
+
+| Control | Fixed contract |
+| --- | --- |
+| Input | One identical `ep.dat` full volume, shape `(420, 400, 100)`, with the same file identity and checksum in all cells |
+| Scanner thinning | `scanner_thin_mode=reference` in all cells |
+| Scanner edge policy | Edge-effect removal is requested and effective: `remove_edge_effects=true` and `effective_remove_edge_effects=true` |
+| Common scanner options | Angle-range bounds, `sigma1`, `sigma2`, interpolation, normalization, dtype (`float32`), and all other options outside the backend definition are held constant |
+| Backend sampling | The reference-like base strike/dip sampling contract is fixed for both `RL-*` cells and supplies the base grid for both `Q-*` cells |
+| Quality refinement | The resolved value is `refinement_factor=2` in every cell; both `Q-*` cells use it, it has no effect on `RL-*`, and workflow cannot change it |
+| Common voting options | Voting radii, seed distance and threshold, strain limits, attribute, surface, and surface-orientation smoothing, and final normalization are held constant unless explicitly workflow-owned below |
+| Comparison overrides | Every explicit workflow-comparison override resolves to the same value in all four cells |
+
+The permitted workflow-owned differences are:
+
+| Setting | Reference workflow | Quality workflow |
+| --- | --- | --- |
+| Effective `voter_thin_mode` | `reference` | `hybrid_v2` |
+| Skinner method | `reference` | `quality` |
+| Minimum likelihood | `0.5` | `None` / adaptive |
+| Growth source | `thinned` | `pre_thin` |
+| Accepted occupancy radius | `None` (effective `5` in reports) | `1` |
+| Boundary fallback and policy | disabled | enabled with `empty_primary` policy |
+
+Scanner backend is the scanner axis. Neither scanner backend nor
+`scanner_thin_mode` is owned by workflow mode. Any setting not listed in the
+workflow-owned table is held constant; an explicit override may suppress a
+workflow default only if it is applied identically to every cell.
+
+For each scanner backend, compute raw full-volume `ft`, `pt`, and `tt` once.
+Apply the fixed scanner reference thinning and edge policy once to produce
+`fet`, `fpt`, and `ftt`, then share those three scanner-thinned volumes between
+the reference and quality workflows for that backend. Workflow comparison must
+not rerun either the raw scanner or scanner thinning. Implementing stage caching
+and reuse is deferred to a later change.
+
+The future runner manifest must record the matrix label, scanner backend,
+workflow mode, `scanner_thin_mode`, requested and effective edge policy,
+refinement factor, all fixed scanner and voting controls as resolved values,
+all workflow-owned resolved values and explicit overrides, and the input
+path/identity/checksum and shape. A matrix label alone is insufficient to prove
+that controls were held constant.
+
+Changing scanner thinning, for example to `scanner_thin_mode=normal`, is a
+separate ablation or an explicitly named third axis. Such a result must record
+that axis and its resolved edge policy and must not be represented only by a
+2×2 label such as `RL-REF`.
 
 Primary metrics must be calculated over all voxels of each fully reconstructed
 volume.

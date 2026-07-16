@@ -107,6 +107,8 @@ def test_explicit_values_take_priority_over_quality_defaults() -> None:
         min_likelihood=0.7,
         growth_source="thinned",
         accepted_occupancy_radius=None,
+        boundary_skinner_fallback=False,
+        boundary_skinner_fallback_policy="degraded_primary",
     )
     effective = _effective_skinning_config_for_workflow(
         workflow_mode="quality",
@@ -115,12 +117,46 @@ def test_explicit_values_take_priority_over_quality_defaults() -> None:
         skinner_min_likelihood_explicit=True,
         skinner_growth_source_explicit=True,
         skinner_accepted_occupancy_radius_explicit=True,
+        skinner_boundary_fallback_explicit=True,
     )
 
     assert effective.method == "quality"
     assert effective.min_likelihood == 0.7
     assert effective.growth_source == "thinned"
     assert effective.accepted_occupancy_radius is None
+    assert effective.boundary_skinner_fallback is False
+    assert effective.boundary_skinner_fallback_policy == "degraded_primary"
+
+
+@pytest.mark.parametrize("fallback", (False, True))
+def test_explicit_boundary_fallback_takes_priority_over_quality_default(
+    fallback: bool,
+) -> None:
+    effective = _effective_skinning_config_for_workflow(
+        workflow_mode="quality",
+        skinning_config=SyntheticSkinningConfig(boundary_skinner_fallback=fallback),
+        skinner_boundary_fallback_explicit=True,
+    )
+
+    assert effective.boundary_skinner_fallback is fallback
+
+
+@pytest.mark.parametrize("workflow_mode", ("reference", "diagnostic"))
+def test_non_quality_workflow_preserves_boundary_fallback(
+    workflow_mode: str,
+) -> None:
+    config = SyntheticSkinningConfig(
+        boundary_skinner_fallback=True,
+        boundary_skinner_fallback_policy="degraded_primary",
+    )
+
+    assert (
+        _effective_skinning_config_for_workflow(
+            workflow_mode=workflow_mode,
+            skinning_config=config,
+        )
+        is config
+    )
 
 
 def test_explicit_reference_skinner_is_not_overridden_by_quality_workflow() -> None:

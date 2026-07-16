@@ -490,6 +490,9 @@ quality
   voter_thin_mode is hybrid_v2 unless --voter-thin-mode is passed. Support-aware
   surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
   is enabled by default, including the empty-primary boundary skinner fallback.
+  Omit the boundary-fallback options to retain that default; pass
+  `--no-skinner-boundary-fallback` to disable it explicitly or
+  `--skinner-boundary-fallback` to enable it explicitly.
   Surface-voting boundary policy remains reference.
 
 diagnostic
@@ -1473,8 +1476,13 @@ Skinning can be disabled with `--skip-skinning`. Skin extraction is configured
 with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
 `--skinner-ru`, `--skinner-rv`, `--skinner-rw`, `--skinner-max-steps`,
 `--skinner-du`, `--skinner-max-delta-strike`, `--skinner-growth-source`,
-`--skinner-accepted-occupancy-radius`, `--no-skinner-reskin`, and
-`--small-skin-size`.
+`--skinner-accepted-occupancy-radius`, `--skinner-boundary-fallback` /
+`--no-skinner-boundary-fallback`, `--no-skinner-reskin`, and `--small-skin-size`.
+When both boundary-fallback options are omitted, the quality workflow enables
+the fallback and the reference and diagnostic workflows preserve the configured
+value. An explicit negative option overrides the quality default. Reports keep
+recording the effective fallback value and policy in the existing skinning
+fields.
 
 The `geometry` and `extended` case sets keep the same top-level JSON contract
 and write one `cases[]` entry per case plus one `summary.csv` row per

@@ -154,6 +154,18 @@ def test_output_dir_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
         module.build_parser().parse_args([])
 
 
+def test_parser_help_explains_all_or_nothing_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_full_module(monkeypatch)
+
+    help_text = " ".join(module.build_parser().format_help().split())
+
+    assert "complete 10-file OUTPUT_NAMES set" in help_text
+    assert "fail before computation" in help_text
+    assert "not partial stage resume" in help_text
+    assert "Output from --skip-save-intermediates cannot be reused" in help_text
+    assert "cannot later be used with --reuse-existing" in help_text
+
+
 def test_ensure_output_not_in_data_root_rejects_equal_and_nested_paths(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -234,7 +246,7 @@ def test_output_json_safety_rejects_path_under_data_root(
         )
 
 
-def test_reuse_mode_reports_missing_intermediate_outputs_clearly(
+def test_reuse_mode_rejects_skip_intermediates_output_set(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -242,7 +254,12 @@ def test_reuse_mode_reports_missing_intermediate_outputs_clearly(
     for name in module.REPORT_OUTPUT_NAMES:
         (tmp_path / name).write_bytes(b"data")
 
-    with pytest.raises(FileNotFoundError, match="pt_py.dat"):
+    monkeypatch.setattr(module, "read_f3d_file", lambda name, root: pytest.fail(name))
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"--reuse-existing requires existing output files: pt_py\.dat",
+    ):
         module.run_or_reuse_pipeline(
             data_root=tmp_path / "f3_reference",
             output_dir=tmp_path,
@@ -274,6 +291,7 @@ def test_reuse_mode_reads_each_full_stage_output_set(
     module = _import_full_module(monkeypatch)
     for name in module.OUTPUT_NAMES:
         (tmp_path / name).write_bytes(b"data")
+    from pyosv.orient3d import FaultOrientScanner3
     from pyosv.voting3d import OptimalSurfaceVoter
 
     read_names: list[tuple[str, ...]] = []
@@ -294,6 +312,26 @@ def test_reuse_mode_reads_each_full_stage_output_set(
         OptimalSurfaceVoter,
         "set_final_normalization_smoothing",
         recording_setter,
+    )
+    monkeypatch.setattr(
+        FaultOrientScanner3,
+        "scan",
+        lambda *args, **kwargs: pytest.fail("scanner calculation must not run"),
+    )
+    monkeypatch.setattr(
+        FaultOrientScanner3,
+        "thin",
+        lambda *args, **kwargs: pytest.fail("scanner thinning must not run"),
+    )
+    monkeypatch.setattr(
+        OptimalSurfaceVoter,
+        "apply_voting",
+        lambda *args, **kwargs: pytest.fail("voter calculation must not run"),
+    )
+    monkeypatch.setattr(
+        OptimalSurfaceVoter,
+        "thin",
+        lambda *args, **kwargs: pytest.fail("voter thinning must not run"),
     )
 
     outputs, runtime = module.run_or_reuse_pipeline(
@@ -336,24 +374,47 @@ def test_reuse_mode_reads_each_full_stage_output_set(
     assert runtime["mode"] == "reuse_existing"
     assert runtime["reused_stages"] == ["scanner", "scanner_thin", "voting", "voter_thin"]
     assert runtime["computed_stages"] == []
+    assert runtime["scanner_elapsed_seconds"] == 0.0
+    assert runtime["scanner_thin_elapsed_seconds"] == 0.0
+    assert runtime["voting_elapsed_seconds"] == 0.0
+    assert runtime["voter_thin_elapsed_seconds"] == 0.0
     assert received_sigmas == [1.0]
 
 
-def test_reuse_mode_rejects_completed_scanner_stage_only(
+def test_reuse_mode_rejects_one_missing_output_before_processing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     module = _import_full_module(monkeypatch)
-    for name in module.SCANNER_OUTPUT_NAMES:
+    missing_name = "fet_py.dat"
+    for name in module.OUTPUT_NAMES:
+        if name == missing_name:
+            continue
         (tmp_path / name).write_bytes(b"data")
+
+    import pyosv.orient3d as orient3d
+    import pyosv.voting3d as voting3d
 
     def fake_read_outputs(output_dir: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
         raise AssertionError(f"reuse should fail before reading {names}")
 
     monkeypatch.setattr(module, "read_outputs", fake_read_outputs)
     monkeypatch.setattr(module, "read_f3d_file", lambda name, root: pytest.fail(name))
+    monkeypatch.setattr(
+        orient3d,
+        "FaultOrientScanner3",
+        lambda *args, **kwargs: pytest.fail("scanner must not be created"),
+    )
+    monkeypatch.setattr(
+        voting3d,
+        "OptimalSurfaceVoter",
+        lambda *args, **kwargs: pytest.fail("voter must not be created"),
+    )
 
-    with pytest.raises(FileNotFoundError, match="fet_py.dat"):
+    with pytest.raises(
+        FileNotFoundError,
+        match=rf"--reuse-existing requires existing output files: {missing_name}",
+    ):
         module.run_or_reuse_pipeline(
             data_root=tmp_path / "f3_reference",
             output_dir=tmp_path,
