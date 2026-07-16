@@ -107,6 +107,15 @@ are diagnostic contrasts for the 2×2 configuration matrix, not inferential
 effects estimated from statistical replicates. Show their fixed slices and/or
 global-axis projections under the selection and scale rules below.
 
+Use a volume in these main-effect and interaction contrasts only when its input
+identity and every held-constant resolved setting match the other three cells
+under the [full-volume 2×2 contract](f3d_validation.md).
+Scanner backend and the workflow-owned settings are the only permitted cell
+differences. Do not interpret runs with different scanner thinning, edge
+policy, refinement within one backend, scanner/voting controls, or explicit
+overrides as the same 2×2 contrast; report such runs as a separate ablation or
+an explicitly named additional axis.
+
 ### Mode-Only Ridge Maps
 
 For each declared baseline/candidate comparison, classify ridge voxels as

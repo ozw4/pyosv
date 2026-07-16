@@ -128,6 +128,62 @@ evaluated as separate configuration axes. The corresponding F3 full-volume
 When presenting results, expand the two axes in a caption or table header; do
 not infer either axis from a bare `reference` or `quality` value.
 
+### Initial F3 publication controls
+
+The initial F3 full-volume publication protocol permits variation only in the
+two named matrix axes. The following controls are fixed before any matrix cell
+is run. “Held constant” means that the resolved value, including any explicit
+override, is identical in all four cells unless the row explicitly assigns the
+value to one scanner backend.
+
+| Control | Fixed contract |
+| --- | --- |
+| Input | The same `ep.dat` full volume with shape `(420, 400, 100)` and the same file identity and checksum in every cell |
+| Scanner thinning | `scanner_thin_mode=reference` in every cell |
+| Scanner edge policy | Edge-effect removal is requested and effective: `remove_edge_effects=true` and `effective_remove_edge_effects=true` |
+| Common scanner options | Angle-range bounds, `sigma1`, `sigma2`, interpolation, normalization, dtype (`float32`), and every scanner option other than the backend definition are held constant |
+| Reference-like backend sampling | The base strike/dip sampling contract described in section 3 is fixed for both `RL-*` cells and is also the base grid refined by both `Q-*` cells |
+| Quality backend refinement | The resolved value is `refinement_factor=2` in every cell; the quality backend uses it in both `Q-*` cells, while it has no effect on `RL-*`, and workflow cannot change it |
+| Common voting options | Voting radii, seed distance and threshold, strain limits, attribute smoothing, surface smoothing, surface-orientation smoothing, and final normalization are held constant unless a setting is explicitly listed as workflow-owned below |
+| Explicit workflow-comparison overrides | Any override added for the comparison is supplied with the same resolved value to all four cells; it must not create another cell-specific difference |
+
+Only these downstream settings may differ because of `workflow_mode` in the
+initial protocol:
+
+| Workflow-owned setting | Reference workflow | Quality workflow |
+| --- | --- | --- |
+| Effective `voter_thin_mode` | `reference` | `hybrid_v2` |
+| Skinner method | `reference` | `quality` |
+| Minimum likelihood | `0.5` | `None` / adaptive |
+| Growth source | `thinned` | `pre_thin` |
+| Accepted occupancy radius | `None` (effective `5` in reports) | `1` |
+| Boundary fallback and policy | disabled | enabled with `empty_primary` policy |
+
+The scanner backend is the scanner axis, and scanner thinning is a held
+constant preprocessing stage; neither is a workflow-owned difference. Settings
+not named in the workflow-owned table are held constant, including all resolved
+voting settings named above. An explicit override can suppress a workflow
+default only when that same override is applied to every cell.
+
+For each scanner backend, compute raw `ft`, `pt`, and `tt` exactly once. Apply
+the fixed scanner reference thinning, including the fixed edge policy, exactly
+once to obtain `fet`, `fpt`, and `ftt`. The reference and quality workflows for
+that backend must share those same `fet`, `fpt`, and `ftt` volumes. A workflow
+comparison must not rerun either scanning or scanner thinning.
+
+A future runner manifest must record more than the matrix label. It must record
+the scanner backend, workflow mode, `scanner_thin_mode`, requested and effective
+edge policy, refinement factor, the resolved value of every fixed scanner and
+voting control above, every workflow-owned resolved value and explicit
+override, and the input path/identity/checksum and shape. This evidence is
+required to establish that a reported contrast differs only on the intended
+axes.
+
+Scanner-thinning comparisons such as `scanner_thin_mode=normal` are separate
+ablations, or an explicitly declared third matrix axis. They must not be
+encoded or reported with only a 2×2 label such as `RL-REF`; the ablation axis
+and its resolved edge policy must appear in its label and manifest.
+
 ## 6. Synthetic and F3 evaluation roles
 
 Synthetic data provides known truth. It can therefore evaluate scanner
@@ -163,12 +219,13 @@ existing operational validation paths.
 
 ### Planned work
 
-F3 full-volume execution of all four matrix cells, shared raw-scan execution,
-and new comparison metrics and figures belong to later PRs. They are not
-implemented by this documentation change. In particular, this document does
-not define a new CLI command, report schema, output artifact, or generated
-file. Any future runner must state how raw scans are shared without conflating
-scanner backend outputs or downstream workflow results.
+F3 full-volume execution of all four matrix cells, shared raw-scan and
+scanner-thinning execution, and new comparison metrics and figures belong to
+later PRs. They are not implemented by this documentation change. In
+particular, this document does not define a new CLI command, report schema,
+output artifact, or generated file. Any future runner must state how raw and
+scanner-thinned volumes are shared without conflating scanner backend outputs
+or downstream workflow results.
 
 ## 8. Source map
 
