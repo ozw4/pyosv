@@ -84,10 +84,18 @@ full-volume baseline/report command; this document does not imply any planned
 command or output schema.
 
 The script writes `run_config.json`, `metrics.json`, and generated Python
-volumes such as `fv_py.dat` and `fvt_py.dat` under `--output-dir`. Use
-`--skip-save-intermediates` when only final vote volumes and reports are needed.
-Use `--reuse-existing` to reuse complete stage outputs already present in that
-directory; incomplete stage output sets are rejected with a clear error. The
+volumes under `--output-dir`. Its `--reuse-existing` contract is all-or-nothing:
+all ten files in the runner's `OUTPUT_NAMES` set must already exist in that
+directory. If any file is missing, the runner reports the missing names and
+fails before reading F3 volume data or starting scanner or voter computation.
+This is reuse of a complete prior run, not resume from a completed subset of
+stages.
+
+Use `--skip-save-intermediates` when only the report volumes `ft_py.dat`,
+`fv_py.dat`, and `fvt_py.dat` are needed. Because that option does not write the
+complete ten-file set, its output directory cannot subsequently be used with
+`--reuse-existing`. This current runner contract is separate from the stage
+cache and reuse contract deferred for the planned full-volume 2×2 runner. The
 runner rejects both output directories and metrics paths inside the F3 data
 root.
 

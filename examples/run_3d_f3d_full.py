@@ -166,12 +166,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reuse-existing",
         action="store_true",
-        help="Reuse the full existing pyosv DAT output set in --output-dir.",
+        help=(
+            "Reuse only when the complete 10-file OUTPUT_NAMES set already exists in "
+            "--output-dir. If any file is missing, fail before computation; this is not "
+            "partial stage resume. Output from --skip-save-intermediates cannot be reused."
+        ),
     )
     parser.add_argument(
         "--skip-save-intermediates",
         action="store_true",
-        help="When saving volumes, write only ft_py.dat, fv_py.dat, and fvt_py.dat.",
+        help=(
+            "When saving volumes, write only ft_py.dat, fv_py.dat, and fvt_py.dat. "
+            "The resulting output directory cannot later be used with --reuse-existing."
+        ),
     )
     volume_group = parser.add_mutually_exclusive_group()
     volume_group.add_argument(
