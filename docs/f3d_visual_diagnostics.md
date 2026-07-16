@@ -1,11 +1,29 @@
 # F3 Visual Diagnostics
 
-F3 visualization is a diagnostic workflow for understanding scanner, voting,
-and thinning differences before changing numerical parameters. Do not tune
-`normalized_correlation` until the figure outputs show which difference mode is
-dominant.
+Publication figures for the F3 mode comparison are derived from complete,
+full-volume outputs. Crop figures are local debugging or historical diagnostics
+only: crop locations are not evaluation samples, independent replicates, or
+repeated experiments. Figure families, slice and threshold selection, and
+display rules must be fixed before reviewing mode differences; results must not
+drive which views are shown.
 
-## Data Layout
+F3 visualization helps explain scanner, voting, thinning, and skinning
+differences. It does not turn the public reference outputs into geological
+truth, and it does not replace the known-truth synthetic evaluation.
+
+## Current Tools
+
+The current tools are the crop and multi-crop commands documented in
+[Legacy/Internal Crop Diagnostics](#legacyinternal-crop-diagnostics), plus the
+static helpers in [`pyosv.viz`](visualization.md). Those helpers currently write
+deterministic center-slice comparisons, pairwise MIP and histogram diagnostics,
+ridge overlays, and targeted crop outlier/context figures. The existing
+`examples/run_3d_f3d_full.py` command produces full-volume data and metrics but
+does not generate the publication figure set below or execute the canonical
+2×2 mode matrix. Only the commands in the legacy section are available for the
+crop visual reports described here.
+
+### Data Layout
 
 Use an external F3 data root. The local shared copy is:
 
@@ -34,7 +52,7 @@ attribute used as scanner input, while `fl.dat`, `fv.dat`, and `fvt.dat` are
 public-workflow attributes or processing results. None of those derived public
 volumes is independent geological truth.
 
-## Install Visualization Support
+### Install Visualization Support
 
 PNG diagnostics require the optional visualization dependency:
 
@@ -45,7 +63,126 @@ python -m pip install -e ".[dev,viz]"
 The core package does not require matplotlib unless visualization helpers are
 used.
 
-## Small Crop Visual Report
+## Planned Full-Volume Publication Figures
+
+> **Planned, not current:** This section defines the required figure contract
+> for a later full-volume comparison implementation. It does not define a
+> current command, generated filename, output directory, or report schema.
+
+All figure families operate on fully reconstructed F3 volumes in global
+coordinates. For each processing stage, panels use the consistent column order
+**public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL`**. The four mode
+labels and their scanner/workflow meanings are canonicalized in
+[Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
+
+### Fixed Orthogonal Slices
+
+The main figure shows the center slice for each of `i1`, `i2`, and `i3`. Slice
+indices must be fixed before mode results are reviewed. An appendix may use a
+deterministic rule such as the 25%, 50%, and 75% indices on every axis, also
+fixed in advance. Do not hand-select slices because they make a difference look
+especially favorable, unfavorable, or clear. Every slice family uses the same
+public-reference and mode column order defined above.
+
+### Maximum-Intensity Projections
+
+Produce maximum-intensity projections (MIPs) along each global axis. These
+figures review full-network density, continuity, and structures that appear in
+only one mode. A MIP is a projection of the same full-volume evaluation unit,
+not another sample.
+
+### Direct Difference Volumes and 2×2 Contrasts
+
+For each comparable stage, show the direct end-to-end difference
+`Q-QUAL - RL-REF` and these scanner/workflow contrasts:
+
+```text
+scanner effect = 0.5 * [(Q-REF - RL-REF) + (Q-QUAL - RL-QUAL)]
+workflow effect = 0.5 * [(RL-QUAL - RL-REF) + (Q-QUAL - Q-REF)]
+interaction = (Q-QUAL - Q-REF) - (RL-QUAL - RL-REF)
+```
+
+Compute each expression voxel by voxel on aligned full-volume outputs. These
+are diagnostic contrasts for the 2×2 configuration matrix, not inferential
+effects estimated from statistical replicates. Show their fixed slices and/or
+global-axis projections under the selection and scale rules below.
+
+### Mode-Only Ridge Maps
+
+For each declared baseline/candidate comparison, classify ridge voxels as
+shared, baseline/reference-side only, or candidate/quality-side only. Use one
+common absolute threshold or one common top-percentile rule across all modes in
+the family. Do not optimize a separate threshold for each mode. Captions must
+identify the two compared outputs and the common rule.
+
+### Axis Profiles
+
+Define spatial profiles across the full volume by aggregating, for every
+`i1`, `i2`, and `i3` index, appropriate quantities from this candidate set:
+
+- mean likelihood
+- nonzero fraction
+- public-reference agreement
+- mode-only fraction
+- boundary-shell density
+
+Profiles are spatial diagnostics through one full-volume evaluation unit. Their
+index values are not independent samples or a statistical series.
+
+### Distribution Plots
+
+The distribution family includes:
+
+- likelihood percentile curves
+- nonzero-value distributions
+- absolute mode-difference distributions
+- strike circular-difference distributions
+- dip or normal-vector angular-difference distributions
+- component-size distributions, if connected components are computed
+
+Each plot must state its stage, mask or support, and included modes. Angular
+plots must use the orientation convention shared by the underlying comparison,
+including circular treatment of strike.
+
+### Common Display Scale and Selection
+
+For one stage and panel family, use a common absolute display range across all
+modes or a range derived from their combined percentiles. Per-panel automatic
+contrast is prohibited. When the public reference appears in the same panel
+family, either include it when deriving the common range or label and explain
+its clearly separate scale. Difference and contrast plots use a zero-centered,
+symmetric negative/positive range.
+
+The figure manifest must record every threshold, percentile, slice index, MIP
+axis, and display range used. Fix these rules before viewing the mode
+differences, and apply them consistently to the complete family.
+
+### Boundary and Chunk-Seam Views
+
+The boundary shell and interior are regions of the same full volume. A
+boundary-only view can diagnose edge behavior, but it does not split F3 into
+additional samples or replicates. If an implementation uses chunking, the
+publication set must add a seam diagnostic after reconstruction in global
+coordinates so discontinuities, duplicate voxels, and missing voxels at chunk
+boundaries are visible.
+
+### Interpretation Constraints
+
+Closeness to a public reference is reference agreement, not proof of processing
+quality or geological accuracy. Interpret F3 figures together with synthetic
+known-truth results. F3 skin figures review continuity, fragmentation, and
+orientation consistency; without independent F3 truth labels, they do not
+measure skin truth accuracy.
+
+## Legacy/Internal Crop Diagnostics
+
+The following commands and interpretation notes preserve the current crop,
+multi-crop, outlier, and historical failed-check workflows. They are useful for
+local debugging and historical evidence only. They do not implement the planned
+full-volume publication contract, and selected crops must not be presented as
+evaluation samples or replicates.
+
+### Small Crop Visual Report
 
 Run one deterministic crop and write metrics, crop volumes, and PNG diagnostics
 under `outputs/`:
@@ -64,7 +201,7 @@ The `PYOSV_RUN_F3D_CROP_PIPELINE=1` flag is only needed for the pytest wrapper,
 but keeping it in the environment is harmless for the script. The script writes
 `metrics.json` plus per-crop figure directories under `--output-dir`.
 
-## Multi-Crop Visual Report
+### Multi-Crop Visual Report
 
 Run multiple deterministic crops when a single crop is not enough to determine
 whether a difference is local or systematic:
@@ -135,7 +272,7 @@ dedicated ablation report. Copy-pastable commands are in
 `docs/f3d_validation.md#reference-like-thinning-validation`, and the thinning
 mode behavior is summarized in `docs/reference_like_thinning.md`.
 
-## Scanner-Thinning Distance-Outlier Review
+### Scanner-Thinning Distance-Outlier Review
 
 The scanner-thinning policy report has an opt-in review for candidate sparse
 ridges whose distance to public FVT is strictly greater than the baseline
@@ -239,7 +376,7 @@ diagnostic context ablation only. In report terms,
 `manual_review.status=pending` remains separate from the failed automatic
 result.
 
-## Figure Interpretation
+### Crop Figure Interpretation
 
 Use the figures to localize the mismatch before comparing scalar summary
 metrics:
@@ -261,7 +398,7 @@ For side-by-side slice panels, first look for obvious orientation, crop, or
 boundary effects. For ridge overlays, distinguish an actual missing ridge from
 a ridge that is consistently shifted by one or two samples.
 
-## Why Correlation Is Not Enough For `fvt`
+### Why Correlation Is Not Enough For `fvt`
 
 `normalized_correlation` is useful for dense volumes such as `fv`, but `fvt` is
 a sparse thinned ridge volume. In sparse volumes, a small spatial shift can
@@ -289,7 +426,7 @@ distance medians, and fewer far-away candidate-only ridges. Exact overlap may
 remain low for sparse ridges, so do not claim success until the ablation report
 has been generated and reviewed.
 
-## Recommended Diagnostic Order
+### Recommended Crop Diagnostic Order
 
 1. Inspect scanner-only `fl_ref` versus `ft_py` figures.
 2. Inspect `fv` side-by-side slice panels and MIPs.
