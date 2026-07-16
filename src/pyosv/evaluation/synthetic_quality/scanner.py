@@ -50,24 +50,44 @@ def scanner_attributes_from_case(
     backend_scan: BackendScan | None = None,
     ensemble_scan: EnsembleScan | None = None,
 ) -> ScannerAttributes:
-    """Generate scanner attributes without running downstream evaluation stages."""
+    """Generate scanner input and attributes without running downstream stages."""
 
+    scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
+    return scanner_attributes_from_input(
+        case,
+        scanner_config,
+        scanner_input,
+        backend_scan=backend_scan,
+        ensemble_scan=ensemble_scan,
+    )
+
+
+def scanner_attributes_from_input(
+    case: Synthetic3DCase,
+    scanner_config: SyntheticScannerConfig,
+    scanner_input: np.ndarray,
+    *,
+    backend_scan: BackendScan | None = None,
+    ensemble_scan: EnsembleScan | None = None,
+) -> ScannerAttributes:
+    """Generate one backend's attributes from a prepared scanner input."""
+
+    input_array = _validated_scanner_input(case, scanner_input)
     backend_scan = scan_backend_attributes if backend_scan is None else backend_scan
     ensemble_scan = scan_ensemble_attributes if ensemble_scan is None else ensemble_scan
-    scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
     scanner = FaultOrientScanner3(scanner_config.sigma1, scanner_config.sigma2)
     ensemble_report: dict[str, Any] | None = None
     if scanner_config.backend == "ensemble":
         ft_scan, pt_scan, tt_scan, confidence, ensemble_report = ensemble_scan(
             scanner,
             scanner_config,
-            scanner_input,
+            input_array,
         )
     else:
         ft_scan, pt_scan, tt_scan, confidence = backend_scan(
             scanner,
             scanner_config,
-            scanner_input,
+            input_array,
             scanner_config.backend,
         )
 
@@ -86,7 +106,7 @@ def scanner_attributes_from_case(
 
     scanner_report = {
         "config": scanner_config.as_report_dict(),
-        "input": _array_summary(scanner_input),
+        "input": _array_summary(input_array),
         "ft": _array_summary(ft_scan),
         "fet": _array_summary(ft_used),
         "pt": _array_summary(pt_scan),
@@ -95,7 +115,7 @@ def scanner_attributes_from_case(
         "ftt": _array_summary(tt_used),
     }
     scanner_volumes = {
-        "scanner_input": scanner_input,
+        "scanner_input": input_array,
         "scanner_ft": ft_scan,
         "scanner_fet": ft_used,
         "scanner_pt": pt_scan,
@@ -112,6 +132,28 @@ def scanner_attributes_from_case(
         ]
         scanner_report["ensemble"] = ensemble_report
     return ScannerAttributes(report=scanner_report, volumes=scanner_volumes)
+
+
+def _validated_scanner_input(case: Synthetic3DCase, scanner_input: np.ndarray) -> np.ndarray:
+    input_array = np.asarray(scanner_input)
+    if input_array.shape != case.shape:
+        raise ValueError(
+            f"scanner_input shape must match case shape {case.shape}, got {input_array.shape}"
+        )
+    if input_array.dtype.kind not in "iuf":
+        raise ValueError("scanner_input must be a numeric array")
+    if not np.all(np.isfinite(input_array)):
+        raise ValueError("scanner_input must contain only finite values")
+    input_float32 = input_array.astype(np.float32, copy=False)
+    if not np.all(np.isfinite(input_float32)):
+        raise ValueError("scanner_input must contain only finite float32 values")
+
+    # Backends only read the shared input. A read-only view prevents an injected
+    # backend from contaminating later backend results without copying valid float32
+    # full volumes or changing the caller's array flags.
+    protected_input = input_float32.view()
+    protected_input.setflags(write=False)
+    return protected_input
 
 
 def scan_backend_attributes(
