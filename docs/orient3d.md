@@ -63,8 +63,13 @@ angle ranges, finite 3D input volumes, `backend`, interpolation order, optional
 smoothing sigma, and normalization mode, then runs a deterministic strike/dip
 orientation sweep.
 
-Reference-like mode does not use the legacy derivative-bank scanner's
-sigma-derived dense sampling. Strike samples follow the Java scanner's fixed
+The report/config value for this scanner backend is `reference-like`; its
+explicit public API method is `scan_reference_like()`. See [scanner backends,
+workflow modes, thinning modes, and reference targets](mode_comparison.md) for
+the canonical terminology and comparison axes.
+
+The reference-like scanner backend does not use the legacy derivative-bank
+scanner's sigma-derived dense sampling. Strike samples follow the Java scanner's fixed
 18-sample grid at 20 degree spacing from 0 degrees, clipped to the requested
 range. Dip samples use approximately 5 degree spacing while preserving the
 requested endpoints.
@@ -138,6 +143,10 @@ are intentionally limited to the range `1..4` to avoid accidental excessive
 orientation sweeps. Pass `return_confidence=True` to receive
 `(ft, pt, tt, confidence)`.
 
+This quality scanner backend does not select the downstream quality workflow
+or change either thinning stage. `scan_quality()` means refined reference-like
+sampling; its name alone is not a guarantee of higher interpretation quality.
+
 `FaultOrientScanner3.scan_fast(...)` exposes the older derivative-bank scanner
 as an explicit practical backend for diagnostics or workflows that prefer its
 ridge/contrast score and sigma-derived dense angle sampling.
@@ -150,6 +159,10 @@ selects the best adjusted backend per voxel. This option creates ordinary
 `ft/pt/tt` scanner attributes for the existing thinning, voting, and skinning
 path; it does not change the `FaultOrientScanner3.scan()`, `scan_quality()`, or
 `scan_fast()` API defaults.
+
+The `fast` and `ensemble` scanner backends are diagnostic or secondary paths,
+not primary axes of the canonical 2×2 scanner-backend/workflow publication
+matrix described in the comparison document linked above.
 
 Migration note: callers that used the old derivative-bank `scan()` behavior
 should call `scan_fast()` explicitly. Callers that used the old scanner
@@ -215,10 +228,11 @@ opt-in:
 fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
 ```
 
-Both modes return `float32` arrays with zeros outside retained samples. In
-`normal` mode, kept likelihood samples retain the original `ft` values. In
-`reference` mode, kept likelihood samples use the smoothed comparison values
-after scanner edge cleanup; `pt` and `tt` are copied only at retained samples.
+Both scanner thinning modes return `float32` arrays with zeros outside retained
+samples. With scanner `normal` thinning, kept likelihood samples retain the
+original `ft` values. With scanner `reference` thinning, kept likelihood
+samples use the smoothed comparison values after scanner edge cleanup; `pt` and
+`tt` are copied only at retained samples.
 `reference_sigma` controls that reference-like smoothing. Voter reference
 thinning has separate reinforcement and edge-handling semantics.
 

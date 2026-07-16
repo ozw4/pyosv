@@ -450,36 +450,57 @@ thinning-sensitivity signal unless a narrower regression is demonstrated.
 
 ## Workflow Modes
 
-Controlled synthetic reports expose an explicit workflow contract through
-`--workflow-mode reference|quality|diagnostic`. The default is `reference` so
-existing reference-first runs keep reference-like voter thinning unless a run
-passes an explicit `--voter-thin-mode` override.
+Controlled synthetic reports expose a downstream workflow contract through
+`--workflow-mode reference|quality|diagnostic`. A workflow profile resolves
+defaults for voting, voter thinning, skinning, and diagnostics; it does not
+select the scanner path. `--scanner-backend` independently selects the scanner
+backend. See [scanner backends, workflow modes, thinning modes, and reference
+targets](mode_comparison.md) for the canonical contract, and [Quality Workflow
+Mode](quality_mode.md) for the recommended quality-workflow benchmark matrix.
 
-See [Quality Mode](quality_mode.md) for the recommended quality benchmark
-matrix and the intended role of each workflow.
+Scanner reference thinning and voter reference thinning are also separate
+stages: `--scanner-thin-mode` controls scanner attributes before voting, while
+`--voter-thin-mode` controls the vote volume. A workflow profile does not
+implicitly change `--scanner-thin-mode`. Explicit CLI or configuration values
+win over workflow defaults at the setting they control; a selected variant's
+narrow patch is applied afterward.
+
+The following are legal isolation or matrix-evaluation combinations, not
+recommended defaults. They demonstrate that scanner backend and workflow are
+independent axes:
+
+```bash
+--scanner-backend reference-like --workflow-mode quality
+--scanner-backend quality --workflow-mode reference
+```
+
+The default workflow is `reference`, so existing reference-first runs keep
+reference voter thinning unless a run passes an explicit
+`--voter-thin-mode` override.
 
 ```text
 reference
-  Reference-alignment mode. Effective voter_thin_mode is reference unless
+  Reference workflow for alignment checks. Effective voter_thin_mode is reference unless
   --voter-thin-mode is passed. Surface-voting boundary policy is reference.
 
 quality
-  Truth-quality mode for controlled synthetic evaluation. Effective
+  Quality workflow for controlled synthetic truth evaluation. Effective
   voter_thin_mode is hybrid_v2 unless --voter-thin-mode is passed. Support-aware
   surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
   is enabled by default, including the empty-primary boundary skinner fallback.
   Surface-voting boundary policy remains reference.
 
 diagnostic
-  Diagnostic mode. Effective voter_thin_mode is reference unless
-  --voter-thin-mode is passed, and reference-vs-normal thinning diagnostics are
-  enabled by default. Surface-voting boundary policy remains reference.
+  Diagnostic workflow. It uses reference-workflow defaults, with effective
+  voter_thin_mode reference unless --voter-thin-mode is passed, and enables
+  reference-vs-normal thinning diagnostics. Surface-voting boundary policy
+  remains reference.
 ```
 
 Explicit `--voter-thin-mode reference|normal` always wins over the workflow
 preset. The `--thinning-diagnostics` / `--include-thinning-diagnostic` flag
-still enables reference-vs-normal thinning diagnostics in `reference` or
-`quality` mode. When diagnostics are enabled by the flag or by
+still enables reference-vs-normal thinning diagnostics in the reference or
+quality workflow. When diagnostics are enabled by the flag or by
 `--workflow-mode diagnostic`, `metrics.json` records
 `config.thinning_diagnostic.enabled: true`.
 
@@ -487,12 +508,12 @@ The report config always records `config.workflow_mode`. The voting config
 records the effective `config.voting.voter_thin_mode`, after applying the
 workflow preset and any explicit override. Every default workflow and
 `current_default` record `surface_voting_boundary_policy="reference"` under
-the per-variant `pyosv.voting` object. For quality mode, `current_default`
-records `surface_support_min_fraction=0.0` and
+the per-variant `pyosv.voting` object. For the quality workflow,
+`current_default` records `surface_support_min_fraction=0.0` and
 `surface_support_exponent=0.0`, so the report config shows that support-aware
-voting is not part of the quality default. Explicit CLI support overrides and
-the `surface_support_weighted` variant record their effective values in the
-same config/report fields. Skinning diagnostics such as `quality_skinner_v2`
+voting is not part of the quality-workflow default. Explicit CLI support
+overrides and the `surface_support_weighted` variant record their effective
+values in the same config/report fields. Skinning diagnostics such as `quality_skinner_v2`
 record effective skinning values under each variant's `config.skinning`; under
 `--workflow-mode quality`, `current_default` records the same quality skinner v2
 profile (`growth_source=pre_thin`, `effective_accepted_occupancy_radius=1`,
@@ -500,29 +521,30 @@ profile (`growth_source=pre_thin`, `effective_accepted_occupancy_radius=1`,
 `boundary_skinner_fallback_policy=empty_primary`). `summary.csv` includes
 `workflow_mode` near `input_mode` on every row.
 
-Treat oracle quality `current_default` and scanner-inclusive quality
-`current_default` as separate evaluations. Oracle quality measures the
-downstream voter/skinner behavior with analytic scanner inputs. Scanner-inclusive
-quality also measures scanner `ft` recovery and the downstream fvt/skinning
+Treat oracle-input and scanner-inclusive `current_default` runs under the
+quality workflow as separate evaluations. The oracle-input run measures the
+downstream voter/skinner behavior with analytic scanner inputs. The
+scanner-inclusive run also measures scanner `ft` recovery and the downstream fvt/skinning
 response; boundary-plane scanner `ft` can be strong while fvt and skin quality
-remain degraded. Diagnostic fallback variants are compared against these modes,
+remain degraded. Diagnostic fallback variants are compared against these evaluations,
 but promotion requires the scanner-inclusive boundary target and non-boundary
 regression tolerances to pass.
 
-No diagnostic voter or skinner variant has been promoted into
-`quality current_default`. In the separate legacy `quality` scanner-backend
-evaluation, the scanner-inclusive 49^3 `boundary_plane` case remains an open
-target. That promotion-candidate flow compares `boundary_aware_voter_v1`,
+No diagnostic voter or skinner variant has been promoted into the quality
+workflow's `current_default`. In the separate legacy evaluation using the
+`quality` scanner backend, the scanner-inclusive 49^3 `boundary_plane` case
+remains an open target. That promotion-candidate flow compares `boundary_aware_voter_v1`,
 `boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
 `quality_boundary_skinner_fallback_v5` against `current_default` with
 `scripts/compare_quality_reports.py` or
 `scripts/check_synthetic_quality_promotion_gate.py`. The 49^3
 `boundary_aware_voter_v1` promotion benchmark has not been run in this
-repository update, so those legacy quality-backend candidates remain
+repository update, so the candidates from that legacy quality scanner backend
+evaluation remain
 unpromoted. This does not contradict the separate passing reference-like
 scanner-thinning policy gate documented above. See
-[Quality Mode](quality_mode.md) for the exact benchmark commands, metrics,
-promotion criteria, and diagnostic variant descriptions.
+[Quality Workflow Mode](quality_mode.md) for the exact benchmark commands,
+metrics, promotion criteria, and diagnostic variant descriptions.
 
 ## Boundary-aware UVW Voting Diagnostic
 
@@ -591,7 +613,7 @@ The documented 49^3 legacy quality-scanner `boundary_plane` baseline for
 `fvt_positive_buffered_f1_r2 >= 0.90` and
 `fvt_positive_distance_p95 <= 2.0` among its promotion gates, in addition to
 the skin, non-boundary, oracle, and topology guardrails documented in
-[Quality Mode](quality_mode.md). No 49^3 result for
+[Quality Workflow Mode](quality_mode.md). No 49^3 result for
 `boundary_aware_voter_v1` is recorded by this documentation update. Until the
 gate passes, do not describe the candidate as higher quality than the reference
 implementation or as promoted/default behavior. The passing reference-like
@@ -752,8 +774,8 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --write-markdown-index
 ```
 
-To smoke-test the opt-in boundary voter against the unchanged quality default,
-run:
+To smoke-test the opt-in boundary voter against the unchanged quality-workflow
+default, run:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
@@ -1508,7 +1530,7 @@ samples.
 `quality_boundary_skinner_fallback_v3` are diagnostic degraded-primary fallback
 candidates. v2 uses the `degraded_primary` policy and improves the
 scanner-inclusive boundary case but over-includes fallback components, so it is
-not promoted as the quality default. v3 uses the filtered
+not promoted as the quality-workflow default. v3 uses the filtered
 `degraded_primary_filtered` policy. In the 49^3 scanner-inclusive extended
 quality benchmark with `--scanner-backend quality` and
 `--scanner-refinement-factor 2`, v3 kept `boundary_plane`

@@ -138,26 +138,36 @@ compatible alias and exposes `backend="directional"` for the previous
 fault-parallel smoothing approximation, while `scan_fast()` exposes the older
 derivative-bank backend for diagnostics or practical comparisons.
 
+`scan_quality()` selects the quality scanner backend: it uses the same scoring
+path with a refined reference-like sampling grid. Scanner backend selection is
+independent of the synthetic report's downstream workflow selection, so neither
+`scan()` nor `scan_quality()` implicitly selects `--workflow-mode quality`.
+See [Scanner backends, workflow modes, thinning modes, and reference
+targets](docs/mode_comparison.md) for the canonical distinction.
+
 Public F3 3D reference-data validation is documented in
 `docs/f3d_validation.md`, including the external data layout, smoke checks,
 crop validation, and the manual full-volume pipeline.
 
-Controlled synthetic 3D truth-quality checks are documented in
+Controlled synthetic 3D truth checks are documented in
 `docs/synthetic_quality.md`, including the default `minimal` case set and the
 `geometry` and `extended` case sets for vertical, dipping, curved, parallel,
 crossing, boundary, and weak/noisy faults, voter variants, and skinning
-metrics. That document also explains controlled report workflow modes:
-`reference` is the default reference-alignment mode, `quality` defaults voter
+metrics. That document also explains downstream workflow modes, independently
+of scanner backend selection: `reference` selects the default reference
+workflow, while `quality` defaults voter
 thinning to the truth-quality-favored `hybrid_v2` path with support-aware surface
 voting inactive, the quality skinner v2 profile, and the empty-primary boundary
 skinner fallback. Degraded-primary fallback variants remain diagnostic after
-the legacy quality-backend 49^3 scanner-inclusive boundary benchmark: v2
+the legacy 49^3 scanner-inclusive boundary benchmark using the quality scanner
+backend: v2
 over-includes fallback components, filtered v3 did not reach the boundary skin
 F1 promotion target or the non-boundary regression tolerances, and skeletonized
 v4 still missed the scanner boundary skin target while regressing oracle
 boundary skin.
 
-The separate reference-like-backend 49^3 scanner-thinning policy evaluation has
+The separate reference-like scanner backend 49^3 scanner-thinning policy
+evaluation has
 been completed. `quality_reference_like_scanner_thin_normal_v1` passed the
 `scanner-boundary-reference-like` gate against
 `quality_reference_like_scanner_thin_reference_v1`, with all 14 required rows,
@@ -175,14 +185,14 @@ default and all public defaults remain unchanged. Compact failed-run evidence
 is recorded in
 `tests/fixtures/f3d_scanner_thinning_policy/quality_reference_like_normal_v1_evidence.json`.
 
-The legacy quality-backend promotion-candidate flow for
+The legacy quality scanner backend promotion-candidate flow for
 `boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
 `quality_boundary_skinner_fallback_v5` is reported with
 `scripts/compare_quality_reports.py` or
 `scripts/check_synthetic_quality_promotion_gate.py`; no new 49^3
 `promotion_candidates_49` result is recorded for that separate flow.
-`diagnostic` keeps the reference path while enabling reference-vs-normal
-thinning diagnostics.
+The diagnostic workflow keeps reference-workflow defaults while enabling
+reference-vs-normal thinning diagnostics.
 The current quality workflow profile and guardrails are summarized in
 `docs/quality_mode.md`. A typical extended report run is:
 

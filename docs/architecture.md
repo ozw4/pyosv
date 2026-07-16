@@ -11,10 +11,12 @@ exports only `__version__`.
 
 ```text
 CLI arguments
-    -> config validation and workflow profile resolution
+    -> config validation
     -> case construction
-    -> oracle/scanner input preparation
-    -> variant resolution
+       scanner input/backend/thinning configuration -> scanner preparation
+       workflow profile -> explicit downstream overrides
+                        -> voting/voter-thinning/skinning configuration
+       variant registry patch -> narrowly scoped effective variant
     -> voting -> thinning -> skinning
     -> metrics and diagnostics
     -> immutable report model
@@ -30,14 +32,25 @@ modules, never the example.
 
 ## Resolution order and reuse
 
-Explicit configuration values win over workflow-profile defaults. The selected
-workflow profile fills values that were not explicitly supplied. A variant is
-then resolved from the single registry in `synthetic_quality/variants.py` and
-its narrowly scoped patch is applied to the effective configuration:
+Scanner input, backend, and scanner-thinning configuration are resolved for
+scanner preparation independently of the downstream workflow profile. The
+workflow profile fills downstream voting, voter-thinning, skinning, and
+diagnostic values that were not explicitly supplied; explicit configuration
+values win over those defaults. A variant is then resolved from the single
+registry in `synthetic_quality/variants.py` and its narrowly scoped patch is
+applied to the effective configuration:
 
 ```text
-base config -> profile defaults -> explicit overrides -> variant patch
+scanner configuration --------------------> scanner preparation
+workflow profile -> explicit overrides ---> downstream effective configuration
+variant patch ----------------------------> narrowly scoped effective variant
 ```
+
+The workflow profile does not select a scanner backend or scanner thinning.
+See [scanner backends, workflow modes, thinning modes, and reference
+targets](mode_comparison.md) for the canonical distinction. This split does not
+change the existing resolution order within downstream configuration: explicit
+values still win before the variant patch is applied.
 
 Scanner results are reusable only within one case, shape, and scanner
 configuration. Within that scope, a prepared scanner input may be shared by
