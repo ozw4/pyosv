@@ -119,16 +119,31 @@ class SyntheticModeComparisonPlan:
     cells: tuple[ModeCellSpec, ...]
 
     def __post_init__(self) -> None:
-        validate_case_ids(self.case_ids)
+        case_ids = validate_case_ids(self.case_ids)
         seeds = validate_trial_seeds(self.trial_seeds)
+        shape = validate_shape3(self.shape)
+        object.__setattr__(self, "case_ids", case_ids)
+        object.__setattr__(self, "trial_seeds", seeds)
+        object.__setattr__(self, "shape", shape)
+        if not isinstance(self.truth_metric_config, SyntheticTruthMetricConfig):
+            raise ValueError("truth_metric_config must be a SyntheticTruthMetricConfig")
+        for name in (
+            "include_oracle_workflow_isolation",
+            "skinner_method_explicit",
+            "skinner_min_likelihood_explicit",
+            "skinner_growth_source_explicit",
+            "skinner_accepted_occupancy_radius_explicit",
+            "skinner_boundary_fallback_explicit",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a bool")
         definitions_by_id = {definition.case_id: definition for definition in EXTENDED_CASES}
         expected_trials = expand_synthetic_trials(
-            tuple(definitions_by_id[case_id] for case_id in self.case_ids),
+            tuple(definitions_by_id[case_id] for case_id in case_ids),
             seeds,
         )
         if self.trials != expected_trials:
             raise ValueError("trials must match the selected cases and trial seeds")
-        validate_shape3(self.shape)
         if self.comparison_variant != "current_default":
             raise ValueError("comparison_variant must be 'current_default'")
         if self.scanner_template.backend != "reference-like":

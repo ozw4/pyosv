@@ -211,6 +211,16 @@ existing operational validation paths.
 - The synthetic report can specify `scanner_backend` and `workflow_mode`
   separately. It can therefore run a selected scanner/workflow pairing without
   treating the two choices as one mode.
+- `pyosv.evaluation.synthetic_mode_comparison` exposes the immutable
+  `SyntheticModeComparisonConfig`, `SyntheticModeComparisonPlan`,
+  `ModeCellSpec`, and `SyntheticTrialSpec` contracts. Call
+  `build_mode_comparison_plan(config)` to validate case selection, seeded
+  trials, fixed scanner controls, resolved reference/quality workflows, and the
+  canonical cell order without running scans, metrics, or artifact writers.
+  The plan uses `current_default`; its cells are `RL-SCAN`, `Q-SCAN`, optional
+  `ORACLE-REF` and `ORACLE-QUAL`, followed by the four 2x2 cells in the table
+  above. Deterministic cases have one trial with `seed=None`; only registered
+  stochastic cases expand in configured `trial_seeds` order.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   full-volume scan/vote runner. It calls `FaultOrientScanner3.scan()`, then
   performs separately configurable scanner and voter thinning.
@@ -234,6 +244,7 @@ or downstream workflow results.
 | Scanner API and angle grids | [`src/pyosv/_orient3d/scanner.py`](../src/pyosv/_orient3d/scanner.py), [`sampling.py`](../src/pyosv/_orient3d/sampling.py) | Scanner entry points, reference-like scoring path, confidence, sampling, and scanner thinning |
 | Synthetic scanner selection | [`src/pyosv/evaluation/synthetic_quality/scanner.py`](../src/pyosv/evaluation/synthetic_quality/scanner.py) | Maps report scanner-backend values to scanner API calls |
 | Synthetic configuration | [`config.py`](../src/pyosv/evaluation/synthetic_quality/config.py), [`profiles.py`](../src/pyosv/evaluation/synthetic_quality/profiles.py), [`application.py`](../src/pyosv/evaluation/synthetic_quality/application.py) | Configuration fields, effective workflow defaults, overrides, and diagnostics |
+| Synthetic comparison planning | [`src/pyosv/evaluation/synthetic_mode_comparison/`](../src/pyosv/evaluation/synthetic_mode_comparison/) | Canonical cells, validated execution-free plans, and deterministic/seeded trial expansion |
 | Voter thinning | [`src/pyosv/voting3d.py`](../src/pyosv/voting3d.py) | Stage-specific voter thinning, including `reference` and `hybrid_v2` |
 | Skinning | [`src/pyosv/_skinner/reference.py`](../src/pyosv/_skinner/reference.py), [`seeds.py`](../src/pyosv/_skinner/seeds.py) | Reference and quality skinner behavior, adaptive threshold, seed gates, and effective occupancy |
 | Current F3 full runner | [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) | Current single full-volume scan/vote pipeline and F3 output comparison |

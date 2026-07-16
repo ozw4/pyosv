@@ -151,3 +151,50 @@ def test_plan_rejects_workflow_settings_from_different_skinning_or_explicit_flag
         replace(plan, skinning_config=SyntheticSkinningConfig(min_likelihood=0.7))
     with pytest.raises(ValueError, match="workflow_settings must match"):
         replace(plan, skinner_min_likelihood_explicit=True)
+
+
+def test_plan_normalizes_case_ids_and_trial_seeds_to_immutable_tuples() -> None:
+    plan = build_mode_comparison_plan(SyntheticModeComparisonConfig())
+    mutable_case_ids = list(plan.case_ids)
+    mutable_trial_seeds = list(plan.trial_seeds)
+
+    normalized = replace(
+        plan,
+        case_ids=mutable_case_ids,  # type: ignore[arg-type]
+        trial_seeds=mutable_trial_seeds,  # type: ignore[arg-type]
+    )
+    mutable_case_ids.append("single_dipping_plane")
+    mutable_trial_seeds.append(1)
+
+    assert normalized.case_ids == plan.case_ids
+    assert normalized.trial_seeds == plan.trial_seeds
+    assert isinstance(normalized.case_ids, tuple)
+    assert isinstance(normalized.trial_seeds, tuple)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "include_oracle_workflow_isolation",
+        "skinner_method_explicit",
+        "skinner_min_likelihood_explicit",
+        "skinner_growth_source_explicit",
+        "skinner_accepted_occupancy_radius_explicit",
+        "skinner_boundary_fallback_explicit",
+    ),
+)
+def test_plan_rejects_non_boolean_flags(field: str) -> None:
+    plan = build_mode_comparison_plan(SyntheticModeComparisonConfig())
+
+    with pytest.raises(ValueError, match=rf"^{field} must be a bool$"):
+        replace(plan, **{field: 1})
+
+
+def test_plan_rejects_invalid_truth_metric_config() -> None:
+    plan = build_mode_comparison_plan(SyntheticModeComparisonConfig())
+
+    with pytest.raises(
+        ValueError,
+        match="^truth_metric_config must be a SyntheticTruthMetricConfig$",
+    ):
+        replace(plan, truth_metric_config=object())
