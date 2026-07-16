@@ -145,9 +145,19 @@ independent of the synthetic report's downstream workflow selection, so neither
 See [Scanner backends, workflow modes, thinning modes, and reference
 targets](docs/mode_comparison.md) for the canonical distinction.
 
-Public F3 3D reference-data validation is documented in
-`docs/f3d_validation.md`, including the external data layout, smoke checks,
-crop validation, and the manual full-volume pipeline.
+Publication-facing F3 3D reference comparison uses the complete
+`(420, 400, 100)` volume as one evaluation unit. See
+[F3 3D Reference Data Validation](docs/f3d_validation.md) for that protocol and
+[Scanner, Workflow, Thinning, and F3 Reference Comparison](docs/mode_comparison.md)
+for the canonical scanner/workflow matrix and terminology. Existing crop and
+multi-crop commands are optional legacy/internal diagnostics and historical
+validation paths; crops are not publication samples or statistical replicates.
+
+The current [`examples/run_3d_f3d_full.py`](examples/run_3d_f3d_full.py) command
+is a reference-like baseline full-volume scan/vote runner. It does not implement
+the quality scanner backend, workflow profiles, or the planned full-volume 2×2
+scanner-backend/workflow matrix. That matrix and its comparison runner remain
+future work.
 
 Controlled synthetic 3D truth checks are documented in
 `docs/synthetic_quality.md`, including the default `minimal` case set and the
@@ -174,15 +184,16 @@ been completed. `quality_reference_like_scanner_thin_normal_v1` passed the
 no missing evidence rows, and a passing configuration contract. Compact values
 and hashes are recorded in
 `tests/fixtures/synthetic_quality_refactor/reference_like_scanner_thinning_49_evidence.json`.
-This is synthetic candidate evidence only. The formal F3 64^3-by-3 shared-scan
-run has since completed but failed one conservative external-smoke check: crop
-1 worsened public-FVT sparse-distance p95 by `6.193637` samples against the
-allowed `5.0`. The other seven checks passed, including shared scanning,
-finite/nonempty stages, density, edge, crop-stability, and configuration
-contracts. The prerequisite large crop was therefore not run and human
-geological review remains pending. The quality-workflow scanner-thinning
-default and all public defaults remain unchanged. Compact failed-run evidence
-is recorded in
+This is synthetic candidate evidence only. A historical 64^3-by-3 F3 crop
+diagnostic later failed one conservative external-smoke check: crop 1 worsened
+public-FVT sparse-distance p95 by `6.193637` samples against the allowed `5.0`.
+The other seven historical diagnostic checks passed, including shared scanning,
+finite/nonempty stages, density, edge, crop stability, and configuration
+contracts. The prerequisite large-crop diagnostic was therefore not run and
+human geological review remains pending. This failed crop check is preserved as
+historical diagnostic evidence, not a current publication gate or a set of
+statistical replicates. The quality-workflow scanner-thinning default and all
+public defaults remain unchanged. Compact failed-run evidence is recorded in
 `tests/fixtures/f3d_scanner_thinning_policy/quality_reference_like_normal_v1_evidence.json`.
 
 The legacy quality scanner backend promotion-candidate flow for

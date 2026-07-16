@@ -348,13 +348,14 @@ The ignored reports did not record a source commit, so the compact evidence
 records `source_commit=null` and `source_provenance="not_recorded"` rather than
 inferring one.
 
-This pass evaluates the synthetic policy candidate only. The formal F3
-64^3-by-3 shared-scan run later failed the per-crop public-FVT sparse-distance
-p95 check (`+6.193637` samples on crop 1 versus the `+5.0` limit); the other
-seven external-smoke checks passed. The prerequisite large crop was not run and
-human review remains pending, so the quality, reference, and diagnostic
-workflow defaults and the public `FaultOrientScanner3.thin()` default remain
-unchanged.
+This pass evaluates the synthetic policy candidate only. A historical F3
+64^3-by-3 shared-scan crop diagnostic later failed the public-FVT
+sparse-distance p95 check (`+6.193637` samples on crop 1 versus the `+5.0`
+limit); the other seven diagnostic checks passed. The prerequisite large-crop
+diagnostic was not run and human review remains pending. This is retained as
+historical crop evidence, not a current publication gate or a set of
+statistical replicates. The quality, reference, and diagnostic workflow
+defaults and the public `FaultOrientScanner3.thin()` default remain unchanged.
 
 For the 49^3 scanner-boundary promotion benchmark, run the current default and
 the opt-in diagnostic candidates with downstream diagnostics enabled:
@@ -640,10 +641,32 @@ fallback path with skin buffered F1 at least `0.5`. These thresholds are not
 benchmark targets. They are meant to catch obvious workflow breakage while
 leaving room for normal tuning changes.
 
-## F3 Real-Data Workflow Comparison
+## F3 Full-Volume Real-Data Comparison
 
-The F3 multi-crop report can also compare `reference` and `quality` workflows
-on the same real-data crop centers:
+Publication-facing F3 comparison uses only the complete `(420, 400, 100)`
+volume as one evaluation unit. Public `fl.dat`, `fv.dat`, and `fvt.dat` support
+F3 public reference agreement and difference measurements; they are not
+independent geological truth, so agreement with them is not quality or
+accuracy. Known-truth accuracy, recovery, and topology claims come from the
+controlled synthetic `extended` matrix described above. F3 supplies the
+complementary truthless real-data reference-agreement review.
+
+The current [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py)
+runner is a manual, potentially slow, reference-like baseline full-volume
+scan/vote path. It exposes scanner and voter thinning separately, but does not
+implement `workflow_mode`, the quality scanner backend, the quality skinner, or
+the canonical 2×2 scanner-backend/workflow comparison. In particular, a quality
+workflow does not imply a quality scanner backend. The planned full-volume
+`RL-REF`, `RL-QUAL`, `Q-REF`, and `Q-QUAL` runner is future work; the labels and
+separate axes are defined in
+[Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
+The complete publication protocol and current/planned boundary are documented
+in [F3 3D Reference Data Validation](f3d_validation.md).
+
+## Legacy/Internal F3 Crop Diagnostics
+
+The existing multi-crop report can compare `reference` and `quality` workflows
+at the same crop centers for debugging and preservation of historical evidence:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
@@ -658,26 +681,27 @@ PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
   --pretty
 ```
 
-Because F3 has no independent truth labels, reference agreement is a stability
-diagnostic rather than direct evidence of higher quality. Review whether the
-quality workflow preserves reference geological signal, avoids extra ridges and
-boundary artifacts, and keeps crop-to-crop behavior stable. The multi-crop JSON
-and markdown include `consensus.workflows` for each workflow and
+This command is an optional legacy/internal crop diagnostic, not the F3
+publication comparison path. Its JSON and markdown include
+`consensus.workflows` for each workflow and
 `consensus.workflow_comparison.quality_minus_reference` in compare mode.
 Compare-mode reports also include top-level `quality_validation`, a truthless
-external smoke summary. Its default conservative checks fail on finite metric
+external-smoke diagnostic. Its default conservative checks fail on finite metric
 failures, quality-workflow FVT density above `2.0x` the reference workflow, FVT
 edge-density proxy delta above `0.10`, sparse distance p95 regression above
 `5.0` samples, or
 extreme crop-to-crop density CV. Use these checks alongside the existing
-reference-overlap metrics.
+reference-overlap metrics only to diagnose local behavior. Crop-to-crop
+stability is historical diagnostic context, not a publication acceptance
+criterion, and crops must not be described as independent samples or
+replicates.
 
 This F3 smoke requires external F3 volumes and should not be mandatory in CI.
 CI should keep using mock/fixture structure tests for the report and markdown
 schema.
 
-For the passing reference-like 49^3 scanner-thinning candidate, use the
-dedicated shared-scan F3 comparison rather than `--compare-workflows`. The
+The historical reference-like 49^3 scanner-thinning candidate used the
+dedicated shared-scan crop diagnostic rather than `--compare-workflows`. The
 dedicated path runs `FaultOrientScanner3.scan()` once per crop, changes only
 scanner thinning from `reference` to `normal`, and fixes the quality downstream
 voter to `hybrid_v2` with each branch's own scanner-thinned `fet` as the plateau
@@ -685,22 +709,18 @@ tie-breaker. Its profile is `quality-workflow-scanner-thinning-v1`; the policies
 are `quality_reference_like_scanner_thin_reference_v1` and
 `quality_reference_like_scanner_thin_normal_v1`. It reports
 `policy_validation` with role `truthless_external_smoke`, not a promotion gate,
-because public F3 `fv.dat` and `fvt.dat` are not independent truth. The formal
-64^3 multi-crop and large-crop commands, automatic checks, manual review list,
-and evidence policy are documented in [F3 3D Reference Data Validation](f3d_validation.md).
-The formal 64^3-by-3 run completed with three scanner executions and finite,
-nonempty outputs, but `policy_validation.passed=false`: crop 1's candidate
+because public F3 `fv.dat` and `fvt.dat` are not independent truth. The
+historical 64^3 multi-crop and large-crop commands, automatic checks, manual
+review list, and evidence policy are preserved in
+[F3 3D Reference Data Validation](f3d_validation.md). The historical 64^3-by-3
+diagnostic completed with three scanner executions and finite, nonempty
+outputs, but `policy_validation.passed=false`: crop 1's candidate
 public-FVT sparse-distance p95 was `8.429705` versus baseline `2.236068`, a
 `+6.193637`-sample regression above the `+5.0` limit. All other automatic
-checks passed. Per the documented ordering, the large crop was not run; human
-geological review and default promotion remain blocked.
+diagnostic checks passed. Per the documented ordering, the large crop was not
+run; human geological review was not completed. This failure remains historical
+crop diagnostic evidence and is not reused as a full-volume publication gate.
 
-F3 reference agreement is not quality itself. A quality-workflow change should
-be promoted only when the controlled synthetic `extended` matrix and the matching
-F3 real-data comparison both avoid clear failures: improved or preserved
-synthetic truth recovery, no new boundary or over-filtering failure, and no
-obvious loss of real-data geological signal across crops. For a scanner-only
-policy candidate, this means the dedicated shared-scan comparison above, not a
-workflow comparison that also changes voter thinning. Until that evidence and
-manual review exist, keep `reference` as the default workflow value and use
-`quality` only as an explicit workflow value.
+Until controlled synthetic truth evidence and the future full-volume F3
+reference-agreement review exist, keep `reference` as the default workflow
+value and use `quality` only as an explicit workflow value.

@@ -20,8 +20,13 @@ outputs with existing reference volumes:
 - `fvt.dat`: reference thinned OSV fault volume.
 
 F3 data is external and optional. Normal tests must not require the F3 data root
-or the `reference_osv/` bind mount. Use `docs/f3d_validation.md` for optional
-smoke, crop, multi-crop, ablation, and full-volume commands.
+or the `reference_osv/` bind mount. Publication-facing comparison uses the
+complete `(420, 400, 100)` volume as one evaluation unit; crops are not
+publication samples or statistical replicates. Start with the full-volume
+protocol in [F3 3D Reference Data Validation](f3d_validation.md). Its current
+`run_3d_f3d_full.py` runner is a single reference-like baseline scan/vote path,
+not the planned full-volume 2×2 scanner-backend/workflow runner. Smoke, crop,
+multi-crop, and ablation commands remain optional legacy/internal diagnostics.
 
 Controlled synthetic reports are a separate truth-quality diagnostic documented
 in `docs/synthetic_quality.md`. Oracle synthetic mode isolates the downstream
@@ -50,13 +55,16 @@ and reviewed for the specific change under audit.
 it, write generated outputs under it, or commit it. Generated reports, figures,
 and `.dat` files belong under `outputs/` or another ignored working directory.
 
-Separate scanner, thinning, and voting differences before changing behavior.
-The same final `fvt` metric can move because of:
+Audit scanner backend, scanner thinning, workflow mode, and voter thinning as
+separate stages before changing behavior. Workflow mode does not select the
+scanner backend or scanner thinning, and scanner reference thinning is distinct
+from voter reference thinning. The same final `fvt` metric can move because of:
 
-- scanner likelihood and angle choices;
-- scanner thinning choices;
+- scanner-backend likelihood and angle choices;
+- scanner-thinning choices;
+- downstream workflow defaults;
 - voter seed selection, local sampling, dynamic programming, or accumulation;
-- voter thinning choices;
+- voter-thinning choices;
 - final vote-map normalization and post-processing differences.
 
 Changing more than one stage at a time makes F3 metrics hard to interpret and
@@ -103,9 +111,10 @@ python -m ruff check src tests examples
 python -m ruff format --check src tests examples
 ```
 
-Useful optional F3 commands are documented in `docs/f3d_validation.md`, including
-the external data smoke test, small crop validation, reference-like thinning
-validation, thinning ablation report, large crop validation, and full F3 run.
+The full-volume F3 protocol and current baseline runner are documented first in
+`docs/f3d_validation.md`. That document also preserves optional external-data
+smoke, small-crop, multi-crop, reference-like-thinning, ablation, and large-crop
+diagnostics.
 
 ## Difference Categories
 

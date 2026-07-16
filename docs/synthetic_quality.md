@@ -316,12 +316,14 @@ The generated reports did not record a source commit, so the compact evidence
 uses `source_commit=null` with `source_provenance="not_recorded"`; it does not
 guess a commit from timestamps.
 
-This passing artifact evaluates the synthetic policy candidate only. The later
-formal F3 64^3-by-3 shared-scan run failed one per-crop external-smoke check:
-crop 1's public-FVT sparse-distance p95 delta was `+6.193637` samples against a
-`+5.0` limit. The prerequisite large crop was not run and human review remains
-pending, so the synthetic result does not change the quality-workflow default,
-another workflow default, or the public scanner-thinning default.
+This passing artifact evaluates the synthetic policy candidate only. A later
+historical F3 64^3-by-3 shared-scan crop diagnostic failed one external-smoke
+check: crop 1's public-FVT sparse-distance p95 delta was `+6.193637` samples
+against a `+5.0` limit. The prerequisite large-crop diagnostic was not run and
+human review remains pending. This crop history is not a current publication
+gate or a set of statistical replicates, so the synthetic result does not
+change the quality-workflow default, another workflow default, or the public
+scanner-thinning default.
 
 The controlled synthetic oracle path is:
 
