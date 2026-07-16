@@ -192,8 +192,9 @@ finite/nonempty stages, density, edge, crop stability, and configuration
 contracts. The prerequisite large-crop diagnostic was therefore not run and
 human geological review remains pending. This failed crop check is preserved as
 historical diagnostic evidence, not a current publication gate or a set of
-statistical replicates. The quality-workflow scanner-thinning default and all
-public defaults remain unchanged. Compact failed-run evidence is recorded in
+statistical replicates. The scanner-thinning default remains unchanged,
+independently of the unchanged workflow default and other public defaults.
+Compact failed-run evidence is recorded in
 `tests/fixtures/f3d_scanner_thinning_policy/quality_reference_like_normal_v1_evidence.json`.
 
 The legacy quality scanner backend promotion-candidate flow for
