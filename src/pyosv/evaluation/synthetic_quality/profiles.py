@@ -57,6 +57,7 @@ def _effective_skinning_config_for_workflow(
     skinner_min_likelihood_explicit: bool = False,
     skinner_growth_source_explicit: bool = False,
     skinner_accepted_occupancy_radius_explicit: bool = False,
+    skinner_boundary_fallback_explicit: bool = False,
 ) -> SyntheticSkinningConfig:
     if workflow_mode != "quality" or skinning_config.method not in {"reference", "quality"}:
         return skinning_config
@@ -75,13 +76,16 @@ def _effective_skinning_config_for_workflow(
     growth_source = skinning_config.growth_source
     if not skinner_growth_source_explicit and growth_source == defaults.growth_source:
         growth_source = "pre_thin"
+    boundary_skinner_fallback = skinning_config.boundary_skinner_fallback
+    if not skinner_boundary_fallback_explicit:
+        boundary_skinner_fallback = True
     return replace(
         skinning_config,
         method="quality",
         min_likelihood=min_likelihood,
         accepted_occupancy_radius=accepted_occupancy_radius,
         growth_source=growth_source,
-        boundary_skinner_fallback=True,
+        boundary_skinner_fallback=boundary_skinner_fallback,
     )
 
 

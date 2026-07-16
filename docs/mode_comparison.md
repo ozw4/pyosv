@@ -94,6 +94,12 @@ does not select a scanner backend and does not select `scanner_thin_mode`.
 Conversely, choosing the `quality` scanner backend does not implicitly choose
 the quality workflow. These choices must be recorded separately.
 
+For boundary fallback, omitting both CLI controls retains these workflow
+defaults. `--skinner-boundary-fallback` explicitly enables the configured
+fallback, while `--no-skinner-boundary-fallback` explicitly disables it and
+therefore overrides the quality-workflow default. The configured fallback
+policy is preserved in either case.
+
 The diagnostic workflow is the reference workflow with thinning diagnostics
 enabled. It is not a third production-quality algorithm. The quality workflow
 uses adaptive skin likelihood when no explicit minimum is supplied, grows from
