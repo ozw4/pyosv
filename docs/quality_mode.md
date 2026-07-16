@@ -58,9 +58,9 @@ filled by the workflow profile.
 ## Boundary-aware Voter Candidate
 
 `boundary_aware_voter_v1` is an explicit-only synthetic-report variant. It
-keeps the selected workflow's scanner backend, scanner thinning, seed
-selection, voter thinning, and skinner settings identical to
-`current_default`, but calls
+preserves the scanner backend and scanner thinning chosen by the run/scanner
+configuration. It keeps the selected workflow's downstream seed selection,
+voter thinning, and skinner settings identical to `current_default`, but calls
 `set_surface_voting_boundary_policy("masked_in_bounds")`. It is absent from
 the default variant list and the `quality-matrix` preset.
 

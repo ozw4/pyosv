@@ -105,7 +105,7 @@ enabled. It is not a third production-quality algorithm. The quality workflow
 uses adaptive skin likelihood when no explicit minimum is supplied, grows from
 the pre-thin vote volume, uses an accepted-occupancy radius of 1, and enables
 the `empty_primary` boundary fallback. Further workflow and benchmark details
-remain in [Quality Mode](quality_mode.md) and
+remain in [Quality Workflow Mode](quality_mode.md) and
 [Controlled Synthetic Quality](synthetic_quality.md).
 
 ## 5. Comparison matrix and labels
@@ -237,4 +237,4 @@ or downstream workflow results.
 | Voter thinning | [`src/pyosv/voting3d.py`](../src/pyosv/voting3d.py) | Stage-specific voter thinning, including `reference` and `hybrid_v2` |
 | Skinning | [`src/pyosv/_skinner/reference.py`](../src/pyosv/_skinner/reference.py), [`seeds.py`](../src/pyosv/_skinner/seeds.py) | Reference and quality skinner behavior, adaptive threshold, seed gates, and effective occupancy |
 | Current F3 full runner | [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) | Current single full-volume scan/vote pipeline and F3 output comparison |
-| Supporting documentation | [3D Orientation Scanning](orient3d.md), [Quality Mode](quality_mode.md), [Controlled Synthetic Quality](synthetic_quality.md), [F3 Validation](f3d_validation.md) | Detailed algorithm, benchmark, and operational context without redefining these canonical terms |
+| Supporting documentation | [3D Orientation Scanning](orient3d.md), [Quality Workflow Mode](quality_mode.md), [Controlled Synthetic Quality](synthetic_quality.md), [F3 Validation](f3d_validation.md) | Detailed algorithm, benchmark, and operational context without redefining these canonical terms |
