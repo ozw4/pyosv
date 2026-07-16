@@ -21,13 +21,7 @@ from pyosv.evaluation.synthetic_quality.config import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
 )
-from pyosv.evaluation.synthetic_quality.profiles import (
-    _default_surface_support_policy_for_workflow,
-    _default_voter_thin_mode_for_workflow,
-    _effective_include_thinning_diagnostic,
-    _effective_skinning_config_for_workflow,
-    _validate_workflow_mode,
-)
+from pyosv.evaluation.synthetic_quality.profiles import resolve_workflow_settings
 from pyosv.evaluation.synthetic_quality.runner import (
     build_case_report_model,
     prepare_case_inputs,
@@ -153,29 +147,21 @@ def _build_report_outputs(
     effective_scanner_boundary_stage_diagnostics = bool(
         include_scanner_boundary_stage_diagnostics and valid_input_mode != "oracle"
     )
-    valid_workflow_mode = _validate_workflow_mode(workflow_mode)
-    skinning_config = _effective_skinning_config_for_workflow(
-        workflow_mode=valid_workflow_mode,
+    workflow_settings = resolve_workflow_settings(
+        workflow_mode=workflow_mode,
+        voting_config=voting_config,
         skinning_config=skinning_config,
         skinner_method_explicit=skinner_method_explicit,
         skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
         skinner_growth_source_explicit=skinner_growth_source_explicit,
         skinner_accepted_occupancy_radius_explicit=(skinner_accepted_occupancy_radius_explicit),
         skinner_boundary_fallback_explicit=skinner_boundary_fallback_explicit,
-    )
-    if voting_config is None:
-        support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
-            valid_workflow_mode
-        )
-        voting_config = SyntheticVotingConfig(
-            voter_thin_mode=_default_voter_thin_mode_for_workflow(valid_workflow_mode),
-            surface_support_min_fraction=support_min_fraction,
-            surface_support_exponent=support_exponent,
-        )
-    include_thinning_diagnostic = _effective_include_thinning_diagnostic(
-        workflow_mode=valid_workflow_mode,
         include_thinning_diagnostic=include_thinning_diagnostic,
     )
+    valid_workflow_mode = workflow_settings.workflow_mode
+    voting_config = workflow_settings.voting_config
+    skinning_config = workflow_settings.skinning_config
+    include_thinning_diagnostic = workflow_settings.include_thinning_diagnostic
     diagnostic_case_ids = set(
         validate_case_ids(
             thinning_diagnostic_cases,

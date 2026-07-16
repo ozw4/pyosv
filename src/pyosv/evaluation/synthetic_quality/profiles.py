@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
-from .config import SyntheticSkinningConfig
+from .config import SyntheticSkinningConfig, SyntheticVotingConfig
 
 WORKFLOW_MODES = ("reference", "quality", "diagnostic")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedWorkflowSettings:
+    """Effective workflow settings shared by synthetic-quality applications."""
+
+    workflow_mode: str
+    voting_config: SyntheticVotingConfig
+    skinning_config: SyntheticSkinningConfig
+    include_thinning_diagnostic: bool
 
 
 def _validate_workflow_mode(value: str) -> str:
@@ -117,3 +127,48 @@ def _effective_include_thinning_diagnostic(
     include_thinning_diagnostic: bool,
 ) -> bool:
     return include_thinning_diagnostic or workflow_mode == "diagnostic"
+
+
+def resolve_workflow_settings(
+    *,
+    workflow_mode: str = "reference",
+    voting_config: SyntheticVotingConfig | None = None,
+    skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(),
+    skinner_method_explicit: bool = False,
+    skinner_min_likelihood_explicit: bool = False,
+    skinner_growth_source_explicit: bool = False,
+    skinner_accepted_occupancy_radius_explicit: bool = False,
+    skinner_boundary_fallback_explicit: bool = False,
+    include_thinning_diagnostic: bool = False,
+) -> ResolvedWorkflowSettings:
+    """Resolve effective voting, skinning, and diagnostic workflow settings."""
+
+    valid_workflow_mode = _validate_workflow_mode(workflow_mode)
+    effective_skinning_config = _effective_skinning_config_for_workflow(
+        workflow_mode=valid_workflow_mode,
+        skinning_config=skinning_config,
+        skinner_method_explicit=skinner_method_explicit,
+        skinner_min_likelihood_explicit=skinner_min_likelihood_explicit,
+        skinner_growth_source_explicit=skinner_growth_source_explicit,
+        skinner_accepted_occupancy_radius_explicit=(skinner_accepted_occupancy_radius_explicit),
+        skinner_boundary_fallback_explicit=skinner_boundary_fallback_explicit,
+    )
+    if voting_config is None:
+        support_min_fraction, support_exponent = _default_surface_support_policy_for_workflow(
+            valid_workflow_mode
+        )
+        voting_config = SyntheticVotingConfig(
+            voter_thin_mode=_default_voter_thin_mode_for_workflow(valid_workflow_mode),
+            surface_support_min_fraction=support_min_fraction,
+            surface_support_exponent=support_exponent,
+        )
+    effective_include_thinning_diagnostic = _effective_include_thinning_diagnostic(
+        workflow_mode=valid_workflow_mode,
+        include_thinning_diagnostic=include_thinning_diagnostic,
+    )
+    return ResolvedWorkflowSettings(
+        workflow_mode=valid_workflow_mode,
+        voting_config=voting_config,
+        skinning_config=effective_skinning_config,
+        include_thinning_diagnostic=effective_include_thinning_diagnostic,
+    )
