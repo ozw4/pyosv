@@ -144,6 +144,10 @@ def resolve_workflow_settings(
     """Resolve effective voting, skinning, and diagnostic workflow settings."""
 
     valid_workflow_mode = _validate_workflow_mode(workflow_mode)
+    if voting_config is not None and not isinstance(voting_config, SyntheticVotingConfig):
+        raise ValueError("voting_config must be a SyntheticVotingConfig or None")
+    if not isinstance(skinning_config, SyntheticSkinningConfig):
+        raise ValueError("skinning_config must be a SyntheticSkinningConfig")
     effective_skinning_config = _effective_skinning_config_for_workflow(
         workflow_mode=valid_workflow_mode,
         skinning_config=skinning_config,

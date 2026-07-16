@@ -9,7 +9,11 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     build_mode_comparison_plan,
 )
-from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig
+from pyosv.evaluation.synthetic_quality import (
+    SyntheticScannerConfig,
+    SyntheticSkinningConfig,
+    SyntheticVotingConfig,
+)
 from pyosv.evaluation.synthetic_quality.cases import CASE_IDS
 
 
@@ -131,3 +135,19 @@ def test_plan_rejects_duplicate_cell_labels() -> None:
 
     with pytest.raises(ValueError, match="duplicate mode cell label"):
         replace(plan, cells=(plan.cells[0], plan.cells[0], *plan.cells[2:]))
+
+
+def test_plan_rejects_workflow_settings_from_different_voting_config() -> None:
+    plan = build_mode_comparison_plan(SyntheticModeComparisonConfig())
+
+    with pytest.raises(ValueError, match="quality_workflow_settings must match"):
+        replace(plan, voting_config=SyntheticVotingConfig())
+
+
+def test_plan_rejects_workflow_settings_from_different_skinning_or_explicit_flags() -> None:
+    plan = build_mode_comparison_plan(SyntheticModeComparisonConfig())
+
+    with pytest.raises(ValueError, match="workflow_settings must match"):
+        replace(plan, skinning_config=SyntheticSkinningConfig(min_likelihood=0.7))
+    with pytest.raises(ValueError, match="workflow_settings must match"):
+        replace(plan, skinner_min_likelihood_explicit=True)

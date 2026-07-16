@@ -21,7 +21,11 @@ class SyntheticTrialSpec:
     seed: int | None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.case_id, str) or not _FILESYSTEM_SAFE_ID.fullmatch(self.case_id):
+        if (
+            not isinstance(self.case_id, str)
+            or not _FILESYSTEM_SAFE_ID.fullmatch(self.case_id)
+            or self.case_id in {".", ".."}
+        ):
             raise ValueError("case_id must be a non-empty filesystem-safe ID")
         if self.seed is not None:
             if not isinstance(self.seed, Integral) or isinstance(self.seed, bool) or self.seed < 0:

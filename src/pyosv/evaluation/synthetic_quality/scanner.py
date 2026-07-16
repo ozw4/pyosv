@@ -148,12 +148,22 @@ def _validated_scanner_input(case: Synthetic3DCase, scanner_input: np.ndarray) -
     if not np.all(np.isfinite(input_float32)):
         raise ValueError("scanner_input must contain only finite float32 values")
 
-    # Backends only read the shared input. A read-only view prevents an injected
-    # backend from contaminating later backend results without copying valid float32
-    # full volumes or changing the caller's array flags.
-    protected_input = input_float32.view()
-    protected_input.setflags(write=False)
-    return protected_input
+    if _has_immutable_bytes_backing(input_float32):
+        return input_float32
+
+    # A read-only ndarray view is insufficient here: its writeable base remains
+    # reachable, and an injected backend can re-enable writes on the view. Copy once
+    # into an immutable bytes buffer at the backend boundary so neither the caller's
+    # array nor a later backend can be contaminated.
+    immutable_buffer = input_float32.tobytes(order="C")
+    return np.frombuffer(immutable_buffer, dtype=np.float32).reshape(input_float32.shape)
+
+
+def _has_immutable_bytes_backing(array: np.ndarray) -> bool:
+    base: object = array
+    while isinstance(base, np.ndarray) and base.base is not None:
+        base = base.base
+    return isinstance(base, bytes)
 
 
 def scan_backend_attributes(

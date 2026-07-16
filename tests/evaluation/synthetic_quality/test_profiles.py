@@ -141,6 +141,13 @@ def test_explicit_default_voting_config_is_not_a_workflow_default() -> None:
     assert explicit_settings.voting_config.voter_thin_mode == "reference"
 
 
+def test_resolve_workflow_settings_rejects_invalid_config_types() -> None:
+    with pytest.raises(ValueError, match="voting_config must be"):
+        resolve_workflow_settings(voting_config=object())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="skinning_config must be"):
+        resolve_workflow_settings(skinning_config=object())  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     ("fallback", "explicit", "expected"),
     (

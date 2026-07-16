@@ -13,6 +13,7 @@ from ..synthetic_quality import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
+    resolve_workflow_settings,
 )
 from ..synthetic_quality.cases import EXTENDED_CASES, validate_case_ids
 from .trials import SyntheticTrialSpec, expand_synthetic_trials, validate_trial_seeds
@@ -142,6 +143,29 @@ class SyntheticModeComparisonPlan:
             raise ValueError("reference_workflow_settings must use the reference workflow")
         if self.quality_workflow_settings.workflow_mode != "quality":
             raise ValueError("quality_workflow_settings must use the quality workflow")
+        workflow_kwargs = {
+            "voting_config": self.voting_config,
+            "skinning_config": self.skinning_config,
+            "skinner_method_explicit": self.skinner_method_explicit,
+            "skinner_min_likelihood_explicit": self.skinner_min_likelihood_explicit,
+            "skinner_growth_source_explicit": self.skinner_growth_source_explicit,
+            "skinner_accepted_occupancy_radius_explicit": (
+                self.skinner_accepted_occupancy_radius_explicit
+            ),
+            "skinner_boundary_fallback_explicit": self.skinner_boundary_fallback_explicit,
+        }
+        expected_reference_settings = resolve_workflow_settings(
+            workflow_mode="reference", **workflow_kwargs
+        )
+        expected_quality_settings = resolve_workflow_settings(
+            workflow_mode="quality", **workflow_kwargs
+        )
+        if self.reference_workflow_settings != expected_reference_settings:
+            raise ValueError(
+                "reference_workflow_settings must match the plan workflow configuration"
+            )
+        if self.quality_workflow_settings != expected_quality_settings:
+            raise ValueError("quality_workflow_settings must match the plan workflow configuration")
         if (
             self.reference_workflow_settings.include_thinning_diagnostic
             or self.quality_workflow_settings.include_thinning_diagnostic

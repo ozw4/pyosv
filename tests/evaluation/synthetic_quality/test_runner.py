@@ -573,6 +573,46 @@ def test_explicit_scanner_backends_scan_and_thin_once_each(
     assert calls == {"construct": 2, "scan": 1, "scan_quality": 1, "thin": 2}
 
 
+def test_explicit_scanner_backend_results_do_not_depend_on_execution_order() -> None:
+    case = make_single_vertical_plane_case((3, 3, 3))
+    scanner_config = SyntheticScannerConfig(
+        backend="quality",
+        phi_min=0.0,
+        phi_max=0.0,
+        theta_min=90.0,
+        theta_max=90.0,
+        sigma1=1.0,
+        sigma2=1.0,
+        scanner_thin_mode="none",
+    )
+
+    forward = prepare_case_inputs(
+        case,
+        scanner_config=scanner_config,
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+        scanner_backends=("reference-like", "quality"),
+    )
+    reverse = prepare_case_inputs(
+        case,
+        scanner_config=scanner_config,
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+        scanner_backends=("quality", "reference-like"),
+    )
+
+    assert forward.scanner is not None
+    assert reverse.scanner is not None
+    for backend in ("reference-like", "quality"):
+        assert (
+            forward.scanner.by_backend[backend].report == reverse.scanner.by_backend[backend].report
+        )
+        _assert_nested_arrays_equal(
+            forward.scanner.by_backend[backend].volumes,
+            reverse.scanner.by_backend[backend].volumes,
+        )
+
+
 @pytest.mark.parametrize(
     ("scanner_backends", "matrix", "message"),
     (

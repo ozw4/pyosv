@@ -64,6 +64,12 @@ def test_trial_spec_is_immutable() -> None:
         trial.seed = 4  # type: ignore[misc]
 
 
+@pytest.mark.parametrize("case_id", (".", ".."))
+def test_trial_spec_rejects_special_path_components(case_id: str) -> None:
+    with pytest.raises(ValueError, match="filesystem-safe"):
+        SyntheticTrialSpec(case_id, case_id, None)
+
+
 def test_trial_seed_does_not_replace_scanner_input_seed() -> None:
     scanner = SyntheticScannerConfig(input_config=SyntheticScannerInputConfig(seed=123))
 

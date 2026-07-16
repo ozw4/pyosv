@@ -156,7 +156,7 @@ def test_scanner_attributes_from_case_matches_prepared_input_path() -> None:
         np.testing.assert_array_equal(wrapped.volumes[name], prepared.volumes[name])
 
 
-def test_scanner_attributes_from_input_protects_float32_input_without_copy() -> None:
+def test_scanner_attributes_from_input_protects_float32_input_from_write_flag_bypass() -> None:
     case = make_single_vertical_plane_case((3, 3, 3))
     scanner_input = np.ones(case.shape, dtype=np.float32)
     original = scanner_input.copy()
@@ -165,6 +165,8 @@ def test_scanner_attributes_from_input_protects_float32_input_without_copy() -> 
     def backend_scan(scanner, config, input_array, backend):
         nonlocal seen_input
         seen_input = input_array
+        with pytest.raises(ValueError, match="cannot set WRITEABLE flag"):
+            input_array.setflags(write=True)
         with pytest.raises(ValueError, match="read-only"):
             input_array[0, 0, 0] = 0.0
         volumes = tuple(np.full(case.shape, value, dtype=np.float32) for value in (1, 2, 3))
@@ -178,10 +180,10 @@ def test_scanner_attributes_from_input_protects_float32_input_without_copy() -> 
     )
 
     assert seen_input is not None
-    assert np.shares_memory(seen_input, scanner_input)
+    assert not np.shares_memory(seen_input, scanner_input)
     assert scanner_input.flags.writeable
     np.testing.assert_array_equal(scanner_input, original)
-    assert np.shares_memory(attributes.volumes["scanner_input"], scanner_input)
+    assert attributes.volumes["scanner_input"] is seen_input
 
 
 @pytest.mark.parametrize(

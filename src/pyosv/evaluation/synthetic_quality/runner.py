@@ -36,6 +36,7 @@ from pyosv.evaluation.synthetic_quality.pipeline import run_voting_from_attribut
 from pyosv.evaluation.synthetic_quality.scanner import (
     SCANNER_BACKENDS,
     ScannerAttributes,
+    _validated_scanner_input,
     scanner_attributes_from_case,
     scanner_attributes_from_input,
 )
@@ -161,7 +162,10 @@ def prepare_case_inputs(
     if valid_input_mode == "oracle":
         return PreparedCaseInputs(case=case, oracle=oracle, scanner=None)
 
-    scanner_input = make_scanner_input_from_case(case, scanner_config.input_config)
+    scanner_input = _validated_scanner_input(
+        case,
+        make_scanner_input_from_case(case, scanner_config.input_config),
+    )
     by_backend = {
         backend: scanner_attributes_from_input(
             case,
