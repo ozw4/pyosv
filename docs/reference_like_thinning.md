@@ -16,6 +16,14 @@ available with `mode="normal"`.
 `OptimalSurfaceVoter.thin(...)` also defaults to `mode="reference"`. Its legacy
 fault-normal voter thinning path remains available with `mode="normal"`.
 
+The reference-like scanner backend and the `reference` thinning mode are
+different concepts. The backend produces scanner likelihood and orientations;
+scanner reference thinning and voter reference thinning are two later,
+stage-specific operations. A downstream `reference` or `quality` workflow is a
+separate choice again. See
+[Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md)
+for the canonical terminology.
+
 ## Reference Audit Notes
 
 The Java scanner and voter thinning methods share the same broad NMS pattern,
@@ -74,10 +82,10 @@ fet, fpt, ftt = scanner.thin(
 )
 ```
 
-The optional F3 crop, multi-crop, and thinning-ablation scripts expose the same
-diagnostic switch as `--keep-scanner-edge-effects`. Leave it unset for
-reference-first validation; the reports record whether edge-effect removal was
-active.
+The optional legacy/internal F3 crop, multi-crop, and thinning-ablation scripts
+expose the same diagnostic switch as `--keep-scanner-edge-effects`. Leave it
+unset for reference-first diagnostics; the reports record whether edge-effect
+removal was active. These crop reports are not publication evidence.
 
 Pass `mode="normal"` explicitly for the older scanner fault-normal thinning
 path:
@@ -103,15 +111,25 @@ Pass `mode="normal"` explicitly for the older fault-normal voter thinning path.
 fvt = voter.thin(fv, vp, vt, mode="normal")
 ```
 
-For F3 crop, multi-crop, and ablation commands, see
-`docs/f3d_validation.md#reference-like-thinning-validation`.
+For the full-volume publication protocol, current baseline runner, and planned
+mode-comparison matrix, see [F3 3D Reference Data
+Validation](f3d_validation.md). Its
+[reference-like thinning validation](f3d_validation.md#reference-like-thinning-validation)
+section preserves crop, multi-crop, and ablation commands as optional
+legacy/internal diagnostics.
 
 ## Interpreting F3 Results
 
-Do not treat the first reference-like thinning runs as proof that pyosv is
-equivalent to the Java reference. F3 metrics are comparison report fields, not
-acceptance thresholds. The first expected improvements are not necessarily high
-voxel-wise correlation. Check whether:
+Publication-facing F3 comparison uses the complete volume as one evaluation
+unit. Record `scanner_backend`, `scanner_thin_mode`, `workflow_mode`, and
+`voter_thin_mode` separately so changes can be attributed stage by stage. Do
+not treat crops as publication samples or statistical replicates, or crop-based
+reference-like thinning results as publication evidence.
+
+The following checks and baseline values are retained for historical/local crop
+diagnostics only. They are not current publication acceptance criteria and do
+not prove that pyosv is equivalent to the Java reference. Within such a
+diagnostic, inspect whether:
 
 - `fvt` `nonzero_fraction` moves closer to the reference.
 - `buffered_ridge_overlap.interior.fvt.buffered_f1` improves.
@@ -127,5 +145,5 @@ buffered_ridge_overlap.interior.fvt.buffered_f1.mean ~= 0.075
 exact fvt ridge overlap F1/Jaccard = 0.0
 ```
 
-Do not claim success until an actual ablation report has been generated and
-reviewed.
+Use an actual ablation report to interpret a local diagnostic; do not promote
+its crop result to a full-volume publication conclusion.

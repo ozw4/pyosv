@@ -772,9 +772,10 @@ known-truth experiments documented in
 [Controlled Synthetic Quality](synthetic_quality.md), not to F3 reference
 comparison.
 
-For an operational figure-first workflow, including crop PNGs, ridge overlays,
-MIPs, histograms, and multi-crop markdown indexes, see
-`docs/f3d_visual_diagnostics.md`.
+For the canonical planned full-volume publication figure contract, and for the
+separately identified current crop PNG, ridge-overlay, MIP, histogram, and
+multi-crop diagnostic workflows, see
+[`docs/f3d_visual_diagnostics.md`](f3d_visual_diagnostics.md).
 
 For historical crop-based reference-like thinning diagnostics, the first
 expected improvements are not necessarily high voxel-wise correlation. The
