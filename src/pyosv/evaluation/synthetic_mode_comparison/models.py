@@ -14,7 +14,8 @@ from ..synthetic_quality import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
 )
-from ..synthetic_quality.cases import validate_case_ids
+from ..synthetic_quality.cases import EXTENDED_CASES, validate_case_ids
+from .trials import SyntheticTrialSpec, expand_synthetic_trials, validate_trial_seeds
 
 ModeCellScope = Literal["scanner-only", "oracle-workflow-isolation", "end-to-end"]
 ModeInputMode = Literal["scanner", "oracle"]
@@ -98,6 +99,8 @@ class SyntheticModeComparisonPlan:
     """Validated, execution-free canonical synthetic comparison plan."""
 
     case_ids: tuple[str, ...]
+    trial_seeds: tuple[int, ...]
+    trials: tuple[SyntheticTrialSpec, ...]
     shape: tuple[int, int, int]
     scanner_template: SyntheticScannerConfig
     voting_config: SyntheticVotingConfig | None
@@ -116,6 +119,14 @@ class SyntheticModeComparisonPlan:
 
     def __post_init__(self) -> None:
         validate_case_ids(self.case_ids)
+        seeds = validate_trial_seeds(self.trial_seeds)
+        definitions_by_id = {definition.case_id: definition for definition in EXTENDED_CASES}
+        expected_trials = expand_synthetic_trials(
+            tuple(definitions_by_id[case_id] for case_id in self.case_ids),
+            seeds,
+        )
+        if self.trials != expected_trials:
+            raise ValueError("trials must match the selected cases and trial seeds")
         validate_shape3(self.shape)
         if self.comparison_variant != "current_default":
             raise ValueError("comparison_variant must be 'current_default'")

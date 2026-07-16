@@ -40,6 +40,33 @@ def test_case_factory_returns_registered_id(definition) -> None:
     assert case.ft_oracle.shape == (17, 17, 17)
 
 
+def test_only_weak_noisy_case_is_registered_as_stochastic() -> None:
+    assert tuple(
+        definition.case_id for definition in EXTENDED_CASES if definition.is_stochastic
+    ) == ("weak_noisy_plane",)
+
+
+def test_seed_aware_build_keeps_legacy_factory_and_supports_seeded_realizations() -> None:
+    definition = EXTENDED_CASES[-1]
+
+    legacy = definition.factory((9, 9, 9))
+    default = definition.build_case((9, 9, 9))
+    first = definition.build_case((9, 9, 9), seed=1)
+    second = definition.build_case((9, 9, 9), seed=2)
+
+    assert (legacy.ft_oracle == default.ft_oracle).all()
+    assert not (first.ft_oracle == second.ft_oracle).all()
+
+
+def test_deterministic_build_does_not_forward_seed() -> None:
+    definition = EXTENDED_CASES[0]
+
+    first = definition.build_case((9, 9, 9), seed=1)
+    second = definition.build_case((9, 9, 9), seed=2)
+
+    assert (first.ft_oracle == second.ft_oracle).all()
+
+
 def test_validate_case_set_rejects_unknown_set() -> None:
     with pytest.raises(ValueError, match=r"^unknown case_set: missing$"):
         validate_case_set("missing")

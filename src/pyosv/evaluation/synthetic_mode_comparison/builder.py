@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from ..synthetic_quality import resolve_workflow_settings
-from ..synthetic_quality.cases import validate_case_ids, validate_case_set
+from ..synthetic_quality.cases import (
+    EXTENDED_CASES,
+    SyntheticQualityCaseDefinition,
+    validate_case_ids,
+    validate_case_set,
+)
 from .config import SyntheticModeComparisonConfig
 from .models import SyntheticModeComparisonPlan, canonical_mode_cells
+from .trials import expand_synthetic_trials
 
 
 def build_mode_comparison_plan(
@@ -16,7 +22,8 @@ def build_mode_comparison_plan(
     if not isinstance(config, SyntheticModeComparisonConfig):
         raise ValueError("config must be a SyntheticModeComparisonConfig")
     _validate_scanner_template(config)
-    case_ids = _resolve_case_ids(config)
+    case_definitions = _resolve_case_definitions(config)
+    case_ids = tuple(definition.case_id for definition in case_definitions)
     workflow_kwargs = {
         "voting_config": config.voting_config,
         "skinning_config": config.skinning_config,
@@ -32,6 +39,8 @@ def build_mode_comparison_plan(
     quality_settings = resolve_workflow_settings(workflow_mode="quality", **workflow_kwargs)
     return SyntheticModeComparisonPlan(
         case_ids=case_ids,
+        trial_seeds=config.trial_seeds,
+        trials=expand_synthetic_trials(case_definitions, config.trial_seeds),
         shape=config.shape,
         scanner_template=config.scanner_template,
         voting_config=config.voting_config,
@@ -54,11 +63,14 @@ def build_mode_comparison_plan(
     )
 
 
-def _resolve_case_ids(config: SyntheticModeComparisonConfig) -> tuple[str, ...]:
+def _resolve_case_definitions(
+    config: SyntheticModeComparisonConfig,
+) -> tuple[SyntheticQualityCaseDefinition, ...]:
     if config.case_ids is not None:
-        return validate_case_ids(config.case_ids)
-    definitions = validate_case_set(config.case_set)
-    return tuple(definition.case_id for definition in definitions)
+        case_ids = validate_case_ids(config.case_ids)
+        definitions_by_id = {definition.case_id: definition for definition in EXTENDED_CASES}
+        return tuple(definitions_by_id[case_id] for case_id in case_ids)
+    return validate_case_set(config.case_set)
 
 
 def _validate_scanner_template(config: SyntheticModeComparisonConfig) -> None:

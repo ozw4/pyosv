@@ -709,6 +709,59 @@ def test_make_weak_noisy_plane_case_is_deterministic() -> None:
         np.testing.assert_array_equal(getattr(case, name), getattr(repeated, name))
 
 
+def test_make_weak_noisy_plane_case_default_seed_matches_explicit_default() -> None:
+    implicit = make_weak_noisy_plane_case(shape=(17, 19, 21))
+    explicit = make_weak_noisy_plane_case(shape=(17, 19, 21), seed=20260707)
+
+    for name in (
+        "truth_fault_mask",
+        "truth_fault_id",
+        "truth_distance",
+        "truth_strike",
+        "truth_dip",
+        "ft_oracle",
+        "pt_oracle",
+        "tt_oracle",
+    ):
+        np.testing.assert_array_equal(getattr(implicit, name), getattr(explicit, name))
+
+
+def test_make_weak_noisy_plane_case_seed_changes_only_noisy_likelihood() -> None:
+    first = make_weak_noisy_plane_case(shape=(17, 19, 21), seed=11)
+    repeated = make_weak_noisy_plane_case(shape=(17, 19, 21), seed=11)
+    second = make_weak_noisy_plane_case(shape=(17, 19, 21), seed=12)
+
+    np.testing.assert_array_equal(first.ft_oracle, repeated.ft_oracle)
+    assert not np.array_equal(first.ft_oracle, second.ft_oracle)
+    for name in (
+        "truth_fault_mask",
+        "truth_fault_id",
+        "truth_distance",
+        "truth_strike",
+        "truth_dip",
+        "pt_oracle",
+        "tt_oracle",
+    ):
+        np.testing.assert_array_equal(getattr(first, name), getattr(second, name))
+
+
+def test_make_weak_noisy_plane_case_does_not_change_global_rng_state() -> None:
+    state_before = np.random.get_state()
+
+    make_weak_noisy_plane_case(shape=(9, 9, 9), seed=1234)
+
+    state_after = np.random.get_state()
+    assert state_before[0] == state_after[0]
+    np.testing.assert_array_equal(state_before[1], state_after[1])
+    assert state_before[2:] == state_after[2:]
+
+
+@pytest.mark.parametrize("seed", (True, -1, 1.5, "1", None))
+def test_make_weak_noisy_plane_case_rejects_invalid_seed(seed: object) -> None:
+    with pytest.raises(ValueError, match="seed must be a non-negative integer"):
+        make_weak_noisy_plane_case(shape=(9, 9, 9), seed=seed)  # type: ignore[arg-type]
+
+
 def test_make_weak_noisy_plane_case_has_degraded_likelihood() -> None:
     shape = (21, 25, 27)
     case = make_weak_noisy_plane_case(shape=shape)

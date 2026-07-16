@@ -12,6 +12,7 @@ from ..synthetic_quality import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
 )
+from .trials import validate_trial_seeds
 
 CANONICAL_COMPARISON_VARIANT = "current_default"
 
@@ -22,6 +23,7 @@ class SyntheticModeComparisonConfig:
 
     case_set: str = "minimal"
     case_ids: tuple[str, ...] | None = None
+    trial_seeds: tuple[int, ...] = (20260707,)
     shape: tuple[int, int, int] = (49, 49, 49)
     scanner_template: SyntheticScannerConfig = SyntheticScannerConfig()
     voting_config: SyntheticVotingConfig | None = None
@@ -39,6 +41,7 @@ class SyntheticModeComparisonConfig:
         object.__setattr__(self, "shape", validate_shape3(self.shape))
         if self.case_ids is not None:
             object.__setattr__(self, "case_ids", tuple(self.case_ids))
+        object.__setattr__(self, "trial_seeds", validate_trial_seeds(self.trial_seeds))
         if not isinstance(self.scanner_template, SyntheticScannerConfig):
             raise ValueError("scanner_template must be a SyntheticScannerConfig")
         if self.voting_config is not None and not isinstance(

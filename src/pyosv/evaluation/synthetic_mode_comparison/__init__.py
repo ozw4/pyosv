@@ -10,6 +10,7 @@ from .models import (
     ModeInputMode,
     SyntheticModeComparisonPlan,
 )
+from .trials import SyntheticTrialSpec, expand_synthetic_trials, validate_trial_seeds
 
 __all__ = [
     "CANONICAL_COMPARISON_VARIANT",
@@ -20,5 +21,8 @@ __all__ = [
     "ModeInputMode",
     "SyntheticModeComparisonConfig",
     "SyntheticModeComparisonPlan",
+    "SyntheticTrialSpec",
     "build_mode_comparison_plan",
+    "expand_synthetic_trials",
+    "validate_trial_seeds",
 ]

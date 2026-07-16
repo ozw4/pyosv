@@ -31,6 +31,10 @@ def test_default_plan_has_canonical_cell_order_and_resolved_workflows() -> None:
         "Q-QUAL",
     )
     assert plan.comparison_variant == "current_default"
+    assert plan.trial_seeds == (20260707,)
+    assert tuple((trial.trial_id, trial.seed) for trial in plan.trials) == (
+        ("single_vertical_plane", None),
+    )
     assert plan.reference_workflow_settings.voting_config.voter_thin_mode == "reference"
     assert plan.quality_workflow_settings.voting_config.voter_thin_mode == "hybrid_v2"
 
