@@ -16,19 +16,47 @@ from pyosv.evaluation.synthetic_quality.profiles import (
 
 
 @pytest.mark.parametrize(
-    ("workflow_mode", "voter_mode", "skinner_method", "include_diagnostic"),
     (
-        ("reference", "reference", "reference", False),
-        ("quality", "hybrid_v2", "quality", False),
-        ("diagnostic", "reference", "reference", True),
+        "workflow_mode",
+        "voter_mode",
+        "skinner_method",
+        "include_diagnostic",
+        "expected_skinning",
+    ),
+    (
+        (
+            "reference",
+            "reference",
+            "reference",
+            False,
+            ("reference", 0.5, "thinned", None, False, "empty_primary"),
+        ),
+        (
+            "quality",
+            "hybrid_v2",
+            "quality",
+            False,
+            ("quality", None, "pre_thin", 1, True, "empty_primary"),
+        ),
+        (
+            "diagnostic",
+            "reference",
+            "reference",
+            True,
+            ("reference", 0.5, "thinned", None, False, "empty_primary"),
+        ),
     ),
 )
-def test_workflow_profile_defaults(
+def test_workflow_profile_effective_defaults(
     workflow_mode: str,
     voter_mode: str,
     skinner_method: str,
     include_diagnostic: bool,
+    expected_skinning: tuple[str, float | None, str, int | None, bool, str],
 ) -> None:
+    # Workflow profiles resolve voter/skinner/diagnostic defaults only. Even though
+    # both axes use "quality", a workflow mode is not a scanner backend preset and
+    # cannot implicitly change the scanner backend or scanner_thin_mode.
     assert _validate_workflow_mode(workflow_mode) == workflow_mode
     assert (
         _effective_voter_thin_mode(workflow_mode=workflow_mode, voter_thin_mode=None) == voter_mode
@@ -53,25 +81,24 @@ def test_workflow_profile_defaults(
         )
         is include_diagnostic
     )
+    effective_skinning = _effective_skinning_config_for_workflow(
+        workflow_mode=workflow_mode,
+        skinning_config=SyntheticSkinningConfig(),
+    )
+    assert (
+        effective_skinning.method,
+        effective_skinning.min_likelihood,
+        effective_skinning.growth_source,
+        effective_skinning.accepted_occupancy_radius,
+        effective_skinning.boundary_skinner_fallback,
+        effective_skinning.boundary_skinner_fallback_policy,
+    ) == expected_skinning
 
 
 def test_validate_workflow_mode_rejects_unknown_mode() -> None:
     assert WORKFLOW_MODES == ("reference", "quality", "diagnostic")
     with pytest.raises(ValueError, match="workflow_mode must be one of"):
         _validate_workflow_mode("missing")
-
-
-def test_quality_workflow_resolves_skinning_defaults() -> None:
-    effective = _effective_skinning_config_for_workflow(
-        workflow_mode="quality",
-        skinning_config=SyntheticSkinningConfig(),
-    )
-
-    assert effective.method == "quality"
-    assert effective.min_likelihood is None
-    assert effective.growth_source == "pre_thin"
-    assert effective.accepted_occupancy_radius == 1
-    assert effective.boundary_skinner_fallback is True
 
 
 def test_explicit_values_take_priority_over_quality_defaults() -> None:

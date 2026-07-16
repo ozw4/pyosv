@@ -5,16 +5,22 @@ import pytest
 
 from pyosv.evaluation.synthetic_quality.config import SyntheticScannerConfig
 from pyosv.evaluation.synthetic_quality.scanner import (
+    SCANNER_BACKENDS,
     SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE,
     SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE,
     ScannerAttributes,
+    scan_backend_attributes,
     scan_ensemble_attributes,
     scanner_attributes_from_case,
 )
 from pyosv.synthetic3d import make_single_vertical_plane_case
 
 
-@pytest.mark.parametrize("backend", ("reference-like", "fast", "quality", "ensemble"))
+def test_scanner_backends_contract() -> None:
+    assert SCANNER_BACKENDS == ("reference-like", "fast", "quality", "ensemble")
+
+
+@pytest.mark.parametrize("backend", SCANNER_BACKENDS)
 def test_scanner_backends_return_finite_float32_volumes(backend: str) -> None:
     case = make_single_vertical_plane_case((9, 9, 9))
     config = SyntheticScannerConfig(
@@ -47,6 +53,61 @@ def test_scanner_backends_return_finite_float32_volumes(backend: str) -> None:
         assert volume.shape == case.ft_oracle.shape
         assert volume.dtype == np.float32
         assert np.all(np.isfinite(volume))
+
+
+@pytest.mark.parametrize("backend", ("reference-like", "quality"))
+def test_scanner_backend_routing_is_independent_of_workflow_profiles(backend: str) -> None:
+    shape = (1, 2, 2)
+    reference_result = tuple(np.full(shape, value, dtype=np.float32) for value in (1.0, 2.0, 3.0))
+    quality_confidence = np.full(shape, 0.75, dtype=np.float32)
+    quality_result = (
+        *(np.full(shape, value, dtype=np.float32) for value in (4.0, 5.0, 6.0)),
+        quality_confidence,
+    )
+
+    class StubScanner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def scan(self, *args: object, **kwargs: object):
+            self.calls.append(("scan", kwargs))
+            return reference_result
+
+        def scan_quality(self, *args: object, **kwargs: object):
+            self.calls.append(("scan_quality", kwargs))
+            return quality_result
+
+        def scan_fast(self, *args: object, **kwargs: object):
+            self.calls.append(("scan_fast", kwargs))
+            return reference_result
+
+    # Scanner backend routing is separate from workflow profile resolution. The shared
+    # "quality" label is not a combined mode or preset, and no workflow mode can
+    # implicitly select a backend or change scanner_thin_mode here.
+    scanner = StubScanner()
+    config = SyntheticScannerConfig(refinement_factor=3, scanner_thin_mode="normal")
+    ft, pt, tt, confidence = scan_backend_attributes(
+        scanner,  # type: ignore[arg-type]
+        config,
+        np.zeros(shape, dtype=np.float32),
+        backend,
+    )
+
+    expected_arrays = quality_result[:3] if backend == "quality" else reference_result
+    for actual, expected in zip((ft, pt, tt), expected_arrays):
+        np.testing.assert_array_equal(actual, expected)
+    assert config.scanner_thin_mode == "normal"
+    if backend == "reference-like":
+        assert scanner.calls == [("scan", {})]
+        assert confidence is None
+    else:
+        assert scanner.calls == [
+            (
+                "scan_quality",
+                {"refinement_factor": config.refinement_factor, "return_confidence": True},
+            )
+        ]
+        assert confidence is quality_confidence
 
 
 def test_scanner_attributes_are_deterministic() -> None:
