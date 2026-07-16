@@ -1,7 +1,15 @@
-# Quality Mode
+# Quality Workflow Mode
 
-This repository separates reference-alignment checks from controlled truth
-quality experiments.
+This document describes the downstream quality workflow profile. The quality
+workflow is distinct from the quality scanner backend: selecting either one
+does not select the other. A workflow profile also does not implicitly change
+`scanner_thin_mode`; scanner reference thinning and voter reference thinning
+are separate stages. See [scanner backends, workflow modes, thinning modes, and
+reference targets](mode_comparison.md) for the canonical contract.
+
+In the benchmark history below, **legacy quality-backend** means a historical
+run that selected the `quality` scanner backend. It does not name the quality
+workflow or imply that the backend produced higher-quality results.
 
 ## Workflows
 
@@ -39,6 +47,8 @@ workflow profile, explicit CLI values override those defaults, and the selected
 variant's declared patch is applied for that variant. Variant definitions live
 in one registry, while promotion thresholds live in one promotion
 specification. See [Architecture](architecture.md) for the ownership boundary.
+Scanner backend and scanner thinning are resolved independently and are not
+filled by the workflow profile.
 
 ## Boundary-aware Voter Candidate
 
@@ -119,8 +129,8 @@ PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
   --pretty
 ```
 
-For scanner-inclusive quality evaluation, prefer the refined opt-in scanner
-path:
+For the historical scanner-inclusive quality-workflow evaluation, explicitly
+pair the workflow with the refined opt-in quality scanner backend:
 
 ```bash
 --input-mode scanner \
@@ -128,9 +138,9 @@ path:
 --scanner-refinement-factor 2
 ```
 
-This recommendation is for quality reports only. The report default remains
-`--scanner-backend reference-like` so reference-oriented scanner behavior is not
-changed automatically.
+This benchmark pairing is not an implicit workflow default. The report default
+remains `--scanner-backend reference-like` so scanner behavior is not changed
+automatically.
 
 ### Scanner thinning policy comparison
 
@@ -545,7 +555,8 @@ Oracle shape-49 behavior must not materially regress.
 component-aware over-merge or over-split counts.
 
 The previously documented 33^3 and 49^3 legacy quality-backend
-scanner-inclusive gate runs kept `quality current_default` unchanged. In the
+scanner-inclusive gate runs kept the quality workflow's `current_default`
+unchanged. In the
 49^3 scanner run with `--scanner-backend quality --scanner-refinement-factor 2`,
 `current_default` on `boundary_plane` had
 `fvt_positive_buffered_f1_r2=0.739494`,
@@ -563,13 +574,14 @@ metrics to `fvt_positive_buffered_f1_r2=0.740855` and
 also remains diagnostic. The known boundary issue remains open for this legacy
 quality-backend candidate flow: scanner `ft` can be high quality while
 downstream FVT and skinning degrade near boundaries. This is distinct from the
-passing reference-like-backend scanner-thinning policy gate documented above.
+passing reference-like scanner backend thinning-policy gate documented above.
 
 For the promotion-candidate flow above, no new 49^3
 `promotion_candidates_49` result for `boundary_aware_voter_v1` has been
 recorded in this repository update. Adding it to the reproducible command does
-not imply that benchmark was run. The `quality current_default` profile is
-therefore unchanged, and `boundary_aware_voter_v1`, `boundary_edge_thin_v1`,
+not imply that benchmark was run. The quality workflow's `current_default`
+profile is therefore unchanged, and `boundary_aware_voter_v1`,
+`boundary_edge_thin_v1`,
 `boundary_seed_retention_v1`, and `quality_boundary_skinner_fallback_v5` remain
 unpromoted until their `promotion_gate.json` shows the scanner-boundary gate
 passing without material non-boundary, oracle, fallback-replacement, or
@@ -596,12 +608,12 @@ Primary metrics to compare:
 - `skin_distance_candidate_to_truth_p95`
 - `edge_false_positive_fraction` columns
 
-## Oracle vs Scanner-Inclusive Quality
+## Oracle vs Scanner-Inclusive Quality-Workflow Evaluation
 
-Oracle quality `current_default` and scanner-inclusive quality
-`current_default` should be reviewed separately. The oracle path at 49^3 is the
-stable controlled-truth baseline for the current quality default, including the
-empty-primary fallback on `boundary_plane`. Scanner-inclusive evaluation also
+Oracle-input and scanner-inclusive `current_default` runs under the quality
+workflow should be reviewed separately. The oracle path at 49^3 is the
+stable controlled-truth baseline for the current quality-workflow default,
+including the empty-primary fallback on `boundary_plane`. Scanner-inclusive evaluation also
 exercises scanner `ft` recovery and downstream fvt/skinning behavior; its
 boundary skin can degrade even when scanner `ft` is strong, which is why the
 degraded-primary fallback variants remain explicit diagnostics rather than
@@ -616,10 +628,12 @@ downloads. It builds the `extended` synthetic case set at a small shape for both
 
 The guardrails are broad. They assert that key overlap, distance, orientation,
 edge false-positive, and skin metrics remain finite, that quality workflow
-effective settings are recorded in `metrics.json`, and that quality mode has not
-clearly regressed relative to reference mode on the extended synthetic cases:
+effective settings are recorded in `metrics.json`, and that the quality workflow has not
+clearly regressed relative to the reference workflow on the extended synthetic
+cases:
 single vertical, single dipping, curved, parallel, crossing, boundary, and
-weak/noisy. Boundary-plane guardrails require the quality current default to
+weak/noisy. Boundary-plane guardrails require the quality workflow's
+`current_default` to
 produce positive fvt candidates with buffered F1 at least `0.98`, distance p95
 at most `1.0`, no edge false positives, and a recovered skin via the reported
 fallback path with skin buffered F1 at least `0.5`. These thresholds are not
@@ -652,8 +666,9 @@ and markdown include `consensus.workflows` for each workflow and
 `consensus.workflow_comparison.quality_minus_reference` in compare mode.
 Compare-mode reports also include top-level `quality_validation`, a truthless
 external smoke summary. Its default conservative checks fail on finite metric
-failures, quality fvt density above `2.0x` reference, fvt edge-density proxy
-delta above `0.10`, sparse distance p95 regression above `5.0` samples, or
+failures, quality-workflow FVT density above `2.0x` the reference workflow, FVT
+edge-density proxy delta above `0.10`, sparse distance p95 regression above
+`5.0` samples, or
 extreme crop-to-crop density CV. Use these checks alongside the existing
 reference-overlap metrics.
 
@@ -680,12 +695,12 @@ public-FVT sparse-distance p95 was `8.429705` versus baseline `2.236068`, a
 checks passed. Per the documented ordering, the large crop was not run; human
 geological review and default promotion remain blocked.
 
-F3 reference agreement is not quality itself. A quality-mode change should be
-promoted only when the controlled synthetic `extended` matrix and the matching
+F3 reference agreement is not quality itself. A quality-workflow change should
+be promoted only when the controlled synthetic `extended` matrix and the matching
 F3 real-data comparison both avoid clear failures: improved or preserved
 synthetic truth recovery, no new boundary or over-filtering failure, and no
 obvious loss of real-data geological signal across crops. For a scanner-only
 policy candidate, this means the dedicated shared-scan comparison above, not a
 workflow comparison that also changes voter thinning. Until that evidence and
-manual review exist, keep `reference` as the default API behavior and use
-`quality` as an explicit workflow mode.
+manual review exist, keep `reference` as the default workflow value and use
+`quality` only as an explicit workflow value.
