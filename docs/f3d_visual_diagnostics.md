@@ -20,8 +20,8 @@ deterministic center-slice comparisons, pairwise MIP and histogram diagnostics,
 ridge overlays, and targeted crop outlier/context figures. The existing
 `examples/run_3d_f3d_full.py` command produces full-volume data and metrics but
 does not generate the publication figure set below or execute the canonical
-2×2 mode matrix. Only the commands in the legacy section are available for the
-crop visual reports described here.
+2×2 scanner-backend/workflow matrix. Only the commands in the legacy section
+are available for the crop visual reports described here.
 
 ### Data Layout
 
@@ -70,19 +70,40 @@ used.
 > current command, generated filename, output directory, or report schema.
 
 All figure families operate on fully reconstructed F3 volumes in global
-coordinates. For each processing stage, panels use the consistent column order
-**public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL`**. The four mode
+coordinates. The public reference mapping and resulting panel column order are
+stage-specific:
+
+| Stage | Public reference | Panel column order |
+| --- | --- | --- |
+| `ft` | `fl.dat` | public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
+| `fv` | `fv.dat` | public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
+| `fvt` | `fvt.dat` | public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
+| orientation (including strike and dip), confidence, skin, and other unmapped stages | none | `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
+
+For a stage without a public reference, do not insert an empty public-reference
+panel, a reference from another stage, or a pseudo-truth volume. The four matrix
 labels and their scanner/workflow meanings are canonicalized in
 [Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
 
 ### Fixed Orthogonal Slices
 
-The main figure shows the center slice for each of `i1`, `i2`, and `i3`. Slice
-indices must be fixed before mode results are reviewed. An appendix may use a
-deterministic rule such as the 25%, 50%, and 75% indices on every axis, also
-fixed in advance. Do not hand-select slices because they make a difference look
-especially favorable, unfavorable, or clear. Every slice family uses the same
-public-reference and mode column order defined above.
+Slice indices are zero-based. For an axis of `size`, the main-figure center
+index is `size // 2`, and the appendix quartile indices are `size // 4`,
+`size // 2`, and `(3 * size) // 4`. Each resolved index must satisfy
+`0 <= index < size`. For the F3 repository-order shape
+`(n3, n2, n1) = (420, 400, 100)`, these rules resolve to:
+
+| Axis | Axis size | Center index | Appendix quartile indices |
+| --- | ---: | ---: | --- |
+| `i1` | 100 | 50 | 25, 50, 75 |
+| `i2` | 400 | 200 | 100, 200, 300 |
+| `i3` | 420 | 210 | 105, 210, 315 |
+
+The main figure shows the center slice for each axis. Slice indices must be
+fixed before matrix-cell results are reviewed. Do not hand-select slices
+because they make a difference look especially favorable, unfavorable, or
+clear. Every slice family uses the stage-specific panel column order defined
+above.
 
 ### Maximum-Intensity Projections
 
@@ -106,6 +127,11 @@ Compute each expression voxel by voxel on aligned full-volume outputs. These
 are diagnostic contrasts for the 2×2 configuration matrix, not inferential
 effects estimated from statistical replicates. Show their fixed slices and/or
 global-axis projections under the selection and scale rules below.
+
+Compute a direct difference or 2×2 contrast only between volumes with the same
+processing stage, shape, global-coordinate registration, and support/mask
+contract. Do not subtract or combine volumes that fail any of these
+comparability conditions, or label their result as a contrast.
 
 Use a volume in these main-effect and interaction contrasts only when its input
 identity and every held-constant resolved setting match the other three cells
@@ -149,21 +175,27 @@ The distribution family includes:
 - dip or normal-vector angular-difference distributions
 - component-size distributions, if connected components are computed
 
-Each plot must state its stage, mask or support, and included modes. Angular
-plots must use the orientation convention shared by the underlying comparison,
-including circular treatment of strike.
+Each plot must state its stage, mask or support, and included matrix cells.
+Angular plots must use the orientation convention shared by the underlying
+comparison, including circular treatment of strike. Strike circular differences
+and dip or normal-vector angular differences are comparisons between matrix
+cells only; without an independent public orientation reference, do not
+describe them as F3 accuracy.
 
 ### Common Display Scale and Selection
 
 For one stage and panel family, use a common absolute display range across all
-modes or a range derived from their combined percentiles. Per-panel automatic
-contrast is prohibited. When the public reference appears in the same panel
-family, either include it when deriving the common range or label and explain
-its clearly separate scale. Difference and contrast plots use a zero-centered,
-symmetric negative/positive range.
+matrix cells or a range derived from their combined percentiles. Per-panel
+automatic contrast is prohibited. When the public reference appears in the
+same panel family, either include it when deriving the common range or label
+and explain its clearly separate scale. Difference and contrast plots use a
+zero-centered, symmetric negative/positive range.
 
-The figure manifest must record every threshold, percentile, slice index, MIP
-axis, and display range used. Fix these rules before viewing the mode
+The figure manifest must record every threshold, percentile, MIP axis, and
+display range used. For slices, it must record the axis name, axis size,
+zero-based resolved index, selection rule, and all slice indices used in the
+family. If physical or sample coordinates are available, record them alongside
+the index, never instead of it. Fix these rules before viewing the matrix-cell
 differences, and apply them consistently to the complete family.
 
 ### Boundary and Chunk-Seam Views
