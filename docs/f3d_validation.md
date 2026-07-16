@@ -48,6 +48,96 @@ Only `xs.dat` is the input seismic image. `ep.dat`, `fl.dat`, `fv.dat`, and
 The current OSV validation starts from `ep.dat`; reproducing `xs.dat -> ep.dat`
 is out of scope for this workflow.
 
+## Publication Comparison Scope: Full Volume Only
+
+Publication-facing F3 mode comparison uses the complete F3 volume only. Its
+shape is `(420, 400, 100)` in repository order `(n3, n2, n1)`, and F3 is one
+dataset and one full-volume evaluation unit. Crops, multiple crops, inlines,
+blocks, boundary regions, and any future processing tiles must not be counted
+as independent replicates, samples, or repeated experiments.
+
+Crop-based runs are limited to optional legacy/internal diagnostics, smoke
+checks, debugging, and preservation of historical evidence. Their automatic
+gates do not define the publication protocol. F3 also has no independent
+geological truth labels. Public reference volumes support agreement and
+difference measurements, but not geological-accuracy claims.
+
+## Full F3 Pipeline
+
+The current full-volume command is a manual, potentially slow, single-path
+baseline/report runner. It scans and votes over the entire
+`(420, 400, 100)` volume:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+python examples/run_3d_f3d_full.py \
+  --output-dir outputs/3d/f3d/full_001
+```
+
+This runner calls `FaultOrientScanner3.scan()`, so its current scanner path is
+the reference-like scanner backend. It provides independent
+`scanner_thin_mode` and `voter_thin_mode` comparison options, each accepting
+`reference` or `normal`. It does **not** implement a `workflow_mode` profile,
+the quality scanner backend, the quality skinner, or the planned 2×2
+publication matrix. The command above remains the current single-path
+full-volume baseline/report command; this document does not imply any planned
+command or output schema.
+
+The script writes `run_config.json`, `metrics.json`, and generated Python
+volumes such as `fv_py.dat` and `fvt_py.dat` under `--output-dir`. Use
+`--skip-save-intermediates` when only final vote volumes and reports are needed.
+Use `--reuse-existing` to reuse complete stage outputs already present in that
+directory; incomplete stage output sets are rejected with a clear error. The
+runner rejects both output directories and metrics paths inside the F3 data
+root.
+
+## Planned Full-Volume 2×2 Comparison Contract
+
+> **Planned, not current:** This is the contract for a future full-volume
+> publication comparison. `examples/run_3d_f3d_full.py` does not currently
+> implement this matrix, its shared-stage execution, a quality workflow, or a
+> quality scanner backend. Runner, cache, metrics, figures, and output-schema work
+> belongs to later changes.
+
+The planned publication matrix is:
+
+| Label | Scanner backend | Workflow mode |
+| --- | --- | --- |
+| `RL-REF` | `reference-like` | `reference` |
+| `RL-QUAL` | `reference-like` | `quality` |
+| `Q-REF` | `quality` | `reference` |
+| `Q-QUAL` | `quality` | `quality` |
+
+Scanner backend and workflow mode are separate axes, as defined in
+[Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
+For each scanner backend, the raw full-volume scan must be computed once, and
+that same raw scan must branch into the reference and quality workflows. A raw
+scanner must not be run twice merely to compare those workflows. Implementing
+stage caching and reuse is deferred to a later change.
+
+Primary metrics must be calculated over all voxels of each fully reconstructed
+volume.
+Interior regions and the boundary shell are regional diagnostics within that
+same full-volume evaluation unit, not separate samples. If future execution
+uses internal chunking or tiling, every output must be completely reconstructed
+in global F3 coordinates before metrics or figures are produced. The
+reconstruction must be checked for chunk seams, duplicated voxels, and missing
+voxels.
+
+The public reference-to-stage mapping is:
+
+| Public file | pyosv stage |
+| --- | --- |
+| `fl.dat` | scanner likelihood `ft` |
+| `fv.dat` | voted likelihood `fv` |
+| `fvt.dat` | thinned voted likelihood `fvt` |
+
+These files are public reference outputs, not independent truth. Results must
+therefore be described as `reference agreement`, `consistency`, or
+`difference`, not `accuracy`, `ground-truth F1`, or `geological truth`. Because
+F3 skinning has no independent truth labels, F3 results cannot support a claim
+of skin accuracy.
+
 ## Fast Smoke Validation
 
 Check that the external files are present, have the expected byte size, and can
@@ -70,6 +160,11 @@ On the local shared F3 copy, that report shows `fv.dat` max around `1.0`,
 the report output as the source of truth for the exact local values.
 
 ## Small Crop Practical-Equivalence Validation
+
+> **Optional diagnostic only:** This crop workflow is not publication
+> comparison evidence, and its crops are not independent statistical
+> replicates. Historical automatic gates in this workflow do not define the
+> full-volume publication protocol.
 
 Run one deterministic crop validation and write metrics under `outputs/`:
 
@@ -125,6 +220,11 @@ python examples/run_3d_f3d_crop_validation.py \
 ```
 
 ## Reference-Like Thinning Validation
+
+> **Optional diagnostic only:** The crop and multi-crop runs in this section
+> are not publication comparison evidence or independent statistical
+> replicates. Their historical automatic gates do not define the full-volume
+> publication protocol.
 
 The 3D scanner and voter thinning steps support two modes:
 
@@ -234,6 +334,11 @@ smoke; CI should keep using mock/fixture structure tests instead of requiring
 the real F3 volumes.
 
 ## Quality-Workflow Scanner-Thinning Policy Validation
+
+> **Optional diagnostic only:** This historical crop policy evidence is not
+> publication comparison evidence, and its crops are not independent
+> statistical replicates. Its automatic gates do not define the full-volume
+> publication protocol.
 
 The reference-like-backend 49^3 synthetic scanner-thinning gate has passed.
 The matching formal F3 64^3-by-3 shared-scan run has also been performed, but
@@ -590,6 +695,10 @@ it is not a substitute for retaining the generated files outside git.
 
 ## Large Crop Manual Validation
 
+> **Optional diagnostic only:** This large-crop workflow is not publication
+> comparison evidence or an independent statistical replicate. Its historical
+> checks do not define the full-volume publication protocol.
+
 The `(128, 128, 100)` crop preset is an explicit long-running manual validation,
 not part of regular checks or CI. It runs the scanner, thinning, voting, and
 voter thinning on a substantially larger crop:
@@ -614,24 +723,6 @@ If a large crop run is interrupted, rerun the command into a fresh output
 directory. The crop validation script does not currently reuse partial scanner
 or voting stages.
 
-## Full F3 Pipeline
-
-The full F3 run is manual and can be slow because it scans and votes over the
-entire `(420, 400, 100)` volume. It is separate from the smoke, small-crop, and
-large-crop validations. Run it explicitly with an output directory:
-
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/run_3d_f3d_full.py \
-  --output-dir outputs/3d/f3d/full_001
-```
-
-The full script writes `run_config.json`, `metrics.json`, and generated Python
-volumes such as `fv_py.dat` and `fvt_py.dat` under `--output-dir`. Use
-`--skip-save-intermediates` when only final vote volumes and reports are needed.
-Use `--reuse-existing` to reuse complete stage outputs already present in that
-directory; incomplete stage output sets are rejected with a clear error.
-
 ## Output Policy
 
 - Never write into `PYOSV_F3D_DATA_ROOT`.
@@ -652,7 +743,14 @@ For example, interpolation is based on SciPy primitives rather than JTK sinc
 interpolation, and smoothing may use SciPy Gaussian-style filters rather than
 JTK recursive filters.
 
-Reference comparisons should use practical metrics and visual review:
+F3 reference agreement measures how closely a result resembles the public
+reference outputs. It is distinct from quality: agreement alone does not
+establish more accurate geology, better topology, or better skin recovery. A
+full-volume publication comparison reports reference agreement, spatial
+continuity, density, boundary behavior, and runtime/resource cost. Interior and
+boundary results remain regional views of the one F3 evaluation unit.
+
+Reference comparisons should use practical metrics and visual review, such as:
 
 - finite-value summaries
 - normalized correlation
@@ -666,14 +764,21 @@ The dedicated scanner-thinning policy report is the explicit exception: it
 applies the conservative truthless external-smoke limits documented above to
 detect extreme density, edge, movement, or stability failures. Passing those
 limits is not proof that public F3 volumes are truth and does not replace visual
-review.
+review. Those historical crop gates, including crop-to-crop stability, are
+diagnostic evidence and are not current publication acceptance criteria.
+
+Accuracy, orientation error, skin recovery, and topology claims belong to the
+known-truth experiments documented in
+[Controlled Synthetic Quality](synthetic_quality.md), not to F3 reference
+comparison.
 
 For an operational figure-first workflow, including crop PNGs, ridge overlays,
 MIPs, histograms, and multi-crop markdown indexes, see
 `docs/f3d_visual_diagnostics.md`.
 
-For reference-like thinning runs, the first expected improvements are not
-necessarily high voxel-wise correlation. The main checks are:
+For historical crop-based reference-like thinning diagnostics, the first
+expected improvements are not necessarily high voxel-wise correlation. The
+main checks are:
 
 - `fvt` `nonzero_fraction` moving closer to the reference.
 - `buffered_ridge_overlap.interior.fvt.buffered_f1` improving.
