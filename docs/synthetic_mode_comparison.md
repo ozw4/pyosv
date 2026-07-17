@@ -30,6 +30,9 @@ generation; they do not replace the fixed scanner-input seed.
 `metrics_long.csv` contains finite per-trial values with their stage,
 selection, unit, and direction (`higher`, `lower`, or `neutral`). Read a metric
 in that declared direction and compare like-for-like rows.
+`array_nonzero_fraction` uses the synthetic-quality report definition: a
+floating-point value counts as nonzero only when its magnitude is strictly
+greater than `1e-6` (integer values use ordinary nonzero counting).
 
 `contrasts.csv` contains paired, within-trial linear differences. Scanner and
 workflow effects compare their named cell pairs. `scanner_main_effect` and
@@ -86,11 +89,18 @@ The successful command writes exactly these eight files atomically:
 - `runtime.csv`: stage timing and shared-stage call counts.
 - `completion.json`: the required file list plus size and SHA-256 records.
 
-The CLI validates `completion.json`, hashes, schemas, and the complete file set
-before printing the output path. Programmatic readers can call
+After each case is generated, the experiment rejects an empty truth-surface
+support mask before constructing scanner input or starting a scanner. The CLI
+validates `completion.json`, hashes, schemas, the complete file set, and
+cross-file semantic consistency before printing the output path. This includes
+the canonical plan and trial coverage, scalar cell-report/metric agreement,
+paired contrasts, aggregates, runtime rows, and cache statistics. Programmatic
+readers can call
 `validate_completed_bundle(path)` from
 `pyosv.evaluation.synthetic_mode_comparison`. A failed run does not publish a
-partial final bundle.
+partial final bundle. Successful completion establishes that the recorded
+scalar evidence is internally consistent; validation does not rerun the
+scanner or independently prove that its computation was correct.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect

@@ -11,7 +11,9 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     validate_completed_bundle,
 )
+from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
 from pyosv.evaluation.synthetic_quality import SyntheticTruthMetricConfig
+from pyosv.evaluation.synthetic_quality import runner as quality_runner
 
 
 def test_parser_defaults(tmp_path: Path) -> None:
@@ -271,6 +273,17 @@ def test_empty_truth_surface_cli_failure_leaves_no_artifacts(
 ) -> None:
     output = tmp_path / "bundle"
     config_type = synthetic_mode_comparison.SyntheticModeComparisonConfig
+    calls = {"case_generation": 0, "scanner_input": 0}
+    original_case_factory = comparison_runner._build_trial_case
+    original_scanner_input = quality_runner.make_scanner_input_from_case
+
+    def counted_case_factory(*args, **kwargs):
+        calls["case_generation"] += 1
+        return original_case_factory(*args, **kwargs)
+
+    def counted_scanner_input(*args, **kwargs):
+        calls["scanner_input"] += 1
+        return original_scanner_input(*args, **kwargs)
 
     def config_with_empty_truth_surface(**kwargs):
         return config_type(
@@ -285,6 +298,8 @@ def test_empty_truth_surface_cli_failure_leaves_no_artifacts(
         "SyntheticModeComparisonConfig",
         config_with_empty_truth_surface,
     )
+    monkeypatch.setattr(comparison_runner, "_build_trial_case", counted_case_factory)
+    monkeypatch.setattr(quality_runner, "make_scanner_input_from_case", counted_scanner_input)
 
     code = synthetic_mode_comparison.main(
         [
@@ -302,7 +317,10 @@ def test_empty_truth_surface_cli_failure_leaves_no_artifacts(
     assert code == 1
     assert captured.out == ""
     assert "empty truth-surface support" in captured.err
+    assert calls == {"case_generation": 1, "scanner_input": 0}
     assert not output.exists()
+    assert not (output / "completion.json").exists()
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
     assert not tuple(tmp_path.iterdir())
 
 

@@ -1428,6 +1428,15 @@ thinning, or skinning failures. The input association uses
 mask; positive contrast means the low-on-fault scanner input is lower near truth
 than far from truth.
 
+All legacy scanner and pipeline array summaries define `nonzero_fraction` with
+`NONZERO_EPSILON = 1e-6`: floating-point magnitudes equal to or below the
+epsilon do not count, while values strictly above it do. Synthetic
+mode-comparison reuses this definition. It also rejects empty truth-surface
+support after generating a case and before starting its scanner. Its completed
+bundle validator checks cross-file scalar semantics as well as hashes and
+syntax; success means the recorded evidence is internally consistent, not that
+the scanner was rerun or independently proven correct.
+
 When `--scanner-backend-matrix` is enabled, scanner pipeline variant reports
 also include `scanner_backend_matrix.backends.<backend>` for `reference-like`,
 `quality`, and `fast`. Each backend entry has the normal scanner pipeline

@@ -229,10 +229,18 @@ existing operational validation paths.
   and runtime rows. Shared scanner-input and backend scan/thinning costs are
   recorded once per trial rather than copied into workflow-cell runtimes; the
   returned object retains no full-volume arrays or fault skin/cell objects.
+  Array nonzero fractions use the legacy synthetic-quality epsilon contract
+  (strictly greater than `1e-6` in magnitude), and an empty configured
+  truth-surface support mask is rejected after case generation but before any
+  scanner work.
 - The package CLI and thin example entry point described in [Synthetic Mode
   Comparison](synthetic_mode_comparison.md) run the canonical synthetic plan,
   atomically write its scalar artifact bundle, validate completion, and print
-  the completed output path. This is separate from F3 full-volume execution.
+  the completed output path. `validate_completed_bundle()` checks cross-file
+  scalar semantics in addition to hashes and syntax. Passing that validation
+  demonstrates internal evidence consistency, not an independent scanner
+  recomputation or proof of scanner correctness. This is separate from F3
+  full-volume execution.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   full-volume scan/vote runner. It calls `FaultOrientScanner3.scan()`, then
   performs separately configurable scanner and voter thinning.
