@@ -18,6 +18,7 @@ import pytest
 from pyosv.cells import FaultCell
 from pyosv.cli import synthetic_mode_comparison as comparison_cli
 from pyosv.evaluation.synthetic_mode_comparison import (
+    CONTRAST_DEFINITIONS,
     AggregateRow,
     ContrastRow,
     MetricRow,
@@ -50,18 +51,6 @@ EXPECTED_HASHED_BUNDLE_FILES = (
     "runtime.csv",
 )
 EXPECTED_BUNDLE_FILES = (*EXPECTED_HASHED_BUNDLE_FILES, "completion.json")
-EXPECTED_CONTRAST_NAMES = {
-    "scanner_only_effect",
-    "oracle_workflow_effect",
-    "scanner_effect_ref",
-    "scanner_effect_qual",
-    "workflow_effect_rl",
-    "workflow_effect_q",
-    "end_to_end_delta",
-    "scanner_main_effect",
-    "workflow_main_effect",
-    "scanner_workflow_interaction",
-}
 
 
 def _config() -> SyntheticModeComparisonConfig:
@@ -154,12 +143,44 @@ def test_public_experiment_integrates_shared_stages_metrics_and_aggregation(
     }
     assert all(row.stage in allowed_stages[row.scope] for row in result.metric_rows)
 
-    by_trial: dict[str, set[str]] = defaultdict(set)
-    for row in result.contrast_rows:
-        by_trial[row.trial_id].add(row.contrast_name)
-    assert {trial_id: names for trial_id, names in by_trial.items()} == {
-        trial_id: EXPECTED_CONTRAST_NAMES for trial_id in expected_trials
-    }
+    eligible_cells: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    for row in result.metric_rows:
+        if row.contrast_eligible:
+            eligible_cells[
+                (
+                    row.case_id,
+                    row.trial_id,
+                    row.seed,
+                    row.stage,
+                    row.selection,
+                    row.metric,
+                    row.unit,
+                    row.direction,
+                )
+            ].add(row.cell_label)
+    expected_contrast_identities: Counter[tuple[Any, ...]] = Counter()
+    for metric_identity, cells in eligible_cells.items():
+        for definition in CONTRAST_DEFINITIONS:
+            if set(definition.component_cells) <= cells:
+                expected_contrast_identities[
+                    (definition.name, *metric_identity, definition.component_cells)
+                ] += 1
+    actual_contrast_identities = Counter(
+        (
+            row.contrast_name,
+            row.case_id,
+            row.trial_id,
+            row.seed,
+            row.stage,
+            row.selection,
+            row.metric,
+            row.unit,
+            row.direction,
+            row.component_cells,
+        )
+        for row in result.contrast_rows
+    )
+    assert actual_contrast_identities == expected_contrast_identities
 
     expected_n = {"single_vertical_plane": 1, "weak_noisy_plane": 3}
     for aggregate in (*result.metric_aggregates, *result.contrast_aggregates):

@@ -25,6 +25,7 @@ import scipy
 
 import pyosv
 
+from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
 from .contrasts import AggregateRow, ContrastRow
 from .experiment import RuntimeRow, SyntheticModeComparisonResult
@@ -121,6 +122,7 @@ def write_artifact_bundle(
     final_path = Path(output_dir)
     if os.path.lexists(final_path):
         raise FileExistsError(f"artifact output already exists: {final_path}")
+    _validate_result_matches_config(result, config)
 
     source = _source_provenance()
     manifest = _build_manifest(result, config, source)
@@ -175,6 +177,22 @@ def write_artifact_bundle(
         _cleanup_path(final_path if finalized else temporary_path, error)
         raise
     return final_path
+
+
+def _validate_result_matches_config(
+    result: SyntheticModeComparisonResult,
+    config: SyntheticModeComparisonConfig,
+) -> None:
+    plan = build_mode_comparison_plan(config)
+    expected_plan = _json_value(asdict(plan))
+    actual_plan = _json_value(result.plan_metadata)
+    if actual_plan != expected_plan:
+        raise ValueError("result plan metadata does not match config")
+
+    expected_trials = _json_value([asdict(trial) for trial in plan.trials])
+    actual_trials = _json_value(result.trial_metadata)
+    if actual_trials != expected_trials:
+        raise ValueError("result trial metadata does not match config")
 
 
 def validate_completed_bundle(path: str | PathLike[str]) -> bool:

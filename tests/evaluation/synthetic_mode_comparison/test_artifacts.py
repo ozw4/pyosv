@@ -264,6 +264,21 @@ def test_existing_final_path_is_not_modified(tmp_path: Path) -> None:
     assert list(final.iterdir()) == [sentinel]
 
 
+def test_writer_rejects_result_from_a_different_config(tmp_path: Path) -> None:
+    _, result = _fixture()
+    different_config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(11, 11, 11),
+    )
+    output = tmp_path / "bundle"
+
+    with pytest.raises(ValueError, match="result plan metadata does not match config"):
+        write_artifact_bundle(result, output, config=different_config)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
+
+
 def test_final_path_created_during_finalize_is_not_replaced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

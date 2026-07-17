@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from pyosv.cli import synthetic_mode_comparison
-from pyosv.evaluation.synthetic_mode_comparison import SyntheticModeComparisonConfig
+from pyosv.evaluation.synthetic_mode_comparison import (
+    REQUIRED_BUNDLE_FILES,
+    SyntheticModeComparisonConfig,
+    validate_completed_bundle,
+)
 
 
 def test_parser_defaults(tmp_path: Path) -> None:
@@ -187,6 +192,75 @@ def test_main_reports_failures_without_a_final_bundle(
     assert captured.out == ""
     assert "failed" in captured.err
     assert not output.exists()
+
+
+def test_main_reports_cleanup_failure_and_removes_completion_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "bundle"
+
+    monkeypatch.setattr(
+        synthetic_mode_comparison,
+        "run_mode_comparison",
+        lambda config: object(),
+    )
+
+    def fake_write(result, output_dir, *, config, pretty):
+        output_dir.mkdir()
+        (output_dir / "completion.json").write_text("{}", encoding="utf-8")
+        return output_dir
+
+    monkeypatch.setattr(synthetic_mode_comparison, "write_artifact_bundle", fake_write)
+    monkeypatch.setattr(
+        synthetic_mode_comparison,
+        "validate_completed_bundle",
+        lambda path: (_ for _ in ()).throw(ValueError("completion failed")),
+    )
+    monkeypatch.setattr(
+        synthetic_mode_comparison.shutil,
+        "rmtree",
+        lambda path: (_ for _ in ()).throw(OSError("cleanup blocked")),
+    )
+
+    assert synthetic_mode_comparison.main(["--output-dir", str(output)]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "completion failed" in captured.err
+    assert "failed to remove invalid artifact bundle: cleanup blocked" in captured.err
+    assert not (output / "completion.json").exists()
+
+
+def test_real_small_skip_skinning_cli_writes_a_valid_bundle(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "bundle"
+
+    assert (
+        synthetic_mode_comparison.main(
+            [
+                "--output-dir",
+                str(output),
+                "--case-set",
+                "minimal",
+                "--shape",
+                "9,9,9",
+                "--skip-skinning",
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == f"{output}\n"
+    assert captured.err == ""
+    assert {path.name for path in output.iterdir()} == set(REQUIRED_BUNDLE_FILES)
+    assert validate_completed_bundle(output)
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["input_config"]["skinning_config"]["enabled"] is False
 
 
 def test_main_rejects_an_existing_output_before_running(

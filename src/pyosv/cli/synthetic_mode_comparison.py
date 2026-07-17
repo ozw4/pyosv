@@ -146,9 +146,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not validate_completed_bundle(written_path):
             raise ValueError("artifact bundle validation failed")
     except Exception as error:
+        cleanup_error: OSError | None = None
         if written_path is not None:
-            _remove_failed_bundle(written_path)
+            try:
+                _remove_failed_bundle(written_path)
+            except OSError as caught:
+                cleanup_error = caught
         print(f"error: {error}", file=sys.stderr)
+        if cleanup_error is not None:
+            print(
+                f"error: failed to remove invalid artifact bundle: {cleanup_error}",
+                file=sys.stderr,
+            )
         return 1
 
     print(written_path)
@@ -159,13 +168,23 @@ def _remove_failed_bundle(path: str | PathLike[str]) -> None:
     """Remove a just-written bundle when post-write validation fails."""
 
     bundle = Path(path)
+    if bundle.is_symlink() or not bundle.is_dir():
+        bundle.unlink(missing_ok=True)
+        return
+
+    completion_error: OSError | None = None
     try:
-        if bundle.is_symlink() or not bundle.is_dir():
-            bundle.unlink(missing_ok=True)
-        else:
-            shutil.rmtree(bundle)
-    except OSError:
-        pass
+        (bundle / "completion.json").unlink(missing_ok=True)
+    except OSError as error:
+        completion_error = error
+    try:
+        shutil.rmtree(bundle)
+    except OSError as error:
+        if completion_error is not None:
+            raise OSError(
+                f"{error}; completion marker removal also failed: {completion_error}"
+            ) from error
+        raise
 
 
 if __name__ == "__main__":
