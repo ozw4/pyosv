@@ -116,6 +116,33 @@ def test_aggregate_tampering_is_rejected(result, config) -> None:
         )
 
 
+def test_confidence_metric_and_aggregate_tampering_is_rejected(result, config) -> None:
+    rows = list(result.metric_rows)
+    index = next(
+        index
+        for index, row in enumerate(rows)
+        if (
+            row.cell_label,
+            row.stage,
+            row.selection,
+            row.metric,
+        )
+        == ("Q-SCAN", "scanner_confidence", "finite", "confidence_mean")
+    )
+    rows[index] = replace(rows[index], value=rows[index].value + 0.01)
+    tampered_rows = tuple(rows)
+
+    with pytest.raises(ValueError, match="scalar evidence in cell_reports"):
+        validate_mode_comparison_result(
+            replace(
+                result,
+                metric_rows=tampered_rows,
+                metric_aggregates=aggregate_metric_rows(tampered_rows),
+            ),
+            config,
+        )
+
+
 @pytest.mark.parametrize("field", ("cell_reports", "cache_stats", "runtime_rows"))
 def test_top_level_coverage_tampering_is_rejected(result, config, field) -> None:
     bad = replace(result, **{field: getattr(result, field)[1:]})

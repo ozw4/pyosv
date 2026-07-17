@@ -203,18 +203,330 @@ _END_TO_END_REPORT_FIELDS = {
     "active_pipeline",
     "pipelines",
 }
-_DOWNSTREAM_SECTION_FIELDS = {
-    "config": {"skinning"},
-    "skinning": {"enabled"},
-    "pyosv": {"fv", "fvt", "voting", "skins"},
-    "quality": {
-        "fv_top_truth_count",
-        "fvt_top_truth_count",
-        "fv_positive_top_truth_count",
-        "fvt_positive_top_truth_count",
-        "edge_false_positive",
-        "skin",
-    },
+_BUFFERED_OVERLAP_REPORT_SCHEMA = {
+    **dict.fromkeys(
+        ("candidate_count", "truth_count", "intersection_count", "union_count"),
+        "integer",
+    ),
+    **dict.fromkeys(
+        (
+            "precision",
+            "recall",
+            "f1",
+            "jaccard",
+            "buffered_precision",
+            "buffered_recall",
+            "buffered_f1",
+            "radius",
+        ),
+        "number",
+    ),
+}
+_SURFACE_DISTANCE_REPORT_SCHEMA = {
+    **dict.fromkeys(("candidate_count", "truth_count"), "integer"),
+    **dict.fromkeys(
+        (
+            "candidate_to_truth_mean",
+            "candidate_to_truth_median",
+            "candidate_to_truth_p90",
+            "candidate_to_truth_p95",
+            "truth_to_candidate_mean",
+            "truth_to_candidate_median",
+            "truth_to_candidate_p90",
+            "truth_to_candidate_p95",
+            "symmetric_chamfer_mean",
+            "hausdorff_p95",
+        ),
+        "number",
+    ),
+}
+_ORIENTATION_ERROR_REPORT_SCHEMA = {
+    "count": "integer",
+    **dict.fromkeys(
+        (
+            "strike_mean",
+            "strike_median",
+            "strike_p90",
+            "strike_p95",
+            "dip_mean",
+            "dip_median",
+            "dip_p90",
+            "dip_p95",
+        ),
+        "number",
+    ),
+}
+_INPUT_ASSOCIATION_REPORT_SCHEMA = dict.fromkeys(
+    ("truth_surface_mean", "far_from_truth_mean", "contrast"), "number"
+)
+_SKINNING_CONFIG_REPORT_SCHEMA = {
+    **dict.fromkeys(
+        (
+            "enabled",
+            "adaptive_min_likelihood",
+            "reskin",
+            "boundary_skinner_fallback",
+        ),
+        "boolean",
+    ),
+    **dict.fromkeys(
+        (
+            "method",
+            "growth_source",
+            "seed_planarity_source",
+            "boundary_skinner_fallback_policy",
+        ),
+        "string",
+    ),
+    **dict.fromkeys(
+        ("min_likelihood", "seed_min_ep"),
+        "optional_number",
+    ),
+    **dict.fromkeys(
+        ("min_skin_size", "rv", "rw", "accepted_occupancy_radius"),
+        "optional_integer",
+    ),
+    **dict.fromkeys(
+        (
+            "d",
+            "ru",
+            "max_steps",
+            "effective_accepted_occupancy_radius",
+            "small_skin_size",
+        ),
+        "integer",
+    ),
+    **dict.fromkeys(("du", "max_delta_strike"), "number"),
+}
+_PRIMARY_SKINNER_DIAGNOSTIC_FIELDS = {
+    "seed_candidate_count_before_spacing": "integer",
+    "seed_count_after_spacing": "integer",
+    "seed_count_rejected_by_occupied": "integer",
+    "grow_attempt_count": "integer",
+    "grown_skin_count_before_min_size": "integer",
+    "discarded_empty_skin_count": "integer",
+    "discarded_small_skin_count": "integer",
+    "accepted_skin_count": "integer",
+    "accepted_cell_count": "integer",
+    "accepted_occupancy_radius": "integer",
+    "seed_min_ep": "number",
+    "seed_threshold": "number",
+    "grow_threshold": "number",
+}
+_SKINNING_DIAGNOSTIC_REPORT_SCHEMA = {
+    **dict.fromkeys(
+        (
+            "skin_primary_count",
+            "skin_primary_cell_count",
+            "skin_primary_unique_cell_count",
+            "skin_primary_largest_size",
+            "skin_primary_small_count",
+            "fallback_skin_count",
+            "fallback_cell_count",
+            "fallback_primary_skin_count",
+            "fallback_primary_cell_count",
+            "fallback_candidate_count",
+            "skin_fallback_raw_component_cell_count",
+            "skin_fallback_pruned_component_cell_count",
+            "skin_fallback_largest_component_size_before_pruning",
+            "skin_fallback_largest_component_size_after_pruning",
+            "skin_fallback_pruning_removed_cell_count",
+            "skin_fallback_component_count",
+            "skin_fallback_candidate_cell_count",
+            "skin_fallback_largest_component_size",
+            "skin_fallback_top3_component_cell_count",
+            "skin_fallback_small_component_count",
+            "skin_fallback_accepted_component_count",
+            "skin_fallback_discarded_component_count",
+            "skin_fallback_accepted_component_cell_count",
+            "skin_fallback_filter_min_component_size",
+            "skin_fallback_filter_max_components",
+        ),
+        "integer",
+    ),
+    **dict.fromkeys(
+        (
+            "skin_primary_largest_fraction",
+            "skin_primary_small_cell_fraction",
+            "skin_primary_cell_coverage_of_fvt_positive",
+            "skin_primary_largest_coverage_of_fvt_positive",
+            "skin_primary_edge_shell_fraction",
+            "fallback_coverage_before",
+            "fallback_coverage_after",
+            "skin_fvt_positive_edge_shell_fraction",
+            "skin_fallback_pruned_fraction",
+            "skin_fallback_largest_component_fraction",
+            "skin_fallback_top3_component_fraction",
+            "skin_fallback_filter_min_component_fraction_of_largest",
+        ),
+        "number",
+    ),
+    **dict.fromkeys(
+        (
+            "skin_scanner_target_positive_edge_shell_fraction",
+            "skin_fvt_to_scanner_target_distance_p95",
+        ),
+        "optional_number",
+    ),
+    **dict.fromkeys(
+        (
+            "skin_primary_degraded_candidate",
+            "fallback_enabled",
+            "fallback_used",
+            "fallback_triggered_by_degraded_primary",
+            "fallback_replaced_primary",
+            "skin_primary_boundary_degraded_candidate",
+        ),
+        "boolean",
+    ),
+    **dict.fromkeys(
+        (
+            "fallback_policy",
+            "fallback_reason",
+            "fallback_method",
+            "fallback_input",
+            "skin_fallback_pruning_method",
+            "skin_fallback_skeletonization_axis_mode",
+        ),
+        "optional_string",
+    ),
+    "skin_fallback_component_policy": "string",
+    **dict.fromkeys(
+        (
+            "skin_primary_degraded_reasons",
+            "fallback_degraded_reasons",
+            "skin_primary_boundary_degraded_reasons",
+        ),
+        "string_array",
+    ),
+}
+_GUARDRAIL_REPORT_SCHEMA = {
+    "enabled": "boolean",
+    "passed": "boolean",
+    "reasons": "string_array",
+    "max_skin_count": "integer",
+    "fallback_skin_count": "integer",
+    **dict.fromkeys(
+        (
+            "coverage_of_fvt_positive",
+            "min_coverage_of_fvt_positive",
+            "max_coverage_of_fvt_positive",
+            "small_skin_cell_fraction",
+            "max_small_skin_cell_fraction",
+            "largest_skin_fraction",
+            "min_largest_skin_fraction",
+            "pruned_fraction",
+            "max_pruned_fraction",
+        ),
+        "number",
+    ),
+}
+_VOTING_REPORT_SCHEMA = {
+    "surface_voting_boundary_policy": "string",
+    "surface_support_min_fraction": "number",
+    "surface_support_exponent": "number",
+}
+_VOTING_DIAGNOSTIC_REPORT_SCHEMA = {
+    "policy": "string",
+    **dict.fromkeys(
+        (
+            "seed_count",
+            "boundary_affected_seed_count",
+            "voted_seed_count",
+            "skipped_seed_count",
+            "surface_projection_count",
+            "selected_invalid_sample_count",
+            "face_center_vote_count",
+        ),
+        "integer",
+    ),
+    **dict.fromkeys(("support_fraction_min", "support_fraction_mean"), "number"),
+}
+_SKIN_TOPOLOGY_REPORT_SCHEMA = {
+    **dict.fromkeys(
+        (
+            "skin_count",
+            "cell_count",
+            "unique_cell_count",
+            "duplicate_cell_count",
+            "largest_skin_size",
+            "small_skin_size",
+            "small_skin_count",
+            "small_skin_cell_count",
+        ),
+        "integer",
+    ),
+    **dict.fromkeys(("largest_skin_fraction", "small_skin_cell_fraction"), "number"),
+}
+_EDGE_FALSE_POSITIVE_REPORT_SCHEMA = {
+    **dict.fromkeys(
+        ("candidate_count", "edge_candidate_count", "edge_false_positive_count", "edge_margin"),
+        "integer",
+    ),
+    **dict.fromkeys(
+        (
+            "edge_candidate_fraction",
+            "edge_false_positive_fraction_of_candidates",
+            "edge_false_positive_fraction_of_edge_candidates",
+            "truth_buffer_radius",
+        ),
+        "number",
+    ),
+}
+_COMPONENT_TOPOLOGY_SUMMARY_SCHEMA = {
+    **dict.fromkeys(
+        (
+            "truth_component_count",
+            "covered_truth_component_count",
+            "uncovered_truth_component_count",
+            "skin_count",
+            "skin_with_truth_count",
+            "skin_without_truth_count",
+            "over_merge_skin_count",
+            "over_split_truth_component_count",
+            "max_truth_components_per_skin",
+            "max_skins_per_truth_component",
+        ),
+        "integer",
+    ),
+    **dict.fromkeys(
+        (
+            "mean_skin_purity",
+            "min_skin_purity",
+            "mean_truth_component_recall",
+            "min_truth_component_recall",
+        ),
+        "number",
+    ),
+}
+_TRUTH_COMPONENT_REPORT_SCHEMA = {
+    **dict.fromkeys(
+        (
+            "truth_id",
+            "truth_cell_count",
+            "covered_cell_count",
+            "skin_count_touching",
+            "dominant_skin_cell_count",
+        ),
+        "integer",
+    ),
+    "dominant_skin_index": "optional_integer",
+    **dict.fromkeys(("recall", "dominant_skin_fraction_of_truth"), "number"),
+}
+_SKIN_COMPONENT_REPORT_SCHEMA = {
+    **dict.fromkeys(
+        (
+            "skin_index",
+            "cell_count",
+            "truth_cell_count",
+            "background_cell_count",
+            "truth_component_count_touching",
+            "dominant_truth_cell_count",
+        ),
+        "integer",
+    ),
+    "dominant_truth_id": "optional_integer",
+    "purity": "number",
 }
 
 
@@ -319,7 +631,10 @@ def validate_completed_bundle(path: str | PathLike[str]) -> bool:
         {"schema_version", "status", "required_files", "files"},
         "completion.json",
     )
-    if completion.get("schema_version") != COMPLETION_SCHEMA_VERSION:
+    completion_schema_version = _integer(
+        completion.get("schema_version"), "completion.json.schema_version"
+    )
+    if completion_schema_version != COMPLETION_SCHEMA_VERSION:
         raise ValueError("unsupported completion schema version")
     if completion.get("status") != "complete":
         raise ValueError("completion status must be 'complete'")
@@ -368,15 +683,21 @@ def _load_bundle_objects(
         _MANIFEST_FIELDS,
         "manifest.json",
     )
-    if manifest["artifact_schema_version"] != ARTIFACT_SCHEMA_VERSION:
+    artifact_schema_version = _integer(
+        manifest["artifact_schema_version"], "manifest artifact_schema_version"
+    )
+    if artifact_schema_version != ARTIFACT_SCHEMA_VERSION:
         raise ValueError("unsupported artifact schema version")
-    if manifest["metric_schema_version"] != METRIC_SCHEMA_VERSION:
+    metric_schema_version = _integer(
+        manifest["metric_schema_version"], "manifest metric_schema_version"
+    )
+    if metric_schema_version != METRIC_SCHEMA_VERSION:
         raise ValueError("unsupported metric schema version")
 
     config = _load_input_config(manifest["input_config"])
     plan = build_mode_comparison_plan(config)
     expected_plan = _json_value(asdict(plan))
-    if manifest["resolved_plan"] != expected_plan:
+    if not _exact_json_value(manifest["resolved_plan"], expected_plan):
         raise ValueError("manifest resolved_plan does not match input_config")
     _validate_manifest_plan_records(manifest, plan)
     cache_stats = _load_cache_stats(manifest["cache_stats"])
@@ -581,7 +902,7 @@ def _validate_manifest_plan_records(manifest: Mapping[str, Any], plan: Any) -> N
         },
     }
     for name, value in expected.items():
-        if manifest[name] != value:
+        if not _exact_json_value(manifest[name], value):
             raise ValueError(f"manifest {name} does not match the canonical plan")
 
 
@@ -623,11 +944,7 @@ def _load_cell_payload(value: Any, cell: ModeCellSpec, context: str) -> dict[str
     if cell.scope == SCANNER_ONLY_SCOPE:
         payload = _object(value, {"scanner", "scanner_quality"}, context)
         _load_scanner_report(payload["scanner"], cell.scanner_backend, f"{context}.scanner")
-        _load_mapping_report_object(
-            payload["scanner_quality"],
-            _SCANNER_QUALITY_REPORT_FIELDS,
-            f"{context}.scanner_quality",
-        )
+        _load_scanner_quality_report(payload["scanner_quality"], f"{context}.scanner_quality")
         return payload
 
     expected_fields = (
@@ -644,11 +961,7 @@ def _load_cell_payload(value: Any, cell: ModeCellSpec, context: str) -> dict[str
     if active_pipeline != cell.input_mode:
         raise ValueError(f"{context}.active_pipeline does not match the canonical cell")
     _load_scanner_report(payload["scanner"], cell.scanner_backend, f"{context}.scanner")
-    _load_mapping_report_object(
-        payload["scanner_quality"],
-        _SCANNER_QUALITY_REPORT_FIELDS,
-        f"{context}.scanner_quality",
-    )
+    _load_scanner_quality_report(payload["scanner_quality"], f"{context}.scanner_quality")
     pipelines = _object(payload["pipelines"], {cell.input_mode}, f"{context}.pipelines")
     pipeline = _object(
         pipelines[cell.input_mode],
@@ -661,42 +974,49 @@ def _load_cell_payload(value: Any, cell: ModeCellSpec, context: str) -> dict[str
         cell.scanner_backend,
         f"{context}.pipelines.{cell.input_mode}.scanner",
     )
-    _load_mapping_report_object(
+    _load_scanner_quality_report(
         pipeline["scanner_quality"],
-        _SCANNER_QUALITY_REPORT_FIELDS,
         f"{context}.pipelines.{cell.input_mode}.scanner_quality",
     )
     return payload
 
 
 def _load_downstream_sections(payload: Mapping[str, Any], context: str) -> None:
-    for name, expected_fields in _DOWNSTREAM_SECTION_FIELDS.items():
-        section_context = f"{context}.{name}"
-        if name == "skinning":
-            section_value = payload[name]
-            if not isinstance(section_value, dict):
-                raise ValueError(f"{section_context} must be an object")
-            enabled = _boolean(
-                section_value.get("enabled"),
-                f"{context}.skinning.enabled",
-            )
-            section_fields = {"enabled", "diagnostics"} if enabled else {"enabled"}
-            section = _object(section_value, section_fields, section_context)
-            if enabled:
-                _load_report_mapping(
-                    section["diagnostics"],
-                    f"{section_context}.diagnostics",
-                )
-        elif name == "quality":
-            section = _object(payload[name], expected_fields, section_context)
-            for field, value in section.items():
-                if field == "skin" and value is None:
-                    continue
-                _load_report_mapping(value, f"{section_context}.{field}")
-        else:
-            section = _object(payload[name], expected_fields, section_context)
-            for field, value in section.items():
-                _load_report_mapping(value, f"{section_context}.{field}")
+    config_context = f"{context}.config"
+    config = _object(payload["config"], {"skinning"}, config_context)
+    skinning_config = _load_scalar_report_object(
+        config["skinning"],
+        _SKINNING_CONFIG_REPORT_SCHEMA,
+        f"{config_context}.skinning",
+    )
+    enabled = skinning_config["enabled"]
+
+    skinning_context = f"{context}.skinning"
+    skinning_fields = {"enabled", "diagnostics"} if enabled else {"enabled"}
+    skinning = _object(payload["skinning"], skinning_fields, skinning_context)
+    if _boolean(skinning["enabled"], f"{skinning_context}.enabled") != enabled:
+        raise ValueError(f"{skinning_context}.enabled does not match config.skinning.enabled")
+    if enabled:
+        _load_skinning_diagnostics(
+            skinning["diagnostics"],
+            method=skinning_config["method"],
+            context=f"{skinning_context}.diagnostics",
+        )
+
+    pyosv_context = f"{context}.pyosv"
+    pyosv_report = _object(payload["pyosv"], {"fv", "fvt", "voting", "skins"}, pyosv_context)
+    _load_array_summary(pyosv_report["fv"], f"{pyosv_context}.fv")
+    _load_array_summary(pyosv_report["fvt"], f"{pyosv_context}.fvt")
+    _load_voting_report(pyosv_report["voting"], f"{pyosv_context}.voting")
+    _load_scalar_report_object(
+        pyosv_report["skins"],
+        _SKIN_TOPOLOGY_REPORT_SCHEMA,
+        f"{pyosv_context}.skins",
+    )
+
+    _load_downstream_quality_report(
+        payload["quality"], enabled=enabled, context=f"{context}.quality"
+    )
 
 
 def _load_scanner_report(value: Any, backend: str, context: str) -> dict[str, Any]:
@@ -738,37 +1058,202 @@ def _load_array_summary(value: Any, context: str) -> dict[str, Any]:
     return summary
 
 
-def _load_mapping_report_object(
-    value: Any,
-    expected_fields: set[str],
-    context: str,
-) -> dict[str, Any]:
-    payload = _object(value, expected_fields, context)
-    for name, item in payload.items():
-        _load_report_mapping(item, f"{context}.{name}")
+def _load_scanner_quality_report(value: Any, context: str) -> dict[str, Any]:
+    payload = _object(value, _SCANNER_QUALITY_REPORT_FIELDS, context)
+    truth_count = _object(
+        payload["ft_top_truth_count"],
+        {"buffered_overlap_radius2", "surface_distance"},
+        f"{context}.ft_top_truth_count",
+    )
+    _load_scalar_report_object(
+        truth_count["buffered_overlap_radius2"],
+        _BUFFERED_OVERLAP_REPORT_SCHEMA,
+        f"{context}.ft_top_truth_count.buffered_overlap_radius2",
+    )
+    _load_scalar_report_object(
+        truth_count["surface_distance"],
+        _SURFACE_DISTANCE_REPORT_SCHEMA,
+        f"{context}.ft_top_truth_count.surface_distance",
+    )
+    orientation = _object(
+        payload["orientation_error"],
+        {"raw_scan_top_truth_count", "used_attributes_top_truth_count"},
+        f"{context}.orientation_error",
+    )
+    for name, item in orientation.items():
+        _load_scalar_report_object(
+            item,
+            _ORIENTATION_ERROR_REPORT_SCHEMA,
+            f"{context}.orientation_error.{name}",
+        )
+    _load_scalar_report_object(
+        payload["input_association"],
+        _INPUT_ASSOCIATION_REPORT_SCHEMA,
+        f"{context}.input_association",
+    )
     return payload
 
 
-def _load_report_mapping(value: Any, context: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{context} must be an object")
-    for name, item in value.items():
-        _load_report_value(item, f"{context}.{name}")
-    return value
+def _load_skinning_diagnostics(value: Any, *, method: str, context: str) -> dict[str, Any]:
+    schema = dict(_SKINNING_DIAGNOSTIC_REPORT_SCHEMA)
+    if method != "connected_component":
+        schema.update(_PRIMARY_SKINNER_DIAGNOSTIC_FIELDS)
+    payload = _object(value, {*schema, "fallback_v5_guardrail"}, context)
+    _load_scalar_report_fields(payload, schema, context)
+    _load_scalar_report_object(
+        payload["fallback_v5_guardrail"],
+        _GUARDRAIL_REPORT_SCHEMA,
+        f"{context}.fallback_v5_guardrail",
+    )
+    return payload
 
 
-def _load_report_value(value: Any, context: str) -> Any:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not np.isfinite(value):
-            raise ValueError(f"{context} must be finite")
-        return value
-    if isinstance(value, dict):
-        return _load_report_mapping(value, context)
-    if isinstance(value, list):
-        return [_load_report_value(item, f"{context}[{index}]") for index, item in enumerate(value)]
-    raise ValueError(f"{context} has an unsupported scalar report type")
+def _load_voting_report(value: Any, context: str) -> dict[str, Any]:
+    payload = _object(value, {*_VOTING_REPORT_SCHEMA, "diagnostic_summary"}, context)
+    _load_scalar_report_fields(payload, _VOTING_REPORT_SCHEMA, context)
+    _load_scalar_report_object(
+        payload["diagnostic_summary"],
+        _VOTING_DIAGNOSTIC_REPORT_SCHEMA,
+        f"{context}.diagnostic_summary",
+    )
+    return payload
+
+
+def _load_downstream_quality_report(value: Any, *, enabled: bool, context: str) -> dict[str, Any]:
+    stage_names = (
+        "fv_top_truth_count",
+        "fvt_top_truth_count",
+        "fv_positive_top_truth_count",
+        "fvt_positive_top_truth_count",
+    )
+    payload = _object(value, {*stage_names, "edge_false_positive", "skin"}, context)
+    for name in stage_names:
+        _load_quality_stage_report(payload[name], f"{context}.{name}")
+
+    edge_names = {*stage_names, *(('skin',) if enabled else ())}
+    edge = _object(payload["edge_false_positive"], edge_names, f"{context}.edge_false_positive")
+    for name, item in edge.items():
+        _load_scalar_report_object(
+            item,
+            _EDGE_FALSE_POSITIVE_REPORT_SCHEMA,
+            f"{context}.edge_false_positive.{name}",
+        )
+
+    if not enabled:
+        if payload["skin"] is not None:
+            raise ValueError(f"{context}.skin must be null when skinning is disabled")
+    else:
+        _load_skin_quality_report(payload["skin"], f"{context}.skin")
+    return payload
+
+
+def _load_quality_stage_report(value: Any, context: str) -> dict[str, Any]:
+    payload = _object(
+        value,
+        {"buffered_overlap_radius2", "surface_distance", "orientation_error"},
+        context,
+    )
+    _load_scalar_report_object(
+        payload["buffered_overlap_radius2"],
+        _BUFFERED_OVERLAP_REPORT_SCHEMA,
+        f"{context}.buffered_overlap_radius2",
+    )
+    _load_scalar_report_object(
+        payload["surface_distance"],
+        _SURFACE_DISTANCE_REPORT_SCHEMA,
+        f"{context}.surface_distance",
+    )
+    _load_scalar_report_object(
+        payload["orientation_error"],
+        _ORIENTATION_ERROR_REPORT_SCHEMA,
+        f"{context}.orientation_error",
+    )
+    return payload
+
+
+def _load_skin_quality_report(value: Any, context: str) -> dict[str, Any]:
+    payload = _object(
+        value,
+        {
+            "topology",
+            "buffered_overlap_radius2",
+            "surface_distance",
+            "orientation_error",
+            "component_topology",
+        },
+        context,
+    )
+    _load_scalar_report_object(
+        payload["topology"], _SKIN_TOPOLOGY_REPORT_SCHEMA, f"{context}.topology"
+    )
+    _load_scalar_report_object(
+        payload["buffered_overlap_radius2"],
+        _BUFFERED_OVERLAP_REPORT_SCHEMA,
+        f"{context}.buffered_overlap_radius2",
+    )
+    _load_scalar_report_object(
+        payload["surface_distance"],
+        _SURFACE_DISTANCE_REPORT_SCHEMA,
+        f"{context}.surface_distance",
+    )
+    _load_scalar_report_object(
+        payload["orientation_error"],
+        _ORIENTATION_ERROR_REPORT_SCHEMA,
+        f"{context}.orientation_error",
+    )
+    _load_component_topology_report(payload["component_topology"], f"{context}.component_topology")
+    return payload
+
+
+def _load_component_topology_report(value: Any, context: str) -> dict[str, Any]:
+    payload = _object(
+        value,
+        {*_COMPONENT_TOPOLOGY_SUMMARY_SCHEMA, "truth_components", "skins"},
+        context,
+    )
+    _load_scalar_report_fields(payload, _COMPONENT_TOPOLOGY_SUMMARY_SCHEMA, context)
+    for name, schema in (
+        ("truth_components", _TRUTH_COMPONENT_REPORT_SCHEMA),
+        ("skins", _SKIN_COMPONENT_REPORT_SCHEMA),
+    ):
+        items = _array(payload[name], f"{context}.{name}")
+        for index, item in enumerate(items):
+            _load_scalar_report_object(item, schema, f"{context}.{name}[{index}]")
+    return payload
+
+
+def _load_scalar_report_object(
+    value: Any, schema: Mapping[str, str], context: str
+) -> dict[str, Any]:
+    payload = _object(value, set(schema), context)
+    _load_scalar_report_fields(payload, schema, context)
+    return payload
+
+
+def _load_scalar_report_fields(
+    payload: Mapping[str, Any], schema: Mapping[str, str], context: str
+) -> None:
+    for name, kind in schema.items():
+        value = payload[name]
+        field_context = f"{context}.{name}"
+        if kind == "integer":
+            _integer(value, field_context)
+        elif kind == "optional_integer":
+            _optional_integer(value, field_context)
+        elif kind == "number":
+            _number(value, field_context)
+        elif kind == "optional_number":
+            _optional_number(value, field_context)
+        elif kind == "boolean":
+            _boolean(value, field_context)
+        elif kind == "string":
+            _string(value, field_context)
+        elif kind == "optional_string":
+            _optional_string(value, field_context)
+        elif kind == "string_array":
+            _string_tuple(value, field_context)
+        else:
+            raise AssertionError(f"unknown scalar report field kind: {kind}")
 
 
 def _load_cache_stats(value: Any) -> tuple[Mapping[str, Any], ...]:
@@ -1018,6 +1503,23 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [_json_value(item) for item in value]
     raise ValueError(f"artifact value is not JSON-safe: {type(value).__name__}")
+
+
+def _exact_json_value(actual: Any, expected: Any) -> bool:
+    """Compare JSON values without Python's bool/int or int/float coercion."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(
+            _exact_json_value(actual[name], value) for name, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _exact_json_value(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected, strict=True)
+        )
+    return actual == expected
 
 
 def _csv_bytes(rows: Sequence[Any], model: type[Any]) -> bytes:

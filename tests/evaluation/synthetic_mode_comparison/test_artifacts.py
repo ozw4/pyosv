@@ -486,7 +486,13 @@ def test_validator_rejects_incompatible_metric_schema_after_valid_hash(
 
 @pytest.mark.parametrize(
     "tamper",
-    ("missing_field", "unknown_field", "wrong_section_type", "wrong_scalar_type"),
+    (
+        "missing_field",
+        "unknown_field",
+        "nested_unknown_field",
+        "wrong_section_type",
+        "wrong_scalar_type",
+    ),
 )
 def test_validator_rejects_rehashed_invalid_cell_report_contract(
     tmp_path: Path,
@@ -500,6 +506,8 @@ def test_validator_rejects_rehashed_invalid_cell_report_contract(
         del scanner_cell["scanner_quality"]
     elif tamper == "unknown_field":
         scanner_cell["unexpected"] = {}
+    elif tamper == "nested_unknown_field":
+        scanner_cell["scanner_quality"]["input_association"]["unexpected"] = 0.0
     elif tamper == "wrong_section_type":
         scanner_cell["scanner_quality"] = []
     else:
@@ -510,6 +518,40 @@ def test_validator_rejects_rehashed_invalid_cell_report_contract(
         newline="\n",
     )
     _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "artifact_schema_version",
+        "metric_schema_version",
+        "canonical_cell_order",
+        "resolved_plan_integer",
+    ),
+)
+def test_validator_rejects_rehashed_wrong_manifest_scalar_types(
+    tmp_path: Path, tamper: str
+) -> None:
+    bundle = _write_bundle(tmp_path / tamper)
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if tamper == "artifact_schema_version":
+        manifest["artifact_schema_version"] = True
+    elif tamper == "metric_schema_version":
+        manifest["metric_schema_version"] = True
+    elif tamper == "canonical_cell_order":
+        manifest["canonical_cells"][0]["order"] = 0.0
+    else:
+        manifest["resolved_plan"]["shape"][0] = 9.0
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
 
     with pytest.raises(ValueError):
         validate_completed_bundle(bundle)
@@ -546,6 +588,56 @@ def test_validator_rejects_rehashed_cross_file_metric_tampering(
     _rehash(bundle, "metrics_long.csv")
 
     with pytest.raises(ValueError):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "coordinated-confidence")
+    metrics_path = bundle / "metrics_long.csv"
+    with metrics_path.open(encoding="utf-8", newline="") as stream:
+        metric_rows = list(csv.reader(stream))
+    metric_header = metric_rows[0]
+    metric_row = next(
+        row
+        for row in metric_rows[1:]
+        if (
+            row[metric_header.index("cell_label")],
+            row[metric_header.index("stage")],
+            row[metric_header.index("selection")],
+            row[metric_header.index("metric")],
+        )
+        == ("Q-SCAN", "scanner_confidence", "finite", "confidence_mean")
+    )
+    tampered_value = float(metric_row[metric_header.index("value")]) + 0.01
+    metric_row[metric_header.index("value")] = repr(tampered_value)
+    with metrics_path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(metric_rows)
+    _rehash(bundle, "metrics_long.csv")
+
+    aggregates_path = bundle / "metric_aggregates.csv"
+    with aggregates_path.open(encoding="utf-8", newline="") as stream:
+        aggregate_rows = list(csv.reader(stream))
+    aggregate_header = aggregate_rows[0]
+    aggregate_row = next(
+        row
+        for row in aggregate_rows[1:]
+        if (
+            row[aggregate_header.index("cell_label")],
+            row[aggregate_header.index("stage")],
+            row[aggregate_header.index("selection")],
+            row[aggregate_header.index("metric")],
+        )
+        == ("Q-SCAN", "scanner_confidence", "finite", "confidence_mean")
+    )
+    for name in ("mean", "median", "min", "max", "q25", "q75"):
+        aggregate_row[aggregate_header.index(name)] = repr(tampered_value)
+    with aggregates_path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(aggregate_rows)
+    _rehash(bundle, "metric_aggregates.csv")
+
+    with pytest.raises(ValueError, match="scalar evidence in cell_reports"):
         validate_completed_bundle(bundle)
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from math import isfinite
+from math import isclose, isfinite
 from numbers import Integral, Real
 from typing import Any
 
@@ -363,7 +363,10 @@ def _validate_reported_metric_values(
         if isinstance(reported, bool) or not isinstance(reported, Real):
             raise ValueError("cell report metric evidence must be numeric")
         normalized = float(reported)
-        if not isfinite(normalized) or normalized != row.value:
+        matches = normalized == row.value
+        if row.stage == "scanner_confidence":
+            matches = isclose(normalized, row.value, rel_tol=1.0e-7, abs_tol=1.0e-9)
+        if not isfinite(normalized) or not matches:
             raise ValueError(
                 "metric_rows do not match scalar evidence in cell_reports: "
                 f"{row.cell_label}/{row.stage}/{row.selection}/{row.metric} "
@@ -383,6 +386,8 @@ def _reported_metric_value(payload: Mapping[str, Any], row: MetricRow) -> Any:
         return _report_path(payload, section, report_name, "nonzero_fraction")
 
     if row.stage == "scanner_confidence":
+        if row.selection == "finite" and row.metric == "confidence_mean":
+            return _report_path(payload, "scanner", "confidence", "mean")
         return _MISSING
 
     if row.stage.startswith("scanner_"):
