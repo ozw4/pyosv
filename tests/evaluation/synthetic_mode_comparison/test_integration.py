@@ -5,6 +5,8 @@ import gc
 import hashlib
 import io
 import json
+import re
+import shlex
 import weakref
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
@@ -18,7 +20,6 @@ import pytest
 from pyosv.cells import FaultCell
 from pyosv.cli import synthetic_mode_comparison as comparison_cli
 from pyosv.evaluation.synthetic_mode_comparison import (
-    CONTRAST_DEFINITIONS,
     AggregateRow,
     ContrastRow,
     MetricRow,
@@ -51,6 +52,21 @@ EXPECTED_HASHED_BUNDLE_FILES = (
     "runtime.csv",
 )
 EXPECTED_BUNDLE_FILES = (*EXPECTED_HASHED_BUNDLE_FILES, "completion.json")
+EXPECTED_CONTRAST_COMPONENTS = (
+    ("scanner_only_effect", ("Q-SCAN", "RL-SCAN")),
+    ("oracle_workflow_effect", ("ORACLE-QUAL", "ORACLE-REF")),
+    ("scanner_effect_ref", ("Q-REF", "RL-REF")),
+    ("scanner_effect_qual", ("Q-QUAL", "RL-QUAL")),
+    ("workflow_effect_rl", ("RL-QUAL", "RL-REF")),
+    ("workflow_effect_q", ("Q-QUAL", "Q-REF")),
+    ("end_to_end_delta", ("Q-QUAL", "RL-REF")),
+    ("scanner_main_effect", ("Q-REF", "RL-REF", "Q-QUAL", "RL-QUAL")),
+    ("workflow_main_effect", ("RL-QUAL", "RL-REF", "Q-QUAL", "Q-REF")),
+    (
+        "scanner_workflow_interaction",
+        ("Q-QUAL", "Q-REF", "RL-QUAL", "RL-REF"),
+    ),
+)
 
 
 def _config() -> SyntheticModeComparisonConfig:
@@ -160,10 +176,10 @@ def test_public_experiment_integrates_shared_stages_metrics_and_aggregation(
             ].add(row.cell_label)
     expected_contrast_identities: Counter[tuple[Any, ...]] = Counter()
     for metric_identity, cells in eligible_cells.items():
-        for definition in CONTRAST_DEFINITIONS:
-            if set(definition.component_cells) <= cells:
+        for contrast_name, component_cells in EXPECTED_CONTRAST_COMPONENTS:
+            if set(component_cells) <= cells:
                 expected_contrast_identities[
-                    (definition.name, *metric_identity, definition.component_cells)
+                    (contrast_name, *metric_identity, component_cells)
                 ] += 1
     actual_contrast_identities = Counter(
         (
@@ -181,6 +197,11 @@ def test_public_experiment_integrates_shared_stages_metrics_and_aggregation(
         for row in result.contrast_rows
     )
     assert actual_contrast_identities == expected_contrast_identities
+    expected_contrast_names = {name for name, _ in EXPECTED_CONTRAST_COMPONENTS}
+    for trial_id in expected_trials:
+        assert {
+            row.contrast_name for row in result.contrast_rows if row.trial_id == trial_id
+        } == expected_contrast_names
 
     expected_n = {"single_vertical_plane": 1, "weak_noisy_plane": 3}
     for aggregate in (*result.metric_aggregates, *result.contrast_aggregates):
@@ -428,6 +449,44 @@ def test_failures_do_not_publish_partial_experiment_or_artifact(
     assert not output.exists()
     assert not (output / "completion.json").exists()
     assert not list(tmp_path.glob(".failed-bundle.tmp-*"))
+
+
+def test_documented_commands_parse_and_relative_links_exist() -> None:
+    repository = Path(__file__).parents[3]
+    comparison_doc = repository / "docs" / "synthetic_mode_comparison.md"
+    markdown = comparison_doc.read_text(encoding="utf-8")
+    commands = re.findall(r"```bash\n(.*?)\n```", markdown, flags=re.DOTALL)
+
+    assert len(commands) == 2
+    parsed = []
+    for command in commands:
+        tokens = shlex.split(command.replace("\\\n", " "))
+        assert tokens[:3] == [
+            "PYTHONPATH=src",
+            "python",
+            "examples/report_3d_synthetic_mode_comparison.py",
+        ]
+        parsed.append(comparison_cli.build_parser().parse_args(tokens[3:]))
+
+    assert parsed[0].case_set == "minimal"
+    assert parsed[0].shape == (9, 9, 9)
+    assert parsed[0].skip_skinning is True
+    assert parsed[1].case_set == "extended"
+    assert parsed[1].shape == (49, 49, 49)
+    assert parsed[1].trial_seeds == SEEDS + (20260710, 20260711)
+    assert parsed[1].pretty is True
+
+    for name in (
+        "synthetic_mode_comparison.md",
+        "mode_comparison.md",
+        "synthetic_quality.md",
+    ):
+        source = repository / "docs" / name
+        for target in re.findall(r"!?\[[^]]*\]\(([^)]+)\)", source.read_text()):
+            if target.startswith(("#", "http://", "https://", "mailto:")):
+                continue
+            path = target.split("#", maxsplit=1)[0].strip("<>")
+            assert (source.parent / path).exists(), f"broken link in {name}: {target}"
 
 
 def _assert_scalar_only(value: Any) -> None:
