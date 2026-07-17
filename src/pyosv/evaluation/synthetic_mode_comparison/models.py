@@ -141,6 +141,7 @@ class SyntheticModeComparisonPlan:
         expected_trials = expand_synthetic_trials(
             tuple(definitions_by_id[case_id] for case_id in case_ids),
             seeds,
+            shape,
         )
         if self.trials != expected_trials:
             raise ValueError("trials must match the selected cases and trial seeds")

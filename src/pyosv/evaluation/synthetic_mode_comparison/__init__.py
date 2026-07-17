@@ -10,6 +10,7 @@ from .models import (
     ModeInputMode,
     SyntheticModeComparisonPlan,
 )
+from .runner import SyntheticCellEvaluation, SyntheticTrialEvaluation, run_synthetic_trial
 from .trials import SyntheticTrialSpec, expand_synthetic_trials, validate_trial_seeds
 
 __all__ = [
@@ -21,8 +22,11 @@ __all__ = [
     "ModeInputMode",
     "SyntheticModeComparisonConfig",
     "SyntheticModeComparisonPlan",
+    "SyntheticCellEvaluation",
+    "SyntheticTrialEvaluation",
     "SyntheticTrialSpec",
     "build_mode_comparison_plan",
     "expand_synthetic_trials",
+    "run_synthetic_trial",
     "validate_trial_seeds",
 ]

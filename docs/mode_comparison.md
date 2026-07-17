@@ -217,6 +217,8 @@ existing operational validation paths.
   `build_mode_comparison_plan(config)` to validate case selection, seeded
   trials, fixed scanner controls, resolved reference/quality workflows, and the
   canonical cell order without running scans, metrics, or artifact writers.
+  Each trial records its case ID, validated 3D shape, optional case-generation
+  seed, and deterministic trial ID.
   The plan uses `current_default`; its cells are `RL-SCAN`, `Q-SCAN`, optional
   `ORACLE-REF` and `ORACLE-QUAL`, followed by the four 2x2 cells in the table
   above. Deterministic cases have one trial with `seed=None`; only registered

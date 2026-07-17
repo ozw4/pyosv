@@ -40,7 +40,7 @@ def build_mode_comparison_plan(
     return SyntheticModeComparisonPlan(
         case_ids=case_ids,
         trial_seeds=config.trial_seeds,
-        trials=expand_synthetic_trials(case_definitions, config.trial_seeds),
+        trials=expand_synthetic_trials(case_definitions, config.trial_seeds, config.shape),
         shape=config.shape,
         scanner_template=config.scanner_template,
         voting_config=config.voting_config,
