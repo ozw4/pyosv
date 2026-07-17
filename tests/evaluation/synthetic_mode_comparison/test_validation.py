@@ -8,11 +8,14 @@ import pytest
 from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     aggregate_metric_rows,
+    build_mode_comparison_plan,
     compute_contrast_rows,
     extract_trial_metric_rows,
     run_mode_comparison,
     validate_mode_comparison_result,
 )
+from pyosv.evaluation.synthetic_mode_comparison.validation import _expected_cache_counters
+from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig, SyntheticVotingConfig
 
 
 @pytest.fixture(scope="module")
@@ -33,6 +36,100 @@ def test_complete_result_passes_without_mutation(result, config) -> None:
 
     assert validate_mode_comparison_result(result, config) is None
     assert result.as_dict() == before
+
+
+@pytest.mark.parametrize(
+    ("config_overrides", "expected"),
+    (
+        (
+            {},
+            {
+                "seed_hits": 3,
+                "seed_misses": 3,
+                "voting_hits": 3,
+                "voting_misses": 3,
+                "thinning_hits": 0,
+                "thinning_misses": 6,
+                "primary_skinning_hits": 0,
+                "primary_skinning_misses": 6,
+            },
+        ),
+        (
+            {"voting_config": SyntheticVotingConfig()},
+            {
+                "seed_hits": 3,
+                "seed_misses": 3,
+                "voting_hits": 3,
+                "voting_misses": 3,
+                "thinning_hits": 3,
+                "thinning_misses": 3,
+                "primary_skinning_hits": 0,
+                "primary_skinning_misses": 6,
+            },
+        ),
+        (
+            {
+                "voting_config": SyntheticVotingConfig(),
+                "skinner_method_explicit": True,
+                "include_oracle_workflow_isolation": False,
+            },
+            {
+                "seed_hits": 2,
+                "seed_misses": 2,
+                "voting_hits": 2,
+                "voting_misses": 2,
+                "thinning_hits": 2,
+                "thinning_misses": 2,
+                "primary_skinning_hits": 2,
+                "primary_skinning_misses": 2,
+            },
+        ),
+        (
+            {"skinning_config": SyntheticSkinningConfig(enabled=False)},
+            {
+                "seed_hits": 3,
+                "seed_misses": 3,
+                "voting_hits": 3,
+                "voting_misses": 3,
+                "thinning_hits": 0,
+                "thinning_misses": 6,
+                "primary_skinning_hits": 0,
+                "primary_skinning_misses": 0,
+            },
+        ),
+    ),
+)
+def test_expected_cache_counters_follow_resolved_stage_keys(config_overrides, expected) -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            case_ids=("single_vertical_plane",),
+            shape=(9, 9, 9),
+            **config_overrides,
+        )
+    )
+
+    assert _expected_cache_counters(plan) == expected
+
+
+def test_shared_explicit_stage_keys_pass_runtime_semantic_validation() -> None:
+    explicit_config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        voting_config=SyntheticVotingConfig(),
+        skinner_method_explicit=True,
+    )
+
+    explicit_result = run_mode_comparison(explicit_config)
+
+    assert (
+        explicit_result.cache_stats[0]["thinning_misses"],
+        explicit_result.cache_stats[0]["thinning_hits"],
+    ) == (3, 3)
+    assert (
+        explicit_result.cache_stats[0]["primary_skinning_misses"],
+        explicit_result.cache_stats[0]["primary_skinning_hits"],
+    ) == (3, 3)
+    assert validate_mode_comparison_result(explicit_result, explicit_config) is None
 
 
 def test_plan_metadata_numeric_type_tampering_is_rejected(result, config) -> None:

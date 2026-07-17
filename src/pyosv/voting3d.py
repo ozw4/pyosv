@@ -111,6 +111,14 @@ __all__ = ["OptimalSurfaceVoter"]
 
 _SURFACE_VOTING_BOUNDARY_POLICIES = tuple(SURFACE_VOTING_POLICY_REGISTRY)
 
+_DEFAULT_BSTRAIN1 = 4
+_DEFAULT_BSTRAIN2 = 4
+_DEFAULT_SURFACE_SMOOTHING1 = 2.0
+_DEFAULT_SURFACE_SMOOTHING2 = 2.0
+_DEFAULT_SURFACE_ORIENTATION_BACKEND = "full_surface"
+_DEFAULT_FINAL_NORMALIZATION_SMOOTHING = 0.0
+_DEFAULT_SURFACE_VOTING_BOUNDARY_POLICY = "reference"
+
 
 class OptimalSurfaceVoter:
     """Configuration and state holder for 3D optimal-surface voting."""
@@ -120,18 +128,18 @@ class OptimalSurfaceVoter:
         self.rv = _validate_nonnegative_int(rv, "rv")
         self.rw = _validate_nonnegative_int(rw, "rw")
         self.lmin, self.lmax, self.nl = shift_range(self.ru)
-        self.bstrain1 = 4
-        self.bstrain2 = 4
+        self.bstrain1 = _DEFAULT_BSTRAIN1
+        self.bstrain2 = _DEFAULT_BSTRAIN2
         self.attribute_smoothing = 1
-        self.surface_smoothing1 = 2.0
-        self.surface_smoothing2 = 2.0
+        self.surface_smoothing1 = _DEFAULT_SURFACE_SMOOTHING1
+        self.surface_smoothing2 = _DEFAULT_SURFACE_SMOOTHING2
         self.surface_orientation_smoothing = float(max(self.rv, self.rw))
-        self.surface_orientation_backend = "full_surface"
-        self.final_normalization_smoothing = 0.0
+        self.surface_orientation_backend = _DEFAULT_SURFACE_ORIENTATION_BACKEND
+        self.final_normalization_smoothing = _DEFAULT_FINAL_NORMALIZATION_SMOOTHING
         self.surface_support_min_fraction = 0.0
         self.surface_support_exponent = 0.0
-        self.surface_voting_boundary_policy = "reference"
-        self._last_surface_voting_policy = "reference"
+        self.surface_voting_boundary_policy = _DEFAULT_SURFACE_VOTING_BOUNDARY_POLICY
+        self._last_surface_voting_policy = _DEFAULT_SURFACE_VOTING_BOUNDARY_POLICY
         self._last_surface_voting_diagnostics: tuple[_SurfaceVotingDiagnostic, ...] = ()
         self.lmins: np.ndarray
         self.lmaxs: np.ndarray

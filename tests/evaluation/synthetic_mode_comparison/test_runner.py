@@ -15,6 +15,9 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 )
 from pyosv.evaluation.synthetic_mode_comparison import experiment as comparison_experiment
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
+from pyosv.evaluation.synthetic_mode_comparison.validation import (
+    _resolved_stage_keys_for_cell,
+)
 from pyosv.evaluation.synthetic_quality import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
@@ -42,6 +45,40 @@ def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> 
     assert result.stage_cache_stats.seed_hits == 3
     assert result.stage_cache_stats.voting_misses == 3
     assert result.stage_cache_stats.voting_hits == 3
+
+
+def test_runtime_looks_up_the_resolved_keys_for_each_downstream_cell(monkeypatch) -> None:
+    plan = _plan()
+    looked_up = {stage: [] for stage in ("seed", "voting", "thinning", "primary_skinning")}
+
+    class TrackingCache(comparison_runner.PipelineStageCache):
+        def get_seed(self, key):
+            looked_up["seed"].append(key)
+            return super().get_seed(key)
+
+        def get_voting(self, key):
+            looked_up["voting"].append(key)
+            return super().get_voting(key)
+
+        def get_thinning(self, key):
+            looked_up["thinning"].append(key)
+            return super().get_thinning(key)
+
+        def get_primary_skinning(self, key):
+            looked_up["primary_skinning"].append(key)
+            return super().get_primary_skinning(key)
+
+    monkeypatch.setattr(comparison_runner, "PipelineStageCache", TrackingCache)
+
+    run_synthetic_trial(plan, plan.trials[0])
+
+    expected = tuple(
+        _resolved_stage_keys_for_cell(plan, cell)
+        for cell in plan.cells
+        if cell.workflow_mode is not None
+    )
+    for stage in looked_up:
+        assert looked_up[stage] == [getattr(keys, stage) for keys in expected]
 
 
 def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
