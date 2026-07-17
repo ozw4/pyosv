@@ -94,13 +94,20 @@ support mask before constructing scanner input or starting a scanner. The CLI
 validates `completion.json`, hashes, schemas, the complete file set, and
 cross-file semantic consistency before printing the output path. This includes
 the canonical plan and trial coverage, scalar cell-report/metric agreement,
-paired contrasts, aggregates, runtime rows, and cache statistics. Programmatic
+paired contrasts, aggregates, runtime rows, and cache statistics. Invalid,
+non-finite, or negative truth-metric scalars are rejected while constructing
+the configuration, before experiment timing or case generation begins. Cache
+counters are checked from the resolved semantic stage keys in canonical cell
+execution order. Validation also enforces the mathematical constraints on
+array summaries and report scalars and compares shared scanner, voting, and
+(when their resolved keys match) thinning evidence across cells. Programmatic
 readers can call
 `validate_completed_bundle(path)` from
 `pyosv.evaluation.synthetic_mode_comparison`. A failed run does not publish a
 partial final bundle. Successful completion establishes that the recorded
-scalar evidence is internally consistent; validation does not rerun the
-scanner or independently prove that its computation was correct.
+scalar evidence is internally and cross-cell consistent; validation does not
+rerun any volume calculation or independently prove that its computation was
+correct.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect
