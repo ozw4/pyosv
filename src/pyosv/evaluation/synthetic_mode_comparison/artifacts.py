@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,7 @@ import pyosv
 from pyosv.synthetic3d import SyntheticScannerInputConfig
 
 from ..synthetic_quality import (
+    ResolvedWorkflowSettings,
     SyntheticScannerConfig,
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
@@ -932,6 +933,7 @@ def _load_cell_reports(
             label: _load_cell_payload(
                 payload,
                 expected_cells[label],
+                plan,
                 f"{context}.cells.{label}",
             )
             for label, payload in cells.items()
@@ -940,48 +942,84 @@ def _load_cell_reports(
     return tuple(output)
 
 
-def _load_cell_payload(value: Any, cell: ModeCellSpec, context: str) -> dict[str, Any]:
+def _load_cell_payload(
+    value: Any,
+    cell: ModeCellSpec,
+    plan: SyntheticModeComparisonPlan,
+    context: str,
+) -> dict[str, Any]:
     if cell.scope == SCANNER_ONLY_SCOPE:
         payload = _object(value, {"scanner", "scanner_quality"}, context)
-        _load_scanner_report(payload["scanner"], cell.scanner_backend, f"{context}.scanner")
-        _load_scanner_quality_report(payload["scanner_quality"], f"{context}.scanner_quality")
+        scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
+        _load_scanner_report(
+            payload["scanner"],
+            scanner_config,
+            plan.shape,
+            f"{context}.scanner",
+        )
+        _load_scanner_quality_report(
+            payload["scanner_quality"],
+            buffer_radius=plan.truth_metric_config.buffer_radius,
+            context=f"{context}.scanner_quality",
+        )
         return payload
 
+    settings = (
+        plan.reference_workflow_settings
+        if cell.workflow_mode == "reference"
+        else plan.quality_workflow_settings
+    )
     expected_fields = (
         _DOWNSTREAM_REPORT_FIELDS
         if cell.scope == ORACLE_WORKFLOW_ISOLATION_SCOPE
         else _END_TO_END_REPORT_FIELDS
     )
     payload = _object(value, expected_fields, context)
-    _load_downstream_sections(payload, context)
+    _load_downstream_sections(payload, plan, settings, context)
     if cell.scope == ORACLE_WORKFLOW_ISOLATION_SCOPE:
         return payload
 
     active_pipeline = _string(payload["active_pipeline"], f"{context}.active_pipeline")
     if active_pipeline != cell.input_mode:
         raise ValueError(f"{context}.active_pipeline does not match the canonical cell")
-    _load_scanner_report(payload["scanner"], cell.scanner_backend, f"{context}.scanner")
-    _load_scanner_quality_report(payload["scanner_quality"], f"{context}.scanner_quality")
+    scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
+    _load_scanner_report(payload["scanner"], scanner_config, plan.shape, f"{context}.scanner")
+    _load_scanner_quality_report(
+        payload["scanner_quality"],
+        buffer_radius=plan.truth_metric_config.buffer_radius,
+        context=f"{context}.scanner_quality",
+    )
     pipelines = _object(payload["pipelines"], {cell.input_mode}, f"{context}.pipelines")
     pipeline = _object(
         pipelines[cell.input_mode],
         {*_DOWNSTREAM_REPORT_FIELDS, "scanner", "scanner_quality"},
         f"{context}.pipelines.{cell.input_mode}",
     )
-    _load_downstream_sections(pipeline, f"{context}.pipelines.{cell.input_mode}")
+    pipeline_context = f"{context}.pipelines.{cell.input_mode}"
+    _load_downstream_sections(pipeline, plan, settings, pipeline_context)
     _load_scanner_report(
         pipeline["scanner"],
-        cell.scanner_backend,
-        f"{context}.pipelines.{cell.input_mode}.scanner",
+        scanner_config,
+        plan.shape,
+        f"{pipeline_context}.scanner",
     )
     _load_scanner_quality_report(
         pipeline["scanner_quality"],
-        f"{context}.pipelines.{cell.input_mode}.scanner_quality",
+        buffer_radius=plan.truth_metric_config.buffer_radius,
+        context=f"{pipeline_context}.scanner_quality",
     )
+    for name in (*_DOWNSTREAM_REPORT_FIELDS, "scanner", "scanner_quality"):
+        if not _exact_json_value(payload[name], pipeline[name]):
+            raise ValueError(f"{context}.{name} does not match the active pipeline duplicate")
     return payload
 
 
-def _load_downstream_sections(payload: Mapping[str, Any], context: str) -> None:
+def _load_downstream_sections(
+    payload: Mapping[str, Any],
+    plan: SyntheticModeComparisonPlan,
+    settings: ResolvedWorkflowSettings,
+    context: str,
+) -> None:
     config_context = f"{context}.config"
     config = _object(payload["config"], {"skinning"}, config_context)
     skinning_config = _load_scalar_report_object(
@@ -989,6 +1027,10 @@ def _load_downstream_sections(payload: Mapping[str, Any], context: str) -> None:
         _SKINNING_CONFIG_REPORT_SCHEMA,
         f"{config_context}.skinning",
     )
+    if not _exact_json_value(skinning_config, settings.skinning_config.as_report_dict()):
+        raise ValueError(
+            f"{config_context}.skinning does not match the resolved workflow configuration"
+        )
     enabled = skinning_config["enabled"]
 
     skinning_context = f"{context}.skinning"
@@ -1005,9 +1047,13 @@ def _load_downstream_sections(payload: Mapping[str, Any], context: str) -> None:
 
     pyosv_context = f"{context}.pyosv"
     pyosv_report = _object(payload["pyosv"], {"fv", "fvt", "voting", "skins"}, pyosv_context)
-    _load_array_summary(pyosv_report["fv"], f"{pyosv_context}.fv")
-    _load_array_summary(pyosv_report["fvt"], f"{pyosv_context}.fvt")
-    _load_voting_report(pyosv_report["voting"], f"{pyosv_context}.voting")
+    _load_array_summary(pyosv_report["fv"], plan.shape, f"{pyosv_context}.fv")
+    _load_array_summary(pyosv_report["fvt"], plan.shape, f"{pyosv_context}.fvt")
+    _load_voting_report(
+        pyosv_report["voting"],
+        settings.voting_config,
+        f"{pyosv_context}.voting",
+    )
     _load_scalar_report_object(
         pyosv_report["skins"],
         _SKIN_TOPOLOGY_REPORT_SCHEMA,
@@ -1015,18 +1061,26 @@ def _load_downstream_sections(payload: Mapping[str, Any], context: str) -> None:
     )
 
     _load_downstream_quality_report(
-        payload["quality"], enabled=enabled, context=f"{context}.quality"
+        payload["quality"],
+        enabled=enabled,
+        buffer_radius=plan.truth_metric_config.buffer_radius,
+        context=f"{context}.quality",
     )
 
 
-def _load_scanner_report(value: Any, backend: str, context: str) -> dict[str, Any]:
+def _load_scanner_report(
+    value: Any,
+    scanner_config: SyntheticScannerConfig,
+    expected_shape: tuple[int, int, int],
+    context: str,
+) -> dict[str, Any]:
     expected_fields = set(_SCANNER_REPORT_FIELDS)
-    if backend == "quality":
+    if scanner_config.backend == "quality":
         expected_fields.add("confidence")
     payload = _object(value, expected_fields, context)
     config_context = f"{context}.config"
     config = _object(payload["config"], _SCANNER_CONFIG_REPORT_FIELDS, config_context)
-    if _string(config["backend"], f"{config_context}.backend") != backend:
+    if _string(config["backend"], f"{config_context}.backend") != scanner_config.backend:
         raise ValueError(f"{config_context}.backend does not match the canonical cell")
     for name in ("phi_min", "phi_max", "theta_min", "theta_max", "sigma1", "sigma2"):
         _number(config[name], f"{config_context}.{name}")
@@ -1042,14 +1096,22 @@ def _load_scanner_report(value: Any, backend: str, context: str) -> dict[str, An
     for name in ("background", "fault_contrast", "noise_sigma", "clip_min", "clip_max"):
         _number(scanner_input[name], f"{input_context}.{name}")
     _integer(scanner_input["seed"], f"{input_context}.seed")
+    if not _exact_json_value(config, scanner_config.as_report_dict()):
+        raise ValueError(f"{config_context} does not match the resolved scanner configuration")
     for name in expected_fields - {"config"}:
-        _load_array_summary(payload[name], f"{context}.{name}")
+        _load_array_summary(payload[name], expected_shape, f"{context}.{name}")
     return payload
 
 
-def _load_array_summary(value: Any, context: str) -> dict[str, Any]:
+def _load_array_summary(
+    value: Any,
+    expected_shape: tuple[int, int, int],
+    context: str,
+) -> dict[str, Any]:
     summary = _object(value, _ARRAY_SUMMARY_FIELDS, context)
-    _shape(summary["shape"], f"{context}.shape")
+    shape = _shape(summary["shape"], f"{context}.shape")
+    if shape != expected_shape:
+        raise ValueError(f"{context}.shape does not match the canonical plan shape")
     finite_count = _integer(summary["finite_count"], f"{context}.finite_count")
     if finite_count < 0:
         raise ValueError(f"{context}.finite_count must be non-negative")
@@ -1058,17 +1120,24 @@ def _load_array_summary(value: Any, context: str) -> dict[str, Any]:
     return summary
 
 
-def _load_scanner_quality_report(value: Any, context: str) -> dict[str, Any]:
+def _load_scanner_quality_report(
+    value: Any, *, buffer_radius: float, context: str
+) -> dict[str, Any]:
     payload = _object(value, _SCANNER_QUALITY_REPORT_FIELDS, context)
     truth_count = _object(
         payload["ft_top_truth_count"],
         {"buffered_overlap_radius2", "surface_distance"},
         f"{context}.ft_top_truth_count",
     )
-    _load_scalar_report_object(
+    overlap = _load_scalar_report_object(
         truth_count["buffered_overlap_radius2"],
         _BUFFERED_OVERLAP_REPORT_SCHEMA,
         f"{context}.ft_top_truth_count.buffered_overlap_radius2",
+    )
+    _validate_report_radius(
+        overlap["radius"],
+        buffer_radius,
+        f"{context}.ft_top_truth_count.buffered_overlap_radius2.radius",
     )
     _load_scalar_report_object(
         truth_count["surface_distance"],
@@ -1108,18 +1177,31 @@ def _load_skinning_diagnostics(value: Any, *, method: str, context: str) -> dict
     return payload
 
 
-def _load_voting_report(value: Any, context: str) -> dict[str, Any]:
+def _load_voting_report(
+    value: Any, voting_config: SyntheticVotingConfig, context: str
+) -> dict[str, Any]:
     payload = _object(value, {*_VOTING_REPORT_SCHEMA, "diagnostic_summary"}, context)
     _load_scalar_report_fields(payload, _VOTING_REPORT_SCHEMA, context)
-    _load_scalar_report_object(
+    diagnostic = _load_scalar_report_object(
         payload["diagnostic_summary"],
         _VOTING_DIAGNOSTIC_REPORT_SCHEMA,
         f"{context}.diagnostic_summary",
     )
+    expected = {
+        "surface_voting_boundary_policy": "reference",
+        "surface_support_min_fraction": float(voting_config.surface_support_min_fraction),
+        "surface_support_exponent": float(voting_config.surface_support_exponent),
+    }
+    if any(not _exact_json_value(payload[name], value) for name, value in expected.items()):
+        raise ValueError(f"{context} does not match the resolved voting configuration")
+    if diagnostic["policy"] != payload["surface_voting_boundary_policy"]:
+        raise ValueError(f"{context}.diagnostic_summary.policy does not match voting policy")
     return payload
 
 
-def _load_downstream_quality_report(value: Any, *, enabled: bool, context: str) -> dict[str, Any]:
+def _load_downstream_quality_report(
+    value: Any, *, enabled: bool, buffer_radius: float, context: str
+) -> dict[str, Any]:
     stage_names = (
         "fv_top_truth_count",
         "fvt_top_truth_count",
@@ -1128,35 +1210,53 @@ def _load_downstream_quality_report(value: Any, *, enabled: bool, context: str) 
     )
     payload = _object(value, {*stage_names, "edge_false_positive", "skin"}, context)
     for name in stage_names:
-        _load_quality_stage_report(payload[name], f"{context}.{name}")
+        _load_quality_stage_report(
+            payload[name],
+            buffer_radius=buffer_radius,
+            context=f"{context}.{name}",
+        )
 
     edge_names = {*stage_names, *(('skin',) if enabled else ())}
     edge = _object(payload["edge_false_positive"], edge_names, f"{context}.edge_false_positive")
     for name, item in edge.items():
-        _load_scalar_report_object(
+        report = _load_scalar_report_object(
             item,
             _EDGE_FALSE_POSITIVE_REPORT_SCHEMA,
             f"{context}.edge_false_positive.{name}",
+        )
+        _validate_report_radius(
+            report["truth_buffer_radius"],
+            buffer_radius,
+            f"{context}.edge_false_positive.{name}.truth_buffer_radius",
         )
 
     if not enabled:
         if payload["skin"] is not None:
             raise ValueError(f"{context}.skin must be null when skinning is disabled")
     else:
-        _load_skin_quality_report(payload["skin"], f"{context}.skin")
+        _load_skin_quality_report(
+            payload["skin"],
+            buffer_radius=buffer_radius,
+            context=f"{context}.skin",
+        )
     return payload
 
 
-def _load_quality_stage_report(value: Any, context: str) -> dict[str, Any]:
+def _load_quality_stage_report(value: Any, *, buffer_radius: float, context: str) -> dict[str, Any]:
     payload = _object(
         value,
         {"buffered_overlap_radius2", "surface_distance", "orientation_error"},
         context,
     )
-    _load_scalar_report_object(
+    overlap = _load_scalar_report_object(
         payload["buffered_overlap_radius2"],
         _BUFFERED_OVERLAP_REPORT_SCHEMA,
         f"{context}.buffered_overlap_radius2",
+    )
+    _validate_report_radius(
+        overlap["radius"],
+        buffer_radius,
+        f"{context}.buffered_overlap_radius2.radius",
     )
     _load_scalar_report_object(
         payload["surface_distance"],
@@ -1171,7 +1271,7 @@ def _load_quality_stage_report(value: Any, context: str) -> dict[str, Any]:
     return payload
 
 
-def _load_skin_quality_report(value: Any, context: str) -> dict[str, Any]:
+def _load_skin_quality_report(value: Any, *, buffer_radius: float, context: str) -> dict[str, Any]:
     payload = _object(
         value,
         {
@@ -1186,10 +1286,15 @@ def _load_skin_quality_report(value: Any, context: str) -> dict[str, Any]:
     _load_scalar_report_object(
         payload["topology"], _SKIN_TOPOLOGY_REPORT_SCHEMA, f"{context}.topology"
     )
-    _load_scalar_report_object(
+    overlap = _load_scalar_report_object(
         payload["buffered_overlap_radius2"],
         _BUFFERED_OVERLAP_REPORT_SCHEMA,
         f"{context}.buffered_overlap_radius2",
+    )
+    _validate_report_radius(
+        overlap["radius"],
+        buffer_radius,
+        f"{context}.buffered_overlap_radius2.radius",
     )
     _load_scalar_report_object(
         payload["surface_distance"],
@@ -1203,6 +1308,11 @@ def _load_skin_quality_report(value: Any, context: str) -> dict[str, Any]:
     )
     _load_component_topology_report(payload["component_topology"], f"{context}.component_topology")
     return payload
+
+
+def _validate_report_radius(value: Any, expected: float, context: str) -> None:
+    if not _exact_json_value(value, float(expected)):
+        raise ValueError(f"{context} does not match the truth metric configuration")
 
 
 def _load_component_topology_report(value: Any, context: str) -> dict[str, Any]:

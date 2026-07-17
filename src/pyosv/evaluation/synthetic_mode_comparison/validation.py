@@ -8,6 +8,7 @@ from math import isclose, isfinite
 from numbers import Integral, Real
 from typing import Any
 
+from ..reporting.models import thaw_report_value
 from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
 from .contrasts import (
@@ -107,8 +108,8 @@ def validate_mode_comparison_result(
         raise ValueError("result must be a SyntheticModeComparisonResult")
     plan = build_mode_comparison_plan(config)
     _validate_plan_and_trial_metadata(result, plan)
-    _validate_cell_reports(result.cell_reports, plan)
     _validate_runtime_rows(result.runtime_rows, plan)
+    _validate_cell_reports(result.cell_reports, plan)
     _validate_cache_stats(result.cache_stats, plan)
     _validate_metric_rows(result.metric_rows, plan)
 
@@ -164,6 +165,17 @@ def _validate_cell_reports(
         cells = report["cells"]
         if not isinstance(cells, Mapping) or tuple(cells) != expected_labels:
             raise ValueError("cell report cells do not match the canonical cells and order")
+
+    # The artifact loader owns the fixed recursive cell-report schema. Reuse it here
+    # so in-memory results and persisted bundles enforce exactly the same scalar
+    # evidence contract without running any experiment stage.
+    from .artifacts import _load_cell_reports
+
+    wire_reports = [thaw_report_value(report) for report in reports]
+    try:
+        _load_cell_reports(wire_reports, plan)
+    except ValueError as error:
+        raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
 
 
 def _validate_cache_stats(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from pyosv.evaluation.synthetic_quality import pipeline as quality_pipeline
 from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.evaluation.synthetic_quality import runner as quality_runner
 from pyosv.evaluation.synthetic_quality import scanner as quality_scanner
+from pyosv.evaluation.synthetic_quality.application import build_report
 from pyosv.evaluation.synthetic_quality.cases import CASE_IDS
 
 
@@ -98,8 +100,34 @@ def test_nonzero_fraction_matches_legacy_report_summaries_and_metric_rows() -> N
     assert quality_scanner._array_summary(values)["nonzero_fraction"] == expected
     assert quality_pipeline._array_summary(values)["nonzero_fraction"] == expected
 
+    config = _config()
     result = _result()
-    cells = result.cell_reports[0]["cells"]
+    legacy_reports = {}
+    for scanner_backend in ("reference-like", "quality"):
+        for workflow_mode in ("reference", "quality"):
+            report = build_report(
+                case_set="minimal",
+                shape=config.shape,
+                voting_config=config.voting_config,
+                scanner_config=replace(
+                    config.scanner_template,
+                    backend=scanner_backend,
+                ),
+                truth_metric_config=config.truth_metric_config,
+                variants=(config.comparison_variant,),
+                skinning_config=config.skinning_config,
+                input_mode="both",
+                workflow_mode=workflow_mode,
+                skinner_method_explicit=config.skinner_method_explicit,
+                skinner_min_likelihood_explicit=(config.skinner_min_likelihood_explicit),
+                skinner_growth_source_explicit=config.skinner_growth_source_explicit,
+                skinner_accepted_occupancy_radius_explicit=(
+                    config.skinner_accepted_occupancy_radius_explicit
+                ),
+                skinner_boundary_fallback_explicit=(config.skinner_boundary_fallback_explicit),
+            )
+            legacy_reports[(scanner_backend, workflow_mode)] = report["cases"][0]
+
     report_names = {
         "scanner_raw": ("scanner", "ft"),
         "scanner_thinned": ("scanner", "fet"),
@@ -110,7 +138,12 @@ def test_nonzero_fraction_matches_legacy_report_summaries_and_metric_rows() -> N
     assert rows
     for row in rows:
         section, report_name = report_names[row.stage]
-        assert row.value == cells[row.cell_label][section][report_name]["nonzero_fraction"]
+        axes = (row.scanner_backend or "reference-like", row.workflow_mode or "reference")
+        pipeline_name = "oracle" if row.input_mode == "oracle" else "scanner"
+        legacy_pipeline = legacy_reports[axes]["pipelines"][pipeline_name]["variants"][
+            config.comparison_variant
+        ]
+        assert row.value == legacy_pipeline[section][report_name]["nonzero_fraction"]
 
 
 def test_public_experiment_rejects_empty_truth_support_before_scanner(

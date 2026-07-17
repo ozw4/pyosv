@@ -553,6 +553,36 @@ def test_validator_rejects_rehashed_invalid_cell_report_contract(
 
 @pytest.mark.parametrize(
     "tamper",
+    ("array_shape", "scanner_config", "active_pipeline_duplicate"),
+)
+def test_validator_binds_cell_report_contents_to_resolved_plan(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    bundle = _write_bundle(tmp_path / tamper)
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    cells = reports[0]["cells"]
+    if tamper == "array_shape":
+        cells["RL-SCAN"]["scanner"]["ft"]["shape"] = [8, 9, 9]
+    elif tamper == "scanner_config":
+        cells["RL-SCAN"]["scanner"]["config"]["phi_min"] = 1.0
+    else:
+        duplicate = cells["RL-REF"]["pipelines"]["scanner"]
+        duplicate["scanner"]["input"]["mean"] += 0.01
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError, match="cell_reports"):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    "tamper",
     (
         "artifact_schema_version",
         "metric_schema_version",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from pyosv.evaluation.synthetic_mode_comparison import (
@@ -157,6 +158,27 @@ def test_top_level_coverage_tampering_is_rejected(result, config, field) -> None
 
     with pytest.raises(ValueError, match=field):
         validate_mode_comparison_result(bad, config)
+
+
+def test_unknown_nested_cell_report_field_is_rejected(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    reports[0]["cells"]["RL-SCAN"]["scanner"]["unexpected"] = 1
+
+    with pytest.raises(ValueError, match="scalar evidence in cell_reports.*unknown"):
+        validate_mode_comparison_result(
+            replace(result, cell_reports=tuple(reports)),
+            config,
+        )
+
+
+def test_injected_numpy_array_in_cell_report_is_rejected(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    reports[0]["cells"]["RL-SCAN"]["scanner"]["input"]["mean"] = np.zeros(1)
+    tampered = replace(result)
+    object.__setattr__(tampered, "cell_reports", tuple(reports))
+
+    with pytest.raises(ValueError, match="scalar evidence in cell_reports.*finite number"):
+        validate_mode_comparison_result(tampered, config)
 
 
 def test_run_rejects_invalid_custom_metric_extractor(config) -> None:
