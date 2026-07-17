@@ -66,11 +66,15 @@ def build_mode_comparison_plan(
 def _resolve_case_definitions(
     config: SyntheticModeComparisonConfig,
 ) -> tuple[SyntheticQualityCaseDefinition, ...]:
+    if (config.case_set is None) == (config.case_ids is None):
+        raise ValueError("exactly one of case_set and case_ids must be specified")
+    if config.case_set is not None:
+        return validate_case_set(config.case_set)
     if config.case_ids is not None:
         case_ids = validate_case_ids(config.case_ids)
         definitions_by_id = {definition.case_id: definition for definition in EXTENDED_CASES}
         return tuple(definitions_by_id[case_id] for case_id in case_ids)
-    return validate_case_set(config.case_set)
+    raise AssertionError("unreachable")
 
 
 def _validate_scanner_template(config: SyntheticModeComparisonConfig) -> None:

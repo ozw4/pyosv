@@ -22,8 +22,11 @@ def _labels(config: SyntheticModeComparisonConfig) -> tuple[str, ...]:
 
 
 def test_default_plan_has_canonical_cell_order_and_resolved_workflows() -> None:
-    plan = build_mode_comparison_plan(SyntheticModeComparisonConfig())
+    config = SyntheticModeComparisonConfig()
+    plan = build_mode_comparison_plan(config)
 
+    assert config.case_set == "minimal"
+    assert config.case_ids is None
     assert tuple(cell.label for cell in plan.cells) == (
         "RL-SCAN",
         "Q-SCAN",
@@ -82,10 +85,14 @@ def test_plan_rejects_noncanonical_variant() -> None:
 
 
 def test_case_set_and_explicit_case_ids_preserve_validator_order() -> None:
-    geometry = build_mode_comparison_plan(SyntheticModeComparisonConfig(case_set="geometry"))
+    geometry_config = SyntheticModeComparisonConfig(case_set="geometry")
+    geometry = build_mode_comparison_plan(geometry_config)
     explicit_ids = (CASE_IDS[2], CASE_IDS[0])
-    explicit = build_mode_comparison_plan(SyntheticModeComparisonConfig(case_ids=explicit_ids))
+    explicit_config = SyntheticModeComparisonConfig(case_ids=explicit_ids)
+    explicit = build_mode_comparison_plan(explicit_config)
 
+    assert geometry_config.case_ids is None
+    assert explicit_config.case_set is None
     assert geometry.case_ids == CASE_IDS[:3]
     assert explicit.case_ids == explicit_ids
 
@@ -95,15 +102,40 @@ def test_shape_uses_existing_shape_validation() -> None:
         SyntheticModeComparisonConfig(shape=(17, 17))  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("case_ids", (("missing",), (CASE_IDS[0], CASE_IDS[0])))
+@pytest.mark.parametrize("case_ids", ((), ("missing",), (CASE_IDS[0], CASE_IDS[0])))
 def test_explicit_case_ids_use_existing_validation(case_ids: tuple[str, ...]) -> None:
     with pytest.raises(ValueError):
-        build_mode_comparison_plan(SyntheticModeComparisonConfig(case_ids=case_ids))
+        SyntheticModeComparisonConfig(case_ids=case_ids)
 
 
 def test_unknown_case_set_uses_existing_validation() -> None:
     with pytest.raises(ValueError, match="^unknown case_set: missing$"):
-        build_mode_comparison_plan(SyntheticModeComparisonConfig(case_set="missing"))
+        SyntheticModeComparisonConfig(case_set="missing")
+
+
+@pytest.mark.parametrize("case_set", ("minimal", "missing"))
+def test_config_rejects_both_case_selection_inputs(case_set: str) -> None:
+    with pytest.raises(ValueError, match="case_set and case_ids are mutually exclusive"):
+        SyntheticModeComparisonConfig(
+            case_set=case_set,
+            case_ids=(CASE_IDS[0],),
+        )
+
+
+@pytest.mark.parametrize(
+    ("case_set", "case_ids"),
+    ((None, None), ("minimal", (CASE_IDS[0],))),
+)
+def test_plan_defensively_rejects_noncanonical_case_selection(
+    case_set: str | None,
+    case_ids: tuple[str, ...] | None,
+) -> None:
+    config = SyntheticModeComparisonConfig()
+    object.__setattr__(config, "case_set", case_set)
+    object.__setattr__(config, "case_ids", case_ids)
+
+    with pytest.raises(ValueError, match="exactly one of case_set and case_ids"):
+        build_mode_comparison_plan(config)
 
 
 @pytest.mark.parametrize(

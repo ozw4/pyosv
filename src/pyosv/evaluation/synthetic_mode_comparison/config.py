@@ -12,6 +12,7 @@ from ..synthetic_quality import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
 )
+from ..synthetic_quality.cases import validate_case_ids, validate_case_set
 from .trials import validate_trial_seeds
 
 CANONICAL_COMPARISON_VARIANT = "current_default"
@@ -21,7 +22,7 @@ CANONICAL_COMPARISON_VARIANT = "current_default"
 class SyntheticModeComparisonConfig:
     """Inputs used to construct a canonical synthetic mode-comparison plan."""
 
-    case_set: str = "minimal"
+    case_set: str | None = None
     case_ids: tuple[str, ...] | None = None
     trial_seeds: tuple[int, ...] = (20260707,)
     shape: tuple[int, int, int] = (49, 49, 49)
@@ -38,9 +39,15 @@ class SyntheticModeComparisonConfig:
     skinner_boundary_fallback_explicit: bool = False
 
     def __post_init__(self) -> None:
+        if self.case_set is not None and self.case_ids is not None:
+            raise ValueError("case_set and case_ids are mutually exclusive")
+        if self.case_set is None and self.case_ids is None:
+            object.__setattr__(self, "case_set", "minimal")
+        elif self.case_set is not None:
+            validate_case_set(self.case_set)
+        else:
+            object.__setattr__(self, "case_ids", validate_case_ids(self.case_ids))
         object.__setattr__(self, "shape", validate_shape3(self.shape))
-        if self.case_ids is not None:
-            object.__setattr__(self, "case_ids", tuple(self.case_ids))
         object.__setattr__(self, "trial_seeds", validate_trial_seeds(self.trial_seeds))
         if not isinstance(self.scanner_template, SyntheticScannerConfig):
             raise ValueError("scanner_template must be a SyntheticScannerConfig")
