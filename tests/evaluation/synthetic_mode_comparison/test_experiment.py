@@ -163,10 +163,8 @@ def test_fake_runner_preserves_trial_order_and_releases_each_evaluation() -> Non
         calls.append((trial.case_id, trial.seed))
         evaluation = FakeEvaluation()
         evaluation.trial = trial
-        evaluation.report_payload = {
-            cell.label: {"scalar": np.float32(1.0), "temporary": np.ones((2, 2))}
-            for cell in plan.cells
-        }
+        evaluation.report_payload = {cell.label: {"scalar": np.float32(1.0)} for cell in plan.cells}
+        evaluation.artifacts = {"temporary": np.ones((2, 2))}
         evaluation.stage_cache_stats = zero_stats
         references.append(weakref.ref(evaluation))
         runtime_recorder.record(
@@ -224,3 +222,27 @@ def test_fake_runner_preserves_trial_order_and_releases_each_evaluation() -> Non
         return False
 
     assert not contains_array(result)
+
+
+def test_array_in_cell_report_is_rejected_instead_of_retained_as_lists() -> None:
+    zero_stats = PipelineStageCacheStats(*(0,) * 8)
+
+    class FakeEvaluation:
+        pass
+
+    def fake_runner(plan, trial, *, clock, runtime_recorder):
+        evaluation = FakeEvaluation()
+        evaluation.trial = trial
+        evaluation.report_payload = {cell.label: {"volume": np.ones((2, 2))} for cell in plan.cells}
+        evaluation.stage_cache_stats = zero_stats
+        return evaluation
+
+    with pytest.raises(ValueError, match="scalar-only.*NumPy arrays"):
+        run_mode_comparison(
+            SyntheticModeComparisonConfig(
+                case_ids=("single_vertical_plane",),
+                shape=(9, 9, 9),
+            ),
+            trial_runner=fake_runner,
+            metric_extractor=lambda evaluation: (),
+        )

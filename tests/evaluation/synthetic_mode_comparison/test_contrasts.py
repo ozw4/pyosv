@@ -133,6 +133,18 @@ def test_contrasts_follow_canonical_metric_registry_order() -> None:
     )
 
 
+def test_contrasts_preserve_metric_row_trial_order() -> None:
+    rows = tuple(
+        _row(cell, value, seed=seed, trial_id=f"case__seed_{seed}")
+        for seed in (7, 13)
+        for cell, value in (("RL-SCAN", 1.0), ("Q-SCAN", 2.0))
+    )
+
+    contrasts = compute_contrast_rows(rows)
+
+    assert tuple(row.seed for row in contrasts) == (7, 13)
+
+
 @pytest.mark.parametrize(
     ("direction", "expected"),
     (("higher", 3.0), ("lower", -3.0), ("neutral", None)),

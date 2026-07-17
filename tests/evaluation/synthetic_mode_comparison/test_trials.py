@@ -33,6 +33,14 @@ def test_extended_cases_expand_only_stochastic_case_for_each_seed() -> None:
     assert len({trial.trial_id for trial in trials}) == len(trials)
 
 
+def test_public_trial_apis_keep_the_default_shape() -> None:
+    trial = SyntheticTrialSpec("single_vertical_plane", "single_vertical_plane", None)
+    expanded = expand_synthetic_trials(EXTENDED_CASES, (1,))
+
+    assert trial.shape == (49, 49, 49)
+    assert {item.shape for item in expanded} == {(49, 49, 49)}
+
+
 def test_trial_expansion_and_plan_order_are_repeatable() -> None:
     config = SyntheticModeComparisonConfig(case_set="extended", trial_seeds=(13, 7))
 

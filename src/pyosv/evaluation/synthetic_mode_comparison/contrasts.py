@@ -203,6 +203,10 @@ def compute_contrast_rows(rows: Sequence[MetricRow]) -> tuple[ContrastRow, ...]:
 
     output: list[ContrastRow] = []
     case_trials = _case_trials(metric_rows)
+    pair_order = {
+        (row.case_id, row.trial_id, row.seed): index
+        for index, row in reversed(tuple(enumerate(metric_rows)))
+    }
     for definition in CONTRAST_DEFINITIONS:
         required = frozenset(definition.component_cells)
         applicable = {
@@ -220,7 +224,7 @@ def compute_contrast_rows(rows: Sequence[MetricRow]) -> tuple[ContrastRow, ...]:
                         f"contrast {definition.name!r} is missing required cell(s) in "
                         f"trial {trial_id!r}: {','.join(sorted(missing))}"
                     )
-        for key in sorted(grouped, key=_sortable_pair_key):
+        for key in sorted(grouped, key=lambda key: _sortable_pair_key(key, pair_order)):
             by_cell = grouped[key]
             present = required.intersection(by_cell)
             if present and present != required:
@@ -520,13 +524,14 @@ def _definition_by_name(name: str) -> ContrastDefinition:
     return next(definition for definition in CONTRAST_DEFINITIONS if definition.name == name)
 
 
-def _sortable_pair_key(key: _MetricPairKey) -> tuple[Any, ...]:
+def _sortable_pair_key(
+    key: _MetricPairKey,
+    pair_order: dict[tuple[str, str, int | None], int],
+) -> tuple[Any, ...]:
     case_id, trial_id, seed, stage, selection, metric = key
     metric_identity = (stage, selection, metric)
     return (
-        case_id,
-        trial_id,
-        -1 if seed is None else seed,
+        pair_order[(case_id, trial_id, seed)],
         _METRIC_ORDER.get(metric_identity, len(_METRIC_ORDER)),
         metric_identity,
     )

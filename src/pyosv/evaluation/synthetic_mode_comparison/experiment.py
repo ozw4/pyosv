@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass
 from numbers import Integral, Real
 from time import perf_counter
 from typing import Any
@@ -363,9 +363,7 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, np.generic):
         return _json_safe(value.item())
     if isinstance(value, np.ndarray):
-        return _json_safe(value.tolist())
-    if is_dataclass(value) and not isinstance(value, type):
-        return _json_safe(asdict(value))
+        raise ValueError("scalar-only experiment results cannot contain NumPy arrays")
     if isinstance(value, Mapping):
         output: dict[str, Any] = {}
         for key, item in value.items():

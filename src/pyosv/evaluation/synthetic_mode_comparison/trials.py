@@ -21,7 +21,7 @@ class SyntheticTrialSpec:
     trial_id: str
     case_id: str
     seed: int | None
-    shape: tuple[int, int, int]
+    shape: tuple[int, int, int] = (49, 49, 49)
 
     def __post_init__(self) -> None:
         if (
@@ -62,7 +62,7 @@ def validate_trial_seeds(trial_seeds: Sequence[int]) -> tuple[int, ...]:
 def expand_synthetic_trials(
     case_definitions: Sequence[SyntheticQualityCaseDefinition],
     trial_seeds: Sequence[int],
-    shape: tuple[int, int, int],
+    shape: tuple[int, int, int] = (49, 49, 49),
 ) -> tuple[SyntheticTrialSpec, ...]:
     """Expand cases in case order, repeating only stochastic cases by seed."""
 
