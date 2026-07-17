@@ -409,6 +409,14 @@ def test_validator_rejects_missing_unexpected_and_changed_files(tmp_path: Path) 
     with pytest.raises(ValueError, match="size mismatch"):
         validate_completed_bundle(changed)
 
+    same_size_change = _write_bundle(tmp_path / "same-size-change")
+    manifest_path = same_size_change / "manifest.json"
+    payload = bytearray(manifest_path.read_bytes())
+    payload[0] = ord("[")
+    manifest_path.write_bytes(payload)
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        validate_completed_bundle(same_size_change)
+
 
 def test_validator_rejects_malformed_and_nonfinite_content_after_valid_hash(
     tmp_path: Path,
@@ -418,6 +426,13 @@ def test_validator_rejects_malformed_and_nonfinite_content_after_valid_hash(
     _rehash(malformed, "cell_reports.json")
     with pytest.raises(ValueError, match="malformed JSON"):
         validate_completed_bundle(malformed)
+
+    malformed_csv = _write_bundle(tmp_path / "malformed-csv")
+    metrics_path = malformed_csv / "metrics_long.csv"
+    metrics_path.write_text('"unterminated\n', encoding="utf-8", newline="\n")
+    _rehash(malformed_csv, "metrics_long.csv")
+    with pytest.raises(ValueError, match="malformed CSV"):
+        validate_completed_bundle(malformed_csv)
 
     nonfinite_json = _write_bundle(tmp_path / "nonfinite-json")
     manifest_path = nonfinite_json / "manifest.json"
@@ -464,8 +479,10 @@ def test_git_failure_records_explicit_unavailable_provenance(
 def test_source_provenance_uses_package_location_not_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source_path = Path(artifacts.__file__).resolve().parent
+    source_file = Path(artifacts.__file__).resolve()
+    source_path = source_file.parent
     source_root = source_path.parents[3]
+    source_relative = source_file.relative_to(source_root).as_posix()
     calls: list[list[str]] = []
 
     def fake_git(command, **kwargs):
@@ -478,6 +495,16 @@ def test_source_provenance_uses_package_location_not_cwd(
             "--show-toplevel",
         ]:
             return subprocess.CompletedProcess(command, 0, f"{source_root}\n", "")
+        if command == [
+            "git",
+            "-C",
+            str(source_root),
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            source_relative,
+        ]:
+            return subprocess.CompletedProcess(command, 0, f"{source_relative}\n", "")
         if command == ["git", "-C", str(source_root), "rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(command, 0, f"{'1' * 40}\n", "")
         if command == ["git", "-C", str(source_root), "status", "--porcelain"]:
@@ -494,6 +521,48 @@ def test_source_provenance_uses_package_location_not_cwd(
         "dirty": False,
     }
     assert calls[0][2] == str(source_path)
+
+
+def test_source_provenance_rejects_untracked_package_in_enclosing_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "consumer"
+    source_file = repository / ".venv/site-packages/pyosv/evaluation/artifacts.py"
+    source_relative = source_file.relative_to(repository).as_posix()
+    calls: list[list[str]] = []
+
+    def fake_git(command, **kwargs):
+        calls.append(command)
+        if command == [
+            "git",
+            "-C",
+            str(source_file.parent),
+            "rev-parse",
+            "--show-toplevel",
+        ]:
+            return subprocess.CompletedProcess(command, 0, f"{repository}\n", "")
+        if command == [
+            "git",
+            "-C",
+            str(repository),
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            source_relative,
+        ]:
+            raise subprocess.CalledProcessError(1, command)
+        raise AssertionError(f"unexpected git command: {command}")
+
+    monkeypatch.setattr(artifacts, "__file__", str(source_file))
+    monkeypatch.setattr(subprocess, "run", fake_git)
+
+    assert artifacts._source_provenance() == {
+        "status": "not_available",
+        "method": "git_cli",
+        "commit": None,
+        "dirty": None,
+    }
+    assert len(calls) == 2
 
 
 def test_writer_and_validator_leave_no_open_handles(tmp_path: Path) -> None:

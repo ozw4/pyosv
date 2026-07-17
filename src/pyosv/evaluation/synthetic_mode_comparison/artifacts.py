@@ -354,25 +354,36 @@ def _source_provenance() -> dict[str, Any]:
         "dirty": None,
     }
     try:
-        source_path = Path(__file__).resolve().parent
-        root = subprocess.run(
-            ["git", "-C", str(source_path), "rev-parse", "--show-toplevel"],
+        source_file = Path(__file__).resolve()
+        root_text = subprocess.run(
+            ["git", "-C", str(source_file.parent), "rev-parse", "--show-toplevel"],
             check=True,
             capture_output=True,
             text=True,
             timeout=5,
         ).stdout.strip()
-        if not root:
+        if not root_text:
+            return unavailable
+        root = Path(root_text).resolve()
+        source_relative = source_file.relative_to(root).as_posix()
+        tracked_source = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", source_relative],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.splitlines()
+        if tracked_source != [source_relative]:
             return unavailable
         commit = subprocess.run(
-            ["git", "-C", root, "rev-parse", "HEAD"],
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
             timeout=5,
         ).stdout.strip()
         status = subprocess.run(
-            ["git", "-C", root, "status", "--porcelain"],
+            ["git", "-C", str(root), "status", "--porcelain"],
             check=True,
             capture_output=True,
             text=True,
