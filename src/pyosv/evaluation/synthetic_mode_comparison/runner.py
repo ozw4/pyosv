@@ -11,8 +11,9 @@ from pyosv.synthetic3d import Synthetic3DCase
 
 from ..synthetic_quality import quality_metrics
 from ..synthetic_quality.cases import EXTENDED_CASES
-from ..synthetic_quality.config import SyntheticTruthMetricConfig
+from ..synthetic_quality.config import SyntheticScannerConfig, SyntheticTruthMetricConfig
 from ..synthetic_quality.models import PipelineArtifacts
+from ..synthetic_quality.profiles import ResolvedWorkflowSettings
 from ..synthetic_quality.runner import PreparedCaseInputs, prepare_case_inputs, run_case_variant
 from ..synthetic_quality.stage_cache import PipelineStageCache, PipelineStageCacheStats
 from .models import (
@@ -35,6 +36,9 @@ class SyntheticCellEvaluation:
     cell: ModeCellSpec
     report_payload: Mapping[str, Any]
     artifacts: SyntheticCellArtifacts
+    effective_scanner_config: SyntheticScannerConfig | None = None
+    effective_workflow_settings: ResolvedWorkflowSettings | None = None
+    variant: str = "current_default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +49,7 @@ class SyntheticTrialEvaluation:
     cells: tuple[SyntheticCellEvaluation, ...]
     report_payload: Mapping[str, Mapping[str, Any]]
     stage_cache_stats: PipelineStageCacheStats
+    truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig()
 
 
 def run_synthetic_trial(
@@ -79,6 +84,7 @@ def run_synthetic_trial(
                 evaluation = _evaluate_scanner_cell(
                     cell,
                     prepared_inputs=prepared_inputs,
+                    scanner_config=replace(plan.scanner_template, backend=cell.scanner_backend),
                     truth_metric_config=plan.truth_metric_config,
                 )
             else:
@@ -99,6 +105,7 @@ def run_synthetic_trial(
             cells=ordered_cells,
             report_payload=report_payload,
             stage_cache_stats=stage_cache.stats,
+            truth_metric_config=plan.truth_metric_config,
         )
     finally:
         stage_cache.clear()
@@ -132,6 +139,7 @@ def _evaluate_scanner_cell(
     cell: ModeCellSpec,
     *,
     prepared_inputs: PreparedCaseInputs,
+    scanner_config: SyntheticScannerConfig,
     truth_metric_config: SyntheticTruthMetricConfig,
 ) -> SyntheticCellEvaluation:
     scanner = prepared_inputs.scanner
@@ -151,6 +159,7 @@ def _evaluate_scanner_cell(
         cell=cell,
         report_payload=report,
         artifacts=scanner_volumes,
+        effective_scanner_config=scanner_config,
     )
 
 
@@ -194,4 +203,7 @@ def _evaluate_downstream_cell(
         cell=cell,
         report_payload=evaluation.report_payload,
         artifacts=evaluation.artifacts,
+        effective_scanner_config=(scanner_config if cell.scope == END_TO_END_SCOPE else None),
+        effective_workflow_settings=settings,
+        variant=plan.comparison_variant,
     )

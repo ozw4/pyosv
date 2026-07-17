@@ -2,6 +2,15 @@
 
 from .builder import build_mode_comparison_plan
 from .config import CANONICAL_COMPARISON_VARIANT, SyntheticModeComparisonConfig
+from .metrics import (
+    METRIC_REGISTRY,
+    METRIC_SCHEMA_VERSION,
+    MetricDefinition,
+    MetricDirection,
+    MetricRow,
+    extract_trial_metric_rows,
+    extract_trial_metrics,
+)
 from .models import (
     CanonicalScannerBackend,
     CanonicalWorkflowMode,
@@ -17,6 +26,11 @@ __all__ = [
     "CANONICAL_COMPARISON_VARIANT",
     "CanonicalScannerBackend",
     "CanonicalWorkflowMode",
+    "METRIC_REGISTRY",
+    "METRIC_SCHEMA_VERSION",
+    "MetricDefinition",
+    "MetricDirection",
+    "MetricRow",
     "ModeCellScope",
     "ModeCellSpec",
     "ModeInputMode",
@@ -27,6 +41,8 @@ __all__ = [
     "SyntheticTrialSpec",
     "build_mode_comparison_plan",
     "expand_synthetic_trials",
+    "extract_trial_metric_rows",
+    "extract_trial_metrics",
     "run_synthetic_trial",
     "validate_trial_seeds",
 ]
