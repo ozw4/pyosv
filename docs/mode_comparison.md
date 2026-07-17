@@ -229,6 +229,10 @@ existing operational validation paths.
   and runtime rows. Shared scanner-input and backend scan/thinning costs are
   recorded once per trial rather than copied into workflow-cell runtimes; the
   returned object retains no full-volume arrays or fault skin/cell objects.
+- The package CLI and thin example entry point described in [Synthetic Mode
+  Comparison](synthetic_mode_comparison.md) run the canonical synthetic plan,
+  atomically write its scalar artifact bundle, validate completion, and print
+  the completed output path. This is separate from F3 full-volume execution.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   full-volume scan/vote runner. It calls `FaultOrientScanner3.scan()`, then
   performs separately configurable scanner and voter thinning.
@@ -238,12 +242,10 @@ existing operational validation paths.
 ### Planned work
 
 F3 full-volume execution of all four matrix cells, shared raw-scan and
-scanner-thinning execution, and new comparison metrics and figures belong to
-later PRs. They are not implemented by this documentation change. In
-particular, this document does not define a new CLI command, report schema,
-output artifact, or generated file. Any future runner must state how raw and
-scanner-thinned volumes are shared without conflating scanner backend outputs
-or downstream workflow results.
+scanner-thinning execution, and new F3 comparison metrics and figures belong
+to later work. The synthetic CLI does not implement that F3 runner. Any future
+runner must state how raw and scanner-thinned volumes are shared without
+conflating scanner backend outputs or downstream workflow results.
 
 ## 8. Source map
 
@@ -256,4 +258,4 @@ or downstream workflow results.
 | Voter thinning | [`src/pyosv/voting3d.py`](../src/pyosv/voting3d.py) | Stage-specific voter thinning, including `reference` and `hybrid_v2` |
 | Skinning | [`src/pyosv/_skinner/reference.py`](../src/pyosv/_skinner/reference.py), [`seeds.py`](../src/pyosv/_skinner/seeds.py) | Reference and quality skinner behavior, adaptive threshold, seed gates, and effective occupancy |
 | Current F3 full runner | [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) | Current single full-volume scan/vote pipeline and F3 output comparison |
-| Supporting documentation | [3D Orientation Scanning](orient3d.md), [Quality Workflow Mode](quality_mode.md), [Controlled Synthetic Quality](synthetic_quality.md), [F3 Validation](f3d_validation.md) | Detailed algorithm, benchmark, and operational context without redefining these canonical terms |
+| Supporting documentation | [3D Orientation Scanning](orient3d.md), [Quality Workflow Mode](quality_mode.md), [Controlled Synthetic Quality](synthetic_quality.md), [Synthetic Mode Comparison](synthetic_mode_comparison.md), [F3 Validation](f3d_validation.md) | Detailed algorithm, benchmark, and operational context without redefining these canonical terms |
