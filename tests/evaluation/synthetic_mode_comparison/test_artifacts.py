@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 from dataclasses import fields, replace
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,16 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     write_artifact_bundle,
 )
 from pyosv.evaluation.synthetic_mode_comparison import artifacts
-from pyosv.evaluation.synthetic_quality.stage_cache import PipelineStageCacheStats
+
+
+@cache
+def _base_result() -> SyntheticModeComparisonResult:
+    return run_mode_comparison(
+        SyntheticModeComparisonConfig(
+            case_ids=("single_vertical_plane",),
+            shape=(9, 9, 9),
+        )
+    )
 
 
 def _fixture() -> tuple[SyntheticModeComparisonConfig, SyntheticModeComparisonResult]:
@@ -33,31 +43,7 @@ def _fixture() -> tuple[SyntheticModeComparisonConfig, SyntheticModeComparisonRe
         case_ids=("single_vertical_plane",),
         shape=(9, 9, 9),
     )
-    clock_values = iter(float(value) for value in range(8))
-
-    class FakeEvaluation:
-        pass
-
-    def fake_runner(plan, trial, *, clock, runtime_recorder):
-        evaluation = FakeEvaluation()
-        evaluation.trial = trial
-        evaluation.report_payload = {
-            cell.label: {"cell_label": cell.label, "score": 1.0} for cell in plan.cells
-        }
-        evaluation.stage_cache_stats = PipelineStageCacheStats(*(0,) * 8)
-        runtime_recorder.record(
-            stage="case_generation",
-            elapsed_seconds=0.5,
-            shared_stage=True,
-        )
-        return evaluation
-
-    base = run_mode_comparison(
-        config,
-        clock=lambda: next(clock_values),
-        trial_runner=fake_runner,
-        metric_extractor=lambda evaluation: (),
-    )
+    base = _base_result()
     metric = MetricRow(
         schema_version=1,
         case_id="single_vertical_plane",

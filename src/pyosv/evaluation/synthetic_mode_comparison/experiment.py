@@ -14,13 +14,14 @@ from ..reporting.models import freeze_report_value
 from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
 from .contrasts import (
+    CONTRAST_DEFINITIONS,
     AggregateRow,
     ContrastRow,
     aggregate_contrast_rows,
     aggregate_metric_rows,
     compute_contrast_rows,
 )
-from .metrics import MetricRow, extract_trial_metric_rows
+from .metrics import METRIC_REGISTRY, MetricRow, extract_trial_metric_rows
 from .models import SyntheticModeComparisonPlan
 from .runner import SyntheticTrialEvaluation, TrialRuntimeRecorder, run_synthetic_trial
 from .trials import SyntheticTrialSpec
@@ -257,6 +258,11 @@ def run_mode_comparison(
         finally:
             evaluation = None
 
+    trial_order = {
+        (trial.case_id, trial.trial_id, trial.seed): index
+        for index, trial in enumerate(plan.trials)
+    }
+    contrast_rows.sort(key=lambda row: _contrast_sort_key(row, trial_order))
     metric_aggregates = tuple(metric_aggregator(tuple(metric_rows)))
     contrast_aggregates = tuple(contrast_aggregator(tuple(contrast_rows)))
     experiment_end = _clock_value(monitored_clock, "experiment_total")
@@ -275,7 +281,7 @@ def run_mode_comparison(
             shared_stage=True,
         )
     )
-    return SyntheticModeComparisonResult(
+    result = SyntheticModeComparisonResult(
         plan_metadata=_plan_metadata(plan),
         trial_metadata=tuple(trial_metadata),
         cell_reports=tuple(cell_reports),
@@ -286,6 +292,10 @@ def run_mode_comparison(
         cache_stats=tuple(cache_stats),
         runtime_rows=tuple(runtime_rows),
     )
+    from .validation import validate_mode_comparison_result
+
+    validate_mode_comparison_result(result, config)
+    return result
 
 
 def _timed_processing(
@@ -306,6 +316,25 @@ def _timed_processing(
         shared_stage=True,
     )
     return result
+
+
+def _contrast_sort_key(
+    row: ContrastRow,
+    trial_order: Mapping[tuple[str, str, int | None], int],
+) -> tuple[Any, ...]:
+    definition_order = {
+        definition.name: index for index, definition in enumerate(CONTRAST_DEFINITIONS)
+    }
+    metric_order = {
+        (definition.stage, definition.selection, definition.metric): index
+        for index, definition in enumerate(METRIC_REGISTRY)
+    }
+    return (
+        definition_order.get(row.contrast_name, len(definition_order)),
+        trial_order.get((row.case_id, row.trial_id, row.seed), len(trial_order)),
+        metric_order.get((row.stage, row.selection, row.metric), len(metric_order)),
+        (row.stage, row.selection, row.metric),
+    )
 
 
 def _clock_value(clock: Clock, stage: str) -> float:

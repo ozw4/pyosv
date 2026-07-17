@@ -39,6 +39,7 @@ from .models import (
 )
 from .runner import SyntheticCellEvaluation, SyntheticTrialEvaluation, run_synthetic_trial
 from .trials import SyntheticTrialSpec, expand_synthetic_trials, validate_trial_seeds
+from .validation import applicable_metric_definitions, validate_mode_comparison_result
 
 __all__ = [
     "ARTIFACT_SCHEMA_VERSION",
@@ -70,6 +71,7 @@ __all__ = [
     "build_mode_comparison_plan",
     "aggregate_contrast_rows",
     "aggregate_metric_rows",
+    "applicable_metric_definitions",
     "compute_contrast_rows",
     "expand_synthetic_trials",
     "extract_trial_metric_rows",
@@ -77,6 +79,7 @@ __all__ = [
     "run_synthetic_trial",
     "run_mode_comparison",
     "validate_completed_bundle",
+    "validate_mode_comparison_result",
     "validate_trial_seeds",
     "write_artifact_bundle",
 ]

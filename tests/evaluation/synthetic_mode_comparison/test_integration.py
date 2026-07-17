@@ -356,7 +356,7 @@ def test_cli_bundle_is_complete_valid_and_reproducible_with_a_fixed_clock(
         validate_completed_bundle(bundle)
 
 
-def test_volume_bearing_trial_evaluations_are_released_sequentially() -> None:
+def test_validation_failure_releases_volume_bearing_evaluations_sequentially() -> None:
     live: weakref.WeakSet[Any] = weakref.WeakSet()
     maximum_live = 0
     zero_stats = PipelineStageCacheStats(*(0,) * 8)
@@ -376,17 +376,17 @@ def test_volume_bearing_trial_evaluations_are_released_sequentially() -> None:
         maximum_live = max(maximum_live, len(live))
         return evaluation
 
-    result = run_mode_comparison(
-        _config(),
-        clock=_fixed_clock,
-        trial_runner=fake_runner,
-        metric_extractor=lambda evaluation: (),
-    )
+    with pytest.raises(ValueError, match="runtime_rows"):
+        run_mode_comparison(
+            _config(),
+            clock=_fixed_clock,
+            trial_runner=fake_runner,
+            metric_extractor=lambda evaluation: (),
+        )
 
     gc.collect()
     assert maximum_live == 1
     assert len(live) == 0
-    _assert_scalar_only(result)
 
 
 def test_failures_do_not_publish_partial_experiment_or_artifact(

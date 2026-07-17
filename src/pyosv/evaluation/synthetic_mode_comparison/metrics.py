@@ -202,6 +202,36 @@ def _build_registry() -> tuple[MetricDefinition, ...]:
 
 METRIC_REGISTRY = _build_registry()
 
+_VALUE_CONSTRAINT_BY_UNIT = {
+    "count": "nonnegative_integer",
+    "degree": "nonnegative",
+    "fraction": "closed_unit_interval",
+    "score": "closed_unit_interval",
+    "voxel": "nonnegative",
+}
+
+
+def validate_metric_value(definition: MetricDefinition, value: Any) -> float:
+    """Return a finite value satisfying the registry definition's value contract."""
+
+    if not isinstance(definition, MetricDefinition):
+        raise ValueError("definition must be a MetricDefinition")
+    normalized = _finite_value(
+        value,
+        "/".join((definition.stage, definition.selection, definition.metric)),
+    )
+    try:
+        constraint = _VALUE_CONSTRAINT_BY_UNIT[definition.unit]
+    except KeyError as error:
+        raise ValueError(f"metric unit {definition.unit!r} has no value constraint") from error
+    if constraint == "closed_unit_interval" and not 0.0 <= normalized <= 1.0:
+        raise ValueError(f"{definition.metric} must be in the closed unit interval")
+    if constraint == "nonnegative" and normalized < 0.0:
+        raise ValueError(f"{definition.metric} must be non-negative")
+    if constraint == "nonnegative_integer" and (normalized < 0.0 or not normalized.is_integer()):
+        raise ValueError(f"{definition.metric} must be a non-negative integer-valued count")
+    return normalized
+
 
 def extract_trial_metric_rows(evaluation: SyntheticTrialEvaluation) -> tuple[MetricRow, ...]:
     """Extract finite rows in plan-cell then registry order from one completed trial."""
@@ -267,7 +297,7 @@ def extract_trial_metric_rows(evaluation: SyntheticTrialEvaluation) -> tuple[Met
                     stage=definition.stage,
                     selection=definition.selection,
                     metric=definition.metric,
-                    value=_finite_value(values[key], "/".join(key)),
+                    value=validate_metric_value(definition, values[key]),
                     unit=definition.unit,
                     direction=definition.direction,
                     contrast_eligible=definition.contrast_eligible,
@@ -578,4 +608,5 @@ __all__ = [
     "MetricRow",
     "extract_trial_metric_rows",
     "extract_trial_metrics",
+    "validate_metric_value",
 ]

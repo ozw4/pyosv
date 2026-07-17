@@ -5,7 +5,7 @@ from __future__ import annotations
 import gc
 import json
 import weakref
-from dataclasses import FrozenInstanceError, fields, is_dataclass
+from dataclasses import FrozenInstanceError
 from typing import Any
 
 import numpy as np
@@ -172,7 +172,7 @@ def test_clock_regression_between_timed_stages_fails() -> None:
         )
 
 
-def test_fake_runner_preserves_trial_order_and_releases_each_evaluation() -> None:
+def test_invalid_fake_runner_preserves_trial_order_and_releases_each_evaluation() -> None:
     calls: list[tuple[str, int | None]] = []
     references: list[weakref.ReferenceType[Any]] = []
     clock_values = iter(float(value) for value in range(100))
@@ -206,16 +206,17 @@ def test_fake_runner_preserves_trial_order_and_releases_each_evaluation() -> Non
             )
         return evaluation
 
-    result = run_mode_comparison(
-        SyntheticModeComparisonConfig(
-            case_ids=("single_vertical_plane", "single_dipping_plane", "weak_noisy_plane"),
-            trial_seeds=(3, 5, 7),
-            shape=(9, 9, 9),
-        ),
-        clock=lambda: next(clock_values),
-        trial_runner=fake_runner,
-        metric_extractor=lambda evaluation: (),
-    )
+    with pytest.raises(ValueError, match="runtime_rows"):
+        run_mode_comparison(
+            SyntheticModeComparisonConfig(
+                case_ids=("single_vertical_plane", "single_dipping_plane", "weak_noisy_plane"),
+                trial_seeds=(3, 5, 7),
+                shape=(9, 9, 9),
+            ),
+            clock=lambda: next(clock_values),
+            trial_runner=fake_runner,
+            metric_extractor=lambda evaluation: (),
+        )
 
     assert calls == [
         ("single_vertical_plane", None),
@@ -225,27 +226,7 @@ def test_fake_runner_preserves_trial_order_and_releases_each_evaluation() -> Non
         ("weak_noisy_plane", 7),
     ]
     assert references[-1]() is None
-    assert [row["trial_id"] for row in result.trial_metadata] == [
-        "single_vertical_plane",
-        "single_dipping_plane",
-        "weak_noisy_plane__seed_3",
-        "weak_noisy_plane__seed_5",
-        "weak_noisy_plane__seed_7",
-    ]
-    json.dumps(result.as_dict(), allow_nan=False)
-
-    def contains_array(value: Any) -> bool:
-        if isinstance(value, np.ndarray):
-            return True
-        if is_dataclass(value) and not isinstance(value, type):
-            return any(contains_array(getattr(value, field.name)) for field in fields(value))
-        if isinstance(value, dict):
-            return any(contains_array(item) for item in value.values())
-        if isinstance(value, (tuple, list)):
-            return any(contains_array(item) for item in value)
-        return False
-
-    assert not contains_array(result)
+    assert references[-1]() is None
 
 
 def test_array_in_cell_report_is_rejected_instead_of_retained_as_lists() -> None:
