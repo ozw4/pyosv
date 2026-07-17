@@ -215,7 +215,7 @@ def test_coherent_voting_metric_tampering_is_rejected(result, config) -> None:
     metric_rows = tuple(rows)
     contrast_rows = compute_contrast_rows(metric_rows)
 
-    with pytest.raises(ValueError, match="shared voting stage evidence"):
+    with pytest.raises(ValueError, match="candidate counts"):
         validate_mode_comparison_result(
             replace(
                 result,

@@ -67,6 +67,12 @@ def _rehash(bundle: Path, filename: str) -> None:
     )
 
 
+def _set_nested(value, path: tuple[str, ...], replacement) -> None:
+    for name in path[:-1]:
+        value = value[name]
+    value[path[-1]] = replacement
+
+
 def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path) -> None:
     bundle = _write_bundle(tmp_path / "bundle")
 
@@ -567,6 +573,194 @@ def test_validator_rejects_rehashed_invalid_cell_report_contract(
 
     with pytest.raises(ValueError):
         validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("RL-SCAN", "scanner", "input", "finite_count"), 730),
+        (("RL-SCAN", "scanner", "input", "finite_fraction"), 2.0),
+        (("RL-SCAN", "scanner", "input", "nonzero_fraction"), -0.5),
+        (("RL-SCAN", "scanner", "input", "min"), 2.0),
+        (("RL-SCAN", "scanner", "input", "mean"), -1.0),
+        (("Q-SCAN", "scanner", "confidence", "max"), 1.1),
+        (
+            (
+                "RL-SCAN",
+                "scanner_quality",
+                "ft_top_truth_count",
+                "buffered_overlap_radius2",
+                "candidate_count",
+            ),
+            -1,
+        ),
+        (
+            (
+                "RL-SCAN",
+                "scanner_quality",
+                "ft_top_truth_count",
+                "buffered_overlap_radius2",
+                "f1",
+            ),
+            1.1,
+        ),
+        (
+            (
+                "RL-SCAN",
+                "scanner_quality",
+                "ft_top_truth_count",
+                "surface_distance",
+                "candidate_count",
+            ),
+            730,
+        ),
+        (
+            (
+                "RL-SCAN",
+                "scanner_quality",
+                "ft_top_truth_count",
+                "surface_distance",
+                "candidate_to_truth_mean",
+            ),
+            -1.0,
+        ),
+        (
+            (
+                "RL-SCAN",
+                "scanner_quality",
+                "orientation_error",
+                "raw_scan_top_truth_count",
+                "count",
+            ),
+            730,
+        ),
+        (
+            (
+                "RL-SCAN",
+                "scanner_quality",
+                "ft_top_truth_count",
+                "buffered_overlap_radius2",
+                "radius",
+            ),
+            -1.0,
+        ),
+        (
+            (
+                "RL-SCAN",
+                "scanner_quality",
+                "orientation_error",
+                "raw_scan_top_truth_count",
+                "strike_mean",
+            ),
+            -1.0,
+        ),
+        (
+            (
+                "RL-REF",
+                "quality",
+                "edge_false_positive",
+                "fv_top_truth_count",
+                "edge_candidate_fraction",
+            ),
+            1.1,
+        ),
+        (
+            (
+                "RL-REF",
+                "quality",
+                "edge_false_positive",
+                "fv_top_truth_count",
+                "candidate_count",
+            ),
+            730,
+        ),
+        (
+            (
+                "RL-REF",
+                "quality",
+                "skin",
+                "component_topology",
+                "mean_skin_purity",
+            ),
+            1.1,
+        ),
+        (
+            (
+                "RL-REF",
+                "skinning",
+                "diagnostics",
+                "fallback_candidate_count",
+            ),
+            -1,
+        ),
+        (
+            (
+                "RL-REF",
+                "quality",
+                "skin",
+                "component_topology",
+                "truth_component_count",
+            ),
+            -1,
+        ),
+        (
+            (
+                "RL-REF",
+                "skinning",
+                "diagnostics",
+                "skin_fvt_to_scanner_target_distance_p95",
+            ),
+            -1.0,
+        ),
+    ),
+)
+def test_validator_rejects_rehashed_impossible_scalar_evidence(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    value,
+) -> None:
+    bundle = _write_bundle(tmp_path / "impossible-scalar")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    _set_nested(reports[0]["cells"], path, value)
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_rejects_skin_orientation_candidate_count_mismatch(tmp_path: Path) -> None:
+    bundle = _write_bundle(tmp_path / "skin-orientation-count-mismatch")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    skin_quality = reports[0]["cells"]["RL-REF"]["quality"]["skin"]
+    mismatched_count = skin_quality["orientation_error"]["count"] + 1
+    skin_quality["orientation_error"]["count"] = mismatched_count
+    skin_quality["topology"]["cell_count"] = mismatched_count
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError, match="candidate counts must match"):
+        validate_completed_bundle(bundle)
+
+
+def test_cell_report_loader_accepts_nonnegative_coverage_above_one() -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    cell = reports[0]["cells"]["RL-REF"]
+    for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+        payload["skinning"]["diagnostics"]["skin_primary_cell_coverage_of_fvt_positive"] = 1.1
+
+    artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
 
 
 @pytest.mark.parametrize(

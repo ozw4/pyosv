@@ -207,7 +207,7 @@ _END_TO_END_REPORT_FIELDS = {
 _BUFFERED_OVERLAP_REPORT_SCHEMA = {
     **dict.fromkeys(
         ("candidate_count", "truth_count", "intersection_count", "union_count"),
-        "integer",
+        "nonnegative_integer",
     ),
     **dict.fromkeys(
         (
@@ -218,13 +218,13 @@ _BUFFERED_OVERLAP_REPORT_SCHEMA = {
             "buffered_precision",
             "buffered_recall",
             "buffered_f1",
-            "radius",
         ),
-        "number",
+        "closed_unit_interval_number",
     ),
+    "radius": "nonnegative_number",
 }
 _SURFACE_DISTANCE_REPORT_SCHEMA = {
-    **dict.fromkeys(("candidate_count", "truth_count"), "integer"),
+    **dict.fromkeys(("candidate_count", "truth_count"), "nonnegative_integer"),
     **dict.fromkeys(
         (
             "candidate_to_truth_mean",
@@ -238,11 +238,11 @@ _SURFACE_DISTANCE_REPORT_SCHEMA = {
             "symmetric_chamfer_mean",
             "hausdorff_p95",
         ),
-        "number",
+        "nonnegative_number",
     ),
 }
 _ORIENTATION_ERROR_REPORT_SCHEMA = {
-    "count": "integer",
+    "count": "nonnegative_integer",
     **dict.fromkeys(
         (
             "strike_mean",
@@ -254,7 +254,7 @@ _ORIENTATION_ERROR_REPORT_SCHEMA = {
             "dip_p90",
             "dip_p95",
         ),
-        "number",
+        "nonnegative_number",
     ),
 }
 _INPUT_ASSOCIATION_REPORT_SCHEMA = dict.fromkeys(
@@ -281,11 +281,11 @@ _SKINNING_CONFIG_REPORT_SCHEMA = {
     ),
     **dict.fromkeys(
         ("min_likelihood", "seed_min_ep"),
-        "optional_number",
+        "optional_closed_unit_interval_number",
     ),
     **dict.fromkeys(
         ("min_skin_size", "rv", "rw", "accepted_occupancy_radius"),
-        "optional_integer",
+        "optional_nonnegative_integer",
     ),
     **dict.fromkeys(
         (
@@ -295,24 +295,24 @@ _SKINNING_CONFIG_REPORT_SCHEMA = {
             "effective_accepted_occupancy_radius",
             "small_skin_size",
         ),
-        "integer",
+        "nonnegative_integer",
     ),
-    **dict.fromkeys(("du", "max_delta_strike"), "number"),
+    **dict.fromkeys(("du", "max_delta_strike"), "nonnegative_number"),
 }
 _PRIMARY_SKINNER_DIAGNOSTIC_FIELDS = {
-    "seed_candidate_count_before_spacing": "integer",
-    "seed_count_after_spacing": "integer",
-    "seed_count_rejected_by_occupied": "integer",
-    "grow_attempt_count": "integer",
-    "grown_skin_count_before_min_size": "integer",
-    "discarded_empty_skin_count": "integer",
-    "discarded_small_skin_count": "integer",
-    "accepted_skin_count": "integer",
-    "accepted_cell_count": "integer",
-    "accepted_occupancy_radius": "integer",
-    "seed_min_ep": "number",
-    "seed_threshold": "number",
-    "grow_threshold": "number",
+    "seed_candidate_count_before_spacing": "nonnegative_integer",
+    "seed_count_after_spacing": "nonnegative_integer",
+    "seed_count_rejected_by_occupied": "nonnegative_integer",
+    "grow_attempt_count": "nonnegative_integer",
+    "grown_skin_count_before_min_size": "nonnegative_integer",
+    "discarded_empty_skin_count": "nonnegative_integer",
+    "discarded_small_skin_count": "nonnegative_integer",
+    "accepted_skin_count": "nonnegative_integer",
+    "accepted_cell_count": "nonnegative_integer",
+    "accepted_occupancy_radius": "nonnegative_integer",
+    "seed_min_ep": "closed_unit_interval_number",
+    "seed_threshold": "closed_unit_interval_number",
+    "grow_threshold": "closed_unit_interval_number",
 }
 _SKINNING_DIAGNOSTIC_REPORT_SCHEMA = {
     **dict.fromkeys(
@@ -343,32 +343,35 @@ _SKINNING_DIAGNOSTIC_REPORT_SCHEMA = {
             "skin_fallback_filter_min_component_size",
             "skin_fallback_filter_max_components",
         ),
-        "integer",
+        "nonnegative_integer",
     ),
     **dict.fromkeys(
         (
             "skin_primary_largest_fraction",
             "skin_primary_small_cell_fraction",
-            "skin_primary_cell_coverage_of_fvt_positive",
-            "skin_primary_largest_coverage_of_fvt_positive",
             "skin_primary_edge_shell_fraction",
-            "fallback_coverage_before",
-            "fallback_coverage_after",
             "skin_fvt_positive_edge_shell_fraction",
             "skin_fallback_pruned_fraction",
             "skin_fallback_largest_component_fraction",
             "skin_fallback_top3_component_fraction",
             "skin_fallback_filter_min_component_fraction_of_largest",
         ),
-        "number",
+        "closed_unit_interval_number",
     ),
     **dict.fromkeys(
         (
-            "skin_scanner_target_positive_edge_shell_fraction",
-            "skin_fvt_to_scanner_target_distance_p95",
+            "skin_primary_cell_coverage_of_fvt_positive",
+            "skin_primary_largest_coverage_of_fvt_positive",
+            "fallback_coverage_before",
+            "fallback_coverage_after",
         ),
-        "optional_number",
+        "nonnegative_number",
     ),
+    **dict.fromkeys(
+        ("skin_scanner_target_positive_edge_shell_fraction",),
+        "optional_closed_unit_interval_number",
+    ),
+    "skin_fvt_to_scanner_target_distance_p95": "optional_nonnegative_number",
     **dict.fromkeys(
         (
             "skin_primary_degraded_candidate",
@@ -405,13 +408,18 @@ _GUARDRAIL_REPORT_SCHEMA = {
     "enabled": "boolean",
     "passed": "boolean",
     "reasons": "string_array",
-    "max_skin_count": "integer",
-    "fallback_skin_count": "integer",
+    "max_skin_count": "nonnegative_integer",
+    "fallback_skin_count": "nonnegative_integer",
     **dict.fromkeys(
         (
             "coverage_of_fvt_positive",
             "min_coverage_of_fvt_positive",
             "max_coverage_of_fvt_positive",
+        ),
+        "nonnegative_number",
+    ),
+    **dict.fromkeys(
+        (
             "small_skin_cell_fraction",
             "max_small_skin_cell_fraction",
             "largest_skin_fraction",
@@ -419,13 +427,13 @@ _GUARDRAIL_REPORT_SCHEMA = {
             "pruned_fraction",
             "max_pruned_fraction",
         ),
-        "number",
+        "closed_unit_interval_number",
     ),
 }
 _VOTING_REPORT_SCHEMA = {
     "surface_voting_boundary_policy": "string",
-    "surface_support_min_fraction": "number",
-    "surface_support_exponent": "number",
+    "surface_support_min_fraction": "closed_unit_interval_number",
+    "surface_support_exponent": "nonnegative_number",
 }
 _VOTING_DIAGNOSTIC_REPORT_SCHEMA = {
     "policy": "string",
@@ -439,9 +447,12 @@ _VOTING_DIAGNOSTIC_REPORT_SCHEMA = {
             "selected_invalid_sample_count",
             "face_center_vote_count",
         ),
-        "integer",
+        "nonnegative_integer",
     ),
-    **dict.fromkeys(("support_fraction_min", "support_fraction_mean"), "number"),
+    **dict.fromkeys(
+        ("support_fraction_min", "support_fraction_mean"),
+        "closed_unit_interval_number",
+    ),
 }
 _SKIN_TOPOLOGY_REPORT_SCHEMA = {
     **dict.fromkeys(
@@ -455,24 +466,27 @@ _SKIN_TOPOLOGY_REPORT_SCHEMA = {
             "small_skin_count",
             "small_skin_cell_count",
         ),
-        "integer",
+        "nonnegative_integer",
     ),
-    **dict.fromkeys(("largest_skin_fraction", "small_skin_cell_fraction"), "number"),
+    **dict.fromkeys(
+        ("largest_skin_fraction", "small_skin_cell_fraction"),
+        "closed_unit_interval_number",
+    ),
 }
 _EDGE_FALSE_POSITIVE_REPORT_SCHEMA = {
     **dict.fromkeys(
         ("candidate_count", "edge_candidate_count", "edge_false_positive_count", "edge_margin"),
-        "integer",
+        "nonnegative_integer",
     ),
     **dict.fromkeys(
         (
             "edge_candidate_fraction",
             "edge_false_positive_fraction_of_candidates",
             "edge_false_positive_fraction_of_edge_candidates",
-            "truth_buffer_radius",
         ),
-        "number",
+        "closed_unit_interval_number",
     ),
+    "truth_buffer_radius": "nonnegative_number",
 }
 _COMPONENT_TOPOLOGY_SUMMARY_SCHEMA = {
     **dict.fromkeys(
@@ -488,7 +502,7 @@ _COMPONENT_TOPOLOGY_SUMMARY_SCHEMA = {
             "max_truth_components_per_skin",
             "max_skins_per_truth_component",
         ),
-        "integer",
+        "nonnegative_integer",
     ),
     **dict.fromkeys(
         (
@@ -497,7 +511,7 @@ _COMPONENT_TOPOLOGY_SUMMARY_SCHEMA = {
             "mean_truth_component_recall",
             "min_truth_component_recall",
         ),
-        "number",
+        "closed_unit_interval_number",
     ),
 }
 _TRUTH_COMPONENT_REPORT_SCHEMA = {
@@ -509,10 +523,13 @@ _TRUTH_COMPONENT_REPORT_SCHEMA = {
             "skin_count_touching",
             "dominant_skin_cell_count",
         ),
-        "integer",
+        "nonnegative_integer",
     ),
-    "dominant_skin_index": "optional_integer",
-    **dict.fromkeys(("recall", "dominant_skin_fraction_of_truth"), "number"),
+    "dominant_skin_index": "optional_nonnegative_integer",
+    **dict.fromkeys(
+        ("recall", "dominant_skin_fraction_of_truth"),
+        "closed_unit_interval_number",
+    ),
 }
 _SKIN_COMPONENT_REPORT_SCHEMA = {
     **dict.fromkeys(
@@ -524,10 +541,10 @@ _SKIN_COMPONENT_REPORT_SCHEMA = {
             "truth_component_count_touching",
             "dominant_truth_cell_count",
         ),
-        "integer",
+        "nonnegative_integer",
     ),
-    "dominant_truth_id": "optional_integer",
-    "purity": "number",
+    "dominant_truth_id": "optional_nonnegative_integer",
+    "purity": "closed_unit_interval_number",
 }
 
 
@@ -1099,7 +1116,12 @@ def _load_scanner_report(
     if not _exact_json_value(config, scanner_config.as_report_dict()):
         raise ValueError(f"{config_context} does not match the resolved scanner configuration")
     for name in expected_fields - {"config"}:
-        _load_array_summary(payload[name], expected_shape, f"{context}.{name}")
+        _load_array_summary(
+            payload[name],
+            expected_shape,
+            f"{context}.{name}",
+            values_in_closed_unit_interval=name == "confidence",
+        )
     return payload
 
 
@@ -1107,16 +1129,29 @@ def _load_array_summary(
     value: Any,
     expected_shape: tuple[int, int, int],
     context: str,
+    *,
+    values_in_closed_unit_interval: bool = False,
 ) -> dict[str, Any]:
     summary = _object(value, _ARRAY_SUMMARY_FIELDS, context)
     shape = _shape(summary["shape"], f"{context}.shape")
     if shape != expected_shape:
         raise ValueError(f"{context}.shape does not match the canonical plan shape")
-    finite_count = _integer(summary["finite_count"], f"{context}.finite_count")
-    if finite_count < 0:
-        raise ValueError(f"{context}.finite_count must be non-negative")
-    for name in ("finite_fraction", "min", "max", "mean", "nonzero_fraction"):
-        _number(summary[name], f"{context}.{name}")
+    finite_count = _nonnegative_integer(summary["finite_count"], f"{context}.finite_count")
+    voxel_count = expected_shape[0] * expected_shape[1] * expected_shape[2]
+    if finite_count != voxel_count:
+        raise ValueError(f"{context}.finite_count must equal the shape voxel count")
+    finite_fraction = _number(summary["finite_fraction"], f"{context}.finite_fraction")
+    if finite_fraction != 1.0:
+        raise ValueError(f"{context}.finite_fraction must equal 1.0")
+    minimum = _number(summary["min"], f"{context}.min")
+    maximum = _number(summary["max"], f"{context}.max")
+    mean = _number(summary["mean"], f"{context}.mean")
+    _closed_unit_interval_number(summary["nonzero_fraction"], f"{context}.nonzero_fraction")
+    if values_in_closed_unit_interval:
+        for name in ("min", "mean", "max"):
+            _closed_unit_interval_number(summary[name], f"{context}.{name}")
+    if not minimum <= mean <= maximum:
+        raise ValueError(f"{context} must satisfy min <= mean <= max")
     return summary
 
 
@@ -1139,7 +1174,7 @@ def _load_scanner_quality_report(
         buffer_radius,
         f"{context}.ft_top_truth_count.buffered_overlap_radius2.radius",
     )
-    _load_scalar_report_object(
+    distance = _load_scalar_report_object(
         truth_count["surface_distance"],
         _SURFACE_DISTANCE_REPORT_SCHEMA,
         f"{context}.ft_top_truth_count.surface_distance",
@@ -1149,12 +1184,19 @@ def _load_scanner_quality_report(
         {"raw_scan_top_truth_count", "used_attributes_top_truth_count"},
         f"{context}.orientation_error",
     )
+    orientation_reports = {}
     for name, item in orientation.items():
-        _load_scalar_report_object(
+        orientation_reports[name] = _load_scalar_report_object(
             item,
             _ORIENTATION_ERROR_REPORT_SCHEMA,
             f"{context}.orientation_error.{name}",
         )
+    _validate_candidate_count_consistency(
+        overlap=overlap,
+        distance=distance,
+        orientation=orientation_reports["raw_scan_top_truth_count"],
+        context=f"{context}.ft_top_truth_count",
+    )
     _load_scalar_report_object(
         payload["input_association"],
         _INPUT_ASSOCIATION_REPORT_SCHEMA,
@@ -1209,8 +1251,9 @@ def _load_downstream_quality_report(
         "fvt_positive_top_truth_count",
     )
     payload = _object(value, {*stage_names, "edge_false_positive", "skin"}, context)
+    stages = {}
     for name in stage_names:
-        _load_quality_stage_report(
+        stages[name] = _load_quality_stage_report(
             payload[name],
             buffer_radius=buffer_radius,
             context=f"{context}.{name}",
@@ -1218,8 +1261,9 @@ def _load_downstream_quality_report(
 
     edge_names = {*stage_names, *(('skin',) if enabled else ())}
     edge = _object(payload["edge_false_positive"], edge_names, f"{context}.edge_false_positive")
+    edge_reports = {}
     for name, item in edge.items():
-        report = _load_scalar_report_object(
+        report = edge_reports[name] = _load_scalar_report_object(
             item,
             _EDGE_FALSE_POSITIVE_REPORT_SCHEMA,
             f"{context}.edge_false_positive.{name}",
@@ -1229,6 +1273,14 @@ def _load_downstream_quality_report(
             buffer_radius,
             f"{context}.edge_false_positive.{name}.truth_buffer_radius",
         )
+        if name in stages:
+            _validate_candidate_count_consistency(
+                overlap=stages[name]["buffered_overlap_radius2"],
+                distance=stages[name]["surface_distance"],
+                orientation=stages[name]["orientation_error"],
+                edge=report,
+                context=f"{context}.{name}",
+            )
 
     if not enabled:
         if payload["skin"] is not None:
@@ -1237,6 +1289,7 @@ def _load_downstream_quality_report(
         _load_skin_quality_report(
             payload["skin"],
             buffer_radius=buffer_radius,
+            edge_report=edge_reports["skin"],
             context=f"{context}.skin",
         )
     return payload
@@ -1258,20 +1311,32 @@ def _load_quality_stage_report(value: Any, *, buffer_radius: float, context: str
         buffer_radius,
         f"{context}.buffered_overlap_radius2.radius",
     )
-    _load_scalar_report_object(
+    distance = _load_scalar_report_object(
         payload["surface_distance"],
         _SURFACE_DISTANCE_REPORT_SCHEMA,
         f"{context}.surface_distance",
     )
-    _load_scalar_report_object(
+    orientation = _load_scalar_report_object(
         payload["orientation_error"],
         _ORIENTATION_ERROR_REPORT_SCHEMA,
         f"{context}.orientation_error",
     )
+    _validate_candidate_count_consistency(
+        overlap=overlap,
+        distance=distance,
+        orientation=orientation,
+        context=context,
+    )
     return payload
 
 
-def _load_skin_quality_report(value: Any, *, buffer_radius: float, context: str) -> dict[str, Any]:
+def _load_skin_quality_report(
+    value: Any,
+    *,
+    buffer_radius: float,
+    edge_report: Mapping[str, Any],
+    context: str,
+) -> dict[str, Any]:
     payload = _object(
         value,
         {
@@ -1283,7 +1348,7 @@ def _load_skin_quality_report(value: Any, *, buffer_radius: float, context: str)
         },
         context,
     )
-    _load_scalar_report_object(
+    topology = _load_scalar_report_object(
         payload["topology"], _SKIN_TOPOLOGY_REPORT_SCHEMA, f"{context}.topology"
     )
     overlap = _load_scalar_report_object(
@@ -1296,16 +1361,28 @@ def _load_skin_quality_report(value: Any, *, buffer_radius: float, context: str)
         buffer_radius,
         f"{context}.buffered_overlap_radius2.radius",
     )
-    _load_scalar_report_object(
+    distance = _load_scalar_report_object(
         payload["surface_distance"],
         _SURFACE_DISTANCE_REPORT_SCHEMA,
         f"{context}.surface_distance",
     )
-    _load_scalar_report_object(
+    orientation = _load_scalar_report_object(
         payload["orientation_error"],
         _ORIENTATION_ERROR_REPORT_SCHEMA,
         f"{context}.orientation_error",
     )
+    _validate_candidate_count_consistency(
+        overlap=overlap,
+        distance=distance,
+        orientation=orientation,
+        orientation_duplicate_count=topology["duplicate_cell_count"],
+        edge=edge_report,
+        context=context,
+    )
+    if overlap["candidate_count"] != topology["unique_cell_count"]:
+        raise ValueError(f"{context} candidate count must match the unique skin cell count")
+    if orientation["count"] != topology["cell_count"]:
+        raise ValueError(f"{context} orientation count must match the skin cell count")
     _load_component_topology_report(payload["component_topology"], f"{context}.component_topology")
     return payload
 
@@ -1313,6 +1390,25 @@ def _load_skin_quality_report(value: Any, *, buffer_radius: float, context: str)
 def _validate_report_radius(value: Any, expected: float, context: str) -> None:
     if not _exact_json_value(value, float(expected)):
         raise ValueError(f"{context} does not match the truth metric configuration")
+
+
+def _validate_candidate_count_consistency(
+    *,
+    overlap: Mapping[str, Any],
+    distance: Mapping[str, Any],
+    context: str,
+    orientation: Mapping[str, Any] | None = None,
+    orientation_duplicate_count: int = 0,
+    edge: Mapping[str, Any] | None = None,
+) -> None:
+    candidate_count = overlap["candidate_count"]
+    compared_counts = [distance["candidate_count"]]
+    if orientation is not None:
+        compared_counts.append(orientation["count"] - orientation_duplicate_count)
+    if edge is not None:
+        compared_counts.append(edge["candidate_count"])
+    if any(value != candidate_count for value in compared_counts):
+        raise ValueError(f"{context} candidate counts must match for the same selection")
 
 
 def _load_component_topology_report(value: Any, context: str) -> dict[str, Any]:
@@ -1348,12 +1444,24 @@ def _load_scalar_report_fields(
         field_context = f"{context}.{name}"
         if kind == "integer":
             _integer(value, field_context)
+        elif kind == "nonnegative_integer":
+            _nonnegative_integer(value, field_context)
         elif kind == "optional_integer":
             _optional_integer(value, field_context)
+        elif kind == "optional_nonnegative_integer":
+            _optional_nonnegative_integer(value, field_context)
         elif kind == "number":
             _number(value, field_context)
+        elif kind == "nonnegative_number":
+            _nonnegative_number(value, field_context)
+        elif kind == "closed_unit_interval_number":
+            _closed_unit_interval_number(value, field_context)
         elif kind == "optional_number":
             _optional_number(value, field_context)
+        elif kind == "optional_nonnegative_number":
+            _optional_nonnegative_number(value, field_context)
+        elif kind == "optional_closed_unit_interval_number":
+            _optional_closed_unit_interval_number(value, field_context)
         elif kind == "boolean":
             _boolean(value, field_context)
         elif kind == "string":
@@ -1935,6 +2043,19 @@ def _optional_integer(value: Any, context: str) -> int | None:
     return _integer(value, context)
 
 
+def _nonnegative_integer(value: Any, context: str) -> int:
+    integer = _integer(value, context)
+    if integer < 0:
+        raise ValueError(f"{context} must be a non-negative integer")
+    return integer
+
+
+def _optional_nonnegative_integer(value: Any, context: str) -> int | None:
+    if value is None:
+        return None
+    return _nonnegative_integer(value, context)
+
+
 def _number(value: Any, context: str) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{context} must be a finite number")
@@ -1947,6 +2068,32 @@ def _optional_number(value: Any, context: str) -> int | float | None:
     if value is None:
         return None
     return _number(value, context)
+
+
+def _nonnegative_number(value: Any, context: str) -> int | float:
+    number = _number(value, context)
+    if number < 0:
+        raise ValueError(f"{context} must be a finite non-negative number")
+    return number
+
+
+def _optional_nonnegative_number(value: Any, context: str) -> int | float | None:
+    if value is None:
+        return None
+    return _nonnegative_number(value, context)
+
+
+def _closed_unit_interval_number(value: Any, context: str) -> int | float:
+    number = _number(value, context)
+    if not 0 <= number <= 1:
+        raise ValueError(f"{context} must be a number in the closed unit interval")
+    return number
+
+
+def _optional_closed_unit_interval_number(value: Any, context: str) -> int | float | None:
+    if value is None:
+        return None
+    return _closed_unit_interval_number(value, context)
 
 
 def _string_tuple(value: Any, context: str) -> tuple[str, ...]:
