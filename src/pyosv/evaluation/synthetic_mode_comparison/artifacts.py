@@ -1825,16 +1825,15 @@ def _optional_integer(value: Any, context: str) -> int | None:
     return _integer(value, context)
 
 
-def _number(value: Any, context: str) -> float:
+def _number(value: Any, context: str) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{context} must be a finite number")
-    number = float(value)
-    if not np.isfinite(number):
+    if not np.isfinite(value):
         raise ValueError(f"{context} must be a finite number")
-    return number
+    return value
 
 
-def _optional_number(value: Any, context: str) -> float | None:
+def _optional_number(value: Any, context: str) -> int | float | None:
     if value is None:
         return None
     return _number(value, context)

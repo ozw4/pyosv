@@ -26,6 +26,7 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     write_artifact_bundle,
 )
 from pyosv.evaluation.synthetic_mode_comparison import artifacts
+from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig
 
 
 @cache
@@ -117,6 +118,19 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             "sha256": hashlib.sha256(payload).hexdigest(),
             "size": len(payload),
         }
+
+
+def test_bundle_round_trip_preserves_integer_valued_real_config(tmp_path: Path) -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        scanner_template=replace(SyntheticScannerConfig(), phi_min=0),
+    )
+    result = run_mode_comparison(config)
+
+    bundle = write_artifact_bundle(result, tmp_path / "bundle", config=config)
+
+    assert validate_completed_bundle(bundle)
 
 
 def test_default_manifest_records_only_minimal_case_set(tmp_path: Path) -> None:
@@ -271,6 +285,20 @@ def test_writer_rejects_result_from_a_different_config(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="plan_metadata does not match the canonical plan"):
         write_artifact_bundle(result, output, config=different_config)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
+
+
+def test_writer_rejects_numeric_type_tampering_before_creating_output(tmp_path: Path) -> None:
+    config, result = _fixture()
+    plan_metadata = result.as_dict()["plan_metadata"]
+    plan_metadata["shape"][0] = 9.0
+    invalid = replace(result, plan_metadata=plan_metadata)
+    output = tmp_path / "bundle"
+
+    with pytest.raises(ValueError, match="plan_metadata does not match the canonical plan"):
+        write_artifact_bundle(invalid, output, config=config)
 
     assert not output.exists()
     assert not list(tmp_path.glob(".bundle.tmp-*"))

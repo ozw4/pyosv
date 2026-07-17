@@ -34,6 +34,14 @@ def test_complete_result_passes_without_mutation(result, config) -> None:
     assert result.as_dict() == before
 
 
+def test_plan_metadata_numeric_type_tampering_is_rejected(result, config) -> None:
+    plan_metadata = result.as_dict()["plan_metadata"]
+    plan_metadata["shape"][0] = 9.0
+
+    with pytest.raises(ValueError, match="plan_metadata does not match the canonical plan"):
+        validate_mode_comparison_result(replace(result, plan_metadata=plan_metadata), config)
+
+
 @pytest.mark.parametrize("value", (1.25, -0.5))
 def test_fraction_value_outside_closed_unit_interval_is_rejected(result, config, value) -> None:
     index = next(

@@ -531,7 +531,13 @@ def _wire_value(value: Any) -> Any:
         return {key: _wire_value(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
         return [_wire_value(item) for item in value]
-    return value
+    if isinstance(value, bool):
+        return (bool, value)
+    if isinstance(value, Integral):
+        return (int, int(value))
+    if isinstance(value, Real):
+        return (float, float(value))
+    return (type(value), value)
 
 
 __all__ = ["applicable_metric_definitions", "validate_mode_comparison_result"]
