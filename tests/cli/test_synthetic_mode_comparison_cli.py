@@ -11,6 +11,7 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     validate_completed_bundle,
 )
+from pyosv.evaluation.synthetic_quality import SyntheticTruthMetricConfig
 
 
 def test_parser_defaults(tmp_path: Path) -> None:
@@ -261,6 +262,48 @@ def test_real_small_skip_skinning_cli_writes_a_valid_bundle(
     assert validate_completed_bundle(output)
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["input_config"]["skinning_config"]["enabled"] is False
+
+
+def test_empty_truth_surface_cli_failure_leaves_no_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "bundle"
+    config_type = synthetic_mode_comparison.SyntheticModeComparisonConfig
+
+    def config_with_empty_truth_surface(**kwargs):
+        return config_type(
+            **kwargs,
+            truth_metric_config=SyntheticTruthMetricConfig(
+                truth_surface_half_width=0.0,
+            ),
+        )
+
+    monkeypatch.setattr(
+        synthetic_mode_comparison,
+        "SyntheticModeComparisonConfig",
+        config_with_empty_truth_surface,
+    )
+
+    code = synthetic_mode_comparison.main(
+        [
+            "--output-dir",
+            str(output),
+            "--case-ids",
+            "single_dipping_plane",
+            "--shape",
+            "10,10,10",
+            "--skip-skinning",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "empty truth-surface support" in captured.err
+    assert not output.exists()
+    assert not tuple(tmp_path.iterdir())
 
 
 def test_main_rejects_an_existing_output_before_running(

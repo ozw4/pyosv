@@ -17,6 +17,10 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     run_mode_comparison,
 )
+from pyosv.evaluation.synthetic_quality import (
+    SyntheticSkinningConfig,
+    SyntheticTruthMetricConfig,
+)
 from pyosv.evaluation.synthetic_quality.stage_cache import PipelineStageCacheStats
 
 
@@ -44,6 +48,24 @@ def test_small_experiment_returns_json_safe_scalar_evidence() -> None:
     assert all(
         np.isfinite(row.mean) for row in (*result.metric_aggregates, *result.contrast_aggregates)
     )
+
+
+def test_positive_width_dipping_case_returns_finite_metrics_and_contrasts() -> None:
+    result = run_mode_comparison(
+        SyntheticModeComparisonConfig(
+            case_ids=("single_dipping_plane",),
+            shape=(10, 10, 10),
+            skinning_config=SyntheticSkinningConfig(enabled=False),
+            truth_metric_config=SyntheticTruthMetricConfig(
+                truth_surface_half_width=0.5,
+            ),
+        )
+    )
+
+    assert result.metric_rows
+    assert result.contrast_rows
+    assert all(np.isfinite(row.value) for row in result.metric_rows)
+    assert all(np.isfinite(row.raw_value) for row in result.contrast_rows)
 
 
 def test_runtime_stage_order_and_shared_scanner_costs() -> None:

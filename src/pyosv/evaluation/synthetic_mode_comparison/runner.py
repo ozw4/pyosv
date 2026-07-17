@@ -95,6 +95,7 @@ def run_synthetic_trial(
         raise ValueError(
             f"case factory returned shape {case.shape}, expected trial shape {trial.shape}"
         )
+    _validate_truth_surface_support(case, trial, plan.truth_metric_config)
 
     stage_cache = PipelineStageCache(case)
     evaluations: dict[str, SyntheticCellEvaluation] = {}
@@ -222,6 +223,21 @@ def _build_trial_case(
 ) -> Synthetic3DCase:
     definitions = {definition.case_id: definition for definition in EXTENDED_CASES}
     return definitions[trial.case_id].build_case(trial.shape, seed=trial.seed)
+
+
+def _validate_truth_surface_support(
+    case: Synthetic3DCase,
+    trial: SyntheticTrialSpec,
+    truth_metric_config: SyntheticTruthMetricConfig,
+) -> None:
+    half_width = truth_metric_config.truth_surface_half_width
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(half_width)
+    if np.count_nonzero(truth_surface_mask) == 0:
+        raise ValueError(
+            "empty truth-surface support in mode-comparison configuration: "
+            f"case_id={case.case_id!r}, trial_id={trial.trial_id!r}, "
+            f"shape={case.shape}, truth_surface_half_width={half_width}"
+        )
 
 
 def _execution_cells(plan: SyntheticModeComparisonPlan) -> tuple[ModeCellSpec, ...]:

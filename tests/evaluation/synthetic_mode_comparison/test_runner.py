@@ -13,7 +13,10 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     run_synthetic_trial,
 )
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
-from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
+from pyosv.evaluation.synthetic_quality import (
+    SyntheticSkinningConfig,
+    SyntheticTruthMetricConfig,
+)
 from pyosv.evaluation.synthetic_quality import pipeline as quality_pipeline
 from pyosv.evaluation.synthetic_quality import runner as quality_runner
 from pyosv.evaluation.synthetic_quality import scanner as quality_scanner
@@ -112,6 +115,120 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     assert scanner_thin_calls == 2
     assert voter_call_phases and not any(voter_call_phases)
     assert skinner_call_phases and not any(skinner_call_phases)
+
+
+def test_empty_truth_surface_fails_before_all_expensive_stages(monkeypatch) -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            case_ids=("single_dipping_plane",),
+            shape=(10, 10, 10),
+            truth_metric_config=SyntheticTruthMetricConfig(
+                truth_surface_half_width=0.0,
+            ),
+        )
+    )
+    calls = {
+        "case_factory": 0,
+        "stage_cache": 0,
+        "scanner_input": 0,
+        "scanner_constructor": 0,
+        "reference-like_scan": 0,
+        "quality_scan": 0,
+        "scanner_thinning": 0,
+        "voter": 0,
+        "skinner": 0,
+    }
+    original_case_factory = comparison_runner._build_trial_case
+    original_stage_cache = comparison_runner.PipelineStageCache
+    original_scanner_input = quality_runner.make_scanner_input_from_case
+    original_scanner_type = quality_scanner.FaultOrientScanner3
+    original_backend_scan = quality_scanner.scan_backend_attributes
+    original_scanner_thin = original_scanner_type.thin
+    original_voter_apply = quality_pipeline.OptimalSurfaceVoter.apply_voting_from_seeds
+    original_skinner = quality_pipeline.find_synthetic_skins
+
+    def counted_case_factory(*args, **kwargs):
+        calls["case_factory"] += 1
+        return original_case_factory(*args, **kwargs)
+
+    def counted_stage_cache(*args, **kwargs):
+        calls["stage_cache"] += 1
+        return original_stage_cache(*args, **kwargs)
+
+    def counted_scanner_input(*args, **kwargs):
+        calls["scanner_input"] += 1
+        return original_scanner_input(*args, **kwargs)
+
+    def counted_scanner_constructor(*args, **kwargs):
+        calls["scanner_constructor"] += 1
+        return original_scanner_type(*args, **kwargs)
+
+    def counted_backend_scan(scanner, scanner_config, scanner_input, backend):
+        calls[f"{backend}_scan"] += 1
+        return original_backend_scan(scanner, scanner_config, scanner_input, backend)
+
+    def counted_scanner_thin(*args, **kwargs):
+        calls["scanner_thinning"] += 1
+        return original_scanner_thin(*args, **kwargs)
+
+    def counted_voter(*args, **kwargs):
+        calls["voter"] += 1
+        return original_voter_apply(*args, **kwargs)
+
+    def counted_skinner(*args, **kwargs):
+        calls["skinner"] += 1
+        return original_skinner(*args, **kwargs)
+
+    monkeypatch.setattr(comparison_runner, "_build_trial_case", counted_case_factory)
+    monkeypatch.setattr(comparison_runner, "PipelineStageCache", counted_stage_cache)
+    monkeypatch.setattr(quality_runner, "make_scanner_input_from_case", counted_scanner_input)
+    monkeypatch.setattr(quality_scanner, "FaultOrientScanner3", counted_scanner_constructor)
+    monkeypatch.setattr(quality_scanner, "scan_backend_attributes", counted_backend_scan)
+    monkeypatch.setattr(original_scanner_type, "thin", counted_scanner_thin)
+    monkeypatch.setattr(
+        quality_pipeline.OptimalSurfaceVoter,
+        "apply_voting_from_seeds",
+        counted_voter,
+    )
+    monkeypatch.setattr(quality_pipeline, "find_synthetic_skins", counted_skinner)
+
+    with pytest.raises(ValueError) as error:
+        run_synthetic_trial(plan, plan.trials[0])
+
+    message = str(error.value)
+    assert "empty truth-surface support" in message
+    assert "case_id='single_dipping_plane'" in message
+    assert "trial_id='single_dipping_plane'" in message
+    assert "shape=(10, 10, 10)" in message
+    assert "truth_surface_half_width=0.0" in message
+    assert calls == {
+        "case_factory": 1,
+        "stage_cache": 0,
+        "scanner_input": 0,
+        "scanner_constructor": 0,
+        "reference-like_scan": 0,
+        "quality_scan": 0,
+        "scanner_thinning": 0,
+        "voter": 0,
+        "skinner": 0,
+    }
+
+
+def test_zero_width_truth_surface_runs_when_exact_support_exists() -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            case_ids=("single_vertical_plane",),
+            shape=(9, 9, 9),
+            skinning_config=SyntheticSkinningConfig(enabled=False),
+            truth_metric_config=SyntheticTruthMetricConfig(
+                truth_surface_half_width=0.0,
+            ),
+        )
+    )
+
+    result = run_synthetic_trial(plan, plan.trials[0])
+
+    assert len(result.cells) == len(plan.cells)
 
 
 def test_scanner_cells_reuse_prepared_arrays_without_pipeline_artifacts() -> None:
