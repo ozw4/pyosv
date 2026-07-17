@@ -98,11 +98,7 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
         "min": minimum,
         "max": maximum,
         "mean": mean,
-        "nonzero_fraction": (
-            float(np.count_nonzero(np.abs(values) > NONZERO_EPSILON) / values.size)
-            if values.size
-            else 0.0
-        ),
+        "nonzero_fraction": quality_metrics.array_nonzero_fraction(values),
     }
 
 

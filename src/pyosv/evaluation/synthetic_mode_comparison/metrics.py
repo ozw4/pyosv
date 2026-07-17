@@ -310,6 +310,7 @@ def _scanner_values(
     if isinstance(evaluation.artifacts, PipelineArtifacts):
         raise ValueError("scanner-only cell must provide scanner artifacts")
     volumes = evaluation.artifacts
+    scanner_report = _mapping(_required(evaluation.report_payload, "scanner"), "scanner")
     for stage, names in (
         ("scanner_raw", ("scanner_ft", "scanner_pt", "scanner_tt")),
         ("scanner_thinned", ("scanner_fet", "scanner_fpt", "scanner_ftt")),
@@ -317,7 +318,15 @@ def _scanner_values(
         values = _finite_array(_required(volumes, names[0]), shape, names[0])
         strike = _finite_array(_required(volumes, names[1]), shape, names[1])
         dip = _finite_array(_required(volumes, names[2]), shape, names[2])
-        _put(output, stage, "all", "array_nonzero_fraction", np.count_nonzero(values) / values.size)
+        report_name = "ft" if stage == "scanner_raw" else "fet"
+        array_summary = _mapping(_required(scanner_report, report_name), f"scanner.{report_name}")
+        _put(
+            output,
+            stage,
+            "all",
+            "array_nonzero_fraction",
+            _required(array_summary, "nonzero_fraction"),
+        )
         candidate = top_truth_count_mask(values, truth_surface)
         _put_quality(
             output,
@@ -366,9 +375,16 @@ def _downstream_values(
         _finite_array(_required(volumes, name), shape, name)
     quality = _mapping(_required(evaluation.report_payload, "quality"), "quality")
     edge = _mapping(_required(quality, "edge_false_positive"), "quality.edge_false_positive")
+    pyosv_report = _mapping(_required(evaluation.report_payload, "pyosv"), "pyosv")
     for stage, volume_name in (("fv", "fv_py"), ("fvt", "fvt_py")):
-        array = np.asarray(volumes[volume_name])
-        _put(output, stage, "all", "array_nonzero_fraction", np.count_nonzero(array) / array.size)
+        array_summary = _mapping(_required(pyosv_report, stage), f"pyosv.{stage}")
+        _put(
+            output,
+            stage,
+            "all",
+            "array_nonzero_fraction",
+            _required(array_summary, "nonzero_fraction"),
+        )
         for selection, report_key in (
             ("top_truth_count", f"{stage}_top_truth_count"),
             ("positive_top_truth_count", f"{stage}_positive_top_truth_count"),

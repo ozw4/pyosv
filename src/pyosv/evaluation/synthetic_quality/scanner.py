@@ -23,7 +23,6 @@ SCANNER_ENSEMBLE_PRIORS = {
 }
 SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_BASE = 0.75
 SCANNER_ENSEMBLE_QUALITY_CONFIDENCE_SCALE = 0.25
-_NONZERO_EPSILON = 1.0e-6
 
 BackendScan = Callable[
     [FaultOrientScanner3, "SyntheticScannerConfig", np.ndarray, str],
@@ -294,6 +293,8 @@ def unit_range_normalize(array: np.ndarray) -> np.ndarray:
 
 
 def _array_summary(array: np.ndarray) -> dict[str, Any]:
+    from .quality_metrics import array_nonzero_fraction
+
     values = np.asarray(array)
     finite = np.isfinite(values)
     finite_values = values[finite].astype(np.float64, copy=False)
@@ -313,9 +314,5 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
         "min": minimum,
         "max": maximum,
         "mean": mean,
-        "nonzero_fraction": (
-            float(np.count_nonzero(np.abs(values) > _NONZERO_EPSILON) / values.size)
-            if values.size
-            else 0.0
-        ),
+        "nonzero_fraction": array_nonzero_fraction(values),
     }

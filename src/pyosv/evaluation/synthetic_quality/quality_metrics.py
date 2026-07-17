@@ -154,6 +154,41 @@ def positive_candidate_count(array: np.ndarray) -> int:
     return candidate_count(positive_candidate_mask(array))
 
 
+def array_nonzero_fraction(array: np.ndarray) -> float:
+    """Return the fraction of finite numeric values above the report epsilon."""
+
+    values = np.asarray(array)
+    try:
+        numeric = np.issubdtype(values.dtype, np.number)
+    except TypeError as error:
+        raise ValueError("array must be numeric") from error
+    if not numeric:
+        raise ValueError("array must be numeric")
+    if values.size == 0:
+        return 0.0
+    if np.issubdtype(values.dtype, np.complexfloating):
+        extrema = (
+            np.min(values.real),
+            np.max(values.real),
+            np.min(values.imag),
+            np.max(values.imag),
+        )
+    else:
+        extrema = (np.min(values), np.max(values))
+    if not all(np.isfinite(extremum) for extremum in extrema):
+        raise ValueError("array must contain only finite values")
+
+    if np.issubdtype(values.dtype, np.integer):
+        count = np.count_nonzero(values)
+    elif np.issubdtype(values.dtype, np.complexfloating):
+        count = np.count_nonzero(np.abs(values) > np.float32(NONZERO_EPSILON))
+    else:
+        threshold = np.float32(NONZERO_EPSILON)
+        count = np.count_nonzero(values > threshold)
+        count += np.count_nonzero(values < -threshold)
+    return float(count / values.size)
+
+
 def positive_candidate_mask(array: np.ndarray) -> np.ndarray:
     return np.asarray(array) > np.float32(NONZERO_EPSILON)
 

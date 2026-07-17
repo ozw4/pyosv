@@ -196,6 +196,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             assert next(csv.reader(stream)) == [field.name for field in fields(model)]
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
     assert manifest["resolved_plan"]["shape"] == [9, 9, 9]
     assert [cell["label"] for cell in manifest["canonical_cells"]] == [
@@ -229,6 +230,19 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             "sha256": hashlib.sha256(payload).hexdigest(),
             "size": len(payload),
         }
+
+
+def test_default_manifest_records_only_minimal_case_set(tmp_path: Path) -> None:
+    _, result = _fixture()
+    bundle = write_artifact_bundle(
+        result,
+        tmp_path / "bundle",
+        config=SyntheticModeComparisonConfig(shape=(9, 9, 9)),
+    )
+
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["input_config"]["case_set"] == "minimal"
+    assert manifest["input_config"]["case_ids"] is None
 
 
 def test_same_result_and_pretty_setting_writes_identical_hashed_files(
