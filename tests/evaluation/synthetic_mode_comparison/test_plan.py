@@ -12,6 +12,7 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 from pyosv.evaluation.synthetic_quality import (
     SyntheticScannerConfig,
     SyntheticSkinningConfig,
+    SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
 )
 from pyosv.evaluation.synthetic_quality.cases import CASE_IDS
@@ -111,6 +112,31 @@ def test_explicit_case_ids_use_existing_validation(case_ids: tuple[str, ...]) ->
 def test_unknown_case_set_uses_existing_validation() -> None:
     with pytest.raises(ValueError, match="^unknown case_set: missing$"):
         SyntheticModeComparisonConfig(case_set="missing")
+
+
+@pytest.mark.parametrize("field", ("truth_surface_half_width", "buffer_radius"))
+@pytest.mark.parametrize(
+    "value",
+    (float("nan"), float("inf"), float("-inf"), -0.1),
+)
+def test_config_rejects_invalid_truth_metric_scalars(field: str, value: float) -> None:
+    truth_metric_config = SyntheticTruthMetricConfig(**{field: value})
+
+    with pytest.raises(ValueError, match=rf"^{field} must be (?:finite|non-negative)$"):
+        SyntheticModeComparisonConfig(truth_metric_config=truth_metric_config)
+
+
+def test_config_preserves_zero_truth_metric_scalars() -> None:
+    truth_metric_config = SyntheticTruthMetricConfig(
+        truth_surface_half_width=0.0,
+        buffer_radius=0.0,
+    )
+
+    config = SyntheticModeComparisonConfig(truth_metric_config=truth_metric_config)
+
+    assert config.truth_metric_config is truth_metric_config
+    assert config.truth_metric_config.truth_surface_half_width == 0.0
+    assert config.truth_metric_config.buffer_radius == 0.0
 
 
 @pytest.mark.parametrize("case_set", ("minimal", "missing"))

@@ -40,6 +40,10 @@ from pyosv.evaluation.synthetic_quality.scanner import (
     scanner_attributes_from_case,
     scanner_attributes_from_input,
 )
+from pyosv.evaluation.synthetic_quality.stage_keys import (
+    build_oracle_attribute_stage_key,
+    build_scanner_attribute_stage_key,
+)
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
     PipelineStageCache,
@@ -94,39 +98,19 @@ def _oracle_attribute_stage_key(
         oracle.ft is case.ft_oracle and oracle.pt is case.pt_oracle and oracle.tt is case.tt_oracle
     ):
         return None
-    return AttributeStageKey(
+    return build_oracle_attribute_stage_key(
         case_id=case.case_id,
         shape=case.shape,
-        source="oracle",
     )
 
 
 def _scanner_attribute_stage_key(
     case: Synthetic3DCase, scanner_config: SyntheticScannerConfig
 ) -> AttributeStageKey:
-    input_config = scanner_config.input_config
-    return AttributeStageKey(
+    return build_scanner_attribute_stage_key(
         case_id=case.case_id,
         shape=case.shape,
-        source="scanner",
-        settings=(
-            ("backend", scanner_config.backend),
-            ("phi_min", float(scanner_config.phi_min)),
-            ("phi_max", float(scanner_config.phi_max)),
-            ("theta_min", float(scanner_config.theta_min)),
-            ("theta_max", float(scanner_config.theta_max)),
-            ("sigma1", float(scanner_config.sigma1)),
-            ("sigma2", float(scanner_config.sigma2)),
-            ("refinement_factor", int(scanner_config.refinement_factor)),
-            ("scanner_thin_mode", scanner_config.scanner_thin_mode),
-            ("remove_edge_effects", scanner_config.remove_edge_effects),
-            ("input_background", float(input_config.background)),
-            ("input_fault_contrast", float(input_config.fault_contrast)),
-            ("input_noise_sigma", float(input_config.noise_sigma)),
-            ("input_seed", int(input_config.seed)),
-            ("input_clip_min", float(input_config.clip_min)),
-            ("input_clip_max", float(input_config.clip_max)),
-        ),
+        scanner_config=scanner_config,
     )
 
 

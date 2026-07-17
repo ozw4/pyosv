@@ -482,6 +482,24 @@ def test_validator_rejects_malformed_and_nonfinite_content_after_valid_hash(
         validate_completed_bundle(nonfinite_csv)
 
 
+def test_validator_rejects_negative_truth_metric_config_after_valid_hash(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "negative-truth-metric")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["input_config"]["truth_metric_config"]["buffer_radius"] = -0.1
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="^buffer_radius must be non-negative$"):
+        validate_completed_bundle(bundle)
+
+
 def test_validator_rejects_incompatible_metric_schema_after_valid_hash(
     tmp_path: Path,
 ) -> None:

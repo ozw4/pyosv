@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, replace
 from math import isclose, isfinite
 from numbers import Integral, Real
 from typing import Any
 
 from ..reporting.models import thaw_report_value
+from ..synthetic_quality.stage_keys import (
+    PipelineStageKeys,
+    build_oracle_attribute_stage_key,
+    build_primary_skinning_stage_key,
+    build_scanner_attribute_stage_key,
+    build_seed_stage_key,
+    build_thinning_stage_key,
+    build_voting_stage_key,
+)
+from ..synthetic_quality.variants import effective_skinning_config, get_variant_spec
 from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
 from .contrasts import (
@@ -27,6 +37,7 @@ from .metrics import (
     validate_metric_value,
 )
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
+from .trials import SyntheticTrialSpec
 
 _CACHE_COUNTERS = (
     "seed_hits",
@@ -112,6 +123,7 @@ def validate_mode_comparison_result(
     _validate_cell_reports(result.cell_reports, plan)
     _validate_cache_stats(result.cache_stats, plan)
     _validate_metric_rows(result.metric_rows, plan)
+    _validate_shared_stage_evidence(result, plan)
 
     expected_contrasts = compute_contrast_rows(result.metric_rows)
     _require_typed_sequence(result.contrast_rows, ContrastRow, "contrast_rows")
@@ -204,25 +216,240 @@ def _validate_cache_stats(
 
 
 def _expected_cache_counters(plan: SyntheticModeComparisonPlan) -> dict[str, int]:
-    attribute_sources = {
-        (cell.input_mode, cell.scanner_backend)
-        for cell in plan.cells
-        if cell.scope != SCANNER_ONLY_SCOPE
+    counters = {name: 0 for name in _CACHE_COUNTERS}
+    seen: dict[str, set[Any]] = {
+        "seed": set(),
+        "voting": set(),
+        "thinning": set(),
+        "primary_skinning": set(),
     }
-    source_count = len(attribute_sources)
-    skinning_enabled = plan.reference_workflow_settings.skinning_config.enabled
-    if plan.quality_workflow_settings.skinning_config.enabled != skinning_enabled:
-        raise ValueError("canonical workflows must agree on whether skinning is enabled")
-    return {
-        "seed_hits": source_count,
-        "seed_misses": source_count,
-        "voting_hits": source_count,
-        "voting_misses": source_count,
-        "thinning_hits": 0,
-        "thinning_misses": source_count * 2,
-        "primary_skinning_hits": 0,
-        "primary_skinning_misses": source_count * 2 if skinning_enabled else 0,
+    for cell in plan.cells:
+        keys = _resolved_stage_keys_for_cell(plan, cell)
+        for stage in seen:
+            key = getattr(keys, stage)
+            if key is None:
+                continue
+            outcome = "hits" if key in seen[stage] else "misses"
+            counters[f"{stage}_{outcome}"] += 1
+            seen[stage].add(key)
+    return counters
+
+
+def _resolved_stage_keys_for_cell(
+    plan: SyntheticModeComparisonPlan,
+    cell: ModeCellSpec,
+    trial: SyntheticTrialSpec | None = None,
+) -> PipelineStageKeys:
+    """Derive the cache keys looked up by one canonical cell, without execution."""
+
+    if cell.scope == SCANNER_ONLY_SCOPE:
+        return PipelineStageKeys(None, None, None, None, None)
+
+    trial = plan.trials[0] if trial is None else trial
+    if cell.input_mode == "oracle":
+        attribute_key = build_oracle_attribute_stage_key(
+            case_id=trial.case_id,
+            shape=trial.shape,
+        )
+        target_source = "oracle_ft"
+    elif cell.input_mode == "scanner" and cell.scanner_backend is not None:
+        scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
+        attribute_key = build_scanner_attribute_stage_key(
+            case_id=trial.case_id,
+            shape=trial.shape,
+            scanner_config=scanner_config,
+        )
+        target_source = "scanner_fet"
+    else:
+        raise ValueError("downstream cell must have a canonical attribute source")
+
+    settings = _workflow_settings(plan, cell)
+    variant_spec = get_variant_spec(plan.comparison_variant)
+    skinning_config = effective_skinning_config(variant_spec, settings.skinning_config)
+    seed_key = build_seed_stage_key(
+        attribute_key=attribute_key,
+        voting_config=settings.voting_config,
+        variant_spec=variant_spec,
+        target_source=target_source,
+    )
+    voting_key = build_voting_stage_key(
+        seed_key=seed_key,
+        voting_config=settings.voting_config,
+        variant_spec=variant_spec,
+    )
+    thinning_key = build_thinning_stage_key(
+        voting_key=voting_key,
+        voting_config=settings.voting_config,
+        variant_spec=variant_spec,
+    )
+    primary_skinning_key = build_primary_skinning_stage_key(
+        thinning_key=thinning_key,
+        skinning_config=skinning_config,
+        variant_spec=variant_spec,
+        target_source=target_source,
+    )
+    return PipelineStageKeys(
+        attribute=attribute_key,
+        seed=seed_key,
+        voting=voting_key,
+        thinning=thinning_key,
+        primary_skinning=primary_skinning_key,
+    )
+
+
+def _validate_shared_stage_evidence(
+    result: SyntheticModeComparisonResult,
+    plan: SyntheticModeComparisonPlan,
+) -> None:
+    """Validate exact scalar evidence reuse for semantically shared trial stages."""
+
+    rows_by_cell_stage: dict[tuple[str, str, int | None, str, str], list[MetricRow]] = {}
+    for row in result.metric_rows:
+        key = (row.case_id, row.trial_id, row.seed, row.cell_label, row.stage)
+        rows_by_cell_stage.setdefault(key, []).append(row)
+
+    for report, trial in zip(result.cell_reports, plan.trials):
+        cells = report["cells"]
+        scanner_cells = tuple(cell for cell in plan.cells if cell.scanner_backend is not None)
+        _require_shared_evidence(
+            "scanner input",
+            (
+                (
+                    cell.label,
+                    {
+                        "summary": cells[cell.label]["scanner"]["input"],
+                        "config": cells[cell.label]["scanner"]["config"]["input"],
+                    },
+                )
+                for cell in scanner_cells
+            ),
+        )
+
+        attribute_groups: dict[Any, list[ModeCellSpec]] = {}
+        voting_groups: dict[Any, list[ModeCellSpec]] = {}
+        thinning_groups: dict[Any, list[ModeCellSpec]] = {}
+        for cell in plan.cells:
+            keys = _resolved_stage_keys_for_cell(plan, cell, trial)
+            if cell.scanner_backend is not None:
+                scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
+                attribute_key = build_scanner_attribute_stage_key(
+                    case_id=trial.case_id,
+                    shape=trial.shape,
+                    scanner_config=scanner_config,
+                )
+                attribute_groups.setdefault(attribute_key, []).append(cell)
+            if keys.voting is not None:
+                voting_groups.setdefault(keys.voting, []).append(cell)
+            if keys.thinning is not None:
+                thinning_groups.setdefault(keys.thinning, []).append(cell)
+
+        for group in attribute_groups.values():
+            _require_shared_evidence(
+                "attribute stage",
+                (
+                    (
+                        cell.label,
+                        {
+                            "scanner": cells[cell.label]["scanner"],
+                            "scanner_quality": cells[cell.label]["scanner_quality"],
+                        },
+                    )
+                    for cell in group
+                ),
+            )
+        for group in voting_groups.values():
+            _require_shared_evidence(
+                "voting stage",
+                (
+                    (
+                        cell.label,
+                        _downstream_stage_evidence(
+                            cells[cell.label],
+                            stage="fv",
+                            metric_rows=rows_by_cell_stage[
+                                (
+                                    trial.case_id,
+                                    trial.trial_id,
+                                    trial.seed,
+                                    cell.label,
+                                    "fv",
+                                )
+                            ],
+                        ),
+                    )
+                    for cell in group
+                ),
+            )
+        for group in thinning_groups.values():
+            _require_shared_evidence(
+                "thinning stage",
+                (
+                    (
+                        cell.label,
+                        _downstream_stage_evidence(
+                            cells[cell.label],
+                            stage="fvt",
+                            metric_rows=rows_by_cell_stage[
+                                (
+                                    trial.case_id,
+                                    trial.trial_id,
+                                    trial.seed,
+                                    cell.label,
+                                    "fvt",
+                                )
+                            ],
+                        ),
+                    )
+                    for cell in group
+                ),
+            )
+
+
+def _downstream_stage_evidence(
+    payload: Mapping[str, Any],
+    *,
+    stage: str,
+    metric_rows: Sequence[MetricRow],
+) -> dict[str, Any]:
+    selections = (f"{stage}_top_truth_count", f"{stage}_positive_top_truth_count")
+    evidence = {
+        "array": payload["pyosv"][stage],
+        "quality": {name: payload["quality"][name] for name in selections},
+        "edge_false_positive": {
+            name: payload["quality"]["edge_false_positive"][name] for name in selections
+        },
+        "metric_rows": tuple(
+            (
+                row.stage,
+                row.selection,
+                row.metric,
+                row.value,
+                row.unit,
+                row.direction,
+                row.contrast_eligible,
+            )
+            for row in metric_rows
+        ),
     }
+    if stage == "fv":
+        evidence["voting"] = payload["pyosv"]["voting"]
+    return evidence
+
+
+def _require_shared_evidence(
+    stage: str,
+    members: Iterable[tuple[str, Any]],
+) -> None:
+    normalized = tuple((label, _wire_value(evidence)) for label, evidence in members)
+    if len(normalized) < 2:
+        return
+    reference_label, reference = normalized[0]
+    for label, evidence in normalized[1:]:
+        if evidence != reference:
+            raise ValueError(
+                f"cell_reports shared {stage} evidence does not match between "
+                f"{reference_label} and {label}"
+            )
 
 
 def _validate_runtime_rows(

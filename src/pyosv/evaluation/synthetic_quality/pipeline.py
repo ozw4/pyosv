@@ -26,16 +26,22 @@ from pyosv.evaluation.synthetic_quality.models import (
     ThinningResult3D,
     VotingResult3D,
 )
+from pyosv.evaluation.synthetic_quality.stage_keys import (
+    THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD,
+    THIN_HYBRID_V2_EDGE_MARGIN,
+    THIN_PLATEAU_TOLERANCE,
+    build_primary_skinning_stage_key,
+    build_seed_stage_key,
+    build_thinning_stage_key,
+    build_voting_stage_key,
+    resolve_stage_target_source,
+)
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
     PipelineStageCache,
-    PrimarySkinningStageKey,
     PrimarySkinningStageResult,
-    SeedStageKey,
     SeedStageResult,
-    ThinningStageKey,
     ThinningStageResult,
-    VotingStageKey,
     VotingStageResult,
     diagnostic_items,
 )
@@ -69,9 +75,6 @@ from pyosv.voting3d import OptimalSurfaceVoter
 EDGE_FALSE_POSITIVE_MARGIN = quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
 FORMAT_VERSION = 1
 NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
-THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD = 8.0
-THIN_HYBRID_V2_EDGE_MARGIN = 2
-THIN_PLATEAU_TOLERANCE = 1.0e-6
 
 # Case-local cache DAG (variant-specific work remains outside cached nodes):
 # attributes -> seeds -> voting(fv/vp/vt) -> base thinning(fvt)
@@ -215,26 +218,15 @@ def run_voting_from_attributes(
         and fvt_recenter_target is not None
         and fvt_recenter_target is not ft
     )
-    boundary_target_source = None
-    boundary_edge_margin = None
-    if variant_spec.seed_policy == "boundary_seed_retention_v1":
-        boundary_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        boundary_edge_margin = EDGE_FALSE_POSITIVE_MARGIN
-    seed_key = (
-        SeedStageKey(
-            attributes=attribute_stage_key,
-            seed_policy=variant_spec.seed_policy,
-            seed_distance=int(voting_config.seed_distance),
-            seed_threshold=float(voting_config.seed_threshold),
-            ru=int(voting_config.ru),
-            rv=int(voting_config.rv),
-            rw=int(voting_config.rw),
-            boundary_target_source=boundary_target_source,
-            boundary_edge_margin=boundary_edge_margin,
-        )
-        if attribute_stage_key is not None
+    seed_key = build_seed_stage_key(
+        attribute_key=attribute_stage_key,
+        voting_config=voting_config,
+        variant_spec=variant_spec,
+        target_source=fvt_recenter_target_source,
+    )
+    boundary_target_source = (
+        resolve_stage_target_source(fvt_recenter_target_source)
+        if variant_spec.seed_policy == "boundary_seed_retention_v1"
         else None
     )
     cached_seed = (
@@ -288,26 +280,10 @@ def run_voting_from_attributes(
         seed_selected_mask = np.zeros(seed_candidate_mask.shape, dtype=bool)
         for seed in seeds:
             seed_selected_mask[seed.i3, seed.i2, seed.i1] = True
-    voting_key = (
-        VotingStageKey(
-            seed=seed_key,
-            ru=int(voter.ru),
-            rv=int(voter.rv),
-            rw=int(voter.rw),
-            bstrain1=int(voter.bstrain1),
-            bstrain2=int(voter.bstrain2),
-            attribute_smoothing=int(voter.attribute_smoothing),
-            surface_smoothing1=float(voter.surface_smoothing1),
-            surface_smoothing2=float(voter.surface_smoothing2),
-            boundary_policy=voter.surface_voting_boundary_policy,
-            support_min_fraction=float(voter.surface_support_min_fraction),
-            support_exponent=float(voter.surface_support_exponent),
-            orientation_smoothing=float(voter.surface_orientation_smoothing),
-            orientation_backend=voter.surface_orientation_backend,
-            final_normalization_smoothing=float(voter.final_normalization_smoothing),
-        )
-        if seed_key is not None
-        else None
+    voting_key = build_voting_stage_key(
+        seed_key=seed_key,
+        voting_config=voting_config,
+        variant_spec=variant_spec,
     )
     cached_voting = (
         stage_cache.get_voting(voting_key)
@@ -341,19 +317,10 @@ def run_voting_from_attributes(
     )
     thin_mode = effective_thin_mode(variant_spec, voting_config)
     plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
-    thinning_key = (
-        ThinningStageKey(
-            voting=voting_key,
-            thin_mode=thin_mode,
-            reference_sigma=float(voting_config.reference_thin_sigma),
-            hybrid_orientation_gradient_threshold=(THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD),
-            hybrid_v2_edge_margin=THIN_HYBRID_V2_EDGE_MARGIN,
-            orientation_source="voting_vp_vt",
-            tie_break_policy=("attribute_ft" if plateau_tie_breaker is not None else "voting_fv"),
-            plateau_tolerance=THIN_PLATEAU_TOLERANCE,
-        )
-        if voting_key is not None
-        else None
+    thinning_key = build_thinning_stage_key(
+        voting_key=voting_key,
+        voting_config=voting_config,
+        variant_spec=variant_spec,
     )
     cached_thinning = (
         stage_cache.get_thinning(thinning_key)
@@ -582,43 +549,11 @@ def run_voting_from_attributes(
         )
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
-        post_thinning_target_source = None
-        if variant_spec.post_thinning_policy != "none":
-            post_thinning_target_source = (
-                "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-            )
-        primary_skinning_key = (
-            PrimarySkinningStageKey(
-                thinning=thinning_key,
-                post_thinning_policy=variant_spec.post_thinning_policy,
-                post_thinning_target_source=post_thinning_target_source,
-                post_thinning_max_shift=(
-                    FVT_RECENTER_MAX_SHIFT
-                    if variant_spec.post_thinning_policy == "recenter_scanner_target"
-                    else None
-                ),
-                post_thinning_edge_margin=(
-                    EDGE_FALSE_POSITIVE_MARGIN
-                    if variant_spec.post_thinning_policy != "none"
-                    else None
-                ),
-                method=skinning_config.method,
-                growth_source=skinning_config.growth_source,
-                min_likelihood=skinning_config.min_likelihood,
-                min_skin_size=skinning_config.min_skin_size,
-                d=skinning_config.d,
-                ru=skinning_config.ru,
-                rv=skinning_config.rv,
-                rw=skinning_config.rw,
-                max_steps=skinning_config.max_steps,
-                du=skinning_config.du,
-                max_delta_strike=skinning_config.max_delta_strike,
-                reskin=skinning_config.reskin,
-                accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
-                small_skin_size=skinning_config.small_skin_size,
-            )
-            if thinning_key is not None
-            else None
+        primary_skinning_key = build_primary_skinning_stage_key(
+            thinning_key=thinning_key,
+            skinning_config=skinning_config,
+            variant_spec=variant_spec,
+            target_source=fvt_recenter_target_source,
         )
         primary_result = (
             stage_cache.get_primary_skinning(primary_skinning_key)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -12,7 +13,11 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     build_mode_comparison_plan,
     run_synthetic_trial,
 )
+from pyosv.evaluation.synthetic_mode_comparison import experiment as comparison_experiment
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
+from pyosv.evaluation.synthetic_mode_comparison.validation import (
+    _resolved_stage_keys_for_cell,
+)
 from pyosv.evaluation.synthetic_quality import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
@@ -40,6 +45,40 @@ def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> 
     assert result.stage_cache_stats.seed_hits == 3
     assert result.stage_cache_stats.voting_misses == 3
     assert result.stage_cache_stats.voting_hits == 3
+
+
+def test_runtime_looks_up_the_resolved_keys_for_each_downstream_cell(monkeypatch) -> None:
+    plan = _plan()
+    looked_up = {stage: [] for stage in ("seed", "voting", "thinning", "primary_skinning")}
+
+    class TrackingCache(comparison_runner.PipelineStageCache):
+        def get_seed(self, key):
+            looked_up["seed"].append(key)
+            return super().get_seed(key)
+
+        def get_voting(self, key):
+            looked_up["voting"].append(key)
+            return super().get_voting(key)
+
+        def get_thinning(self, key):
+            looked_up["thinning"].append(key)
+            return super().get_thinning(key)
+
+        def get_primary_skinning(self, key):
+            looked_up["primary_skinning"].append(key)
+            return super().get_primary_skinning(key)
+
+    monkeypatch.setattr(comparison_runner, "PipelineStageCache", TrackingCache)
+
+    run_synthetic_trial(plan, plan.trials[0])
+
+    expected = tuple(
+        _resolved_stage_keys_for_cell(plan, cell)
+        for cell in plan.cells
+        if cell.workflow_mode is not None
+    )
+    for stage in looked_up:
+        assert looked_up[stage] == [getattr(keys, stage) for keys in expected]
 
 
 def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
@@ -115,6 +154,54 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     assert scanner_thin_calls == 2
     assert voter_call_phases and not any(voter_call_phases)
     assert skinner_call_phases and not any(skinner_call_phases)
+
+
+def test_invalid_truth_metric_config_prevents_all_trial_work(monkeypatch) -> None:
+    case_factory = Mock()
+    scanner_input = Mock()
+    scanner_constructor = Mock()
+    backend_scan = Mock()
+    scanner_thinning = Mock()
+    voter = Mock()
+    skinner = Mock()
+    result_constructor = Mock()
+    scanner_type = quality_scanner.FaultOrientScanner3
+
+    monkeypatch.setattr(comparison_runner, "_build_trial_case", case_factory)
+    monkeypatch.setattr(quality_runner, "make_scanner_input_from_case", scanner_input)
+    monkeypatch.setattr(scanner_type, "thin", scanner_thinning)
+    monkeypatch.setattr(quality_scanner, "FaultOrientScanner3", scanner_constructor)
+    monkeypatch.setattr(quality_scanner, "scan_backend_attributes", backend_scan)
+    monkeypatch.setattr(
+        quality_pipeline.OptimalSurfaceVoter,
+        "apply_voting_from_seeds",
+        voter,
+    )
+    monkeypatch.setattr(quality_pipeline, "find_synthetic_skins", skinner)
+    monkeypatch.setattr(
+        comparison_experiment,
+        "SyntheticModeComparisonResult",
+        result_constructor,
+    )
+
+    with pytest.raises(ValueError, match="^buffer_radius must be non-negative$"):
+        comparison_experiment.run_mode_comparison(
+            SyntheticModeComparisonConfig(
+                truth_metric_config=SyntheticTruthMetricConfig(buffer_radius=-0.1),
+            )
+        )
+
+    for operation in (
+        case_factory,
+        scanner_input,
+        scanner_constructor,
+        backend_scan,
+        scanner_thinning,
+        voter,
+        skinner,
+        result_constructor,
+    ):
+        operation.assert_not_called()
 
 
 def test_empty_truth_surface_fails_before_all_expensive_stages(monkeypatch) -> None:

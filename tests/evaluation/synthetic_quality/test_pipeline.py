@@ -54,6 +54,46 @@ def test_pipeline_stage_arrays_and_inputs(variant: str, skinning_enabled: bool) 
         np.testing.assert_array_equal(actual, original)
 
 
+def test_legacy_pipeline_keeps_truth_metric_validation_after_voting_and_thinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    truth_metric_config = SyntheticTruthMetricConfig(buffer_radius=-0.1)
+    calls = {"voting": 0, "thinning": 0}
+    original_voting = pipeline.OptimalSurfaceVoter.apply_voting_from_seeds
+    original_thinning = pipeline.OptimalSurfaceVoter.thin
+
+    def counted_voting(self, *args, **kwargs):
+        calls["voting"] += 1
+        return original_voting(self, *args, **kwargs)
+
+    def counted_thinning(self, *args, **kwargs):
+        calls["thinning"] += 1
+        return original_thinning(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        pipeline.OptimalSurfaceVoter,
+        "apply_voting_from_seeds",
+        counted_voting,
+    )
+    monkeypatch.setattr(pipeline.OptimalSurfaceVoter, "thin", counted_thinning)
+
+    assert truth_metric_config.buffer_radius == -0.1
+    with pytest.raises(ValueError, match="^buffer_radius must be non-negative$"):
+        run_voting_from_attributes(
+            case,
+            ft=case.ft_oracle,
+            pt=case.pt_oracle,
+            tt=case.tt_oracle,
+            voting_config=SyntheticVotingConfig(),
+            truth_metric_config=truth_metric_config,
+            skinning_config=SyntheticSkinningConfig(enabled=False),
+            variant_spec=get_variant_spec("current_default"),
+        )
+
+    assert calls == {"voting": 1, "thinning": 1}
+
+
 def _run_pipeline_with_trace(
     *, skinning_enabled: bool, variant: str = "current_default"
 ) -> PipelineEvaluation:
