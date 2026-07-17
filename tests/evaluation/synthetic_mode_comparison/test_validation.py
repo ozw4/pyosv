@@ -7,6 +7,7 @@ import pytest
 
 from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
+    aggregate_contrast_rows,
     aggregate_metric_rows,
     build_mode_comparison_plan,
     compute_contrast_rows,
@@ -36,6 +37,18 @@ def test_complete_result_passes_without_mutation(result, config) -> None:
 
     assert validate_mode_comparison_result(result, config) is None
     assert result.as_dict() == before
+    shared_workflow_contrasts = {
+        "oracle_workflow_effect",
+        "workflow_effect_rl",
+        "workflow_effect_q",
+    }
+    fv_contrasts = tuple(
+        row
+        for row in result.contrast_rows
+        if row.stage == "fv" and row.contrast_name in shared_workflow_contrasts
+    )
+    assert fv_contrasts
+    assert all(row.raw_value == 0.0 for row in fv_contrasts)
 
 
 @pytest.mark.parametrize(
@@ -130,6 +143,90 @@ def test_shared_explicit_stage_keys_pass_runtime_semantic_validation() -> None:
         explicit_result.cache_stats[0]["primary_skinning_hits"],
     ) == (3, 3)
     assert validate_mode_comparison_result(explicit_result, explicit_config) is None
+    fvt_workflow_contrasts = tuple(
+        row
+        for row in explicit_result.contrast_rows
+        if row.stage == "fvt"
+        and row.contrast_name
+        in {"oracle_workflow_effect", "workflow_effect_rl", "workflow_effect_q"}
+    )
+    assert fvt_workflow_contrasts
+    assert all(row.raw_value == 0.0 for row in fvt_workflow_contrasts)
+
+    reports = explicit_result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["RL-QUAL"]
+    payload["pyosv"]["fvt"]["mean"] += 0.01
+    payload["pipelines"]["scanner"]["pyosv"]["fvt"]["mean"] += 0.01
+
+    with pytest.raises(ValueError, match="shared thinning stage evidence"):
+        validate_mode_comparison_result(
+            replace(explicit_result, cell_reports=tuple(reports)),
+            explicit_config,
+        )
+
+
+def test_shared_scanner_input_tampering_is_rejected(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    reports[0]["cells"]["Q-SCAN"]["scanner"]["input"]["mean"] += 0.01
+
+    with pytest.raises(ValueError, match="shared scanner input evidence"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+def test_coherent_end_to_end_scanner_tampering_is_rejected(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["RL-QUAL"]
+    payload["scanner"]["fet"]["mean"] += 0.01
+    payload["pipelines"]["scanner"]["scanner"]["fet"]["mean"] += 0.01
+
+    with pytest.raises(ValueError, match="shared attribute stage evidence"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+def test_coherent_voting_summary_tampering_is_rejected(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["Q-QUAL"]
+    payload["pyosv"]["fv"]["mean"] += 0.01
+    payload["pipelines"]["scanner"]["pyosv"]["fv"]["mean"] += 0.01
+
+    with pytest.raises(ValueError, match="shared voting stage evidence"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+def test_coherent_voting_metric_tampering_is_rejected(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["Q-QUAL"]
+    for quality in (payload["quality"], payload["pipelines"]["scanner"]["quality"]):
+        quality["fv_top_truth_count"]["buffered_overlap_radius2"]["candidate_count"] += 1
+
+    rows = list(result.metric_rows)
+    index = next(
+        index
+        for index, row in enumerate(rows)
+        if (
+            row.cell_label,
+            row.stage,
+            row.selection,
+            row.metric,
+        )
+        == ("Q-QUAL", "fv", "top_truth_count", "candidate_count")
+    )
+    rows[index] = replace(rows[index], value=rows[index].value + 1.0)
+    metric_rows = tuple(rows)
+    contrast_rows = compute_contrast_rows(metric_rows)
+
+    with pytest.raises(ValueError, match="shared voting stage evidence"):
+        validate_mode_comparison_result(
+            replace(
+                result,
+                cell_reports=tuple(reports),
+                metric_rows=metric_rows,
+                contrast_rows=contrast_rows,
+                metric_aggregates=aggregate_metric_rows(metric_rows),
+                contrast_aggregates=aggregate_contrast_rows(contrast_rows),
+            ),
+            config,
+        )
 
 
 def test_plan_metadata_numeric_type_tampering_is_rejected(result, config) -> None:
