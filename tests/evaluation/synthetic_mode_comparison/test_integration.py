@@ -39,7 +39,7 @@ from pyosv.evaluation.synthetic_quality.stage_cache import PipelineStageCacheSta
 from pyosv.orient3d import FaultOrientScanner3
 from pyosv.skin import FaultSkin
 
-CASES = ("single_vertical_plane", "weak_noisy_plane")
+CASES = ("weak_noisy_plane", "single_vertical_plane")
 SEEDS = (20260707, 20260708, 20260709)
 SHAPE = (9, 9, 9)
 EXPECTED_HASHED_BUNDLE_FILES = (
@@ -79,6 +79,7 @@ def _fixed_clock() -> float:
 
 def test_public_experiment_integrates_shared_stages_metrics_and_aggregation(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls: dict[str, Counter[str]] = defaultdict(Counter)
     active_trial = ""
@@ -122,10 +123,10 @@ def test_public_experiment_integrates_shared_stages_metrics_and_aggregation(
     result = run_mode_comparison(_config(), clock=_fixed_clock)
 
     expected_trials = (
-        "single_vertical_plane",
         "weak_noisy_plane__seed_20260707",
         "weak_noisy_plane__seed_20260708",
         "weak_noisy_plane__seed_20260709",
+        "single_vertical_plane",
     )
     assert tuple(row["trial_id"] for row in result.trial_metadata) == expected_trials
     assert [len(report["cells"]) for report in result.cell_reports] == [8, 8, 8, 8]
@@ -223,6 +224,31 @@ def test_public_experiment_integrates_shared_stages_metrics_and_aggregation(
 
     _assert_scalar_only(result)
 
+    calls_before_validation = {trial_id: Counter(counts) for trial_id, counts in calls.items()}
+    compact = write_artifact_bundle(result, tmp_path / "compact", config=_config())
+    pretty = write_artifact_bundle(
+        result,
+        tmp_path / "pretty",
+        config=_config(),
+        pretty=True,
+    )
+    assert validate_completed_bundle(compact)
+    assert validate_completed_bundle(pretty)
+    assert calls == calls_before_validation
+
+    for filename in ("manifest.json", "cell_reports.json"):
+        assert json.loads((compact / filename).read_text(encoding="utf-8")) == json.loads(
+            (pretty / filename).read_text(encoding="utf-8")
+        )
+    for filename in (
+        "metrics_long.csv",
+        "metric_aggregates.csv",
+        "contrasts.csv",
+        "contrast_aggregates.csv",
+        "runtime.csv",
+    ):
+        assert (compact / filename).read_bytes() == (pretty / filename).read_bytes()
+
 
 @pytest.mark.parametrize(
     ("include_oracle_workflow_isolation", "attribute_source_count"),
@@ -301,7 +327,9 @@ def test_cli_bundle_is_complete_valid_and_reproducible_with_a_fixed_clock(
 
     result = captured_results[0]
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == list(CASES)
+    assert manifest["case_order"] == list(CASES)
     assert manifest["resolved_plan"]["shape"] == list(SHAPE)
     assert [cell["label"] for cell in manifest["canonical_cells"]] == [
         "RL-SCAN",
@@ -314,8 +342,8 @@ def test_cli_bundle_is_complete_valid_and_reproducible_with_a_fixed_clock(
         "Q-QUAL",
     ]
     assert [trial["case_generation_seed"] for trial in manifest["trials"]] == [
-        None,
         *SEEDS,
+        None,
     ]
 
     csv_contracts = {

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from numbers import Integral
+from math import isfinite
+from numbers import Integral, Real
 from typing import Any
 
 from .builder import build_mode_comparison_plan
@@ -36,6 +37,42 @@ _CACHE_COUNTERS = (
     "primary_skinning_hits",
     "primary_skinning_misses",
 )
+_MISSING = object()
+_OVERLAP_METRICS = {
+    "candidate_count",
+    "buffered_precision",
+    "buffered_recall",
+    "buffered_f1",
+}
+_DISTANCE_METRICS = {
+    "candidate_to_truth_median",
+    "candidate_to_truth_p95",
+    "truth_to_candidate_median",
+    "truth_to_candidate_p95",
+    "hausdorff_p95",
+}
+_ORIENTATION_METRICS = {
+    "strike_median",
+    "strike_p95",
+    "dip_median",
+    "dip_p95",
+}
+_TOPOLOGY_METRICS = {
+    "skin_count",
+    "largest_skin_fraction",
+    "small_skin_cell_fraction",
+    "duplicate_cell_count",
+}
+_COMPONENT_METRICS = {
+    "covered_truth_component_count",
+    "uncovered_truth_component_count",
+    "over_merge_skin_count",
+    "over_split_truth_component_count",
+    "mean_skin_purity",
+    "min_skin_purity",
+    "mean_truth_component_recall",
+    "min_truth_component_recall",
+}
 
 
 def applicable_metric_definitions(
@@ -71,8 +108,8 @@ def validate_mode_comparison_result(
     plan = build_mode_comparison_plan(config)
     _validate_plan_and_trial_metadata(result, plan)
     _validate_cell_reports(result.cell_reports, plan)
-    _validate_cache_stats(result.cache_stats, plan)
     _validate_runtime_rows(result.runtime_rows, plan)
+    _validate_cache_stats(result.cache_stats, plan)
     _validate_metric_rows(result.metric_rows, plan)
 
     expected_contrasts = compute_contrast_rows(result.metric_rows)
@@ -89,6 +126,8 @@ def validate_mode_comparison_result(
     _require_typed_sequence(result.contrast_aggregates, AggregateRow, "contrast_aggregates")
     if result.contrast_aggregates != expected_contrast_aggregates:
         raise ValueError("contrast_aggregates do not match canonical contrast aggregation")
+
+    _validate_reported_metric_values(result, plan)
 
 
 def _validate_plan_and_trial_metadata(
@@ -134,6 +173,7 @@ def _validate_cache_stats(
     if not isinstance(rows, tuple) or len(rows) != len(plan.trials):
         raise ValueError("cache_stats must contain exactly one row per canonical trial")
     expected_fields = ("case_id", "trial_id", "seed", *_CACHE_COUNTERS)
+    expected_counters = _expected_cache_counters(plan)
     for row, trial in zip(rows, plan.trials):
         if not isinstance(row, Mapping) or set(row) != set(expected_fields):
             raise ValueError("cache stat fields do not match the canonical schema")
@@ -147,6 +187,30 @@ def _validate_cache_stats(
             value = row[name]
             if not isinstance(value, Integral) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"cache counter {name} must be a non-negative integer")
+            if value != expected_counters[name]:
+                raise ValueError("cache stats do not match canonical shared-stage execution")
+
+
+def _expected_cache_counters(plan: SyntheticModeComparisonPlan) -> dict[str, int]:
+    attribute_sources = {
+        (cell.input_mode, cell.scanner_backend)
+        for cell in plan.cells
+        if cell.scope != SCANNER_ONLY_SCOPE
+    }
+    source_count = len(attribute_sources)
+    skinning_enabled = plan.reference_workflow_settings.skinning_config.enabled
+    if plan.quality_workflow_settings.skinning_config.enabled != skinning_enabled:
+        raise ValueError("canonical workflows must agree on whether skinning is enabled")
+    return {
+        "seed_hits": source_count,
+        "seed_misses": source_count,
+        "voting_hits": source_count,
+        "voting_misses": source_count,
+        "thinning_hits": 0,
+        "thinning_misses": source_count * 2,
+        "primary_skinning_hits": 0,
+        "primary_skinning_misses": source_count * 2 if skinning_enabled else 0,
+    }
 
 
 def _validate_runtime_rows(
@@ -280,6 +344,132 @@ def _metric_identity(row: MetricRow) -> tuple[Any, ...]:
         row.selection,
         row.metric,
     )
+
+
+def _validate_reported_metric_values(
+    result: SyntheticModeComparisonResult,
+    plan: SyntheticModeComparisonPlan,
+) -> None:
+    reports = {
+        (report["case_id"], report["trial_id"], report["seed"]): report["cells"]
+        for report in result.cell_reports
+    }
+    for row in result.metric_rows:
+        cells = reports[(row.case_id, row.trial_id, row.seed)]
+        payload = cells[row.cell_label]
+        reported = _reported_metric_value(payload, row)
+        if reported is _MISSING:
+            continue
+        if isinstance(reported, bool) or not isinstance(reported, Real):
+            raise ValueError("cell report metric evidence must be numeric")
+        normalized = float(reported)
+        if not isfinite(normalized) or normalized != row.value:
+            raise ValueError(
+                "metric_rows do not match scalar evidence in cell_reports: "
+                f"{row.cell_label}/{row.stage}/{row.selection}/{row.metric} "
+                f"has {row.value}, report has {normalized}"
+            )
+
+
+def _reported_metric_value(payload: Mapping[str, Any], row: MetricRow) -> Any:
+    if row.metric == "array_nonzero_fraction":
+        report_name = {
+            "scanner_raw": "ft",
+            "scanner_thinned": "fet",
+            "fv": "fv",
+            "fvt": "fvt",
+        }[row.stage]
+        section = "scanner" if row.stage.startswith("scanner_") else "pyosv"
+        return _report_path(payload, section, report_name, "nonzero_fraction")
+
+    if row.stage == "scanner_confidence":
+        return _MISSING
+
+    if row.stage.startswith("scanner_"):
+        return _reported_scanner_quality_value(payload, row)
+    return _reported_downstream_quality_value(payload, row)
+
+
+def _reported_scanner_quality_value(payload: Mapping[str, Any], row: MetricRow) -> Any:
+    if row.stage == "scanner_raw":
+        if row.metric in _OVERLAP_METRICS:
+            return _report_path(
+                payload,
+                "scanner_quality",
+                "ft_top_truth_count",
+                "buffered_overlap_radius2",
+                row.metric,
+            )
+        if row.metric in _DISTANCE_METRICS:
+            return _report_path(
+                payload,
+                "scanner_quality",
+                "ft_top_truth_count",
+                "surface_distance",
+                row.metric,
+            )
+        orientation_key = "raw_scan_top_truth_count"
+    else:
+        orientation_key = "used_attributes_top_truth_count"
+    if row.metric in _ORIENTATION_METRICS:
+        return _report_path(
+            payload,
+            "scanner_quality",
+            "orientation_error",
+            orientation_key,
+            row.metric,
+        )
+    return _MISSING
+
+
+def _reported_downstream_quality_value(payload: Mapping[str, Any], row: MetricRow) -> Any:
+    quality_key = "skin" if row.stage == "skin" else f"{row.stage}_{row.selection}"
+    if row.metric in _OVERLAP_METRICS:
+        return _report_path(
+            payload,
+            "quality",
+            quality_key,
+            "buffered_overlap_radius2",
+            row.metric,
+        )
+    if row.metric in _DISTANCE_METRICS:
+        return _report_path(
+            payload,
+            "quality",
+            quality_key,
+            "surface_distance",
+            row.metric,
+        )
+    if row.metric in _ORIENTATION_METRICS:
+        return _report_path(
+            payload,
+            "quality",
+            quality_key,
+            "orientation_error",
+            row.metric,
+        )
+    if row.metric == "edge_false_positive_fraction_of_candidates":
+        return _report_path(
+            payload,
+            "quality",
+            "edge_false_positive",
+            quality_key,
+            row.metric,
+        )
+    if row.metric in _TOPOLOGY_METRICS:
+        return _report_path(payload, "quality", "skin", "topology", row.metric)
+    if row.metric in _COMPONENT_METRICS:
+        return _report_path(payload, "quality", "skin", "component_topology", row.metric)
+    return _MISSING
+
+
+def _report_path(value: Any, *path: str) -> Any:
+    current = value
+    for name in path:
+        if not isinstance(current, Mapping) or name not in current:
+            raise ValueError(f"cell report is missing metric evidence at {'.'.join(path)}")
+        current = current[name]
+    return current
 
 
 def _metric_metadata(plan, trial, cell) -> dict[str, Any]:
