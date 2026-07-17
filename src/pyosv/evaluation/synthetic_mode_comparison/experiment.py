@@ -143,6 +143,8 @@ class SyntheticModeComparisonResult:
                 not isinstance(value, item_type) for value in values
             ):
                 raise ValueError(f"{name} must be a tuple of {item_type.__name__} values")
+            for value in values:
+                _json_safe(value.as_dict())
         if not isinstance(self.plan_metadata, Mapping):
             raise ValueError("plan_metadata must be a mapping")
 

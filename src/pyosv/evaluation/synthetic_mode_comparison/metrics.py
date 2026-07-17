@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from numbers import Real
+from numbers import Integral, Real
 from typing import Any, Literal
 
 import numpy as np
@@ -74,8 +74,12 @@ class MetricRow:
     contrast_eligible: bool
 
     def __post_init__(self) -> None:
-        if self.schema_version != METRIC_SCHEMA_VERSION:
+        if not isinstance(self.schema_version, Integral) or isinstance(self.schema_version, bool):
+            raise ValueError("schema_version must be an integer")
+        schema_version = int(self.schema_version)
+        if schema_version != METRIC_SCHEMA_VERSION:
             raise ValueError(f"schema_version must be {METRIC_SCHEMA_VERSION}")
+        object.__setattr__(self, "schema_version", schema_version)
         for name in (
             "case_id",
             "trial_id",
@@ -90,6 +94,25 @@ class MetricRow:
         ):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must be a non-empty string")
+        if self.seed is not None:
+            if not isinstance(self.seed, Integral) or isinstance(self.seed, bool) or self.seed < 0:
+                raise ValueError("seed must be None or a non-negative integer")
+            object.__setattr__(self, "seed", int(self.seed))
+        for name in (
+            "scanner_backend",
+            "scanner_thin_mode",
+            "workflow_mode",
+            "voter_thin_mode",
+            "skinner_method",
+        ):
+            metadata = getattr(self, name)
+            if metadata is not None and (not isinstance(metadata, str) or not metadata):
+                raise ValueError(f"{name} must be None or a non-empty string")
+        if self.scanner_refinement_factor is not None:
+            refinement = self.scanner_refinement_factor
+            if not isinstance(refinement, Integral) or isinstance(refinement, bool):
+                raise ValueError("scanner_refinement_factor must be None or an integer")
+            object.__setattr__(self, "scanner_refinement_factor", int(refinement))
         if isinstance(self.value, bool) or not isinstance(self.value, Real):
             raise ValueError("value must be a finite number")
         value = float(self.value)

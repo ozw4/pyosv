@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import weakref
 from dataclasses import FrozenInstanceError, fields, is_dataclass
@@ -11,6 +12,7 @@ import numpy as np
 import pytest
 
 from pyosv.evaluation.synthetic_mode_comparison import (
+    MetricRow,
     RuntimeRow,
     SyntheticModeComparisonConfig,
     run_mode_comparison,
@@ -246,3 +248,97 @@ def test_array_in_cell_report_is_rejected_instead_of_retained_as_lists() -> None
             trial_runner=fake_runner,
             metric_extractor=lambda evaluation: (),
         )
+
+
+def test_result_rejects_array_in_injected_metric_row() -> None:
+    zero_stats = PipelineStageCacheStats(*(0,) * 8)
+    row = MetricRow(
+        schema_version=1,
+        case_id="single_vertical_plane",
+        trial_id="single_vertical_plane",
+        seed=None,
+        scope="scanner_only",
+        cell_label="RL-SCAN",
+        input_mode="scanner",
+        scanner_backend="reference-like",
+        scanner_refinement_factor=None,
+        scanner_thin_mode="reference",
+        workflow_mode=None,
+        voter_thin_mode=None,
+        skinner_method=None,
+        variant="current_default",
+        stage="scanner_raw",
+        selection="all",
+        metric="array_nonzero_fraction",
+        value=0.5,
+        unit="fraction",
+        direction="neutral",
+        contrast_eligible=True,
+    )
+    object.__setattr__(row, "scanner_backend", np.asarray(["reference-like"]))
+
+    class FakeEvaluation:
+        pass
+
+    def fake_runner(plan, trial, *, clock, runtime_recorder):
+        evaluation = FakeEvaluation()
+        evaluation.trial = trial
+        evaluation.report_payload = {cell.label: {} for cell in plan.cells}
+        evaluation.stage_cache_stats = zero_stats
+        return evaluation
+
+    with pytest.raises(ValueError, match="scalar-only.*NumPy arrays"):
+        run_mode_comparison(
+            SyntheticModeComparisonConfig(
+                case_ids=("single_vertical_plane",),
+                shape=(9, 9, 9),
+            ),
+            trial_runner=fake_runner,
+            metric_extractor=lambda evaluation: (row,),
+            contrast_builder=lambda rows: (),
+            metric_aggregator=lambda rows: (),
+        )
+
+
+@pytest.mark.parametrize("failure_stage", ("metric", "contrast"))
+def test_processing_failure_releases_trial_evaluation(failure_stage: str) -> None:
+    zero_stats = PipelineStageCacheStats(*(0,) * 8)
+    references: list[weakref.ReferenceType[Any]] = []
+
+    class FakeEvaluation:
+        pass
+
+    def fake_runner(plan, trial, *, clock, runtime_recorder):
+        evaluation = FakeEvaluation()
+        evaluation.trial = trial
+        evaluation.report_payload = {cell.label: {} for cell in plan.cells}
+        evaluation.artifacts = {"temporary": np.ones((2, 2))}
+        evaluation.stage_cache_stats = zero_stats
+        references.append(weakref.ref(evaluation))
+        return evaluation
+
+    def raise_processing_error(values):
+        raise RuntimeError(f"{failure_stage} failed")
+
+    def run_failure() -> None:
+        kwargs = (
+            {"metric_extractor": raise_processing_error}
+            if failure_stage == "metric"
+            else {
+                "metric_extractor": lambda evaluation: (),
+                "contrast_builder": raise_processing_error,
+            }
+        )
+        with pytest.raises(RuntimeError, match=f"{failure_stage} failed"):
+            run_mode_comparison(
+                SyntheticModeComparisonConfig(
+                    case_ids=("single_vertical_plane",),
+                    shape=(9, 9, 9),
+                ),
+                trial_runner=fake_runner,
+                **kwargs,
+            )
+
+    run_failure()
+    gc.collect()
+    assert references[0]() is None

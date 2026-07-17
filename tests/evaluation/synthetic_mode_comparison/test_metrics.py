@@ -342,6 +342,25 @@ def test_metric_row_field_order_is_canonical() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "seed",
+        "scanner_backend",
+        "scanner_refinement_factor",
+        "scanner_thin_mode",
+        "workflow_mode",
+        "voter_thin_mode",
+        "skinner_method",
+    ),
+)
+def test_metric_row_rejects_array_optional_metadata(field_name: str) -> None:
+    row = extract_trial_metric_rows(_evaluation())[0]
+
+    with pytest.raises(ValueError, match=field_name):
+        replace(row, **{field_name: np.asarray([1])})
+
+
 def test_runner_rows_are_finite_unique_and_follow_cell_registry_order() -> None:
     evaluation = _evaluation()
 

@@ -14,6 +14,9 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 )
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
+from pyosv.evaluation.synthetic_quality import pipeline as quality_pipeline
+from pyosv.evaluation.synthetic_quality import runner as quality_runner
+from pyosv.evaluation.synthetic_quality import scanner as quality_scanner
 from pyosv.evaluation.synthetic_quality.models import PipelineArtifacts
 from pyosv.evaluation.synthetic_quality.runner import prepare_case_inputs, run_case_variant
 
@@ -34,6 +37,81 @@ def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> 
     assert result.stage_cache_stats.seed_hits == 3
     assert result.stage_cache_stats.voting_misses == 3
     assert result.stage_cache_stats.voting_hits == 3
+
+
+def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
+    plan = _plan()
+    case_factory_calls = 0
+    scanner_input_calls = 0
+    scan_backends: list[str] = []
+    scanner_thin_calls = 0
+    scanner_cell_active = False
+    voter_call_phases: list[bool] = []
+    skinner_call_phases: list[bool] = []
+
+    original_case_factory = comparison_runner._build_trial_case
+    original_scanner_input = quality_runner.make_scanner_input_from_case
+    original_backend_scan = quality_scanner.scan_backend_attributes
+    original_scanner_thin = quality_scanner.FaultOrientScanner3.thin
+    original_scanner_cell = comparison_runner._evaluate_scanner_cell
+    original_voter_apply = quality_pipeline.OptimalSurfaceVoter.apply_voting_from_seeds
+    original_skinner = quality_pipeline.find_synthetic_skins
+
+    def counted_case_factory(*args, **kwargs):
+        nonlocal case_factory_calls
+        case_factory_calls += 1
+        return original_case_factory(*args, **kwargs)
+
+    def counted_scanner_input(*args, **kwargs):
+        nonlocal scanner_input_calls
+        scanner_input_calls += 1
+        return original_scanner_input(*args, **kwargs)
+
+    def counted_backend_scan(scanner, scanner_config, scanner_input, backend):
+        scan_backends.append(backend)
+        return original_backend_scan(scanner, scanner_config, scanner_input, backend)
+
+    def counted_scanner_thin(*args, **kwargs):
+        nonlocal scanner_thin_calls
+        scanner_thin_calls += 1
+        return original_scanner_thin(*args, **kwargs)
+
+    def tracked_scanner_cell(*args, **kwargs):
+        nonlocal scanner_cell_active
+        scanner_cell_active = True
+        try:
+            return original_scanner_cell(*args, **kwargs)
+        finally:
+            scanner_cell_active = False
+
+    def tracked_voter_apply(*args, **kwargs):
+        voter_call_phases.append(scanner_cell_active)
+        return original_voter_apply(*args, **kwargs)
+
+    def tracked_skinner(*args, **kwargs):
+        skinner_call_phases.append(scanner_cell_active)
+        return original_skinner(*args, **kwargs)
+
+    monkeypatch.setattr(comparison_runner, "_build_trial_case", counted_case_factory)
+    monkeypatch.setattr(quality_runner, "make_scanner_input_from_case", counted_scanner_input)
+    monkeypatch.setattr(quality_scanner, "scan_backend_attributes", counted_backend_scan)
+    monkeypatch.setattr(quality_scanner.FaultOrientScanner3, "thin", counted_scanner_thin)
+    monkeypatch.setattr(comparison_runner, "_evaluate_scanner_cell", tracked_scanner_cell)
+    monkeypatch.setattr(
+        quality_pipeline.OptimalSurfaceVoter,
+        "apply_voting_from_seeds",
+        tracked_voter_apply,
+    )
+    monkeypatch.setattr(quality_pipeline, "find_synthetic_skins", tracked_skinner)
+
+    run_synthetic_trial(plan, plan.trials[0])
+
+    assert case_factory_calls == 1
+    assert scanner_input_calls == 1
+    assert scan_backends == ["reference-like", "quality"]
+    assert scanner_thin_calls == 2
+    assert voter_call_phases and not any(voter_call_phases)
+    assert skinner_call_phases and not any(skinner_call_phases)
 
 
 def test_scanner_cells_reuse_prepared_arrays_without_pipeline_artifacts() -> None:
