@@ -18,18 +18,27 @@ from pyosv.synthetic3d import SyntheticScannerInputConfig
 def test_extended_cases_expand_only_stochastic_case_for_each_seed() -> None:
     seeds = (5, 3, 8, 1, 2)
 
-    trials = expand_synthetic_trials(EXTENDED_CASES, seeds)
+    trials = expand_synthetic_trials(EXTENDED_CASES, seeds, (49, 49, 49))
 
     assert tuple(trial.case_id for trial in trials[:6]) == tuple(
         definition.case_id for definition in EXTENDED_CASES[:6]
     )
     assert tuple(trial.seed for trial in trials[:6]) == (None,) * 6
     assert tuple(trial.seed for trial in trials[6:]) == seeds
+    assert {trial.shape for trial in trials} == {(49, 49, 49)}
     assert tuple(trial.trial_id for trial in trials[6:]) == tuple(
         f"weak_noisy_plane__seed_{seed}" for seed in seeds
     )
     assert len(trials) == 11
     assert len({trial.trial_id for trial in trials}) == len(trials)
+
+
+def test_public_trial_apis_keep_the_default_shape() -> None:
+    trial = SyntheticTrialSpec("single_vertical_plane", "single_vertical_plane", None)
+    expanded = expand_synthetic_trials(EXTENDED_CASES, (1,))
+
+    assert trial.shape == (49, 49, 49)
+    assert {item.shape for item in expanded} == {(49, 49, 49)}
 
 
 def test_trial_expansion_and_plan_order_are_repeatable() -> None:
@@ -40,7 +49,7 @@ def test_trial_expansion_and_plan_order_are_repeatable() -> None:
 
     assert first.trials == second.trials
     assert first.trial_seeds == (13, 7)
-    assert first.trials == expand_synthetic_trials(EXTENDED_CASES, (13, 7))
+    assert first.trials == expand_synthetic_trials(EXTENDED_CASES, (13, 7), first.shape)
 
 
 @pytest.mark.parametrize(
@@ -54,11 +63,11 @@ def test_config_rejects_invalid_trial_seeds(trial_seeds: tuple[object, ...]) -> 
 
 def test_empty_seed_list_fails_before_trial_expansion() -> None:
     with pytest.raises(ValueError, match="at least one seed"):
-        expand_synthetic_trials(EXTENDED_CASES, ())
+        expand_synthetic_trials(EXTENDED_CASES, (), (49, 49, 49))
 
 
 def test_trial_spec_is_immutable() -> None:
-    trial = SyntheticTrialSpec("weak_noisy_plane__seed_3", "weak_noisy_plane", 3)
+    trial = SyntheticTrialSpec("weak_noisy_plane__seed_3", "weak_noisy_plane", 3, (49, 49, 49))
 
     with pytest.raises(FrozenInstanceError):
         trial.seed = 4  # type: ignore[misc]
@@ -67,7 +76,7 @@ def test_trial_spec_is_immutable() -> None:
 @pytest.mark.parametrize("case_id", (".", ".."))
 def test_trial_spec_rejects_special_path_components(case_id: str) -> None:
     with pytest.raises(ValueError, match="filesystem-safe"):
-        SyntheticTrialSpec(case_id, case_id, None)
+        SyntheticTrialSpec(case_id, case_id, None, (49, 49, 49))
 
 
 def test_trial_seed_does_not_replace_scanner_input_seed() -> None:

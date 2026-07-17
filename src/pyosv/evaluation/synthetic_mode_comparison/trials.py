@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from numbers import Integral
 
+from pyosv.synthetic3d import validate_shape3
+
 from ..synthetic_quality.cases import SyntheticQualityCaseDefinition
 
 _FILESYSTEM_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -19,6 +21,7 @@ class SyntheticTrialSpec:
     trial_id: str
     case_id: str
     seed: int | None
+    shape: tuple[int, int, int] = (49, 49, 49)
 
     def __post_init__(self) -> None:
         if (
@@ -31,6 +34,7 @@ class SyntheticTrialSpec:
             if not isinstance(self.seed, Integral) or isinstance(self.seed, bool) or self.seed < 0:
                 raise ValueError("seed must be None or a non-negative integer")
             object.__setattr__(self, "seed", int(self.seed))
+        object.__setattr__(self, "shape", validate_shape3(self.shape))
         expected_id = _trial_id(self.case_id, self.seed)
         if self.trial_id != expected_id:
             raise ValueError(f"trial_id must be {expected_id!r} for case_id and seed")
@@ -58,10 +62,12 @@ def validate_trial_seeds(trial_seeds: Sequence[int]) -> tuple[int, ...]:
 def expand_synthetic_trials(
     case_definitions: Sequence[SyntheticQualityCaseDefinition],
     trial_seeds: Sequence[int],
+    shape: tuple[int, int, int] = (49, 49, 49),
 ) -> tuple[SyntheticTrialSpec, ...]:
     """Expand cases in case order, repeating only stochastic cases by seed."""
 
     seeds = validate_trial_seeds(trial_seeds)
+    normalized_shape = validate_shape3(shape)
     trials: list[SyntheticTrialSpec] = []
     for definition in case_definitions:
         if not isinstance(definition, SyntheticQualityCaseDefinition):
@@ -72,6 +78,7 @@ def expand_synthetic_trials(
                     trial_id=_trial_id(definition.case_id, seed),
                     case_id=definition.case_id,
                     seed=seed,
+                    shape=normalized_shape,
                 )
                 for seed in seeds
             )
@@ -81,6 +88,7 @@ def expand_synthetic_trials(
                     trial_id=_trial_id(definition.case_id, None),
                     case_id=definition.case_id,
                     seed=None,
+                    shape=normalized_shape,
                 )
             )
 
