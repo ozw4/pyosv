@@ -43,106 +43,7 @@ def _fixture() -> tuple[SyntheticModeComparisonConfig, SyntheticModeComparisonRe
         case_ids=("single_vertical_plane",),
         shape=(9, 9, 9),
     )
-    base = _base_result()
-    metric = MetricRow(
-        schema_version=1,
-        case_id="single_vertical_plane",
-        trial_id="single_vertical_plane",
-        seed=None,
-        scope="scanner-only",
-        cell_label="RL-SCAN",
-        input_mode="scanner",
-        scanner_backend="reference-like",
-        scanner_refinement_factor=None,
-        scanner_thin_mode="reference",
-        workflow_mode=None,
-        voter_thin_mode=None,
-        skinner_method=None,
-        variant="current_default",
-        stage="scanner_raw",
-        selection="all",
-        metric="array_nonzero_fraction",
-        value=1.25,
-        unit="fraction",
-        direction="higher",
-        contrast_eligible=True,
-    )
-    contrast = ContrastRow(
-        contrast_name="scanner_only_effect",
-        case_id="single_vertical_plane",
-        trial_id="single_vertical_plane",
-        seed=None,
-        stage="scanner_raw",
-        selection="all",
-        metric="array_nonzero_fraction",
-        unit="fraction",
-        direction="higher",
-        component_cells=("Q-SCAN", "RL-SCAN"),
-        raw_value=0.25,
-        improvement_value=0.25,
-    )
-    metric_aggregate = AggregateRow(
-        source="metric",
-        case_id="single_vertical_plane",
-        cell_label="RL-SCAN",
-        contrast_name=None,
-        stage="scanner_raw",
-        selection="all",
-        metric="array_nonzero_fraction",
-        unit="fraction",
-        direction="higher",
-        n=1,
-        mean=1.25,
-        median=1.25,
-        std=0.0,
-        min=1.25,
-        max=1.25,
-        q25=1.25,
-        q75=1.25,
-    )
-    contrast_aggregate = AggregateRow(
-        source="contrast",
-        case_id="single_vertical_plane",
-        cell_label=None,
-        contrast_name="scanner_only_effect",
-        stage="scanner_raw",
-        selection="all",
-        metric="array_nonzero_fraction",
-        unit="fraction",
-        direction="higher",
-        n=1,
-        mean=0.25,
-        median=0.25,
-        std=0.0,
-        min=0.25,
-        max=0.25,
-        q25=0.25,
-        q75=0.25,
-    )
-    result = SyntheticModeComparisonResult(
-        plan_metadata=base.plan_metadata,
-        trial_metadata=base.trial_metadata,
-        cell_reports=base.cell_reports,
-        metric_rows=(metric,),
-        contrast_rows=(contrast,),
-        metric_aggregates=(metric_aggregate,),
-        contrast_aggregates=(contrast_aggregate,),
-        cache_stats=base.cache_stats,
-        runtime_rows=(
-            RuntimeRow(
-                case_id=None,
-                trial_id=None,
-                seed=None,
-                stage="experiment_total",
-                cell_label=None,
-                scanner_backend=None,
-                elapsed_seconds=7.0,
-                call_count=1,
-                shared_stage=True,
-            ),
-        ),
-    )
-    return config, result
+    return config, _base_result()
 
 
 def _write_bundle(path: Path, *, pretty: bool = False) -> Path:
@@ -281,7 +182,7 @@ def test_pretty_only_changes_json_whitespace(
         assert (compact / filename).read_bytes() == (pretty / filename).read_bytes()
 
 
-def test_csv_rows_preserve_result_order(tmp_path: Path) -> None:
+def test_writer_rejects_noncanonical_result_order(tmp_path: Path) -> None:
     config, result = _fixture()
     result = replace(
         result,
@@ -307,17 +208,43 @@ def test_csv_rows_preserve_result_order(tmp_path: Path) -> None:
         ),
     )
 
-    bundle = write_artifact_bundle(result, tmp_path / "bundle", config=config)
-    ordered_fields = {
-        "metrics_long.csv": ("selection", ["z-first", "a-second"]),
-        "metric_aggregates.csv": ("selection", ["z-first", "a-second"]),
-        "contrasts.csv": ("selection", ["z-first", "a-second"]),
-        "contrast_aggregates.csv": ("selection", ["z-first", "a-second"]),
-        "runtime.csv": ("stage", ["z-first", "a-second"]),
-    }
-    for filename, (field, expected) in ordered_fields.items():
-        with (bundle / filename).open(encoding="utf-8", newline="") as stream:
-            assert [row[field] for row in csv.DictReader(stream)] == expected
+    with pytest.raises(ValueError, match="do not match canonical"):
+        write_artifact_bundle(result, tmp_path / "bundle", config=config)
+
+    assert not (tmp_path / "bundle").exists()
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
+
+
+def test_invalid_result_is_rejected_before_any_artifact_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, result = _fixture()
+    invalid = replace(result, metric_rows=result.metric_rows[:-1])
+    calls: list[str] = []
+
+    for name in (
+        "_write_bytes",
+        "_file_metadata",
+        "_fsync_directory",
+        "_finalize_bundle",
+    ):
+        monkeypatch.setattr(
+            artifacts,
+            name,
+            lambda *args, _name=name, **kwargs: calls.append(_name),
+        )
+    monkeypatch.setattr(
+        artifacts.tempfile,
+        "mkdtemp",
+        lambda *args, **kwargs: calls.append("mkdtemp"),
+    )
+
+    with pytest.raises(ValueError, match="metric_rows do not match canonical"):
+        write_artifact_bundle(invalid, tmp_path / "bundle", config=config)
+
+    assert calls == []
+    assert not (tmp_path / "bundle").exists()
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
 
 
 def test_existing_final_path_is_not_modified(tmp_path: Path) -> None:
@@ -342,7 +269,7 @@ def test_writer_rejects_result_from_a_different_config(tmp_path: Path) -> None:
     )
     output = tmp_path / "bundle"
 
-    with pytest.raises(ValueError, match="result plan metadata does not match config"):
+    with pytest.raises(ValueError, match="plan_metadata does not match the canonical plan"):
         write_artifact_bundle(result, output, config=different_config)
 
     assert not output.exists()
@@ -555,6 +482,97 @@ def test_validator_rejects_incompatible_metric_schema_after_valid_hash(
     _rehash(incompatible_rows, "metrics_long.csv")
     with pytest.raises(ValueError, match="unsupported metric schema version"):
         validate_completed_bundle(incompatible_rows)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ("missing_field", "unknown_field", "wrong_section_type", "wrong_scalar_type"),
+)
+def test_validator_rejects_rehashed_invalid_cell_report_contract(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    bundle = _write_bundle(tmp_path / tamper)
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    scanner_cell = reports[0]["cells"]["RL-SCAN"]
+    if tamper == "missing_field":
+        del scanner_cell["scanner_quality"]
+    elif tamper == "unknown_field":
+        scanner_cell["unexpected"] = {}
+    elif tamper == "wrong_section_type":
+        scanner_cell["scanner_quality"] = []
+    else:
+        scanner_cell["scanner"]["input"]["finite_count"] = "729"
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError):
+        validate_completed_bundle(bundle)
+
+
+def test_cell_report_loader_rejects_nonfinite_nested_scalar(tmp_path: Path) -> None:
+    bundle = _write_bundle(tmp_path / "bundle")
+    reports = json.loads((bundle / "cell_reports.json").read_text(encoding="utf-8"))
+    reports[0]["cells"]["RL-SCAN"]["scanner"]["input"]["mean"] = float("nan")
+    config, _ = _fixture()
+    plan = artifacts.build_mode_comparison_plan(config)
+
+    with pytest.raises(ValueError, match="finite"):
+        artifacts._load_cell_reports(reports, plan)
+
+
+@pytest.mark.parametrize("tamper", ("drop_metric", "change_value", "change_unit"))
+def test_validator_rejects_rehashed_cross_file_metric_tampering(
+    tmp_path: Path, tamper: str
+) -> None:
+    bundle = _write_bundle(tmp_path / tamper)
+    metrics_path = bundle / "metrics_long.csv"
+    with metrics_path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.reader(stream))
+    header = rows[0]
+    if tamper == "drop_metric":
+        rows.pop(1)
+    elif tamper == "change_value":
+        rows[1][header.index("value")] = "0.123456789"
+    else:
+        rows[1][header.index("unit")] = "wrong-unit"
+    with metrics_path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
+    _rehash(bundle, "metrics_long.csv")
+
+    with pytest.raises(ValueError):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_rejects_rehashed_manifest_plan_split_and_missing_coverage(
+    tmp_path: Path,
+) -> None:
+    split_plan = _write_bundle(tmp_path / "split-plan")
+    manifest_path = split_plan / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["resolved_plan"]["shape"] = [11, 11, 11]
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(split_plan, "manifest.json")
+    with pytest.raises(ValueError, match="resolved_plan does not match input_config"):
+        validate_completed_bundle(split_plan)
+
+    missing_report = _write_bundle(tmp_path / "missing-report")
+    reports_path = missing_report / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    reports.clear()
+    reports_path.write_text("[]\n", encoding="utf-8", newline="\n")
+    _rehash(missing_report, "cell_reports.json")
+    with pytest.raises(ValueError, match="exactly one report"):
+        validate_completed_bundle(missing_report)
 
 
 def test_git_failure_records_explicit_unavailable_provenance(
