@@ -1434,8 +1434,14 @@ epsilon do not count, while values strictly above it do. Synthetic
 mode-comparison reuses this definition. It also rejects empty truth-surface
 support after generating a case and before starting its scanner. Its completed
 bundle validator checks cross-file scalar semantics as well as hashes and
-syntax; success means the recorded evidence is internally consistent, not that
-the scanner was rerun or independently proven correct.
+syntax. Invalid non-finite or negative truth-metric scalars are rejected during
+mode-comparison configuration, before the experiment starts. Cache counters
+are validated from resolved semantic stage keys, and shared scanner, voting,
+and conditionally shared thinning scalar evidence is compared across cells.
+Array summaries and report scalars are also checked for their mathematical
+value and count constraints. Success means the recorded scalar evidence is
+internally and cross-cell consistent, not that any volume calculation was
+independently rerun or proven correct.
 
 When `--scanner-backend-matrix` is enabled, scanner pipeline variant reports
 also include `scanner_backend_matrix.backends.<backend>` for `reference-like`,
