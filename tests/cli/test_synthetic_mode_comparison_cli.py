@@ -324,6 +324,42 @@ def test_empty_truth_surface_cli_failure_leaves_no_artifacts(
     assert not tuple(tmp_path.iterdir())
 
 
+def test_invalid_truth_metric_cli_failure_leaves_no_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "bundle"
+    config_type = synthetic_mode_comparison.SyntheticModeComparisonConfig
+
+    def config_with_invalid_truth_metric(**kwargs):
+        return config_type(
+            **kwargs,
+            truth_metric_config=SyntheticTruthMetricConfig(buffer_radius=-0.1),
+        )
+
+    def unexpected_run(config):
+        raise AssertionError("invalid config must fail before experiment execution")
+
+    monkeypatch.setattr(
+        synthetic_mode_comparison,
+        "SyntheticModeComparisonConfig",
+        config_with_invalid_truth_metric,
+    )
+    monkeypatch.setattr(synthetic_mode_comparison, "run_mode_comparison", unexpected_run)
+
+    code = synthetic_mode_comparison.main(["--output-dir", str(output)])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "buffer_radius must be non-negative" in captured.err
+    assert not output.exists()
+    assert not (output / "completion.json").exists()
+    assert not list(tmp_path.glob(".bundle.tmp-*"))
+    assert not tuple(tmp_path.iterdir())
+
+
 def test_main_rejects_an_existing_output_before_running(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

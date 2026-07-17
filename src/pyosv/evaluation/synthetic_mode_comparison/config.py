@@ -13,6 +13,7 @@ from ..synthetic_quality import (
     SyntheticVotingConfig,
 )
 from ..synthetic_quality.cases import validate_case_ids, validate_case_set
+from ..synthetic_quality.config import _validate_nonnegative_finite_scalar
 from .trials import validate_trial_seeds
 
 CANONICAL_COMPARISON_VARIANT = "current_default"
@@ -59,6 +60,14 @@ class SyntheticModeComparisonConfig:
             raise ValueError("skinning_config must be a SyntheticSkinningConfig")
         if not isinstance(self.truth_metric_config, SyntheticTruthMetricConfig):
             raise ValueError("truth_metric_config must be a SyntheticTruthMetricConfig")
+        _validate_nonnegative_finite_scalar(
+            self.truth_metric_config.truth_surface_half_width,
+            "truth_surface_half_width",
+        )
+        _validate_nonnegative_finite_scalar(
+            self.truth_metric_config.buffer_radius,
+            "buffer_radius",
+        )
         _validate_bool(
             self.include_oracle_workflow_isolation,
             "include_oracle_workflow_isolation",
