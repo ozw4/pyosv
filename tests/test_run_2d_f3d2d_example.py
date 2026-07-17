@@ -12,8 +12,11 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
 EXAMPLE_SCRIPTS = tuple(sorted(EXAMPLES_DIR.glob("*.py")))
+PACKAGE_CLI_EXAMPLES = ("report_3d_synthetic_mode_comparison.py",)
 EXAMPLE_MODULES = tuple(
-    script.stem for script in EXAMPLE_SCRIPTS if script.name != "report_3d_synthetic_quality.py"
+    script.stem
+    for script in EXAMPLE_SCRIPTS
+    if script.name not in ("report_3d_synthetic_quality.py", *PACKAGE_CLI_EXAMPLES)
 )
 REFERENCE_EXAMPLE_MODULES = ("run_2d_f3d2d", "run_2d_reference")
 REPOSITORY_ROOT_OUTPUTS = ("fv_py.dat", "fvt_py.dat")
@@ -65,7 +68,7 @@ def test_example_help_exits_successfully(script_path: Path) -> None:
     expected_output_arg = (
         "--output-json"
         if script_path.name.startswith("report_")
-        and script_path.name != "report_3d_synthetic_quality.py"
+        and script_path.name not in ("report_3d_synthetic_quality.py", *PACKAGE_CLI_EXAMPLES)
         else "--output-dir"
     )
     assert expected_output_arg in result.stdout

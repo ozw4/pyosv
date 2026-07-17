@@ -75,6 +75,8 @@ The controlled synthetic API includes:
 - minimal oracle pipeline smoke test
 - scanner-inclusive report/CLI pipeline
 - `examples/report_3d_synthetic_quality.py`
+- canonical scanner/workflow comparison CLI and atomic scalar bundle; see
+  [Synthetic Mode Comparison](synthetic_mode_comparison.md)
 
 ### Report application and serialization API
 
