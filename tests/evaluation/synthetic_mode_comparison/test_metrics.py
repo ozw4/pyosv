@@ -19,7 +19,10 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     run_synthetic_trial,
 )
 from pyosv.evaluation.synthetic_quality import PipelineArtifacts, SyntheticSkinningConfig
-from pyosv.evaluation.synthetic_quality.quality_metrics import EDGE_FALSE_POSITIVE_MARGIN
+from pyosv.evaluation.synthetic_quality.quality_metrics import (
+    EDGE_FALSE_POSITIVE_MARGIN,
+    array_nonzero_fraction,
+)
 from pyosv.skin import FaultSkin
 from pyosv.synthetic_metrics import (
     buffered_surface_overlap,
@@ -131,10 +134,12 @@ def _handcrafted_evaluation(*, empty_skins: bool = False):
     scanner_ft[4, 4, 4] = 9.0
     scanner_ft[4, 4, 5] = 8.0
     scanner_ft[4, 5, 4] = 7.0
+    scanner_ft[0, 0, 1] = 5.0e-8
     scanner_fet[8, 8, 8] = 10.0
     scanner_fet[4, 4, 4] = 9.0
     scanner_fet[4, 4, 5] = 8.0
     scanner_fet[4, 5, 5] = 7.0
+    scanner_fet[0, 0, 1] = -5.0e-8
     confidence = np.linspace(0.0, 1.0, num=np.prod(shape), dtype=np.float32).reshape(shape)
     scanner_artifacts = {
         "scanner_ft": scanner_ft,
@@ -150,7 +155,9 @@ def _handcrafted_evaluation(*, empty_skins: bool = False):
     fv = np.zeros(shape, dtype=np.float32)
     for value, (i1, i2, i3) in enumerate(((0, 0, 0), *component_one, *component_two), start=1):
         fv[i3, i2, i1] = float(value)
+    fv[0, 0, 1] = 5.0e-8
     fvt = np.zeros(shape, dtype=np.float32)
+    fvt[0, 0, 1] = -5.0e-8
     stage_arrays = {"fv": fv, "fvt": fvt}
     quality: dict[str, Any] = {"edge_false_positive": {}}
     expected: dict[str, dict[tuple[str, str, str], float]] = {
@@ -159,8 +166,8 @@ def _handcrafted_evaluation(*, empty_skins: bool = False):
     }
 
     for stage, values in stage_arrays.items():
-        expected["Q-QUAL"][(stage, "all", "array_nonzero_fraction")] = float(
-            np.count_nonzero(values) / values.size
+        expected["Q-QUAL"][(stage, "all", "array_nonzero_fraction")] = array_nonzero_fraction(
+            values
         )
         for selection, candidate in (
             ("top_truth_count", top_truth_count_mask(values, truth_surface)),
@@ -268,6 +275,10 @@ def _handcrafted_evaluation(*, empty_skins: bool = False):
         report_payload={
             "quality": quality,
             "skinning": {"enabled": True},
+            "pyosv": {
+                stage: {"nonzero_fraction": array_nonzero_fraction(values)}
+                for stage, values in stage_arrays.items()
+            },
         },
         artifacts=PipelineArtifacts(volumes=volumes, skins_payload={}),
     )
@@ -290,8 +301,8 @@ def _handcrafted_evaluation(*, empty_skins: bool = False):
             edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
             truth_buffer_radius=buffer_radius,
         )
-        expected[scanner_cell.cell.label][(stage, "all", "array_nonzero_fraction")] = float(
-            np.count_nonzero(values) / values.size
+        expected[scanner_cell.cell.label][(stage, "all", "array_nonzero_fraction")] = (
+            array_nonzero_fraction(values)
         )
         expected[scanner_cell.cell.label].update(
             {
@@ -312,6 +323,14 @@ def _handcrafted_evaluation(*, empty_skins: bool = False):
             expected[scanner_cell.cell.label][
                 ("scanner_confidence", selection, f"confidence_{summary}")
             ] = float(value)
+
+    scanner_report = dict(scanner_cell.report_payload)
+    scanner_report["scanner"] = {
+        **scanner_report["scanner"],
+        "ft": {"nonzero_fraction": array_nonzero_fraction(scanner_ft)},
+        "fet": {"nonzero_fraction": array_nonzero_fraction(scanner_fet)},
+    }
+    scanner_cell = replace(scanner_cell, report_payload=scanner_report)
 
     return replace(evaluation, cells=(scanner_cell, downstream_cell)), expected
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from pyosv.evaluation.synthetic_quality.config import SyntheticTruthMetricConfig
 from pyosv.evaluation.synthetic_quality import quality_metrics
@@ -19,6 +20,60 @@ def test_positive_candidate_count_uses_report_epsilon() -> None:
     np.testing.assert_array_equal(
         quality_metrics.positive_candidate_mask(values), [False, False, True]
     )
+
+
+def test_array_nonzero_fraction_ignores_sub_epsilon_tails() -> None:
+    values = np.array([0.0, 5.0e-8, 2.0e-6, -5.0e-8, -2.0e-6], dtype=np.float32)
+
+    assert quality_metrics.array_nonzero_fraction(values) == 2 / 5
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    (
+        (
+            np.array(
+                [-quality_metrics.NONZERO_EPSILON, quality_metrics.NONZERO_EPSILON],
+                dtype=np.float32,
+            ),
+            0.0,
+        ),
+        (
+            np.array(
+                [
+                    np.nextafter(np.float32(quality_metrics.NONZERO_EPSILON), np.float32(0.0)),
+                    np.nextafter(np.float32(quality_metrics.NONZERO_EPSILON), np.float32(np.inf)),
+                    np.nextafter(-np.float32(quality_metrics.NONZERO_EPSILON), np.float32(0.0)),
+                    np.nextafter(-np.float32(quality_metrics.NONZERO_EPSILON), np.float32(-np.inf)),
+                ],
+                dtype=np.float32,
+            ),
+            0.5,
+        ),
+        (np.array([], dtype=np.float32), 0.0),
+        (np.array([np.iinfo(np.int32).min, 0, 3], dtype=np.int32), 2 / 3),
+    ),
+)
+def test_array_nonzero_fraction_epsilon_boundaries_and_dtypes(
+    values: np.ndarray, expected: float
+) -> None:
+    original = values.copy()
+
+    assert quality_metrics.array_nonzero_fraction(values) == expected
+    np.testing.assert_array_equal(values, original)
+
+
+@pytest.mark.parametrize(
+    "values",
+    (
+        np.array(["not-numeric"]),
+        np.array([np.nan], dtype=np.float32),
+        np.array([np.inf], dtype=np.float32),
+    ),
+)
+def test_array_nonzero_fraction_rejects_invalid_values(values: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="numeric|finite"):
+        quality_metrics.array_nonzero_fraction(values)
 
 
 def test_edge_candidate_fraction_and_zero_denominator() -> None:
