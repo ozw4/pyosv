@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from .metrics import MetricDirection, MetricRow
+from .metrics import METRIC_REGISTRY, MetricDirection, MetricRow
 
 AggregateSource = Literal["metric", "contrast"]
 
@@ -86,6 +86,10 @@ CONTRAST_DEFINITIONS = (
 )
 
 _DEFINITION_NAMES = frozenset(definition.name for definition in CONTRAST_DEFINITIONS)
+_METRIC_ORDER = {
+    (definition.stage, definition.selection, definition.metric): index
+    for index, definition in enumerate(METRIC_REGISTRY)
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -518,4 +522,11 @@ def _definition_by_name(name: str) -> ContrastDefinition:
 
 def _sortable_pair_key(key: _MetricPairKey) -> tuple[Any, ...]:
     case_id, trial_id, seed, stage, selection, metric = key
-    return (case_id, trial_id, -1 if seed is None else seed, stage, selection, metric)
+    metric_identity = (stage, selection, metric)
+    return (
+        case_id,
+        trial_id,
+        -1 if seed is None else seed,
+        _METRIC_ORDER.get(metric_identity, len(_METRIC_ORDER)),
+        metric_identity,
+    )

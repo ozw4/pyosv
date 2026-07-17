@@ -33,6 +33,24 @@ MetricAggregator = Callable[[Sequence[MetricRow]], Sequence[AggregateRow]]
 ContrastAggregator = Callable[[Sequence[ContrastRow]], Sequence[AggregateRow]]
 
 
+class _MonotonicClock:
+    def __init__(self, clock: Clock) -> None:
+        self._clock = clock
+        self._previous: float | None = None
+
+    def __call__(self) -> float:
+        value = self._clock()
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError("clock must return a finite number")
+        normalized = float(value)
+        if not np.isfinite(normalized):
+            raise ValueError("clock must return a finite number")
+        if self._previous is not None and normalized < self._previous:
+            raise ValueError("clock moved backwards")
+        self._previous = normalized
+        return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeRow:
     """One validated runtime observation for an experiment stage."""
@@ -186,7 +204,8 @@ def run_mode_comparison(
 ) -> SyntheticModeComparisonResult:
     """Run every planned trial sequentially and return scalar-only evidence."""
 
-    experiment_start = _clock_value(clock, "experiment_total")
+    monitored_clock = _MonotonicClock(clock)
+    experiment_start = _clock_value(monitored_clock, "experiment_total")
     plan = build_mode_comparison_plan(config)
     runtime_rows: list[RuntimeRow] = []
     trial_metadata: list[Mapping[str, Any]] = []
@@ -196,30 +215,30 @@ def run_mode_comparison(
     contrast_rows: list[ContrastRow] = []
     for trial in plan.trials:
         recorder = _ExperimentRuntimeRecorder(trial, runtime_rows)
-        trial_start = _clock_value(clock, "trial_total")
+        trial_start = _clock_value(monitored_clock, "trial_total")
         evaluation: SyntheticTrialEvaluation | None = None
         try:
             evaluation = trial_runner(
                 plan,
                 trial,
-                clock=clock,
+                clock=monitored_clock,
                 runtime_recorder=recorder,
             )
             report = _cell_report(evaluation, plan, trial)
             trial_metrics = _timed_processing(
                 "metric_extraction",
                 lambda: tuple(metric_extractor(evaluation)),
-                clock=clock,
+                clock=monitored_clock,
                 recorder=recorder,
             )
             trial_contrasts = _timed_processing(
                 "contrast_extraction",
                 lambda: tuple(contrast_builder(trial_metrics)),
-                clock=clock,
+                clock=monitored_clock,
                 recorder=recorder,
             )
             trial_cache = _cache_stats(evaluation, trial)
-            trial_end = _clock_value(clock, "trial_total")
+            trial_end = _clock_value(monitored_clock, "trial_total")
             if trial_end < trial_start:
                 raise ValueError("clock moved backwards while timing 'trial_total'")
             recorder.record(
@@ -238,7 +257,7 @@ def run_mode_comparison(
 
     metric_aggregates = tuple(metric_aggregator(tuple(metric_rows)))
     contrast_aggregates = tuple(contrast_aggregator(tuple(contrast_rows)))
-    experiment_end = _clock_value(clock, "experiment_total")
+    experiment_end = _clock_value(monitored_clock, "experiment_total")
     if experiment_end < experiment_start:
         raise ValueError("clock moved backwards while timing 'experiment_total'")
     runtime_rows.append(

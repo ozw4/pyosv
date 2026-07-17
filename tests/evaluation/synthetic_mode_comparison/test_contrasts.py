@@ -109,6 +109,30 @@ def test_all_fixed_contrast_formulas_and_component_order() -> None:
     )
 
 
+def test_contrasts_follow_canonical_metric_registry_order() -> None:
+    rows = tuple(
+        _row(cell, value, stage="fvt", selection=selection, metric=metric)
+        for selection, metric in reversed(
+            (
+                ("top_truth_count", "candidate_count"),
+                ("top_truth_count", "buffered_f1"),
+                ("positive_top_truth_count", "candidate_count"),
+                ("positive_top_truth_count", "buffered_f1"),
+            )
+        )
+        for cell, value in (("RL-SCAN", 1.0), ("Q-SCAN", 2.0))
+    )
+
+    contrasts = compute_contrast_rows(rows)
+
+    assert tuple((row.selection, row.metric) for row in contrasts) == (
+        ("top_truth_count", "candidate_count"),
+        ("top_truth_count", "buffered_f1"),
+        ("positive_top_truth_count", "candidate_count"),
+        ("positive_top_truth_count", "buffered_f1"),
+    )
+
+
 @pytest.mark.parametrize(
     ("direction", "expected"),
     (("higher", 3.0), ("lower", -3.0), ("neutral", None)),

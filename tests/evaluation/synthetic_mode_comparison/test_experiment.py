@@ -122,6 +122,32 @@ def test_backwards_clock_fails_without_returning_a_result() -> None:
         )
 
 
+def test_clock_regression_between_timed_stages_fails() -> None:
+    values = iter((0.0, 0.0, 10.0, 11.0, 5.0))
+    zero_stats = PipelineStageCacheStats(*(0,) * 8)
+
+    class FakeEvaluation:
+        pass
+
+    def fake_runner(plan, trial, *, clock, runtime_recorder):
+        evaluation = FakeEvaluation()
+        evaluation.trial = trial
+        evaluation.report_payload = {cell.label: {} for cell in plan.cells}
+        evaluation.stage_cache_stats = zero_stats
+        return evaluation
+
+    with pytest.raises(ValueError, match="clock moved backwards"):
+        run_mode_comparison(
+            SyntheticModeComparisonConfig(
+                case_ids=("single_vertical_plane",),
+                shape=(9, 9, 9),
+            ),
+            clock=lambda: next(values),
+            trial_runner=fake_runner,
+            metric_extractor=lambda evaluation: (),
+        )
+
+
 def test_fake_runner_preserves_trial_order_and_releases_each_evaluation() -> None:
     calls: list[tuple[str, int | None]] = []
     references: list[weakref.ReferenceType[Any]] = []
