@@ -5,13 +5,14 @@ import hashlib
 import json
 import shutil
 import subprocess
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
 
 from pyosv.evaluation.synthetic_mode_comparison import (
     HASHED_BUNDLE_FILES,
+    METRIC_SCHEMA_VERSION,
     REQUIRED_BUNDLE_FILES,
     AggregateRow,
     ContrastRow,
@@ -250,6 +251,75 @@ def test_same_result_and_pretty_setting_writes_identical_hashed_files(
     )
 
 
+def test_pretty_only_changes_json_whitespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provenance = {
+        "status": "available",
+        "method": "git_cli",
+        "commit": "1" * 40,
+        "dirty": False,
+    }
+    monkeypatch.setattr(artifacts, "_source_provenance", lambda: provenance)
+    config, result = _fixture()
+
+    compact = write_artifact_bundle(result, tmp_path / "compact", config=config)
+    pretty = write_artifact_bundle(
+        result,
+        tmp_path / "pretty",
+        config=config,
+        pretty=True,
+    )
+
+    for filename in (
+        "metrics_long.csv",
+        "metric_aggregates.csv",
+        "contrasts.csv",
+        "contrast_aggregates.csv",
+        "runtime.csv",
+    ):
+        assert (compact / filename).read_bytes() == (pretty / filename).read_bytes()
+
+
+def test_csv_rows_preserve_result_order(tmp_path: Path) -> None:
+    config, result = _fixture()
+    result = replace(
+        result,
+        metric_rows=(
+            replace(result.metric_rows[0], selection="z-first"),
+            replace(result.metric_rows[0], selection="a-second"),
+        ),
+        metric_aggregates=(
+            replace(result.metric_aggregates[0], selection="z-first"),
+            replace(result.metric_aggregates[0], selection="a-second"),
+        ),
+        contrast_rows=(
+            replace(result.contrast_rows[0], selection="z-first"),
+            replace(result.contrast_rows[0], selection="a-second"),
+        ),
+        contrast_aggregates=(
+            replace(result.contrast_aggregates[0], selection="z-first"),
+            replace(result.contrast_aggregates[0], selection="a-second"),
+        ),
+        runtime_rows=(
+            replace(result.runtime_rows[0], stage="z-first"),
+            replace(result.runtime_rows[0], stage="a-second"),
+        ),
+    )
+
+    bundle = write_artifact_bundle(result, tmp_path / "bundle", config=config)
+    ordered_fields = {
+        "metrics_long.csv": ("selection", ["z-first", "a-second"]),
+        "metric_aggregates.csv": ("selection", ["z-first", "a-second"]),
+        "contrasts.csv": ("selection", ["z-first", "a-second"]),
+        "contrast_aggregates.csv": ("selection", ["z-first", "a-second"]),
+        "runtime.csv": ("stage", ["z-first", "a-second"]),
+    }
+    for filename, (field, expected) in ordered_fields.items():
+        with (bundle / filename).open(encoding="utf-8", newline="") as stream:
+            assert [row[field] for row in csv.DictReader(stream)] == expected
+
+
 def test_existing_final_path_is_not_modified(tmp_path: Path) -> None:
     final = tmp_path / "bundle"
     final.mkdir()
@@ -455,6 +525,36 @@ def test_validator_rejects_malformed_and_nonfinite_content_after_valid_hash(
     _rehash(nonfinite_csv, "metrics_long.csv")
     with pytest.raises(ValueError, match="non-finite number"):
         validate_completed_bundle(nonfinite_csv)
+
+
+def test_validator_rejects_incompatible_metric_schema_after_valid_hash(
+    tmp_path: Path,
+) -> None:
+    incompatible_manifest = _write_bundle(tmp_path / "incompatible-manifest")
+    manifest_path = incompatible_manifest / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["metric_schema_version"] = METRIC_SCHEMA_VERSION + 1
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(incompatible_manifest, "manifest.json")
+    with pytest.raises(ValueError, match="unsupported metric schema version"):
+        validate_completed_bundle(incompatible_manifest)
+
+    incompatible_rows = _write_bundle(tmp_path / "incompatible-rows")
+    metrics_path = incompatible_rows / "metrics_long.csv"
+    with metrics_path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.reader(stream))
+    rows[1][[field.name for field in fields(MetricRow)].index("schema_version")] = str(
+        METRIC_SCHEMA_VERSION + 1
+    )
+    with metrics_path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
+    _rehash(incompatible_rows, "metrics_long.csv")
+    with pytest.raises(ValueError, match="unsupported metric schema version"):
+        validate_completed_bundle(incompatible_rows)
 
 
 def test_git_failure_records_explicit_unavailable_provenance(

@@ -257,6 +257,8 @@ def validate_completed_bundle(path: str | PathLike[str]) -> bool:
         raise ValueError("manifest.json must contain an object")
     if manifest.get("artifact_schema_version") != ARTIFACT_SCHEMA_VERSION:
         raise ValueError("unsupported artifact schema version")
+    if manifest.get("metric_schema_version") != METRIC_SCHEMA_VERSION:
+        raise ValueError("unsupported metric schema version")
     reports = _read_json(entries[CELL_REPORTS_FILE])
     if not isinstance(reports, list):
         raise ValueError("cell_reports.json must contain an ordered reports array")
@@ -637,9 +639,15 @@ def _validate_csv(path: Path, filename: str) -> None:
             if not value and name in _CSV_NULLABLE_NUMERIC_FIELDS[filename]:
                 continue
             try:
-                int(value, 10)
+                integer = int(value, 10)
             except ValueError as error:
                 raise ValueError(f"invalid integer in {filename}: {name}") from error
+            if (
+                filename == METRICS_FILE
+                and name == "schema_version"
+                and integer != METRIC_SCHEMA_VERSION
+            ):
+                raise ValueError("unsupported metric schema version in metrics_long.csv")
         for name in _CSV_FLOAT_FIELDS[filename]:
             value = values[name]
             if not value and name in _CSV_NULLABLE_NUMERIC_FIELDS[filename]:
