@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from numbers import Real
+from time import perf_counter
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 from pyosv.synthetic3d import Synthetic3DCase
@@ -27,6 +29,22 @@ from .trials import SyntheticTrialSpec
 
 ScannerCellArtifacts = Mapping[str, np.ndarray]
 SyntheticCellArtifacts = ScannerCellArtifacts | PipelineArtifacts
+_T = TypeVar("_T")
+
+
+class TrialRuntimeRecorder(Protocol):
+    """Receiver for scalar stage timings produced by one trial."""
+
+    def record(
+        self,
+        *,
+        stage: str,
+        elapsed_seconds: float,
+        cell_label: str | None = None,
+        scanner_backend: str | None = None,
+        call_count: int = 1,
+        shared_stage: bool,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,11 +73,20 @@ class SyntheticTrialEvaluation:
 def run_synthetic_trial(
     plan: SyntheticModeComparisonPlan,
     trial: SyntheticTrialSpec,
+    *,
+    clock: Any = perf_counter,
+    runtime_recorder: TrialRuntimeRecorder | None = None,
 ) -> SyntheticTrialEvaluation:
     """Run every canonical cell for ``trial`` from one set of shared inputs."""
 
     _validate_trial(plan, trial)
-    case = _build_trial_case(plan, trial)
+    case = _timed_call(
+        "case_generation",
+        lambda: _build_trial_case(plan, trial),
+        clock=clock,
+        runtime_recorder=runtime_recorder,
+        shared_stage=True,
+    )
     if case.case_id != trial.case_id:
         raise ValueError(
             f"case factory returned {case.case_id!r}, expected trial case {trial.case_id!r}"
@@ -78,22 +105,30 @@ def run_synthetic_trial(
             input_mode="both",
             scanner_backend_matrix=False,
             scanner_backends=("reference-like", "quality"),
+            stage_timer=lambda stage, backend, operation: _timed_call(
+                stage,
+                operation,
+                clock=clock,
+                runtime_recorder=runtime_recorder,
+                scanner_backend=backend,
+                shared_stage=True,
+            ),
         )
         for cell in _execution_cells(plan):
-            if cell.scope == SCANNER_ONLY_SCOPE:
-                evaluation = _evaluate_scanner_cell(
-                    cell,
-                    prepared_inputs=prepared_inputs,
-                    scanner_config=replace(plan.scanner_template, backend=cell.scanner_backend),
-                    truth_metric_config=plan.truth_metric_config,
-                )
-            else:
-                evaluation = _evaluate_downstream_cell(
+            evaluation = _timed_call(
+                "cell_execution",
+                lambda cell=cell: _evaluate_cell(
                     plan,
                     cell,
                     prepared_inputs=prepared_inputs,
                     stage_cache=stage_cache,
-                )
+                ),
+                clock=clock,
+                runtime_recorder=runtime_recorder,
+                cell_label=cell.label,
+                scanner_backend=cell.scanner_backend,
+                shared_stage=False,
+            )
             evaluations[cell.label] = evaluation
 
         ordered_cells = tuple(evaluations[cell.label] for cell in plan.cells)
@@ -109,6 +144,66 @@ def run_synthetic_trial(
         )
     finally:
         stage_cache.clear()
+
+
+def _evaluate_cell(
+    plan: SyntheticModeComparisonPlan,
+    cell: ModeCellSpec,
+    *,
+    prepared_inputs: PreparedCaseInputs,
+    stage_cache: PipelineStageCache,
+) -> SyntheticCellEvaluation:
+    if cell.scope == SCANNER_ONLY_SCOPE:
+        return _evaluate_scanner_cell(
+            cell,
+            prepared_inputs=prepared_inputs,
+            scanner_config=replace(plan.scanner_template, backend=cell.scanner_backend),
+            truth_metric_config=plan.truth_metric_config,
+        )
+    return _evaluate_downstream_cell(
+        plan,
+        cell,
+        prepared_inputs=prepared_inputs,
+        stage_cache=stage_cache,
+    )
+
+
+def _timed_call(
+    stage: str,
+    operation: Callable[[], _T],
+    *,
+    clock: Any,
+    runtime_recorder: TrialRuntimeRecorder | None,
+    cell_label: str | None = None,
+    scanner_backend: str | None = None,
+    shared_stage: bool,
+) -> _T:
+    start = _clock_value(clock, stage)
+    result = operation()
+    end = _clock_value(clock, stage)
+    elapsed = end - start
+    if elapsed < 0.0:
+        raise ValueError(f"clock moved backwards while timing {stage!r}")
+    if runtime_recorder is not None:
+        runtime_recorder.record(
+            stage=stage,
+            elapsed_seconds=elapsed,
+            cell_label=cell_label,
+            scanner_backend=scanner_backend,
+            call_count=1,
+            shared_stage=shared_stage,
+        )
+    return result
+
+
+def _clock_value(clock: Any, stage: str) -> float:
+    value = clock()
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"clock must return a finite number while timing {stage!r}")
+    normalized = float(value)
+    if not np.isfinite(normalized):
+        raise ValueError(f"clock must return a finite number while timing {stage!r}")
+    return normalized
 
 
 def _validate_trial(plan: SyntheticModeComparisonPlan, trial: SyntheticTrialSpec) -> None:

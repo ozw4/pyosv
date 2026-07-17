@@ -223,6 +223,12 @@ existing operational validation paths.
   `ORACLE-REF` and `ORACLE-QUAL`, followed by the four 2x2 cells in the table
   above. Deterministic cases have one trial with `seed=None`; only registered
   stochastic cases expand in configured `trial_seeds` order.
+- `run_mode_comparison(config)` executes that plan sequentially and returns a
+  `SyntheticModeComparisonResult` containing JSON-safe cell reports,
+  long-format metrics, paired contrasts, case-local aggregates, cache counters,
+  and runtime rows. Shared scanner-input and backend scan/thinning costs are
+  recorded once per trial rather than copied into workflow-cell runtimes; the
+  returned object retains no full-volume arrays or fault skin/cell objects.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   full-volume scan/vote runner. It calls `FaultOrientScanner3.scan()`, then
   performs separately configurable scanner and voter thinning.

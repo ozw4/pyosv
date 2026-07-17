@@ -11,6 +11,7 @@ from .contrasts import (
     aggregate_metric_rows,
     compute_contrast_rows,
 )
+from .experiment import RuntimeRow, SyntheticModeComparisonResult, run_mode_comparison
 from .metrics import (
     METRIC_REGISTRY,
     METRIC_SCHEMA_VERSION,
@@ -47,8 +48,10 @@ __all__ = [
     "ModeCellScope",
     "ModeCellSpec",
     "ModeInputMode",
+    "RuntimeRow",
     "SyntheticModeComparisonConfig",
     "SyntheticModeComparisonPlan",
+    "SyntheticModeComparisonResult",
     "SyntheticCellEvaluation",
     "SyntheticTrialEvaluation",
     "SyntheticTrialSpec",
@@ -60,5 +63,6 @@ __all__ = [
     "extract_trial_metric_rows",
     "extract_trial_metrics",
     "run_synthetic_trial",
+    "run_mode_comparison",
     "validate_trial_seeds",
 ]

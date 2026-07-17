@@ -60,6 +60,8 @@ PIPELINE_OUTPUTS_KEY = "__pipelines__"
 SCANNER_BACKEND_MATRIX_BACKENDS = ("reference-like", "quality", "fast")
 DEFAULT_THINNING_DIAGNOSTIC_CASES = ("curved_surface",)
 
+PrepareStageTimer = Callable[[str, str | None, Callable[[], Any]], Any]
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedScannerInput:
@@ -149,6 +151,7 @@ def prepare_case_inputs(
     input_mode: str,
     scanner_backend_matrix: bool,
     scanner_backends: Sequence[str] | None = None,
+    stage_timer: PrepareStageTimer | None = None,
 ) -> PreparedCaseInputs:
     """Generate inputs shared by every variant in a single report build."""
 
@@ -162,18 +165,32 @@ def prepare_case_inputs(
     if valid_input_mode == "oracle":
         return PreparedCaseInputs(case=case, oracle=oracle, scanner=None)
 
-    scanner_input = _validated_scanner_input(
-        case,
-        make_scanner_input_from_case(case, scanner_config.input_config),
-    )
-    by_backend = {
-        backend: scanner_attributes_from_input(
+    def generate_scanner_input() -> np.ndarray:
+        return _validated_scanner_input(
             case,
-            replace(scanner_config, backend=backend),
-            scanner_input,
+            make_scanner_input_from_case(case, scanner_config.input_config),
         )
-        for backend in backends
-    }
+
+    scanner_input = (
+        generate_scanner_input()
+        if stage_timer is None
+        else stage_timer("scanner_input_generation", None, generate_scanner_input)
+    )
+    by_backend: dict[str, ScannerAttributes] = {}
+    for backend in backends:
+
+        def generate_attributes(backend: str = backend) -> ScannerAttributes:
+            return scanner_attributes_from_input(
+                case,
+                replace(scanner_config, backend=backend),
+                scanner_input,
+            )
+
+        by_backend[backend] = (
+            generate_attributes()
+            if stage_timer is None
+            else stage_timer("scanner_scan_thinning", backend, generate_attributes)
+        )
     selected = by_backend[scanner_config.backend]
     prepared_scanner = PreparedScannerInput(
         config=scanner_config,
