@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, replace
-from math import isclose, isfinite
+from math import isfinite
 from numbers import Integral, Real
 from typing import Any
 
@@ -352,6 +352,7 @@ def _validate_shared_stage_evidence(
                         {
                             "scanner": cells[cell.label]["scanner"],
                             "scanner_quality": cells[cell.label]["scanner_quality"],
+                            "scanner_metric_evidence": cells[cell.label]["scanner_metric_evidence"],
                         },
                     )
                     for cell in group
@@ -602,10 +603,7 @@ def _validate_reported_metric_values(
         if isinstance(reported, bool) or not isinstance(reported, Real):
             raise ValueError("cell report metric evidence must be numeric")
         normalized = float(reported)
-        matches = normalized == row.value
-        if row.stage == "scanner_confidence":
-            matches = isclose(normalized, row.value, rel_tol=1.0e-7, abs_tol=1.0e-9)
-        if not isfinite(normalized) or not matches:
+        if not isfinite(normalized) or normalized != row.value:
             raise ValueError(
                 "metric_rows do not match scalar evidence in cell_reports: "
                 f"{row.cell_label}/{row.stage}/{row.selection}/{row.metric} "
@@ -614,56 +612,34 @@ def _validate_reported_metric_values(
 
 
 def _reported_metric_value(payload: Mapping[str, Any], row: MetricRow) -> Any:
+    if row.stage.startswith("scanner_") or row.stage == "scanner_confidence":
+        return _reported_scanner_evidence_value(payload, row)
+
     if row.metric == "array_nonzero_fraction":
         report_name = {
-            "scanner_raw": "ft",
-            "scanner_thinned": "fet",
             "fv": "fv",
             "fvt": "fvt",
         }[row.stage]
-        section = "scanner" if row.stage.startswith("scanner_") else "pyosv"
-        return _report_path(payload, section, report_name, "nonzero_fraction")
-
-    if row.stage == "scanner_confidence":
-        if row.selection == "finite" and row.metric == "confidence_mean":
-            return _report_path(payload, "scanner", "confidence", "mean")
-        return _MISSING
-
-    if row.stage.startswith("scanner_"):
-        return _reported_scanner_quality_value(payload, row)
+        return _report_path(payload, "pyosv", report_name, "nonzero_fraction")
     return _reported_downstream_quality_value(payload, row)
 
 
-def _reported_scanner_quality_value(payload: Mapping[str, Any], row: MetricRow) -> Any:
-    if row.stage == "scanner_raw":
-        if row.metric in _OVERLAP_METRICS:
-            return _report_path(
-                payload,
-                "scanner_quality",
-                "ft_top_truth_count",
-                "buffered_overlap_radius2",
-                row.metric,
-            )
-        if row.metric in _DISTANCE_METRICS:
-            return _report_path(
-                payload,
-                "scanner_quality",
-                "ft_top_truth_count",
-                "surface_distance",
-                row.metric,
-            )
-        orientation_key = "raw_scan_top_truth_count"
-    else:
-        orientation_key = "used_attributes_top_truth_count"
-    if row.metric in _ORIENTATION_METRICS:
-        return _report_path(
-            payload,
-            "scanner_quality",
-            "orientation_error",
-            orientation_key,
-            row.metric,
+def _reported_scanner_evidence_value(payload: Mapping[str, Any], row: MetricRow) -> Any:
+    evidence = payload.get("scanner_metric_evidence", _MISSING)
+    if evidence is _MISSING or not isinstance(evidence, (tuple, list)):
+        raise ValueError("applicable scanner metric is missing scanner_metric_evidence")
+    identity = (row.stage, row.selection, row.metric)
+    matches = []
+    for entry in evidence:
+        if not isinstance(entry, Mapping):
+            raise ValueError("scanner_metric_evidence entries must be mappings")
+        if tuple(entry.get(name) for name in ("stage", "selection", "metric")) == identity:
+            matches.append(entry)
+    if len(matches) != 1 or "value" not in matches[0]:
+        raise ValueError(
+            "applicable scanner metric evidence lookup failed for " + "/".join(identity)
         )
-    return _MISSING
+    return matches[0]["value"]
 
 
 def _reported_downstream_quality_value(payload: Mapping[str, Any], row: MetricRow) -> Any:

@@ -37,7 +37,12 @@ from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
 from .contrasts import AggregateRow, ContrastRow
 from .experiment import RuntimeRow, SyntheticModeComparisonResult
-from .metrics import METRIC_SCHEMA_VERSION, MetricRow
+from .metrics import (
+    METRIC_SCHEMA_VERSION,
+    MetricRow,
+    scanner_metric_definitions,
+    validate_metric_value,
+)
 from .models import (
     ORACLE_WORKFLOW_ISOLATION_SCOPE,
     SCANNER_ONLY_SCOPE,
@@ -46,7 +51,7 @@ from .models import (
 )
 from .validation import validate_mode_comparison_result
 
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
 METRIC_REGISTRY_DEFINITION_VERSION = 1
@@ -201,6 +206,7 @@ _END_TO_END_REPORT_FIELDS = {
     *_DOWNSTREAM_REPORT_FIELDS,
     "scanner",
     "scanner_quality",
+    "scanner_metric_evidence",
     "active_pipeline",
     "pipelines",
 }
@@ -703,6 +709,11 @@ def _load_bundle_objects(
         manifest["artifact_schema_version"], "manifest artifact_schema_version"
     )
     if artifact_schema_version != ARTIFACT_SCHEMA_VERSION:
+        if artifact_schema_version == 1:
+            raise ValueError(
+                "unsupported artifact schema version 1: legacy bundle does not contain "
+                "complete scanner metric evidence"
+            )
         raise ValueError("unsupported artifact schema version")
     metric_schema_version = _integer(
         manifest["metric_schema_version"], "manifest metric_schema_version"
@@ -964,7 +975,11 @@ def _load_cell_payload(
     context: str,
 ) -> dict[str, Any]:
     if cell.scope == SCANNER_ONLY_SCOPE:
-        payload = _object(value, {"scanner", "scanner_quality"}, context)
+        payload = _object(
+            value,
+            {"scanner", "scanner_quality", "scanner_metric_evidence"},
+            context,
+        )
         scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
         _load_scanner_report(
             payload["scanner"],
@@ -976,6 +991,11 @@ def _load_cell_payload(
             payload["scanner_quality"],
             buffer_radius=plan.truth_metric_config.buffer_radius,
             context=f"{context}.scanner_quality",
+        )
+        payload["scanner_metric_evidence"] = _load_scanner_metric_evidence(
+            payload["scanner_metric_evidence"],
+            scanner_backend=scanner_config.backend,
+            context=f"{context}.scanner_metric_evidence",
         )
         return payload
 
@@ -1003,6 +1023,11 @@ def _load_cell_payload(
         payload["scanner_quality"],
         buffer_radius=plan.truth_metric_config.buffer_radius,
         context=f"{context}.scanner_quality",
+    )
+    payload["scanner_metric_evidence"] = _load_scanner_metric_evidence(
+        payload["scanner_metric_evidence"],
+        scanner_backend=scanner_config.backend,
+        context=f"{context}.scanner_metric_evidence",
     )
     pipelines = _object(payload["pipelines"], {cell.input_mode}, f"{context}.pipelines")
     pipeline = _object(
@@ -1201,6 +1226,53 @@ def _load_scanner_quality_report(
         f"{context}.input_association",
     )
     return payload
+
+
+def _load_scanner_metric_evidence(
+    value: Any, *, scanner_backend: str, context: str
+) -> list[dict[str, Any]]:
+    entries = _array(value, context)
+    definitions = scanner_metric_definitions(scanner_backend)
+    if len(entries) != len(definitions):
+        raise ValueError(f"{context} must contain exactly every applicable scanner registry metric")
+    loaded: list[dict[str, Any]] = []
+    fields = {"stage", "selection", "metric", "value", "unit", "direction"}
+    for index, (entry_value, definition) in enumerate(zip(entries, definitions, strict=True)):
+        entry_context = f"{context}[{index}]"
+        entry = _object(entry_value, fields, entry_context)
+        identity = tuple(
+            _string(entry[name], f"{entry_context}.{name}")
+            for name in ("stage", "selection", "metric")
+        )
+        expected_identity = (definition.stage, definition.selection, definition.metric)
+        if identity != expected_identity:
+            raise ValueError(
+                f"{entry_context} identity does not match the applicable metric registry order"
+            )
+        unit = _string(entry["unit"], f"{entry_context}.unit")
+        direction = _string(entry["direction"], f"{entry_context}.direction")
+        if unit != definition.unit or direction != definition.direction:
+            raise ValueError(f"{entry_context} unit or direction does not match the registry")
+        try:
+            metric_value = validate_metric_value(
+                definition,
+                _number(entry["value"], f"{entry_context}.value"),
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"{entry_context}.value violates the metric registry: {error}"
+            ) from error
+        loaded.append(
+            {
+                "stage": identity[0],
+                "selection": identity[1],
+                "metric": identity[2],
+                "value": metric_value,
+                "unit": unit,
+                "direction": direction,
+            }
+        )
+    return loaded
 
 
 def _load_skinning_diagnostics(value: Any, *, method: str, context: str) -> dict[str, Any]:

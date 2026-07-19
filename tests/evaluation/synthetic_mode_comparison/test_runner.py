@@ -14,6 +14,7 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     run_synthetic_trial,
 )
 from pyosv.evaluation.synthetic_mode_comparison import experiment as comparison_experiment
+from pyosv.evaluation.synthetic_mode_comparison import metrics as comparison_metrics
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
 from pyosv.evaluation.synthetic_mode_comparison.validation import (
     _resolved_stage_keys_for_cell,
@@ -87,6 +88,7 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     scanner_input_calls = 0
     scan_backends: list[str] = []
     scanner_thin_calls = 0
+    evidence_backends: list[str] = []
     scanner_cell_active = False
     voter_call_phases: list[bool] = []
     skinner_call_phases: list[bool] = []
@@ -96,6 +98,7 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     original_backend_scan = quality_scanner.scan_backend_attributes
     original_scanner_thin = quality_scanner.FaultOrientScanner3.thin
     original_scanner_cell = comparison_runner._evaluate_scanner_cell
+    original_evidence = comparison_metrics.build_scanner_metric_evidence
     original_voter_apply = quality_pipeline.OptimalSurfaceVoter.apply_voting_from_seeds
     original_skinner = quality_pipeline.find_synthetic_skins
 
@@ -118,6 +121,10 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
         scanner_thin_calls += 1
         return original_scanner_thin(*args, **kwargs)
 
+    def counted_evidence(*args, **kwargs):
+        evidence_backends.append(kwargs["scanner_backend"])
+        return original_evidence(*args, **kwargs)
+
     def tracked_scanner_cell(*args, **kwargs):
         nonlocal scanner_cell_active
         scanner_cell_active = True
@@ -139,6 +146,7 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     monkeypatch.setattr(quality_scanner, "scan_backend_attributes", counted_backend_scan)
     monkeypatch.setattr(quality_scanner.FaultOrientScanner3, "thin", counted_scanner_thin)
     monkeypatch.setattr(comparison_runner, "_evaluate_scanner_cell", tracked_scanner_cell)
+    monkeypatch.setattr(comparison_metrics, "build_scanner_metric_evidence", counted_evidence)
     monkeypatch.setattr(
         quality_pipeline.OptimalSurfaceVoter,
         "apply_voting_from_seeds",
@@ -152,6 +160,7 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     assert scanner_input_calls == 1
     assert scan_backends == ["reference-like", "quality"]
     assert scanner_thin_calls == 2
+    assert evidence_backends == ["reference-like", "quality"]
     assert voter_call_phases and not any(voter_call_phases)
     assert skinner_call_phases and not any(skinner_call_phases)
 
@@ -400,7 +409,10 @@ def test_downstream_cells_match_standalone_case_variant_runs() -> None:
             prepared_inputs=prepared,
         )
         actual = next(item for item in shared.cells if item.cell.label == cell.label)
-        assert actual.report_payload == standalone.report_payload
+        actual_payload = dict(actual.report_payload)
+        evidence = actual_payload.pop("scanner_metric_evidence", None)
+        assert actual_payload == standalone.report_payload
+        assert (evidence is not None) == (cell.scanner_backend is not None)
         assert isinstance(actual.artifacts, PipelineArtifacts)
         for name, volume in standalone.artifacts.volumes.items():
             assert np.array_equal(actual.artifacts.volumes[name], volume)

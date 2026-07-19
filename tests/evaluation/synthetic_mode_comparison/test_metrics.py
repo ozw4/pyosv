@@ -18,6 +18,10 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     extract_trial_metric_rows,
     run_synthetic_trial,
 )
+from pyosv.evaluation.synthetic_mode_comparison.metrics import (
+    build_scanner_metric_evidence,
+    scanner_metric_definitions,
+)
 from pyosv.evaluation.synthetic_quality import PipelineArtifacts, SyntheticSkinningConfig
 from pyosv.evaluation.synthetic_quality.quality_metrics import (
     EDGE_FALSE_POSITIVE_MARGIN,
@@ -330,6 +334,18 @@ def _handcrafted_evaluation(*, empty_skins: bool = False):
         "ft": {"nonzero_fraction": array_nonzero_fraction(scanner_ft)},
         "fet": {"nonzero_fraction": array_nonzero_fraction(scanner_fet)},
     }
+    scanner_report["scanner_metric_evidence"] = build_scanner_metric_evidence(
+        scanner_backend="quality",
+        scanner_volumes=scanner_artifacts,
+        scanner_report=scanner_report["scanner"],
+        shape=shape,
+        truth_fault=truth_fault,
+        truth_distance=truth_distance,
+        truth_strike=truth_strike,
+        truth_dip=truth_dip,
+        truth_surface_half_width=evaluation.truth_metric_config.truth_surface_half_width,
+        buffer_radius=buffer_radius,
+    )
     scanner_cell = replace(scanner_cell, report_payload=scanner_report)
 
     return replace(evaluation, cells=(scanner_cell, downstream_cell)), expected
@@ -437,6 +453,35 @@ def test_scope_rows_and_effective_metadata_are_not_inferred_across_axes() -> Non
     assert quality.skinner_method == "quality"
 
 
+def test_scanner_evidence_is_complete_registry_ordered_and_shared_by_backend() -> None:
+    evaluation = _evaluation()
+    cells = {cell.cell.label: cell for cell in evaluation.cells}
+
+    for backend, labels in (
+        ("reference-like", ("RL-SCAN", "RL-REF", "RL-QUAL")),
+        ("quality", ("Q-SCAN", "Q-REF", "Q-QUAL")),
+    ):
+        evidence = cells[labels[0]].report_payload["scanner_metric_evidence"]
+        definitions = scanner_metric_definitions(backend)
+        assert tuple(
+            (entry["stage"], entry["selection"], entry["metric"]) for entry in evidence
+        ) == tuple(
+            (definition.stage, definition.selection, definition.metric)
+            for definition in definitions
+        )
+        assert tuple((entry["unit"], entry["direction"]) for entry in evidence) == tuple(
+            (definition.unit, definition.direction) for definition in definitions
+        )
+        assert all(
+            cells[label].report_payload["scanner_metric_evidence"] is evidence for label in labels
+        )
+
+    assert all(
+        "scanner_metric_evidence" not in cells[label].report_payload
+        for label in ("ORACLE-REF", "ORACLE-QUAL")
+    )
+
+
 def test_downstream_rows_reuse_report_metric_values() -> None:
     evaluation = _evaluation()
     rows = extract_trial_metric_rows(evaluation)
@@ -528,8 +573,9 @@ def test_real_runner_case_rows_have_complete_finite_contract(case_id: str) -> No
 
 
 @pytest.mark.parametrize("invalid", [np.nan, np.inf])
-def test_nonfinite_artifact_fails_the_whole_extraction(invalid: float) -> None:
+def test_scanner_extraction_uses_evidence_without_reading_volumes(invalid: float) -> None:
     evaluation = _evaluation()
+    expected = extract_trial_metric_rows(evaluation)
     scanner_cell = evaluation.cells[0]
     artifacts = dict(scanner_cell.artifacts)
     ft = artifacts["scanner_ft"].copy()
@@ -538,16 +584,18 @@ def test_nonfinite_artifact_fails_the_whole_extraction(invalid: float) -> None:
     invalid_cell = replace(scanner_cell, artifacts=artifacts)
     invalid_evaluation = replace(evaluation, cells=(invalid_cell, *evaluation.cells[1:]))
 
-    with pytest.raises(ValueError, match="scanner_ft must contain only finite values"):
-        extract_trial_metric_rows(invalid_evaluation)
+    assert extract_trial_metric_rows(invalid_evaluation) == expected
 
 
-def test_shape_mismatch_fails_the_whole_extraction() -> None:
+def test_scanner_extraction_ignores_volume_shape_after_evidence_generation() -> None:
     evaluation = _evaluation()
+    expected = extract_trial_metric_rows(evaluation)
     scanner_cell = evaluation.cells[0]
     artifacts = dict(scanner_cell.artifacts)
     artifacts["scanner_pt"] = artifacts["scanner_pt"][:-1]
     invalid_cell = replace(scanner_cell, artifacts=artifacts)
 
-    with pytest.raises(ValueError, match="scanner_pt must have shape"):
+    assert (
         extract_trial_metric_rows(replace(evaluation, cells=(invalid_cell, *evaluation.cells[1:])))
+        == expected
+    )

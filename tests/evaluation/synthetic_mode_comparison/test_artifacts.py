@@ -90,6 +90,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             assert next(csv.reader(stream)) == [field.name for field in fields(model)]
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 2
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
     assert manifest["resolved_plan"]["shape"] == [9, 9, 9]
@@ -580,6 +581,22 @@ def test_validator_rejects_incompatible_metric_schema_after_valid_hash(
     _rehash(incompatible_rows, "metrics_long.csv")
     with pytest.raises(ValueError, match="unsupported metric schema version"):
         validate_completed_bundle(incompatible_rows)
+
+
+def test_validator_explicitly_rejects_rehashed_legacy_v1_bundle(tmp_path: Path) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-v1")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_schema_version"] = 1
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy bundle.*scanner metric evidence"):
+        validate_completed_bundle(bundle)
 
 
 @pytest.mark.parametrize(

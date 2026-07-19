@@ -81,7 +81,9 @@ The successful command writes exactly these eight files atomically:
 
 - `manifest.json`: requested configuration, resolved canonical plan, case and
   trial order, software versions, cache statistics, and source provenance.
-- `cell_reports.json`: ordered scalar cell reports.
+- `cell_reports.json`: ordered scalar cell reports. Artifact schema v2 records
+  the complete registry-ordered `scanner_metric_evidence` in every scanner-only
+  and end-to-end scanner cell.
 - `metrics_long.csv` and `metric_aggregates.csv`: trial metrics and descriptive
   summaries.
 - `contrasts.csv` and `contrast_aggregates.csv`: paired contrasts and their
@@ -107,7 +109,9 @@ readers can call
 partial final bundle. Successful completion establishes that the recorded
 scalar evidence is internally and cross-cell consistent; validation does not
 rerun any volume calculation or independently prove that its computation was
-correct.
+correct. Schema-v1 bundles do not contain complete scanner evidence and must be
+regenerated with the current writer; validation does not implicitly upgrade
+them to v2.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect

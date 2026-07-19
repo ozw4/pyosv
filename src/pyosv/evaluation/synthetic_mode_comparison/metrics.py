@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from numbers import Integral, Real
+from types import MappingProxyType
 from typing import Any, Literal
 
 import numpy as np
@@ -233,56 +234,117 @@ def validate_metric_value(definition: MetricDefinition, value: Any) -> float:
     return normalized
 
 
+def scanner_metric_definitions(scanner_backend: str) -> tuple[MetricDefinition, ...]:
+    """Return scanner evidence definitions in canonical registry order."""
+
+    if scanner_backend not in {"reference-like", "quality"}:
+        raise ValueError("scanner_backend must be 'reference-like' or 'quality'")
+    stages = {"scanner_raw", "scanner_thinned"}
+    if scanner_backend == "quality":
+        stages.add("scanner_confidence")
+    return tuple(definition for definition in METRIC_REGISTRY if definition.stage in stages)
+
+
+def build_scanner_metric_evidence(
+    *,
+    scanner_backend: str,
+    scanner_volumes: Mapping[str, Any],
+    scanner_report: Mapping[str, Any],
+    shape: tuple[int, int, int],
+    truth_fault: np.ndarray,
+    truth_distance: np.ndarray,
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+    truth_surface_half_width: float,
+    buffer_radius: float,
+) -> tuple[Mapping[str, Any], ...]:
+    """Build immutable, JSON-safe canonical scanner publication evidence."""
+
+    definitions = scanner_metric_definitions(scanner_backend)
+    half_width = _finite_nonnegative(truth_surface_half_width, "truth_surface_half_width")
+    radius = _finite_nonnegative(buffer_radius, "buffer_radius")
+    fault = _finite_array(truth_fault, shape, "truth_fault_mask").astype(bool, copy=False)
+    distance = _finite_array(truth_distance, shape, "truth_distance")
+    strike_truth = _finite_array(truth_strike, shape, "truth_strike")
+    dip_truth = _finite_array(truth_dip, shape, "truth_dip")
+    truth_surface = np.abs(distance) <= np.float32(half_width)
+
+    values: dict[tuple[str, str, str], float | int] = {}
+    scanner_summary = _mapping(scanner_report, "scanner")
+    for stage, names in (
+        ("scanner_raw", ("scanner_ft", "scanner_pt", "scanner_tt")),
+        ("scanner_thinned", ("scanner_fet", "scanner_fpt", "scanner_ftt")),
+    ):
+        likelihood = _finite_array(_required(scanner_volumes, names[0]), shape, names[0])
+        strike = _finite_array(_required(scanner_volumes, names[1]), shape, names[1])
+        dip = _finite_array(_required(scanner_volumes, names[2]), shape, names[2])
+        report_name = "ft" if stage == "scanner_raw" else "fet"
+        array_summary = _mapping(_required(scanner_summary, report_name), f"scanner.{report_name}")
+        _put(
+            values,
+            stage,
+            "all",
+            "array_nonzero_fraction",
+            _required(array_summary, "nonzero_fraction"),
+        )
+        candidate = top_truth_count_mask(likelihood, truth_surface)
+        _put_quality(
+            values,
+            stage,
+            "top_truth_count",
+            buffered_surface_overlap(candidate, fault, radius=radius),
+            surface_distance_metrics(candidate, truth_surface),
+            masked_orientation_error(strike, dip, strike_truth, dip_truth, candidate),
+            edge_false_positive_ratio(
+                candidate,
+                truth_surface,
+                edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+                truth_buffer_radius=radius,
+            ),
+        )
+
+    if scanner_backend == "quality":
+        confidence = _finite_array(
+            _required(scanner_volumes, "scanner_confidence"), shape, "scanner_confidence"
+        )
+        raw = _finite_array(_required(scanner_volumes, "scanner_ft"), shape, "scanner_ft")
+        raw_support = top_truth_count_mask(raw, truth_surface)
+        _put_summaries(values, "finite", confidence.ravel())
+        _put_summaries(values, "raw_top_truth_count", confidence[raw_support])
+
+    expected = {
+        (definition.stage, definition.selection, definition.metric) for definition in definitions
+    }
+    if set(values) != expected:
+        raise ValueError("generated scanner metric evidence does not match the registry")
+    return tuple(
+        MappingProxyType(
+            {
+                "stage": definition.stage,
+                "selection": definition.selection,
+                "metric": definition.metric,
+                "value": validate_metric_value(
+                    definition,
+                    values[(definition.stage, definition.selection, definition.metric)],
+                ),
+                "unit": definition.unit,
+                "direction": definition.direction,
+            }
+        )
+        for definition in definitions
+    )
+
+
 def extract_trial_metric_rows(evaluation: SyntheticTrialEvaluation) -> tuple[MetricRow, ...]:
     """Extract finite rows in plan-cell then registry order from one completed trial."""
 
     if not isinstance(evaluation, SyntheticTrialEvaluation):
         raise ValueError("evaluation must be a SyntheticTrialEvaluation")
-    truth_surface_half_width = _finite_nonnegative(
-        evaluation.truth_metric_config.truth_surface_half_width,
-        "truth_surface_half_width",
-    )
-    buffer_radius = _finite_nonnegative(
-        evaluation.truth_metric_config.buffer_radius,
-        "buffer_radius",
-    )
-    truth_volumes = _truth_volumes(evaluation)
-    truth_fault = _finite_array(
-        _required(truth_volumes, "truth_fault_mask"),
-        evaluation.trial.shape,
-        "truth_fault_mask",
-    )
-    truth_distance = _finite_array(
-        _required(truth_volumes, "truth_distance"),
-        evaluation.trial.shape,
-        "truth_distance",
-    )
-    truth_strike = _finite_array(
-        _required(truth_volumes, "truth_strike"),
-        evaluation.trial.shape,
-        "truth_strike",
-    )
-    truth_dip = _finite_array(
-        _required(truth_volumes, "truth_dip"),
-        evaluation.trial.shape,
-        "truth_dip",
-    )
-    truth_surface = np.abs(truth_distance) <= np.float32(truth_surface_half_width)
-
     rows: list[MetricRow] = []
     for cell_evaluation in evaluation.cells:
         values: dict[tuple[str, str, str], float | int] = {}
         if cell_evaluation.cell.scope == SCANNER_ONLY_SCOPE:
-            _scanner_values(
-                values,
-                cell_evaluation,
-                shape=evaluation.trial.shape,
-                truth_fault=np.asarray(truth_fault, dtype=bool),
-                truth_surface=truth_surface,
-                truth_strike=truth_strike,
-                truth_dip=truth_dip,
-                buffer_radius=buffer_radius,
-            )
+            _scanner_values(values, cell_evaluation)
         else:
             _downstream_values(values, cell_evaluation, shape=evaluation.trial.shape)
 
@@ -319,67 +381,37 @@ def extract_trial_metrics(evaluation: SyntheticTrialEvaluation) -> tuple[MetricR
     return extract_trial_metric_rows(evaluation)
 
 
-def _truth_volumes(evaluation: SyntheticTrialEvaluation) -> Mapping[str, Any]:
-    for cell in evaluation.cells:
-        if isinstance(cell.artifacts, PipelineArtifacts):
-            return cell.artifacts.volumes
-    raise ValueError("trial evaluation is missing downstream truth artifacts")
-
-
 def _scanner_values(
     output: dict[tuple[str, str, str], float | int],
     evaluation: SyntheticCellEvaluation,
-    *,
-    shape: tuple[int, int, int],
-    truth_fault: np.ndarray,
-    truth_surface: np.ndarray,
-    truth_strike: np.ndarray,
-    truth_dip: np.ndarray,
-    buffer_radius: float,
 ) -> None:
-    if isinstance(evaluation.artifacts, PipelineArtifacts):
-        raise ValueError("scanner-only cell must provide scanner artifacts")
-    volumes = evaluation.artifacts
-    scanner_report = _mapping(_required(evaluation.report_payload, "scanner"), "scanner")
-    for stage, names in (
-        ("scanner_raw", ("scanner_ft", "scanner_pt", "scanner_tt")),
-        ("scanner_thinned", ("scanner_fet", "scanner_fpt", "scanner_ftt")),
-    ):
-        values = _finite_array(_required(volumes, names[0]), shape, names[0])
-        strike = _finite_array(_required(volumes, names[1]), shape, names[1])
-        dip = _finite_array(_required(volumes, names[2]), shape, names[2])
-        report_name = "ft" if stage == "scanner_raw" else "fet"
-        array_summary = _mapping(_required(scanner_report, report_name), f"scanner.{report_name}")
+    scanner_config = evaluation.effective_scanner_config
+    if scanner_config is None:
+        raise ValueError("scanner-only cell is missing effective scanner configuration")
+    definitions = scanner_metric_definitions(scanner_config.backend)
+    evidence = _required(evaluation.report_payload, "scanner_metric_evidence")
+    if not isinstance(evidence, (tuple, list)):
+        raise ValueError("scanner_metric_evidence must be a sequence")
+    if len(evidence) != len(definitions):
+        raise ValueError("scanner_metric_evidence must contain every applicable registry metric")
+    expected_fields = {"stage", "selection", "metric", "value", "unit", "direction"}
+    for index, (item, definition) in enumerate(zip(evidence, definitions, strict=True)):
+        entry = _mapping(item, f"scanner_metric_evidence[{index}]")
+        if set(entry) != expected_fields:
+            raise ValueError("scanner_metric_evidence entry fields do not match the contract")
+        identity = tuple(entry[name] for name in ("stage", "selection", "metric"))
+        expected_identity = (definition.stage, definition.selection, definition.metric)
+        if identity != expected_identity:
+            raise ValueError("scanner_metric_evidence identity does not match registry order")
+        if entry["unit"] != definition.unit or entry["direction"] != definition.direction:
+            raise ValueError("scanner_metric_evidence unit or direction does not match registry")
         _put(
             output,
-            stage,
-            "all",
-            "array_nonzero_fraction",
-            _required(array_summary, "nonzero_fraction"),
+            definition.stage,
+            definition.selection,
+            definition.metric,
+            validate_metric_value(definition, entry["value"]),
         )
-        candidate = top_truth_count_mask(values, truth_surface)
-        _put_quality(
-            output,
-            stage,
-            "top_truth_count",
-            buffered_surface_overlap(candidate, truth_fault, radius=buffer_radius),
-            surface_distance_metrics(candidate, truth_surface),
-            masked_orientation_error(strike, dip, truth_strike, truth_dip, candidate),
-            edge_false_positive_ratio(
-                candidate,
-                truth_surface,
-                edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-                truth_buffer_radius=buffer_radius,
-            ),
-        )
-
-    confidence = volumes.get("scanner_confidence")
-    if confidence is not None:
-        confidence_array = _finite_array(confidence, shape, "scanner_confidence")
-        raw = _finite_array(_required(volumes, "scanner_ft"), shape, "scanner_ft")
-        raw_support = top_truth_count_mask(raw, truth_surface)
-        _put_summaries(output, "finite", confidence_array.ravel())
-        _put_summaries(output, "raw_top_truth_count", confidence_array[raw_support])
 
 
 def _downstream_values(
@@ -606,7 +638,9 @@ __all__ = [
     "MetricDefinition",
     "MetricDirection",
     "MetricRow",
+    "build_scanner_metric_evidence",
     "extract_trial_metric_rows",
     "extract_trial_metrics",
+    "scanner_metric_definitions",
     "validate_metric_value",
 ]
