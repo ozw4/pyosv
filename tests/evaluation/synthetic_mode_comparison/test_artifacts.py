@@ -21,12 +21,15 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     RuntimeRow,
     SyntheticModeComparisonConfig,
     SyntheticModeComparisonResult,
+    aggregate_contrast_rows,
+    aggregate_metric_rows,
+    compute_contrast_rows,
     run_mode_comparison,
     validate_completed_bundle,
     write_artifact_bundle,
 )
 from pyosv.evaluation.synthetic_mode_comparison import artifacts
-from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig
+from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig, SyntheticSkinningConfig
 
 
 @cache
@@ -73,6 +76,131 @@ def _set_nested(value, path: tuple[str, ...], replacement) -> None:
     value[path[-1]] = replacement
 
 
+def _different_scanner_metric_value(metric: str, current: float) -> float:
+    if metric == "hausdorff_p95":
+        return current + 0.5
+    return 0.25 if current != 0.25 else 0.75
+
+
+def _read_csv_dicts(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames is not None
+        return reader.fieldnames, list(reader)
+
+
+def _write_csv_dicts(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _tamper_downstream_scalar_algebra(
+    reports: list[dict], tamper: str
+) -> dict[tuple[str, str, str, str], float]:
+    cells = reports[0]["cells"]
+
+    def quality_payloads(label: str) -> tuple[dict, ...]:
+        cell = cells[label]
+        payloads = [cell["quality"]]
+        if "active_pipeline" in cell:
+            payloads.append(cell["pipelines"][cell["active_pipeline"]]["quality"])
+        return tuple(payloads)
+
+    metric_updates: dict[tuple[str, str, str, str], float] = {}
+    if tamper == "fv_union_count":
+        for label in ("RL-REF", "RL-QUAL"):
+            for quality in quality_payloads(label):
+                overlap = quality["fv_top_truth_count"]["buffered_overlap_radius2"]
+                overlap["union_count"] = (
+                    overlap["candidate_count"]
+                    + overlap["truth_count"]
+                    - overlap["intersection_count"]
+                    + 1
+                )
+    elif tamper == "fvt_buffered_numerator":
+        for label in ("Q-REF", "Q-QUAL"):
+            for quality in quality_payloads(label):
+                overlap = quality["fvt_top_truth_count"]["buffered_overlap_radius2"]
+                overlap["candidate_in_truth_buffer_count"] = overlap["candidate_count"] - 1
+    elif tamper == "skin_empty_distance_penalty":
+        distance_metrics = (
+            "candidate_to_truth_median",
+            "candidate_to_truth_p95",
+            "truth_to_candidate_median",
+            "truth_to_candidate_p95",
+            "hausdorff_p95",
+        )
+        for quality in quality_payloads("Q-REF"):
+            distance = quality["skin"]["surface_distance"]
+            for name in (
+                "candidate_to_truth_mean",
+                "candidate_to_truth_median",
+                "candidate_to_truth_p90",
+                "candidate_to_truth_p95",
+                "truth_to_candidate_mean",
+                "truth_to_candidate_median",
+                "truth_to_candidate_p90",
+                "truth_to_candidate_p95",
+                "symmetric_chamfer_mean",
+                "hausdorff_p95",
+            ):
+                distance[name] = 0.0
+        metric_updates.update(
+            {("Q-REF", "skin", "skin_cells", name): 0.0 for name in distance_metrics}
+        )
+    elif tamper == "skin_orientation_zero":
+        orientation_metrics = ("strike_median", "strike_p95", "dip_median", "dip_p95")
+        for quality in quality_payloads("Q-REF"):
+            orientation = quality["skin"]["orientation_error"]
+            for name in (
+                "strike_mean",
+                "strike_median",
+                "strike_p90",
+                "strike_p95",
+                "dip_mean",
+                "dip_median",
+                "dip_p90",
+                "dip_p95",
+            ):
+                orientation[name] = 0.25
+        metric_updates.update(
+            {("Q-REF", "skin", "skin_cells", name): 0.25 for name in orientation_metrics}
+        )
+    elif tamper == "skin_edge_count_hierarchy":
+        for quality in quality_payloads("Q-REF"):
+            edge = quality["edge_false_positive"]["skin"]
+            edge["edge_candidate_count"] = edge["candidate_count"] + 1
+    else:
+        raise AssertionError(f"unknown downstream algebra tamper: {tamper}")
+    return metric_updates
+
+
+def _coherent_publication_rows(
+    result: SyntheticModeComparisonResult,
+    metric_updates: dict[tuple[str, str, str, str], float],
+) -> tuple[
+    tuple[MetricRow, ...],
+    tuple[AggregateRow, ...],
+    tuple[ContrastRow, ...],
+    tuple[AggregateRow, ...],
+]:
+    metric_rows = tuple(
+        replace(row, value=metric_updates[identity])
+        if (identity := (row.cell_label, row.stage, row.selection, row.metric)) in metric_updates
+        else row
+        for row in result.metric_rows
+    )
+    contrast_rows = compute_contrast_rows(metric_rows)
+    return (
+        metric_rows,
+        aggregate_metric_rows(metric_rows),
+        contrast_rows,
+        aggregate_contrast_rows(contrast_rows),
+    )
+
+
 def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path) -> None:
     bundle = _write_bundle(tmp_path / "bundle")
 
@@ -90,6 +218,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             assert next(csv.reader(stream)) == [field.name for field in fields(model)]
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 2
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
     assert manifest["resolved_plan"]["shape"] == [9, 9, 9]
@@ -137,6 +266,52 @@ def test_bundle_round_trip_preserves_integer_valued_real_config(tmp_path: Path) 
     bundle = write_artifact_bundle(result, tmp_path / "bundle", config=config)
 
     assert validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize("min_likelihood", (None, 0.0, 0.5, 1.0, 1.5))
+def test_bundle_round_trip_accepts_nonnegative_skinner_likelihood_thresholds(
+    tmp_path: Path, min_likelihood: float | None
+) -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        skinning_config=SyntheticSkinningConfig(min_likelihood=min_likelihood),
+        skinner_min_likelihood_explicit=True,
+    )
+    result = run_mode_comparison(config)
+    reports = result.as_dict()["cell_reports"]
+    downstream_cells = reports[0]["cells"]
+
+    for label in ("ORACLE-REF", "ORACLE-QUAL", "RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL"):
+        cell = downstream_cells[label]
+        assert cell["config"]["skinning"]["min_likelihood"] == min_likelihood
+        if min_likelihood is not None:
+            assert cell["skinning"]["diagnostics"]["seed_threshold"] == min_likelihood
+            assert cell["skinning"]["diagnostics"]["grow_threshold"] == min_likelihood
+
+    if min_likelihood is None:
+        for label in ("ORACLE-QUAL", "RL-QUAL", "Q-QUAL"):
+            assert downstream_cells[label]["config"]["skinning"]["adaptive_min_likelihood"]
+    if min_likelihood == 1.5:
+        assert all(
+            downstream_cells[label]["skinning"]["enabled"]
+            and downstream_cells[label]["skinning"]["diagnostics"]["skin_primary_count"] == 0
+            for label in (
+                "ORACLE-REF",
+                "ORACLE-QUAL",
+                "RL-REF",
+                "RL-QUAL",
+                "Q-REF",
+                "Q-QUAL",
+            )
+        )
+        assert any(row.stage == "skin" for row in result.metric_rows)
+
+    bundle = write_artifact_bundle(result, tmp_path / "bundle", config=config)
+
+    assert validate_completed_bundle(bundle)
+    artifact_reports = json.loads((bundle / "cell_reports.json").read_text(encoding="utf-8"))
+    assert artifact_reports == reports
 
 
 def test_default_manifest_records_only_minimal_case_set(tmp_path: Path) -> None:
@@ -536,6 +711,22 @@ def test_validator_rejects_incompatible_metric_schema_after_valid_hash(
         validate_completed_bundle(incompatible_rows)
 
 
+def test_validator_explicitly_rejects_rehashed_legacy_v1_bundle(tmp_path: Path) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-v1")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_schema_version"] = 1
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy bundle.*scanner metric evidence"):
+        validate_completed_bundle(bundle)
+
+
 @pytest.mark.parametrize(
     "tamper",
     (
@@ -712,6 +903,10 @@ def test_validator_rejects_rehashed_invalid_cell_report_contract(
             ),
             -1.0,
         ),
+        (("RL-REF", "config", "skinning", "min_likelihood"), -1.0),
+        (("RL-REF", "skinning", "diagnostics", "seed_min_ep"), 1.1),
+        (("RL-REF", "skinning", "diagnostics", "seed_threshold"), -1.0),
+        (("RL-REF", "skinning", "diagnostics", "grow_threshold"), -1.0),
     ),
 )
 def test_validator_rejects_rehashed_impossible_scalar_evidence(
@@ -732,6 +927,220 @@ def test_validator_rejects_rehashed_impossible_scalar_evidence(
 
     with pytest.raises(ValueError):
         validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("fv_union_count", "union_count"),
+        ("fvt_buffered_numerator", "buffered_precision"),
+        ("skin_empty_distance_penalty", "candidate_to_truth_mean"),
+        ("skin_orientation_zero", "strike_mean"),
+        ("skin_edge_count_hierarchy", "edge_candidate_count"),
+    ),
+)
+def test_downstream_scalar_algebra_tampering_is_rejected_across_artifact_paths(
+    tmp_path: Path, tamper: str, message: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    metric_updates = _tamper_downstream_scalar_algebra(reports, tamper)
+    metric_rows, metric_aggregates, contrast_rows, contrast_aggregates = _coherent_publication_rows(
+        result, metric_updates
+    )
+    plan = artifacts.build_mode_comparison_plan(config)
+
+    with pytest.raises(ValueError, match=message):
+        artifacts._load_cell_reports(reports, plan)
+
+    invalid = replace(
+        result,
+        cell_reports=tuple(reports),
+        metric_rows=metric_rows,
+        metric_aggregates=metric_aggregates,
+        contrast_rows=contrast_rows,
+        contrast_aggregates=contrast_aggregates,
+    )
+    writer_output = tmp_path / f"writer-{tamper}"
+    with pytest.raises(ValueError, match=message):
+        write_artifact_bundle(invalid, writer_output, config=config)
+    assert not writer_output.exists()
+    assert not list(tmp_path.glob(f".{writer_output.name}.tmp-*"))
+
+    bundle = _write_bundle(tmp_path / f"completed-{tamper}")
+    reports_path = bundle / "cell_reports.json"
+    persisted_reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    persisted_updates = _tamper_downstream_scalar_algebra(persisted_reports, tamper)
+    assert persisted_updates == metric_updates
+    reports_path.write_text(
+        json.dumps(persisted_reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    coherent_rows = {
+        "metrics_long.csv": (metric_rows, MetricRow),
+        "metric_aggregates.csv": (metric_aggregates, AggregateRow),
+        "contrasts.csv": (contrast_rows, ContrastRow),
+        "contrast_aggregates.csv": (contrast_aggregates, AggregateRow),
+    }
+    for filename, (rows, model) in coherent_rows.items():
+        (bundle / filename).write_bytes(artifacts._csv_bytes(rows, model))
+        _rehash(bundle, filename)
+
+    with pytest.raises(ValueError, match=message):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("stage", "metric"),
+    (
+        ("scanner_raw", "buffered_f1"),
+        ("scanner_thinned", "dip_median"),
+    ),
+)
+def test_cell_report_loader_rejects_scanner_metric_evidence_quality_mismatch(
+    stage: str, metric: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    evidence = reports[0]["cells"]["RL-SCAN"]["scanner_metric_evidence"]
+    entry = next(
+        item
+        for item in evidence
+        if item["stage"] == stage
+        and item["selection"] == "top_truth_count"
+        and item["metric"] == metric
+    )
+    entry["value"] = entry["value"] * 0.9 if entry["value"] else 0.01
+    plan = artifacts.build_mode_comparison_plan(config)
+
+    with pytest.raises(ValueError, match="does not match scanner_quality"):
+        artifacts._load_cell_reports(reports, plan)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("missing", "exactly every applicable"),
+        ("extra", "exactly every applicable"),
+        ("duplicate", "identity does not match"),
+        ("unknown", "identity does not match"),
+    ),
+)
+def test_cell_report_loader_rejects_malformed_scanner_evidence_identity(
+    mutation: str, message: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    evidence = reports[0]["cells"]["RL-SCAN"]["scanner_metric_evidence"]
+    if mutation == "missing":
+        evidence.pop()
+    elif mutation == "extra":
+        evidence.append(dict(evidence[-1]))
+    elif mutation == "duplicate":
+        for name in ("stage", "selection", "metric"):
+            evidence[1][name] = evidence[0][name]
+    else:
+        evidence[1]["metric"] = "unknown_metric"
+    plan = artifacts.build_mode_comparison_plan(config)
+
+    with pytest.raises(ValueError, match=message):
+        artifacts._load_cell_reports(reports, plan)
+
+
+@pytest.mark.parametrize(
+    "metric",
+    (
+        "buffered_f1",
+        "hausdorff_p95",
+        "edge_false_positive_fraction_of_candidates",
+    ),
+)
+def test_writer_rejects_coordinated_scanner_thinned_metric_tampering(
+    tmp_path: Path, metric: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    cells = reports[0]["cells"]
+    original = next(
+        entry["value"]
+        for entry in cells["RL-SCAN"]["scanner_metric_evidence"]
+        if (entry["stage"], entry["selection"], entry["metric"])
+        == ("scanner_thinned", "top_truth_count", metric)
+    )
+    tampered = _different_scanner_metric_value(metric, original)
+    report_name = {
+        "buffered_f1": "buffered_overlap_radius2",
+        "hausdorff_p95": "surface_distance",
+        "edge_false_positive_fraction_of_candidates": "edge_false_positive",
+    }[metric]
+    for label in ("RL-SCAN", "RL-REF", "RL-QUAL"):
+        evidence = cells[label]["scanner_metric_evidence"]
+        metric_entry = next(
+            item
+            for item in evidence
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", metric)
+        )
+        metric_entry["value"] = tampered
+        quality_entry = next(
+            item
+            for item in evidence
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", "candidate_count")
+        )
+        quality_entry["quality_report"][report_name][metric] = tampered
+
+    metric_rows = tuple(
+        replace(row, value=tampered)
+        if (
+            row.cell_label,
+            row.stage,
+            row.selection,
+            row.metric,
+        )
+        == ("RL-SCAN", "scanner_thinned", "top_truth_count", metric)
+        else row
+        for row in result.metric_rows
+    )
+    contrast_rows = compute_contrast_rows(metric_rows)
+    invalid = replace(
+        result,
+        cell_reports=tuple(reports),
+        metric_rows=metric_rows,
+        contrast_rows=contrast_rows,
+        metric_aggregates=aggregate_metric_rows(metric_rows),
+        contrast_aggregates=aggregate_contrast_rows(contrast_rows),
+    )
+    output = tmp_path / f"coordinated-{metric}"
+
+    with pytest.raises(ValueError, match="invalid scalar evidence"):
+        write_artifact_bundle(invalid, output, config=config)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.tmp-*"))
+
+
+def test_scanner_quality_loader_accepts_distinct_raw_and_thinned_counts() -> None:
+    config, result = _fixture()
+    plan = artifacts.build_mode_comparison_plan(config)
+    quality = result.as_dict()["cell_reports"][0]["cells"]["RL-SCAN"]["scanner_quality"]
+    orientations = quality["orientation_error"]
+    orientations["used_attributes_top_truth_count"]["count"] = (
+        orientations["raw_scan_top_truth_count"]["count"] + 1
+    )
+
+    assert (
+        artifacts._load_scanner_quality_report(
+            quality,
+            buffer_radius=plan.truth_metric_config.buffer_radius,
+            shape=plan.shape,
+            context="scanner_quality",
+        )
+        == quality
+    )
 
 
 def test_validator_rejects_skin_orientation_candidate_count_mismatch(tmp_path: Path) -> None:
@@ -761,6 +1170,24 @@ def test_cell_report_loader_accepts_nonnegative_coverage_above_one() -> None:
         payload["skinning"]["diagnostics"]["skin_primary_cell_coverage_of_fvt_positive"] = 1.1
 
     artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
+
+
+def test_cell_report_loader_separates_planarity_and_likelihood_threshold_ranges() -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    cell = reports[0]["cells"]["RL-REF"]
+    for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+        diagnostics = payload["skinning"]["diagnostics"]
+        diagnostics["seed_threshold"] = 1.1
+        diagnostics["grow_threshold"] = 1.1
+
+    artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
+
+    for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+        payload["skinning"]["diagnostics"]["seed_min_ep"] = 1.1
+
+    with pytest.raises(ValueError, match="closed unit interval"):
+        artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
 
 
 @pytest.mark.parametrize(
@@ -865,6 +1292,9 @@ def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
     tmp_path: Path,
 ) -> None:
     bundle = _write_bundle(tmp_path / "coordinated-confidence")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    cells = reports[0]["cells"]
     metrics_path = bundle / "metrics_long.csv"
     with metrics_path.open(encoding="utf-8", newline="") as stream:
         metric_rows = list(csv.reader(stream))
@@ -881,6 +1311,21 @@ def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
         == ("Q-SCAN", "scanner_confidence", "finite", "confidence_mean")
     )
     tampered_value = float(metric_row[metric_header.index("value")]) + 0.01
+    for label in ("Q-SCAN", "Q-REF", "Q-QUAL"):
+        evidence = next(
+            entry
+            for entry in cells[label]["scanner_metric_evidence"]
+            if (entry["stage"], entry["selection"], entry["metric"])
+            == ("scanner_confidence", "finite", "confidence_mean")
+        )
+        evidence["value"] = tampered_value
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
     metric_row[metric_header.index("value")] = repr(tampered_value)
     with metrics_path.open("w", encoding="utf-8", newline="") as stream:
         csv.writer(stream, lineterminator="\n").writerows(metric_rows)
@@ -907,7 +1352,123 @@ def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
         csv.writer(stream, lineterminator="\n").writerows(aggregate_rows)
     _rehash(bundle, "metric_aggregates.csv")
 
-    with pytest.raises(ValueError, match="scalar evidence in cell_reports"):
+    with pytest.raises(ValueError, match="scanner_quality/scanner evidence"):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    "metric",
+    (
+        "buffered_f1",
+        "hausdorff_p95",
+        "edge_false_positive_fraction_of_candidates",
+    ),
+)
+def test_validator_rejects_rehashed_coordinated_scanner_thinned_metric_tampering(
+    tmp_path: Path, metric: str
+) -> None:
+    bundle = _write_bundle(tmp_path / f"coordinated-scanner-thinned-{metric}")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    cells = reports[0]["cells"]
+    original = next(
+        entry["value"]
+        for entry in cells["RL-SCAN"]["scanner_metric_evidence"]
+        if (entry["stage"], entry["selection"], entry["metric"])
+        == ("scanner_thinned", "top_truth_count", metric)
+    )
+    tampered = _different_scanner_metric_value(metric, original)
+    report_name = {
+        "buffered_f1": "buffered_overlap_radius2",
+        "hausdorff_p95": "surface_distance",
+        "edge_false_positive_fraction_of_candidates": "edge_false_positive",
+    }[metric]
+    for label in ("RL-SCAN", "RL-REF", "RL-QUAL"):
+        evidence = cells[label]["scanner_metric_evidence"]
+        metric_entry = next(
+            item
+            for item in evidence
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", metric)
+        )
+        metric_entry["value"] = tampered
+        quality_entry = next(
+            item
+            for item in evidence
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", "candidate_count")
+        )
+        quality_entry["quality_report"][report_name][metric] = tampered
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    metric_fields, metric_rows = _read_csv_dicts(bundle / "metrics_long.csv")
+    quality_value = next(
+        float(row["value"])
+        for row in metric_rows
+        if (row["cell_label"], row["stage"], row["selection"], row["metric"])
+        == ("Q-SCAN", "scanner_thinned", "top_truth_count", metric)
+    )
+    metric_row = next(
+        row
+        for row in metric_rows
+        if (row["cell_label"], row["stage"], row["selection"], row["metric"])
+        == ("RL-SCAN", "scanner_thinned", "top_truth_count", metric)
+    )
+    metric_row["value"] = repr(tampered)
+    _write_csv_dicts(bundle / "metrics_long.csv", metric_fields, metric_rows)
+    _rehash(bundle, "metrics_long.csv")
+
+    aggregate_fields, aggregate_rows = _read_csv_dicts(bundle / "metric_aggregates.csv")
+    metric_aggregate = next(
+        row
+        for row in aggregate_rows
+        if (row["cell_label"], row["stage"], row["selection"], row["metric"])
+        == ("RL-SCAN", "scanner_thinned", "top_truth_count", metric)
+    )
+    for name in ("mean", "median", "min", "max", "q25", "q75"):
+        metric_aggregate[name] = repr(tampered)
+    _write_csv_dicts(bundle / "metric_aggregates.csv", aggregate_fields, aggregate_rows)
+    _rehash(bundle, "metric_aggregates.csv")
+
+    raw_value = quality_value - tampered
+    contrast_fields, contrast_rows = _read_csv_dicts(bundle / "contrasts.csv")
+    contrast_row = next(
+        row
+        for row in contrast_rows
+        if (row["contrast_name"], row["stage"], row["selection"], row["metric"])
+        == ("scanner_only_effect", "scanner_thinned", "top_truth_count", metric)
+    )
+    contrast_row["raw_value"] = repr(raw_value)
+    contrast_row["improvement_value"] = repr(
+        raw_value if contrast_row["direction"] == "higher" else -raw_value
+    )
+    _write_csv_dicts(bundle / "contrasts.csv", contrast_fields, contrast_rows)
+    _rehash(bundle, "contrasts.csv")
+
+    contrast_aggregate_fields, contrast_aggregate_rows = _read_csv_dicts(
+        bundle / "contrast_aggregates.csv"
+    )
+    contrast_aggregate = next(
+        row
+        for row in contrast_aggregate_rows
+        if (row["contrast_name"], row["stage"], row["selection"], row["metric"])
+        == ("scanner_only_effect", "scanner_thinned", "top_truth_count", metric)
+    )
+    for name in ("mean", "median", "min", "max", "q25", "q75"):
+        contrast_aggregate[name] = repr(raw_value)
+    _write_csv_dicts(
+        bundle / "contrast_aggregates.csv",
+        contrast_aggregate_fields,
+        contrast_aggregate_rows,
+    )
+    _rehash(bundle, "contrast_aggregates.csv")
+
+    with pytest.raises(ValueError, match=metric):
         validate_completed_bundle(bundle)
 
 

@@ -148,6 +148,57 @@ def test_buffered_surface_overlap_empty_mask_conventions() -> None:
     assert false_positive["buffered_recall"] == 1.0
 
 
+@pytest.mark.parametrize(
+    ("candidate_indices", "truth_indices", "expected_counts"),
+    (
+        ((), (), (0, 0, 0, 0, 0, 0)),
+        ((0,), (), (1, 0, 0, 1, 0, 0)),
+        ((), (0,), (0, 1, 0, 1, 0, 0)),
+        ((1, 2), (2, 3), (2, 2, 1, 3, 2, 2)),
+        ((1,), (2,), (1, 1, 0, 2, 1, 1)),
+    ),
+)
+def test_buffered_surface_overlap_counts_define_all_ratios(
+    candidate_indices: tuple[int, ...],
+    truth_indices: tuple[int, ...],
+    expected_counts: tuple[int, ...],
+) -> None:
+    candidate = np.zeros(5, dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[list(candidate_indices)] = True
+    truth[list(truth_indices)] = True
+
+    overlap = buffered_surface_overlap(candidate, truth, radius=1.0)
+
+    count_names = (
+        "candidate_count",
+        "truth_count",
+        "intersection_count",
+        "union_count",
+        "candidate_in_truth_buffer_count",
+        "truth_in_candidate_buffer_count",
+    )
+    assert tuple(overlap[name] for name in count_names) == expected_counts
+    candidate_count, truth_count, intersection_count, union_count, buffered_p, buffered_r = (
+        expected_counts
+    )
+    precision = intersection_count / candidate_count if candidate_count else 1.0
+    recall = intersection_count / truth_count if truth_count else 1.0
+    buffered_precision = buffered_p / candidate_count if candidate_count else 1.0
+    buffered_recall = buffered_r / truth_count if truth_count else 1.0
+
+    def f1(left: float, right: float) -> float:
+        return 2.0 * left * right / (left + right) if left + right else 0.0
+
+    assert overlap["precision"] == precision
+    assert overlap["recall"] == recall
+    assert overlap["f1"] == f1(precision, recall)
+    assert overlap["jaccard"] == (intersection_count / union_count if union_count else 1.0)
+    assert overlap["buffered_precision"] == buffered_precision
+    assert overlap["buffered_recall"] == buffered_recall
+    assert overlap["buffered_f1"] == f1(buffered_precision, buffered_recall)
+
+
 def test_edge_false_positive_ratio_counts_no_false_positives_inside_truth_buffer() -> None:
     truth = np.zeros((5, 5), dtype=bool)
     candidate = np.zeros_like(truth)

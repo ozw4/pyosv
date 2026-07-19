@@ -135,6 +135,8 @@ def buffered_surface_overlap(
         "truth_count": truth_count,
         "intersection_count": intersection_count,
         "union_count": union_count,
+        "candidate_in_truth_buffer_count": candidate_in_truth_buffer_count,
+        "truth_in_candidate_buffer_count": truth_in_candidate_buffer_count,
         "precision": precision,
         "recall": recall,
         "f1": _f1(precision, recall),

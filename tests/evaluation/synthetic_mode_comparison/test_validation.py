@@ -229,6 +229,17 @@ def test_coherent_voting_metric_tampering_is_rejected(result, config) -> None:
         )
 
 
+def test_in_memory_validation_applies_shared_overlap_algebra(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    overlap = reports[0]["cells"]["RL-SCAN"]["scanner_quality"]["ft_top_truth_count"][
+        "buffered_overlap_radius2"
+    ]
+    overlap["union_count"] += 1
+
+    with pytest.raises(ValueError, match="union_count is inconsistent"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
 def test_plan_metadata_numeric_type_tampering_is_rejected(result, config) -> None:
     plan_metadata = result.as_dict()["plan_metadata"]
     plan_metadata["shape"][0] = 9.0

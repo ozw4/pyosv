@@ -115,6 +115,7 @@ def run_synthetic_trial(
                 shared_stage=True,
             ),
         )
+        scanner_evidence = _build_scanner_evidence(plan, prepared_inputs)
         for cell in _execution_cells(plan):
             evaluation = _timed_call(
                 "cell_execution",
@@ -123,6 +124,11 @@ def run_synthetic_trial(
                     cell,
                     prepared_inputs=prepared_inputs,
                     stage_cache=stage_cache,
+                    scanner_metric_evidence=(
+                        scanner_evidence[cell.scanner_backend]
+                        if cell.scanner_backend is not None
+                        else None
+                    ),
                 ),
                 clock=clock,
                 runtime_recorder=runtime_recorder,
@@ -153,6 +159,7 @@ def _evaluate_cell(
     *,
     prepared_inputs: PreparedCaseInputs,
     stage_cache: PipelineStageCache,
+    scanner_metric_evidence: tuple[Mapping[str, Any], ...] | None,
 ) -> SyntheticCellEvaluation:
     if cell.scope == SCANNER_ONLY_SCOPE:
         return _evaluate_scanner_cell(
@@ -160,13 +167,42 @@ def _evaluate_cell(
             prepared_inputs=prepared_inputs,
             scanner_config=replace(plan.scanner_template, backend=cell.scanner_backend),
             truth_metric_config=plan.truth_metric_config,
+            scanner_metric_evidence=scanner_metric_evidence,
         )
     return _evaluate_downstream_cell(
         plan,
         cell,
         prepared_inputs=prepared_inputs,
         stage_cache=stage_cache,
+        scanner_metric_evidence=scanner_metric_evidence,
     )
+
+
+def _build_scanner_evidence(
+    plan: SyntheticModeComparisonPlan,
+    prepared_inputs: PreparedCaseInputs,
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    scanner = prepared_inputs.scanner
+    if scanner is None:
+        raise RuntimeError("mode comparison requires prepared scanner attributes")
+    from .metrics import build_scanner_metric_evidence
+
+    case = prepared_inputs.case
+    return {
+        backend: build_scanner_metric_evidence(
+            scanner_backend=backend,
+            scanner_volumes=attributes.volumes,
+            scanner_report=attributes.report,
+            shape=case.shape,
+            truth_fault=case.truth_fault_mask,
+            truth_distance=case.truth_distance,
+            truth_strike=case.truth_strike,
+            truth_dip=case.truth_dip,
+            truth_surface_half_width=plan.truth_metric_config.truth_surface_half_width,
+            buffer_radius=plan.truth_metric_config.buffer_radius,
+        )
+        for backend, attributes in scanner.by_backend.items()
+    }
 
 
 def _timed_call(
@@ -252,10 +288,13 @@ def _evaluate_scanner_cell(
     prepared_inputs: PreparedCaseInputs,
     scanner_config: SyntheticScannerConfig,
     truth_metric_config: SyntheticTruthMetricConfig,
+    scanner_metric_evidence: tuple[Mapping[str, Any], ...] | None,
 ) -> SyntheticCellEvaluation:
     scanner = prepared_inputs.scanner
     if scanner is None or cell.scanner_backend is None:
         raise RuntimeError("scanner-only comparison cell requires prepared scanner attributes")
+    if scanner_metric_evidence is None:
+        raise RuntimeError("scanner-only comparison cell requires scanner metric evidence")
     attributes = scanner.by_backend[cell.scanner_backend]
     scanner_volumes = attributes.volumes
     report = {
@@ -265,6 +304,7 @@ def _evaluate_scanner_cell(
             scanner_volumes=scanner_volumes,
             truth_metric_config=truth_metric_config,
         ),
+        "scanner_metric_evidence": scanner_metric_evidence,
     }
     return SyntheticCellEvaluation(
         cell=cell,
@@ -280,6 +320,7 @@ def _evaluate_downstream_cell(
     *,
     prepared_inputs: PreparedCaseInputs,
     stage_cache: PipelineStageCache,
+    scanner_metric_evidence: tuple[Mapping[str, Any], ...] | None,
 ) -> SyntheticCellEvaluation:
     if cell.workflow_mode == "reference":
         settings = plan.reference_workflow_settings
@@ -310,9 +351,17 @@ def _evaluate_downstream_cell(
         prepared_inputs=prepared_inputs,
         stage_cache=stage_cache,
     )
+    report_payload = evaluation.report_payload
+    if cell.scope == END_TO_END_SCOPE:
+        if scanner_metric_evidence is None:
+            raise RuntimeError("end-to-end scanner cell requires scanner metric evidence")
+        report_payload = {
+            **report_payload,
+            "scanner_metric_evidence": scanner_metric_evidence,
+        }
     return SyntheticCellEvaluation(
         cell=cell,
-        report_payload=evaluation.report_payload,
+        report_payload=report_payload,
         artifacts=evaluation.artifacts,
         effective_scanner_config=(scanner_config if cell.scope == END_TO_END_SCOPE else None),
         effective_workflow_settings=settings,
