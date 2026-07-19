@@ -650,6 +650,22 @@ def test_scanner_evidence_is_complete_registry_ordered_and_shared_by_backend() -
         assert tuple((entry["unit"], entry["direction"]) for entry in evidence) == tuple(
             (definition.unit, definition.direction) for definition in definitions
         )
+        quality_entries = tuple(entry for entry in evidence if "quality_report" in entry)
+        assert tuple(
+            (entry["stage"], entry["selection"], entry["metric"]) for entry in quality_entries
+        ) == (
+            ("scanner_raw", "top_truth_count", "candidate_count"),
+            ("scanner_thinned", "top_truth_count", "candidate_count"),
+        )
+        for entry in quality_entries:
+            assert set(entry["quality_report"]) == {
+                "buffered_overlap_radius2",
+                "surface_distance",
+                "orientation_error",
+                "edge_false_positive",
+            }
+            with pytest.raises(TypeError):
+                entry["quality_report"]["buffered_overlap_radius2"]["candidate_count"] = 0
         assert all(
             cells[label].report_payload["scanner_metric_evidence"] is evidence for label in labels
         )

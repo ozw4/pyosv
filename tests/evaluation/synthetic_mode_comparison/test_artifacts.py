@@ -21,6 +21,9 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     RuntimeRow,
     SyntheticModeComparisonConfig,
     SyntheticModeComparisonResult,
+    aggregate_contrast_rows,
+    aggregate_metric_rows,
+    compute_contrast_rows,
     run_mode_comparison,
     validate_completed_bundle,
     write_artifact_bundle,
@@ -71,6 +74,26 @@ def _set_nested(value, path: tuple[str, ...], replacement) -> None:
     for name in path[:-1]:
         value = value[name]
     value[path[-1]] = replacement
+
+
+def _different_scanner_metric_value(metric: str, current: float) -> float:
+    if metric == "hausdorff_p95":
+        return current + 0.5
+    return 0.25 if current != 0.25 else 0.75
+
+
+def _read_csv_dicts(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames is not None
+        return reader.fieldnames, list(reader)
+
+
+def _write_csv_dicts(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path) -> None:
@@ -828,6 +851,66 @@ def test_cell_report_loader_rejects_scanner_metric_evidence_quality_mismatch(
         artifacts._load_cell_reports(reports, plan)
 
 
+@pytest.mark.parametrize(
+    "metric",
+    (
+        "buffered_f1",
+        "hausdorff_p95",
+        "edge_false_positive_fraction_of_candidates",
+    ),
+)
+def test_writer_rejects_coordinated_scanner_thinned_metric_tampering(
+    tmp_path: Path, metric: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    cells = reports[0]["cells"]
+    original = next(
+        entry["value"]
+        for entry in cells["RL-SCAN"]["scanner_metric_evidence"]
+        if (entry["stage"], entry["selection"], entry["metric"])
+        == ("scanner_thinned", "top_truth_count", metric)
+    )
+    tampered = _different_scanner_metric_value(metric, original)
+    for label in ("RL-SCAN", "RL-REF", "RL-QUAL"):
+        entry = next(
+            item
+            for item in cells[label]["scanner_metric_evidence"]
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", metric)
+        )
+        entry["value"] = tampered
+
+    metric_rows = tuple(
+        replace(row, value=tampered)
+        if (
+            row.cell_label,
+            row.stage,
+            row.selection,
+            row.metric,
+        )
+        == ("RL-SCAN", "scanner_thinned", "top_truth_count", metric)
+        else row
+        for row in result.metric_rows
+    )
+    contrast_rows = compute_contrast_rows(metric_rows)
+    invalid = replace(
+        result,
+        cell_reports=tuple(reports),
+        metric_rows=metric_rows,
+        contrast_rows=contrast_rows,
+        metric_aggregates=aggregate_metric_rows(metric_rows),
+        contrast_aggregates=aggregate_contrast_rows(contrast_rows),
+    )
+    output = tmp_path / f"coordinated-{metric}"
+
+    with pytest.raises(ValueError, match="invalid scalar evidence"):
+        write_artifact_bundle(invalid, output, config=config)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.tmp-*"))
+
+
 def test_scanner_quality_loader_accepts_distinct_raw_and_thinned_counts() -> None:
     config, result = _fixture()
     plan = artifacts.build_mode_comparison_plan(config)
@@ -1040,6 +1123,109 @@ def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
     _rehash(bundle, "metric_aggregates.csv")
 
     with pytest.raises(ValueError, match="scalar evidence in cell_reports"):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    "metric",
+    (
+        "buffered_f1",
+        "hausdorff_p95",
+        "edge_false_positive_fraction_of_candidates",
+    ),
+)
+def test_validator_rejects_rehashed_coordinated_scanner_thinned_metric_tampering(
+    tmp_path: Path, metric: str
+) -> None:
+    bundle = _write_bundle(tmp_path / f"coordinated-scanner-thinned-{metric}")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    cells = reports[0]["cells"]
+    original = next(
+        entry["value"]
+        for entry in cells["RL-SCAN"]["scanner_metric_evidence"]
+        if (entry["stage"], entry["selection"], entry["metric"])
+        == ("scanner_thinned", "top_truth_count", metric)
+    )
+    tampered = _different_scanner_metric_value(metric, original)
+    for label in ("RL-SCAN", "RL-REF", "RL-QUAL"):
+        entry = next(
+            item
+            for item in cells[label]["scanner_metric_evidence"]
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", metric)
+        )
+        entry["value"] = tampered
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    metric_fields, metric_rows = _read_csv_dicts(bundle / "metrics_long.csv")
+    quality_value = next(
+        float(row["value"])
+        for row in metric_rows
+        if (row["cell_label"], row["stage"], row["selection"], row["metric"])
+        == ("Q-SCAN", "scanner_thinned", "top_truth_count", metric)
+    )
+    metric_row = next(
+        row
+        for row in metric_rows
+        if (row["cell_label"], row["stage"], row["selection"], row["metric"])
+        == ("RL-SCAN", "scanner_thinned", "top_truth_count", metric)
+    )
+    metric_row["value"] = repr(tampered)
+    _write_csv_dicts(bundle / "metrics_long.csv", metric_fields, metric_rows)
+    _rehash(bundle, "metrics_long.csv")
+
+    aggregate_fields, aggregate_rows = _read_csv_dicts(bundle / "metric_aggregates.csv")
+    metric_aggregate = next(
+        row
+        for row in aggregate_rows
+        if (row["cell_label"], row["stage"], row["selection"], row["metric"])
+        == ("RL-SCAN", "scanner_thinned", "top_truth_count", metric)
+    )
+    for name in ("mean", "median", "min", "max", "q25", "q75"):
+        metric_aggregate[name] = repr(tampered)
+    _write_csv_dicts(bundle / "metric_aggregates.csv", aggregate_fields, aggregate_rows)
+    _rehash(bundle, "metric_aggregates.csv")
+
+    raw_value = quality_value - tampered
+    contrast_fields, contrast_rows = _read_csv_dicts(bundle / "contrasts.csv")
+    contrast_row = next(
+        row
+        for row in contrast_rows
+        if (row["contrast_name"], row["stage"], row["selection"], row["metric"])
+        == ("scanner_only_effect", "scanner_thinned", "top_truth_count", metric)
+    )
+    contrast_row["raw_value"] = repr(raw_value)
+    contrast_row["improvement_value"] = repr(
+        raw_value if contrast_row["direction"] == "higher" else -raw_value
+    )
+    _write_csv_dicts(bundle / "contrasts.csv", contrast_fields, contrast_rows)
+    _rehash(bundle, "contrasts.csv")
+
+    contrast_aggregate_fields, contrast_aggregate_rows = _read_csv_dicts(
+        bundle / "contrast_aggregates.csv"
+    )
+    contrast_aggregate = next(
+        row
+        for row in contrast_aggregate_rows
+        if (row["contrast_name"], row["stage"], row["selection"], row["metric"])
+        == ("scanner_only_effect", "scanner_thinned", "top_truth_count", metric)
+    )
+    for name in ("mean", "median", "min", "max", "q25", "q75"):
+        contrast_aggregate[name] = repr(raw_value)
+    _write_csv_dicts(
+        bundle / "contrast_aggregates.csv",
+        contrast_aggregate_fields,
+        contrast_aggregate_rows,
+    )
+    _rehash(bundle, "contrast_aggregates.csv")
+
+    with pytest.raises(ValueError, match="scanner_quality/scanner evidence"):
         validate_completed_bundle(bundle)
 
 

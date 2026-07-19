@@ -83,7 +83,9 @@ The successful command writes exactly these eight files atomically:
   trial order, software versions, cache statistics, and source provenance.
 - `cell_reports.json`: ordered scalar cell reports. Artifact schema v2 records
   the complete registry-ordered `scanner_metric_evidence` in every scanner-only
-  and end-to-end scanner cell.
+  and end-to-end scanner cell. Each scanner-stage candidate-count entry also
+  carries the canonical overlap, distance, orientation, and edge source report
+  needed to validate its publication metrics algebraically.
 - `metrics_long.csv` and `metric_aggregates.csv`: trial metrics and descriptive
   summaries.
 - `contrasts.csv` and `contrast_aggregates.csv`: paired contrasts and their

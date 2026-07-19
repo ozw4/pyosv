@@ -52,6 +52,7 @@ from .models import (
 from .scalar_algebra import (
     derived_scalars_close,
     validate_downstream_quality_scalar_algebra,
+    validate_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
 )
 from .validation import validate_mode_comparison_result
@@ -1010,6 +1011,8 @@ def _load_cell_payload(
             scanner_backend=scanner_config.backend,
             scanner_report=scanner_report,
             scanner_quality=scanner_quality,
+            buffer_radius=plan.truth_metric_config.buffer_radius,
+            shape=plan.shape,
             context=f"{context}.scanner_metric_evidence",
         )
         return payload
@@ -1047,6 +1050,8 @@ def _load_cell_payload(
         scanner_backend=scanner_config.backend,
         scanner_report=scanner_report,
         scanner_quality=scanner_quality,
+        buffer_radius=plan.truth_metric_config.buffer_radius,
+        shape=plan.shape,
         context=f"{context}.scanner_metric_evidence",
     )
     pipelines = _object(payload["pipelines"], {cell.input_mode}, f"{context}.pipelines")
@@ -1250,6 +1255,8 @@ def _load_scanner_metric_evidence(
     scanner_backend: str,
     scanner_report: Mapping[str, Any],
     scanner_quality: Mapping[str, Any],
+    buffer_radius: float,
+    shape: tuple[int, int, int],
     context: str,
 ) -> list[dict[str, Any]]:
     entries = _array(value, context)
@@ -1257,9 +1264,14 @@ def _load_scanner_metric_evidence(
     if len(entries) != len(definitions):
         raise ValueError(f"{context} must contain exactly every applicable scanner registry metric")
     loaded: list[dict[str, Any]] = []
-    fields = {"stage", "selection", "metric", "value", "unit", "direction"}
+    base_fields = {"stage", "selection", "metric", "value", "unit", "direction"}
     for index, (entry_value, definition) in enumerate(zip(entries, definitions, strict=True)):
         entry_context = f"{context}[{index}]"
+        fields = (
+            {*base_fields, "quality_report"}
+            if definition.metric == "candidate_count"
+            else base_fields
+        )
         entry = _object(entry_value, fields, entry_context)
         identity = tuple(
             _string(entry[name], f"{entry_context}.{name}")
@@ -1283,16 +1295,22 @@ def _load_scanner_metric_evidence(
             raise ValueError(
                 f"{entry_context}.value violates the metric registry: {error}"
             ) from error
-        loaded.append(
-            {
-                "stage": identity[0],
-                "selection": identity[1],
-                "metric": identity[2],
-                "value": metric_value,
-                "unit": unit,
-                "direction": direction,
-            }
-        )
+        loaded_entry = {
+            "stage": identity[0],
+            "selection": identity[1],
+            "metric": identity[2],
+            "value": metric_value,
+            "unit": unit,
+            "direction": direction,
+        }
+        if definition.metric == "candidate_count":
+            loaded_entry["quality_report"] = _load_scanner_evidence_quality_report(
+                entry["quality_report"],
+                buffer_radius=buffer_radius,
+                shape=shape,
+                context=f"{entry_context}.quality_report",
+            )
+        loaded.append(loaded_entry)
     _validate_scanner_metric_evidence_consistency(
         loaded,
         scanner_report=scanner_report,
@@ -1315,42 +1333,65 @@ def _validate_scanner_metric_evidence_consistency(
     orientations = scanner_quality["orientation_error"]
     raw_orientation = orientations["raw_scan_top_truth_count"]
     thinned_orientation = orientations["used_attributes_top_truth_count"]
+    quality_reports = {
+        (entry["stage"], entry["selection"]): entry["quality_report"]
+        for entry in evidence
+        if "quality_report" in entry
+    }
+    expected_quality_identities = {
+        ("scanner_raw", "top_truth_count"),
+        ("scanner_thinned", "top_truth_count"),
+    }
+    if set(quality_reports) != expected_quality_identities:
+        raise ValueError(f"{context} must contain one quality report for each scanner stage")
+    raw_quality = quality_reports[("scanner_raw", "top_truth_count")]
+    thinned_quality = quality_reports[("scanner_thinned", "top_truth_count")]
+    for evidence_report, legacy_report, report_name in (
+        (
+            raw_quality["buffered_overlap_radius2"],
+            overlap,
+            "scanner_raw buffered overlap",
+        ),
+        (raw_quality["surface_distance"], distance, "scanner_raw surface distance"),
+        (raw_quality["orientation_error"], raw_orientation, "scanner_raw orientation"),
+        (
+            thinned_quality["orientation_error"],
+            thinned_orientation,
+            "scanner_thinned orientation",
+        ),
+    ):
+        if not _exact_json_value(evidence_report, legacy_report):
+            raise ValueError(f"{context} {report_name} does not match scanner_quality")
     expected_values = {
         ("scanner_raw", "all", "array_nonzero_fraction"): scanner_report["ft"]["nonzero_fraction"],
         ("scanner_thinned", "all", "array_nonzero_fraction"): scanner_report["fet"][
             "nonzero_fraction"
         ],
     }
-    quality_metrics = {
-        "candidate_count": overlap,
-        "buffered_precision": overlap,
-        "buffered_recall": overlap,
-        "buffered_f1": overlap,
-        "candidate_to_truth_median": distance,
-        "candidate_to_truth_p95": distance,
-        "truth_to_candidate_median": distance,
-        "truth_to_candidate_p95": distance,
-        "hausdorff_p95": distance,
-        "strike_median": raw_orientation,
-        "strike_p95": raw_orientation,
-        "dip_median": raw_orientation,
-        "dip_p95": raw_orientation,
-    }
-    expected_values.update(
-        {
-            ("scanner_raw", "top_truth_count", metric): source[metric]
-            for metric, source in quality_metrics.items()
+    for (stage, selection), report in quality_reports.items():
+        overlap_report = report["buffered_overlap_radius2"]
+        distance_report = report["surface_distance"]
+        orientation_report = report["orientation_error"]
+        edge_report = report["edge_false_positive"]
+        sources = {
+            "candidate_count": overlap_report,
+            "buffered_precision": overlap_report,
+            "buffered_recall": overlap_report,
+            "buffered_f1": overlap_report,
+            "candidate_to_truth_median": distance_report,
+            "candidate_to_truth_p95": distance_report,
+            "truth_to_candidate_median": distance_report,
+            "truth_to_candidate_p95": distance_report,
+            "hausdorff_p95": distance_report,
+            "strike_median": orientation_report,
+            "strike_p95": orientation_report,
+            "dip_median": orientation_report,
+            "dip_p95": orientation_report,
+            "edge_false_positive_fraction_of_candidates": edge_report,
         }
-    )
-    expected_values.update(
-        {
-            ("scanner_thinned", "top_truth_count", "candidate_count"): thinned_orientation["count"],
-            **{
-                ("scanner_thinned", "top_truth_count", metric): thinned_orientation[metric]
-                for metric in ("strike_median", "strike_p95", "dip_median", "dip_p95")
-            },
-        }
-    )
+        expected_values.update(
+            {(stage, selection, metric): source[metric] for metric, source in sources.items()}
+        )
 
     for entry in evidence:
         identity = tuple(entry[name] for name in ("stage", "selection", "metric"))
@@ -1369,6 +1410,56 @@ def _validate_scanner_metric_evidence_consistency(
                 f"{context} {identity[0]}/{identity[1]}/{metric} "
                 "does not match scanner_quality/scanner evidence"
             )
+
+
+def _load_scanner_evidence_quality_report(
+    value: Any,
+    *,
+    buffer_radius: float,
+    shape: tuple[int, int, int],
+    context: str,
+) -> dict[str, Any]:
+    payload = _object(
+        value,
+        {
+            "buffered_overlap_radius2",
+            "surface_distance",
+            "orientation_error",
+            "edge_false_positive",
+        },
+        context,
+    )
+    _load_quality_stage_report(
+        {
+            name: payload[name]
+            for name in (
+                "buffered_overlap_radius2",
+                "surface_distance",
+                "orientation_error",
+            )
+        },
+        buffer_radius=buffer_radius,
+        context=context,
+    )
+    edge = _load_scalar_report_object(
+        payload["edge_false_positive"],
+        _EDGE_FALSE_POSITIVE_REPORT_SCHEMA,
+        f"{context}.edge_false_positive",
+    )
+    _validate_report_radius(
+        edge["truth_buffer_radius"],
+        buffer_radius,
+        f"{context}.edge_false_positive.truth_buffer_radius",
+    )
+    validate_quality_scalar_algebra(
+        overlap=payload["buffered_overlap_radius2"],
+        distance=payload["surface_distance"],
+        orientation=payload["orientation_error"],
+        edge=edge,
+        shape=shape,
+        context=context,
+    )
+    return payload
 
 
 def _load_skinning_diagnostics(value: Any, *, method: str, context: str) -> dict[str, Any]:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from numbers import Integral, Real
-from types import MappingProxyType
 from typing import Any, Literal
 
 import numpy as np
@@ -18,6 +17,7 @@ from pyosv.synthetic_metrics import (
     top_truth_count_mask,
 )
 
+from ..reporting.models import freeze_report_value
 from ..synthetic_quality.models import PipelineArtifacts
 from ..synthetic_quality.quality_metrics import EDGE_FALSE_POSITIVE_MARGIN
 from .models import SCANNER_ONLY_SCOPE
@@ -270,6 +270,7 @@ def build_scanner_metric_evidence(
     truth_surface = np.abs(distance) <= np.float32(half_width)
 
     values: dict[tuple[str, str, str], float | int] = {}
+    quality_reports: dict[tuple[str, str], Mapping[str, Any]] = {}
     scanner_summary = _mapping(scanner_report, "scanner")
     for stage, names in (
         ("scanner_raw", ("scanner_ft", "scanner_pt", "scanner_tt")),
@@ -288,20 +289,32 @@ def build_scanner_metric_evidence(
             _required(array_summary, "nonzero_fraction"),
         )
         candidate = top_truth_count_mask(likelihood, truth_surface)
+        overlap = buffered_surface_overlap(candidate, fault, radius=radius)
+        surface_distance = surface_distance_metrics(candidate, truth_surface)
+        orientation_error = masked_orientation_error(
+            strike, dip, strike_truth, dip_truth, candidate
+        )
+        edge_false_positive = edge_false_positive_ratio(
+            candidate,
+            truth_surface,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=radius,
+        )
         _put_quality(
             values,
             stage,
             "top_truth_count",
-            buffered_surface_overlap(candidate, fault, radius=radius),
-            surface_distance_metrics(candidate, truth_surface),
-            masked_orientation_error(strike, dip, strike_truth, dip_truth, candidate),
-            edge_false_positive_ratio(
-                candidate,
-                truth_surface,
-                edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-                truth_buffer_radius=radius,
-            ),
+            overlap,
+            surface_distance,
+            orientation_error,
+            edge_false_positive,
         )
+        quality_reports[(stage, "top_truth_count")] = {
+            "buffered_overlap_radius2": overlap,
+            "surface_distance": surface_distance,
+            "orientation_error": orientation_error,
+            "edge_false_positive": edge_false_positive,
+        }
 
     if scanner_backend == "quality":
         confidence = _finite_array(
@@ -317,8 +330,13 @@ def build_scanner_metric_evidence(
     }
     if set(values) != expected:
         raise ValueError("generated scanner metric evidence does not match the registry")
+    if set(quality_reports) != {
+        ("scanner_raw", "top_truth_count"),
+        ("scanner_thinned", "top_truth_count"),
+    }:
+        raise ValueError("generated scanner quality evidence is incomplete")
     return tuple(
-        MappingProxyType(
+        freeze_report_value(
             {
                 "stage": definition.stage,
                 "selection": definition.selection,
@@ -329,6 +347,11 @@ def build_scanner_metric_evidence(
                 ),
                 "unit": definition.unit,
                 "direction": definition.direction,
+                **(
+                    {"quality_report": quality_reports[(definition.stage, definition.selection)]}
+                    if definition.metric == "candidate_count"
+                    else {}
+                ),
             }
         )
         for definition in definitions
@@ -394,9 +417,14 @@ def _scanner_values(
         raise ValueError("scanner_metric_evidence must be a sequence")
     if len(evidence) != len(definitions):
         raise ValueError("scanner_metric_evidence must contain every applicable registry metric")
-    expected_fields = {"stage", "selection", "metric", "value", "unit", "direction"}
+    base_fields = {"stage", "selection", "metric", "value", "unit", "direction"}
     for index, (item, definition) in enumerate(zip(evidence, definitions, strict=True)):
         entry = _mapping(item, f"scanner_metric_evidence[{index}]")
+        expected_fields = (
+            {*base_fields, "quality_report"}
+            if definition.metric == "candidate_count"
+            else base_fields
+        )
         if set(entry) != expected_fields:
             raise ValueError("scanner_metric_evidence entry fields do not match the contract")
         identity = tuple(entry[name] for name in ("stage", "selection", "metric"))
@@ -405,6 +433,8 @@ def _scanner_values(
             raise ValueError("scanner_metric_evidence identity does not match registry order")
         if entry["unit"] != definition.unit or entry["direction"] != definition.direction:
             raise ValueError("scanner_metric_evidence unit or direction does not match registry")
+        if definition.metric == "candidate_count":
+            _mapping(entry["quality_report"], f"scanner_metric_evidence[{index}].quality_report")
         _put(
             output,
             definition.stage,
