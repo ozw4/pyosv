@@ -115,6 +115,233 @@ def validate_downstream_quality_scalar_algebra(
         )
 
 
+def validate_skin_topology_algebra(
+    report: Mapping[str, Any], context: str, *, require_empty: bool = False
+) -> None:
+    """Validate a skin topology summary using only its reported scalars."""
+
+    skin_count = _count(report, "skin_count", context)
+    cell_count = _count(report, "cell_count", context)
+    unique_cell_count = _count(report, "unique_cell_count", context)
+    duplicate_cell_count = _count(report, "duplicate_cell_count", context)
+    largest_skin_size = _count(report, "largest_skin_size", context)
+    small_skin_count = _count(report, "small_skin_count", context)
+    small_skin_cell_count = _count(report, "small_skin_cell_count", context)
+
+    if require_empty and skin_count != 0:
+        raise ValueError(f"{context} must be empty when skinning is disabled")
+
+    if unique_cell_count > cell_count:
+        raise ValueError(f"{context}.unique_cell_count exceeds cell_count")
+    if duplicate_cell_count != cell_count - unique_cell_count:
+        raise ValueError(f"{context}.duplicate_cell_count is inconsistent with cell counts")
+    if largest_skin_size > cell_count:
+        raise ValueError(f"{context}.largest_skin_size exceeds cell_count")
+    if small_skin_count > skin_count:
+        raise ValueError(f"{context}.small_skin_count exceeds skin_count")
+    if small_skin_cell_count > cell_count:
+        raise ValueError(f"{context}.small_skin_cell_count exceeds cell_count")
+
+    _require_close(
+        report,
+        "largest_skin_fraction",
+        largest_skin_size / cell_count if cell_count else 0.0,
+        context,
+    )
+    _require_close(
+        report,
+        "small_skin_cell_fraction",
+        small_skin_cell_count / cell_count if cell_count else 0.0,
+        context,
+    )
+
+    if skin_count == 0:
+        zero_counts = {
+            "cell_count": cell_count,
+            "unique_cell_count": unique_cell_count,
+            "duplicate_cell_count": duplicate_cell_count,
+            "largest_skin_size": largest_skin_size,
+            "small_skin_count": small_skin_count,
+            "small_skin_cell_count": small_skin_cell_count,
+        }
+        if any(zero_counts.values()):
+            raise ValueError(f"{context} empty skin topology must contain only zero counts")
+
+
+def validate_component_topology_algebra(
+    report: Mapping[str, Any],
+    topology: Mapping[str, Any],
+    context: str,
+) -> None:
+    """Validate component topology summaries and arrays without rebuilding incidence data."""
+
+    truth_component_count = _count(report, "truth_component_count", context)
+    covered_count = _count(report, "covered_truth_component_count", context)
+    uncovered_count = _count(report, "uncovered_truth_component_count", context)
+    skin_count = _count(report, "skin_count", context)
+    skin_with_truth_count = _count(report, "skin_with_truth_count", context)
+    skin_without_truth_count = _count(report, "skin_without_truth_count", context)
+    over_merge_count = _count(report, "over_merge_skin_count", context)
+    over_split_count = _count(report, "over_split_truth_component_count", context)
+
+    truth_components = _mapping_array(report, "truth_components", context)
+    skins = _mapping_array(report, "skins", context)
+    if truth_component_count != len(truth_components):
+        raise ValueError(f"{context}.truth_component_count does not match truth_components")
+    if skin_count != len(skins):
+        raise ValueError(f"{context}.skin_count does not match skins")
+    if covered_count + uncovered_count != truth_component_count:
+        raise ValueError(f"{context} covered and uncovered truth counts are inconsistent")
+    if skin_with_truth_count + skin_without_truth_count != skin_count:
+        raise ValueError(f"{context} with-truth and without-truth skin counts are inconsistent")
+    if over_merge_count > skin_count:
+        raise ValueError(f"{context}.over_merge_skin_count exceeds skin_count")
+    if over_split_count > truth_component_count:
+        raise ValueError(
+            f"{context}.over_split_truth_component_count exceeds truth_component_count"
+        )
+
+    topology_skin_count = _count(topology, "skin_count", f"{context}.topology")
+    if skin_count != topology_skin_count:
+        raise ValueError(f"{context}.skin_count does not match skin topology")
+
+    truth_ids: list[int] = []
+    recalls: list[float] = []
+    truth_touching_counts: list[int] = []
+    actually_covered_count = 0
+    for index, item in enumerate(truth_components):
+        item_context = f"{context}.truth_components[{index}]"
+        truth_id = _count(item, "truth_id", item_context)
+        if truth_id <= 0:
+            raise ValueError(f"{item_context}.truth_id must be positive")
+        truth_ids.append(truth_id)
+        truth_cell_count = _count(item, "truth_cell_count", item_context)
+        if truth_cell_count <= 0:
+            raise ValueError(f"{item_context}.truth_cell_count must be positive")
+        covered_cell_count = _count(item, "covered_cell_count", item_context)
+        if covered_cell_count > truth_cell_count:
+            raise ValueError(f"{item_context}.covered_cell_count exceeds truth_cell_count")
+        skin_count_touching = _count(item, "skin_count_touching", item_context)
+        if skin_count_touching > skin_count:
+            raise ValueError(f"{item_context}.skin_count_touching exceeds skin_count")
+        dominant_skin_cell_count = _count(item, "dominant_skin_cell_count", item_context)
+        if dominant_skin_cell_count > covered_cell_count:
+            raise ValueError(f"{item_context}.dominant_skin_cell_count exceeds covered_cell_count")
+        recall = covered_cell_count / truth_cell_count
+        _require_close(item, "recall", recall, item_context)
+        _require_close(
+            item,
+            "dominant_skin_fraction_of_truth",
+            dominant_skin_cell_count / truth_cell_count,
+            item_context,
+        )
+        dominant_skin_index = item.get("dominant_skin_index")
+        if covered_cell_count == 0:
+            if (
+                skin_count_touching != 0
+                or dominant_skin_index is not None
+                or dominant_skin_cell_count != 0
+            ):
+                raise ValueError(f"{item_context} uncovered truth component is inconsistent")
+        else:
+            actually_covered_count += 1
+            if skin_count_touching == 0:
+                raise ValueError(f"{item_context}.skin_count_touching must be positive")
+            if dominant_skin_cell_count == 0:
+                raise ValueError(f"{item_context}.dominant_skin_cell_count must be positive")
+            if not _valid_index(dominant_skin_index, skin_count):
+                raise ValueError(f"{item_context}.dominant_skin_index is not a valid skin index")
+        recalls.append(recall)
+        truth_touching_counts.append(skin_count_touching)
+
+    if truth_ids != sorted(set(truth_ids)):
+        raise ValueError(f"{context}.truth_components truth_id values must be unique and sorted")
+    if covered_count != actually_covered_count:
+        raise ValueError(f"{context}.covered_truth_component_count does not match truth_components")
+
+    truth_id_set = set(truth_ids)
+    purities: list[float] = []
+    skin_touching_counts: list[int] = []
+    total_skin_cells = 0
+    actually_with_truth_count = 0
+    for index, item in enumerate(skins):
+        item_context = f"{context}.skins[{index}]"
+        if _count(item, "skin_index", item_context) != index:
+            raise ValueError(f"{item_context}.skin_index must match its array index")
+        cell_count = _count(item, "cell_count", item_context)
+        truth_cell_count = _count(item, "truth_cell_count", item_context)
+        background_cell_count = _count(item, "background_cell_count", item_context)
+        if truth_cell_count + background_cell_count != cell_count:
+            raise ValueError(f"{item_context} truth and background cell counts are inconsistent")
+        touching_count = _count(item, "truth_component_count_touching", item_context)
+        if touching_count > truth_component_count:
+            raise ValueError(
+                f"{item_context}.truth_component_count_touching exceeds truth_component_count"
+            )
+        dominant_truth_cell_count = _count(item, "dominant_truth_cell_count", item_context)
+        if dominant_truth_cell_count > truth_cell_count:
+            raise ValueError(f"{item_context}.dominant_truth_cell_count exceeds truth_cell_count")
+        purity = dominant_truth_cell_count / cell_count if cell_count else 0.0
+        _require_close(item, "purity", purity, item_context)
+        dominant_truth_id = item.get("dominant_truth_id")
+        if truth_cell_count == 0:
+            if (
+                touching_count != 0
+                or dominant_truth_id is not None
+                or dominant_truth_cell_count != 0
+            ):
+                raise ValueError(f"{item_context} background-only skin is inconsistent")
+        else:
+            actually_with_truth_count += 1
+            if touching_count == 0:
+                raise ValueError(f"{item_context}.truth_component_count_touching must be positive")
+            if dominant_truth_cell_count == 0:
+                raise ValueError(f"{item_context}.dominant_truth_cell_count must be positive")
+            if (
+                isinstance(dominant_truth_id, bool)
+                or not isinstance(dominant_truth_id, Integral)
+                or int(dominant_truth_id) not in truth_id_set
+            ):
+                raise ValueError(
+                    f"{item_context}.dominant_truth_id is not a reported truth component"
+                )
+        total_skin_cells += cell_count
+        purities.append(purity)
+        skin_touching_counts.append(touching_count)
+
+    if skin_with_truth_count != actually_with_truth_count:
+        raise ValueError(f"{context}.skin_with_truth_count does not match skins")
+    if total_skin_cells != _count(topology, "cell_count", f"{context}.topology"):
+        raise ValueError(f"{context} per-skin cell count does not match skin topology")
+
+    possible_over_merge_count = sum(count >= 2 for count in skin_touching_counts)
+    if over_merge_count > possible_over_merge_count:
+        raise ValueError(
+            f"{context}.over_merge_skin_count exceeds skins touching multiple truth components"
+        )
+    possible_over_split_count = sum(count >= 2 for count in truth_touching_counts)
+    if over_split_count > possible_over_split_count:
+        raise ValueError(
+            f"{context}.over_split_truth_component_count exceeds truth components touching "
+            "multiple skins"
+        )
+
+    expected_summaries = {
+        "max_truth_components_per_skin": max(skin_touching_counts, default=0),
+        "max_skins_per_truth_component": max(truth_touching_counts, default=0),
+        "mean_skin_purity": fsum(purities) / len(purities) if purities else 0.0,
+        "min_skin_purity": min(purities, default=0.0),
+        "mean_truth_component_recall": fsum(recalls) / len(recalls) if recalls else 0.0,
+        "min_truth_component_recall": min(recalls, default=0.0),
+    }
+    for name, expected in expected_summaries.items():
+        if name.startswith("max_"):
+            if _count(report, name, context) != expected:
+                raise ValueError(f"{context}.{name} does not match component arrays")
+        else:
+            _require_close(report, name, float(expected), context)
+
+
 def validate_overlap_algebra(report: Mapping[str, Any], context: str) -> None:
     """Validate exact and buffered overlap counts and derived ratios."""
 
@@ -273,6 +500,24 @@ def _nonnegative_integer(value: Any, context: str) -> int:
     return int(value)
 
 
+def _mapping_array(
+    report: Mapping[str, Any], name: str, context: str
+) -> tuple[Mapping[str, Any], ...]:
+    try:
+        value = report[name]
+    except KeyError as error:
+        raise ValueError(f"{context}.{name} is required") from error
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(f"{context}.{name} must be an array")
+    if any(not isinstance(item, Mapping) for item in value):
+        raise ValueError(f"{context}.{name} must contain only objects")
+    return tuple(value)
+
+
+def _valid_index(value: Any, length: int) -> bool:
+    return not isinstance(value, bool) and isinstance(value, Integral) and 0 <= int(value) < length
+
+
 def _number(report: Mapping[str, Any], name: str, context: str) -> float:
     try:
         value = report[name]
@@ -330,11 +575,13 @@ __all__ = [
     "DERIVED_SCALAR_ABS_TOL",
     "DERIVED_SCALAR_REL_TOL",
     "derived_scalars_close",
+    "validate_component_topology_algebra",
     "validate_edge_false_positive_algebra",
     "validate_downstream_quality_scalar_algebra",
     "validate_orientation_algebra",
     "validate_overlap_algebra",
     "validate_quality_scalar_algebra",
     "validate_scanner_quality_scalar_algebra",
+    "validate_skin_topology_algebra",
     "validate_surface_distance_algebra",
 ]

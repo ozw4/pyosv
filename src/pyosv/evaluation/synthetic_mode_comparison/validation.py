@@ -38,8 +38,10 @@ from .metrics import (
 )
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
 from .scalar_algebra import (
+    validate_component_topology_algebra,
     validate_downstream_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
+    validate_skin_topology_algebra,
 )
 from .trials import SyntheticTrialSpec
 
@@ -182,7 +184,7 @@ def _validate_cell_reports(
         if not isinstance(cells, Mapping) or tuple(cells) != expected_labels:
             raise ValueError("cell report cells do not match the canonical cells and order")
         try:
-            for label, payload in cells.items():
+            for cell, (label, payload) in zip(plan.cells, cells.items(), strict=True):
                 context = f"cell_reports[{trial.trial_id}].cells.{label}"
                 if "scanner_quality" in payload:
                     validate_scanner_quality_scalar_algebra(
@@ -192,6 +194,15 @@ def _validate_cell_reports(
                     validate_downstream_quality_scalar_algebra(
                         payload["quality"], plan.shape, f"{context}.quality"
                     )
+                    enabled = _workflow_settings(plan, cell).skinning_config.enabled
+                    _validate_downstream_topology_algebra(payload, enabled, context)
+                    if "pipelines" in payload:
+                        pipeline = payload["pipelines"][cell.input_mode]
+                        _validate_downstream_topology_algebra(
+                            pipeline,
+                            enabled,
+                            f"{context}.pipelines.{cell.input_mode}",
+                        )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
 
@@ -205,6 +216,35 @@ def _validate_cell_reports(
         _load_cell_reports(wire_reports, plan)
     except ValueError as error:
         raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
+
+
+def _validate_downstream_topology_algebra(
+    payload: Mapping[str, Any], enabled: bool, context: str
+) -> None:
+    topology = payload["pyosv"]["skins"]
+    validate_skin_topology_algebra(
+        topology,
+        f"{context}.pyosv.skins",
+        require_empty=not enabled,
+    )
+
+    skin = payload["quality"]["skin"]
+    if not enabled:
+        if skin is not None:
+            raise ValueError(f"{context}.quality.skin must be null when skinning is disabled")
+        return
+
+    if skin is None:
+        raise ValueError(f"{context}.quality.skin must be present when skinning is enabled")
+    quality_topology = skin["topology"]
+    validate_skin_topology_algebra(quality_topology, f"{context}.quality.skin.topology")
+    validate_component_topology_algebra(
+        skin["component_topology"],
+        quality_topology,
+        f"{context}.quality.skin.component_topology",
+    )
+    if _wire_value(topology) != _wire_value(quality_topology):
+        raise ValueError(f"{context}.pyosv.skins does not match quality.skin.topology")
 
 
 def _validate_cache_stats(

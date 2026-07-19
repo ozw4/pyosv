@@ -172,6 +172,13 @@ def _tamper_downstream_scalar_algebra(
         for quality in quality_payloads("Q-REF"):
             edge = quality["edge_false_positive"]["skin"]
             edge["edge_candidate_count"] = edge["candidate_count"] + 1
+    elif tamper == "skin_topology_fraction":
+        cell = cells["RL-REF"]
+        for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+            fraction = payload["pyosv"]["skins"]["largest_skin_fraction"] - 0.1
+            payload["pyosv"]["skins"]["largest_skin_fraction"] = fraction
+            payload["quality"]["skin"]["topology"]["largest_skin_fraction"] = fraction
+        metric_updates[("RL-REF", "skin", "skin_cells", "largest_skin_fraction")] = fraction
     else:
         raise AssertionError(f"unknown downstream algebra tamper: {tamper}")
     return metric_updates
@@ -937,6 +944,7 @@ def test_validator_rejects_rehashed_impossible_scalar_evidence(
         ("skin_empty_distance_penalty", "candidate_to_truth_mean"),
         ("skin_orientation_zero", "strike_mean"),
         ("skin_edge_count_hierarchy", "edge_candidate_count"),
+        ("skin_topology_fraction", "largest_skin_fraction"),
     ),
 )
 def test_downstream_scalar_algebra_tampering_is_rejected_across_artifact_paths(
@@ -1159,6 +1167,42 @@ def test_validator_rejects_skin_orientation_candidate_count_mismatch(tmp_path: P
     _rehash(bundle, "cell_reports.json")
 
     with pytest.raises(ValueError, match="candidate counts must match"):
+        validate_completed_bundle(bundle)
+
+
+def test_cell_report_loader_requires_exact_matching_skin_topologies() -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    cell = reports[0]["cells"]["RL-REF"]
+    assert cell["pyosv"]["skins"]["largest_skin_fraction"] == 1.0
+    cell["pyosv"]["skins"]["largest_skin_fraction"] = 1
+
+    with pytest.raises(ValueError, match="pyosv.skins does not match quality.skin.topology"):
+        artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
+
+
+def test_bundle_requires_empty_skin_topology_when_disabled(tmp_path: Path) -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+    )
+    result = run_mode_comparison(config)
+    bundle = write_artifact_bundle(result, tmp_path / "disabled-skinning", config=config)
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    cell = reports[0]["cells"]["RL-REF"]
+    topology = _fixture()[1].as_dict()["cell_reports"][0]["cells"]["RL-REF"]["pyosv"]["skins"]
+    for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+        payload["pyosv"]["skins"] = topology
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError, match="must be empty when skinning is disabled"):
         validate_completed_bundle(bundle)
 
 

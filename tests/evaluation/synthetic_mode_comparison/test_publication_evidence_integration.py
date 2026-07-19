@@ -27,6 +27,7 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 )
 from pyosv.evaluation.synthetic_mode_comparison import metrics as comparison_metrics
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
+from pyosv.evaluation.synthetic_mode_comparison.metrics import scanner_metric_definitions
 from pyosv.evaluation.synthetic_mode_comparison.validation import (
     _expected_cache_counters,
     _resolved_stage_keys_for_cell,
@@ -85,6 +86,19 @@ def shared_result(shared_config) -> SyntheticModeComparisonResult:
     return run_mode_comparison(shared_config, clock=_fixed_clock)
 
 
+@pytest.fixture(scope="module")
+def topology_config() -> SyntheticModeComparisonConfig:
+    return SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane", "parallel_planes", "crossing_planes"),
+        shape=SHAPE,
+    )
+
+
+@pytest.fixture(scope="module")
+def topology_result(topology_config) -> SyntheticModeComparisonResult:
+    return run_mode_comparison(topology_config, clock=_fixed_clock)
+
+
 def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -104,6 +118,7 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     original_backend_scan = quality_scanner.scan_backend_attributes
     original_ensemble_scan = quality_scanner.scan_ensemble_attributes
     original_scanner_thin = FaultOrientScanner3.thin
+    original_scanner_evidence = comparison_metrics.build_scanner_metric_evidence
 
     def counted_case_factory(plan, trial):
         nonlocal active_trial
@@ -129,11 +144,21 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         calls[active_trial][f"{active_backend}_thin"] += 1
         return original_scanner_thin(*args, **kwargs)
 
+    def counted_scanner_evidence(*args, **kwargs):
+        backend = kwargs["scanner_backend"]
+        calls[active_trial][f"{backend}_evidence"] += 1
+        return original_scanner_evidence(*args, **kwargs)
+
     monkeypatch.setattr(comparison_runner, "_build_trial_case", counted_case_factory)
     monkeypatch.setattr(quality_runner, "make_scanner_input_from_case", counted_scanner_input)
     monkeypatch.setattr(quality_scanner, "scan_backend_attributes", counted_backend_scan)
     monkeypatch.setattr(quality_scanner, "scan_ensemble_attributes", counted_ensemble_scan)
     monkeypatch.setattr(FaultOrientScanner3, "thin", counted_scanner_thin)
+    monkeypatch.setattr(
+        comparison_metrics,
+        "build_scanner_metric_evidence",
+        counted_scanner_evidence,
+    )
 
     result = run_mode_comparison(config, clock=_fixed_clock)
 
@@ -156,10 +181,13 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
                 "scanner_input": 1,
                 "reference-like_scan": 1,
                 "reference-like_thin": 1,
+                "reference-like_evidence": 1,
                 "quality_scan": 1,
                 "quality_thin": 1,
+                "quality_evidence": 1,
             }
         )
+    _assert_scanner_publication_identity(result)
     expected_counters = {
         "seed_hits": 3,
         "seed_misses": 3,
@@ -182,6 +210,39 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     bundle = write_artifact_bundle(result, tmp_path / "extended-smoke", config=config)
     assert validate_completed_bundle(bundle)
     assert calls == calls_before_validation
+
+
+def test_skinning_cases_round_trip_complete_topology_algebra(
+    topology_config: SyntheticModeComparisonConfig,
+    topology_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    assert tuple(report["case_id"] for report in topology_result.cell_reports) == (
+        "single_vertical_plane",
+        "parallel_planes",
+        "crossing_planes",
+    )
+    for report in topology_result.cell_reports:
+        for label in (
+            "ORACLE-REF",
+            "ORACLE-QUAL",
+            "RL-REF",
+            "RL-QUAL",
+            "Q-REF",
+            "Q-QUAL",
+        ):
+            payload = report["cells"][label]
+            assert payload["skinning"]["enabled"] is True
+            assert payload["quality"]["skin"] is not None
+            assert payload["pyosv"]["skins"] == payload["quality"]["skin"]["topology"]
+
+    validate_mode_comparison_result(topology_result, topology_config)
+    bundle = write_artifact_bundle(
+        topology_result,
+        tmp_path / "topology-cases",
+        config=topology_config,
+    )
+    assert validate_completed_bundle(bundle)
 
 
 def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
@@ -328,6 +389,43 @@ def test_coherent_cross_cell_tamper_is_rejected_in_memory_and_after_rehash(
     reports_path = bundle / "cell_reports.json"
     persisted = json.loads(reports_path.read_text(encoding="utf-8"))
     _tamper_shared_subtree(persisted, label=label, stage=stage)
+    _write_json(reports_path, persisted)
+    _rehash(bundle, "cell_reports.json")
+    with pytest.raises(ValueError, match=message):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("summary", "with-truth and without-truth skin counts"),
+        ("per_truth", r"truth_components\[0\]\.recall"),
+        ("per_skin", "truth and background cell counts"),
+        ("topology_skin_count", "skin_count does not match skin topology"),
+        ("topology_cell_count", "per-skin cell count does not match skin topology"),
+    ),
+)
+def test_component_topology_tampering_is_rejected_in_memory_and_after_rehash(
+    tamper: str,
+    message: str,
+    topology_config: SyntheticModeComparisonConfig,
+    topology_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = topology_result.as_dict()["cell_reports"]
+    _tamper_component_topology(reports, tamper)
+    tampered = replace(topology_result, cell_reports=tuple(reports))
+    with pytest.raises(ValueError, match=message):
+        validate_mode_comparison_result(tampered, topology_config)
+
+    bundle = write_artifact_bundle(
+        topology_result,
+        tmp_path / f"component-{tamper}",
+        config=topology_config,
+    )
+    reports_path = bundle / "cell_reports.json"
+    persisted = json.loads(reports_path.read_text(encoding="utf-8"))
+    _tamper_component_topology(persisted, tamper)
     _write_json(reports_path, persisted)
     _rehash(bundle, "cell_reports.json")
     with pytest.raises(ValueError, match=message):
@@ -528,6 +626,50 @@ def _scanner_evidence(payload: Mapping[str, Any]) -> tuple[Any, Any]:
     return payload["scanner"], payload["scanner_quality"]
 
 
+def _assert_scanner_publication_identity(result: SyntheticModeComparisonResult) -> None:
+    labels_by_backend = {
+        "reference-like": ("RL-SCAN", "RL-REF", "RL-QUAL"),
+        "quality": ("Q-SCAN", "Q-REF", "Q-QUAL"),
+    }
+    for report in result.cell_reports:
+        trial_id = report["trial_id"]
+        cells = report["cells"]
+        for backend, labels in labels_by_backend.items():
+            definitions = scanner_metric_definitions(backend)
+            expected = tuple(
+                (definition.stage, definition.selection, definition.metric)
+                for definition in definitions
+            )
+            evidence_by_label = tuple(cells[label]["scanner_metric_evidence"] for label in labels)
+            assert all(evidence == evidence_by_label[0] for evidence in evidence_by_label[1:])
+            for evidence in evidence_by_label:
+                evidence_identities = tuple(
+                    (entry["stage"], entry["selection"], entry["metric"]) for entry in evidence
+                )
+                assert evidence_identities == expected
+            scanner_label = labels[0]
+            row_identities = tuple(
+                (row.stage, row.selection, row.metric)
+                for row in result.metric_rows
+                if row.trial_id == trial_id
+                and row.cell_label == scanner_label
+                and row.stage.startswith("scanner")
+            )
+            assert row_identities == expected
+
+            confidence = tuple(
+                identity for identity in expected if identity[0] == "scanner_confidence"
+            )
+            if backend == "reference-like":
+                assert confidence == ()
+            else:
+                assert confidence == tuple(
+                    ("scanner_confidence", selection, f"confidence_{summary}")
+                    for selection in ("finite", "raw_top_truth_count")
+                    for summary in ("mean", "median", "p95")
+                )
+
+
 def _downstream_evidence(payload: Mapping[str, Any], stage: str) -> tuple[Any, ...]:
     selections = (f"{stage}_top_truth_count", f"{stage}_positive_top_truth_count")
     evidence: tuple[Any, ...] = (
@@ -548,6 +690,33 @@ def _tamper_shared_subtree(reports: list[dict[str, Any]], *, label: str, stage: 
         return
     payload["pyosv"][stage]["mean"] += 0.01
     payload["pipelines"]["scanner"]["pyosv"][stage]["mean"] += 0.01
+
+
+def _tamper_component_topology(reports: list[dict[str, Any]], tamper: str) -> None:
+    payload = reports[0]["cells"]["ORACLE-REF"]
+    skin = payload["quality"]["skin"]
+    component = skin["component_topology"]
+    if tamper == "summary":
+        component["skin_without_truth_count"] += 1
+    elif tamper == "per_truth":
+        truth = component["truth_components"][0]
+        truth["recall"] = 0.0 if truth["recall"] else 0.5
+    elif tamper == "per_skin":
+        component["skins"][0]["background_cell_count"] += 1
+    elif tamper == "topology_skin_count":
+        skin_count = skin["topology"]["skin_count"] + 1
+        skin["topology"]["skin_count"] = skin_count
+        payload["pyosv"]["skins"]["skin_count"] = skin_count
+    elif tamper == "topology_cell_count":
+        item = component["skins"][0]
+        item["cell_count"] += 1
+        item["background_cell_count"] += 1
+        item["purity"] = item["dominant_truth_cell_count"] / item["cell_count"]
+        purities = [entry["purity"] for entry in component["skins"]]
+        component["mean_skin_purity"] = sum(purities) / len(purities)
+        component["min_skin_purity"] = min(purities)
+    else:
+        raise AssertionError(f"unknown component topology tamper: {tamper}")
 
 
 def _set_nested(value: dict[str, Any], path: tuple[str, ...], replacement: Any) -> None:

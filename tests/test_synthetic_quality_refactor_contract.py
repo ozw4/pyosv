@@ -64,6 +64,23 @@ def test_compare_output_reports_json_csv_and_artifact_differences(tmp_path: Path
     assert any("artifact extra.dat: unexpected" in difference for difference in differences)
 
 
+def test_json_contract_allows_only_additive_buffered_overlap_counts() -> None:
+    expected = {"buffered_overlap_radius2": {"candidate_count": 3}}
+    actual = {
+        "buffered_overlap_radius2": {
+            "candidate_count": 3,
+            "candidate_in_truth_buffer_count": 2,
+            "truth_in_candidate_buffer_count": 1,
+        }
+    }
+
+    assert contract._json_differences(expected, actual) == []
+    actual["buffered_overlap_radius2"]["unexpected_count"] = 1
+    assert contract._json_differences(expected, actual) == [
+        "JSON $.buffered_overlap_radius2.unexpected_count: unexpected in actual output"
+    ]
+
+
 def test_artifact_manifest_does_not_follow_symlinks(tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
