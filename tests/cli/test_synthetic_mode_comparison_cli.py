@@ -263,7 +263,14 @@ def test_real_small_skip_skinning_cli_writes_a_valid_bundle(
     assert {path.name for path in output.iterdir()} == set(REQUIRED_BUNDLE_FILES)
     assert validate_completed_bundle(output)
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    reports = json.loads((output / "cell_reports.json").read_text(encoding="utf-8"))
+    assert manifest["artifact_schema_version"] == 2
     assert manifest["input_config"]["skinning_config"]["enabled"] is False
+    assert {
+        label
+        for label, payload in reports[0]["cells"].items()
+        if "scanner_metric_evidence" in payload
+    } == {"RL-SCAN", "Q-SCAN", "RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL"}
 
 
 def test_empty_truth_surface_cli_failure_leaves_no_artifacts(

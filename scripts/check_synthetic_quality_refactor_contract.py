@@ -19,6 +19,10 @@ METRICS_FIXTURE = FIXTURE_DIR / "17_quality_ref2_metrics.json"
 SUMMARY_FIXTURE = FIXTURE_DIR / "17_quality_ref2_summary.csv"
 ARTIFACT_FIXTURE = FIXTURE_DIR / "17_quality_ref2_artifact_sha256.json"
 UPDATE_ENVIRONMENT_VARIABLE = "PYOSV_UPDATE_REFACTOR_CONTRACT"
+ADDITIVE_BUFFERED_OVERLAP_COUNTS = {
+    "candidate_in_truth_buffer_count",
+    "truth_in_candidate_buffer_count",
+}
 
 
 def normalized_json(path: Path) -> Any:
@@ -54,6 +58,11 @@ def _json_differences(expected: Any, actual: Any, path: str = "$") -> list[str]:
             if key not in actual:
                 differences.append(f"JSON {child_path}: missing from actual output")
             elif key not in expected:
+                if (
+                    path.endswith("buffered_overlap_radius2")
+                    and key in ADDITIVE_BUFFERED_OVERLAP_COUNTS
+                ):
+                    continue
                 differences.append(f"JSON {child_path}: unexpected in actual output")
             else:
                 differences.extend(_json_differences(expected[key], actual[key], child_path))

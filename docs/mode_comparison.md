@@ -239,13 +239,18 @@ existing operational validation paths.
   Comparison](synthetic_mode_comparison.md) run the canonical synthetic plan,
   atomically write its scalar artifact bundle, validate completion, and print
   the completed output path. `validate_completed_bundle()` checks cross-file
-  scalar semantics in addition to hashes and syntax. Runtime and validation
-  derive cache hit/miss expectations from the same resolved semantic stage
-  keys. Validation enforces array-summary and report-scalar constraints and
-  compares shared scanner, voting, and conditionally shared thinning evidence
-  across cells. Passing it demonstrates consistency of the recorded scalar
-  evidence, not an independent recomputation or proof of any volume stage.
-  This is separate from F3 full-volume execution.
+  scalar semantics in addition to hashes and syntax. The authoritative writer
+  emits artifact schema v2; schema-v1 bundles lack complete scanner evidence
+  and must be regenerated. Scanner publication metrics are joined totally to
+  the persisted registry-ordered evidence. Runtime and validation derive cache
+  hit/miss expectations from the same resolved semantic stage keys. Validation
+  enforces overlap, distance, orientation, edge, skin-topology, and
+  component-topology algebra, including summary consistency with per-truth and
+  per-skin arrays, and compares shared scanner, voting, and conditionally shared
+  thinning evidence across cells. Passing it demonstrates consistency of the
+  recorded scalar evidence, not an independent recomputation, proof of any
+  volume stage, or tamper-prevention signature. This is separate from F3
+  full-volume execution.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   full-volume scan/vote runner. It calls `FaultOrientScanner3.scan()`, then
   performs separately configurable scanner and voter thinning.

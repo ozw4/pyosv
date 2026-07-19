@@ -85,7 +85,9 @@ The successful command writes exactly these eight files atomically:
   the complete registry-ordered `scanner_metric_evidence` in every scanner-only
   and end-to-end scanner cell. Each scanner-stage candidate-count entry also
   carries the canonical overlap, distance, orientation, and edge source report
-  needed to validate its publication metrics algebraically.
+  needed to validate its publication metrics algebraically. Scanner publication
+  metrics are joined totally and one-to-one to this persisted evidence; a
+  missing applicable evidence entry or metric row is invalid.
 - `metrics_long.csv` and `metric_aggregates.csv`: trial metrics and descriptive
   summaries.
 - `contrasts.csv` and `contrast_aggregates.csv`: paired contrasts and their
@@ -113,10 +115,13 @@ scalar evidence is internally and cross-cell consistent. Overlap ratios,
 distance symmetric summaries, orientation percentile order, and edge
 false-positive fractions are checked algebraically with one strict numeric
 tolerance; empty distance reports use the metric implementation's
-volume-diagonal convention. Validation does not rerun any volume calculation
-or independently prove that its computation was correct. Schema-v1 bundles do
-not contain complete scanner evidence and must be regenerated with the current
-writer; validation does not implicitly upgrade them to v2.
+volume-diagonal convention. Skin summaries and component-topology summaries
+are also checked against their per-truth and per-skin arrays, including counts,
+fractions, coverage, merge/split, purity, and recall relationships. Validation
+does not rerun any volume calculation, independently prove that its computation
+was correct, or provide a tamper-prevention signature. Schema-v1 bundles do not
+contain complete scanner evidence and must be regenerated with the current
+schema-v2 writer; validation does not implicitly upgrade them to v2.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect

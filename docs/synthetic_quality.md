@@ -1438,10 +1438,15 @@ syntax. Invalid non-finite or negative truth-metric scalars are rejected during
 mode-comparison configuration, before the experiment starts. Cache counters
 are validated from resolved semantic stage keys, and shared scanner, voting,
 and conditionally shared thinning scalar evidence is compared across cells.
-Array summaries and report scalars are also checked for their mathematical
-value and count constraints. Success means the recorded scalar evidence is
-internally and cross-cell consistent, not that any volume calculation was
-independently rerun or proven correct.
+Its authoritative artifact schema is v2: scanner publication metrics are
+joined totally to complete persisted scanner evidence, while v1 bundles lack
+that evidence and must be regenerated. Array summaries and overlap, distance,
+orientation, and edge report scalars are checked for their mathematical value,
+count, and derived-summary constraints. Skin and component topology summaries
+are checked against their per-truth and per-skin arrays. Success means the
+recorded scalar evidence is internally and cross-cell consistent, not that any
+volume calculation was independently rerun or proven correct, and it is not a
+tamper-prevention signature.
 
 When `--scanner-backend-matrix` is enabled, scanner pipeline variant reports
 also include `scanner_backend_matrix.backends.<backend>` for `reference-like`,
