@@ -396,6 +396,43 @@ def test_coherent_cross_cell_tamper_is_rejected_in_memory_and_after_rehash(
 
 
 @pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("summary", "with-truth and without-truth skin counts"),
+        ("per_truth", r"truth_components\[0\]\.recall"),
+        ("per_skin", "truth and background cell counts"),
+        ("topology_skin_count", "skin_count does not match skin topology"),
+        ("topology_cell_count", "per-skin cell count does not match skin topology"),
+    ),
+)
+def test_component_topology_tampering_is_rejected_in_memory_and_after_rehash(
+    tamper: str,
+    message: str,
+    topology_config: SyntheticModeComparisonConfig,
+    topology_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = topology_result.as_dict()["cell_reports"]
+    _tamper_component_topology(reports, tamper)
+    tampered = replace(topology_result, cell_reports=tuple(reports))
+    with pytest.raises(ValueError, match=message):
+        validate_mode_comparison_result(tampered, topology_config)
+
+    bundle = write_artifact_bundle(
+        topology_result,
+        tmp_path / f"component-{tamper}",
+        config=topology_config,
+    )
+    reports_path = bundle / "cell_reports.json"
+    persisted = json.loads(reports_path.read_text(encoding="utf-8"))
+    _tamper_component_topology(persisted, tamper)
+    _write_json(reports_path, persisted)
+    _rehash(bundle, "cell_reports.json")
+    with pytest.raises(ValueError, match=message):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
     ("path", "replacement"),
     (
         (("RL-SCAN", "scanner", "input", "finite_count"), 730),
@@ -653,6 +690,33 @@ def _tamper_shared_subtree(reports: list[dict[str, Any]], *, label: str, stage: 
         return
     payload["pyosv"][stage]["mean"] += 0.01
     payload["pipelines"]["scanner"]["pyosv"][stage]["mean"] += 0.01
+
+
+def _tamper_component_topology(reports: list[dict[str, Any]], tamper: str) -> None:
+    payload = reports[0]["cells"]["ORACLE-REF"]
+    skin = payload["quality"]["skin"]
+    component = skin["component_topology"]
+    if tamper == "summary":
+        component["skin_without_truth_count"] += 1
+    elif tamper == "per_truth":
+        truth = component["truth_components"][0]
+        truth["recall"] = 0.0 if truth["recall"] else 0.5
+    elif tamper == "per_skin":
+        component["skins"][0]["background_cell_count"] += 1
+    elif tamper == "topology_skin_count":
+        skin_count = skin["topology"]["skin_count"] + 1
+        skin["topology"]["skin_count"] = skin_count
+        payload["pyosv"]["skins"]["skin_count"] = skin_count
+    elif tamper == "topology_cell_count":
+        item = component["skins"][0]
+        item["cell_count"] += 1
+        item["background_cell_count"] += 1
+        item["purity"] = item["dominant_truth_cell_count"] / item["cell_count"]
+        purities = [entry["purity"] for entry in component["skins"]]
+        component["mean_skin_purity"] = sum(purities) / len(purities)
+        component["min_skin_purity"] = min(purities)
+    else:
+        raise AssertionError(f"unknown component topology tamper: {tamper}")
 
 
 def _set_nested(value: dict[str, Any], path: tuple[str, ...], replacement: Any) -> None:
