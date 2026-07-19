@@ -166,6 +166,8 @@ def test_skin_topology_algebra_rejects_inconsistent_summary(path, replacement) -
         (("skins", 2, "purity"), 0.5),
         (("mean_skin_purity",), 0.5),
         (("max_skins_per_truth_component",), 2),
+        (("over_merge_skin_count",), 1),
+        (("over_split_truth_component_count",), 1),
         (("skin_count",), 1),
     ),
 )

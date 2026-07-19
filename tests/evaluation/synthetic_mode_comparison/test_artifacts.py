@@ -172,6 +172,13 @@ def _tamper_downstream_scalar_algebra(
         for quality in quality_payloads("Q-REF"):
             edge = quality["edge_false_positive"]["skin"]
             edge["edge_candidate_count"] = edge["candidate_count"] + 1
+    elif tamper == "skin_topology_fraction":
+        cell = cells["RL-REF"]
+        for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+            fraction = payload["pyosv"]["skins"]["largest_skin_fraction"] - 0.1
+            payload["pyosv"]["skins"]["largest_skin_fraction"] = fraction
+            payload["quality"]["skin"]["topology"]["largest_skin_fraction"] = fraction
+        metric_updates[("RL-REF", "skin", "skin_cells", "largest_skin_fraction")] = fraction
     else:
         raise AssertionError(f"unknown downstream algebra tamper: {tamper}")
     return metric_updates
@@ -937,6 +944,7 @@ def test_validator_rejects_rehashed_impossible_scalar_evidence(
         ("skin_empty_distance_penalty", "candidate_to_truth_mean"),
         ("skin_orientation_zero", "strike_mean"),
         ("skin_edge_count_hierarchy", "edge_candidate_count"),
+        ("skin_topology_fraction", "largest_skin_fraction"),
     ),
 )
 def test_downstream_scalar_algebra_tampering_is_rejected_across_artifact_paths(

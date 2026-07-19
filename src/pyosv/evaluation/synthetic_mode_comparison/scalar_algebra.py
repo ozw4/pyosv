@@ -314,6 +314,18 @@ def validate_component_topology_algebra(
     if total_skin_cells != _count(topology, "cell_count", f"{context}.topology"):
         raise ValueError(f"{context} per-skin cell count does not match skin topology")
 
+    possible_over_merge_count = sum(count >= 2 for count in skin_touching_counts)
+    if over_merge_count > possible_over_merge_count:
+        raise ValueError(
+            f"{context}.over_merge_skin_count exceeds skins touching multiple truth components"
+        )
+    possible_over_split_count = sum(count >= 2 for count in truth_touching_counts)
+    if over_split_count > possible_over_split_count:
+        raise ValueError(
+            f"{context}.over_split_truth_component_count exceeds truth components touching "
+            "multiple skins"
+        )
+
     expected_summaries = {
         "max_truth_components_per_skin": max(skin_touching_counts, default=0),
         "max_skins_per_truth_component": max(truth_touching_counts, default=0),
