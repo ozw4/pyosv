@@ -16,6 +16,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, fields, replace
+from math import isclose
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -1368,6 +1369,10 @@ def _validate_scanner_metric_evidence_consistency(
             "nonzero_fraction"
         ],
     }
+    if "confidence" in scanner_report:
+        expected_values[("scanner_confidence", "finite", "confidence_mean")] = scanner_report[
+            "confidence"
+        ]["mean"]
     for (stage, selection), report in quality_reports.items():
         overlap_report = report["buffered_overlap_radius2"]
         distance_report = report["surface_distance"]
@@ -1400,11 +1405,14 @@ def _validate_scanner_metric_evidence_consistency(
             continue
         metric = entry["metric"]
         actual = entry["value"]
-        matches = (
-            actual == float(expected)
-            if metric == "candidate_count"
-            else derived_scalars_close(float(actual), float(expected))
-        )
+        if identity == ("scanner_confidence", "finite", "confidence_mean"):
+            # The evidence mean uses NumPy's float32 reduction while the legacy
+            # scanner summary promotes samples to float64 before reduction.
+            matches = isclose(float(actual), float(expected), rel_tol=1.0e-7, abs_tol=1.0e-9)
+        elif metric == "candidate_count":
+            matches = actual == float(expected)
+        else:
+            matches = derived_scalars_close(float(actual), float(expected))
         if not matches:
             raise ValueError(
                 f"{context} {identity[0]}/{identity[1]}/{metric} "

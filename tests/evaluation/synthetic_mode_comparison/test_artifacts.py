@@ -852,6 +852,36 @@ def test_cell_report_loader_rejects_scanner_metric_evidence_quality_mismatch(
 
 
 @pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("missing", "exactly every applicable"),
+        ("extra", "exactly every applicable"),
+        ("duplicate", "identity does not match"),
+        ("unknown", "identity does not match"),
+    ),
+)
+def test_cell_report_loader_rejects_malformed_scanner_evidence_identity(
+    mutation: str, message: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    evidence = reports[0]["cells"]["RL-SCAN"]["scanner_metric_evidence"]
+    if mutation == "missing":
+        evidence.pop()
+    elif mutation == "extra":
+        evidence.append(dict(evidence[-1]))
+    elif mutation == "duplicate":
+        for name in ("stage", "selection", "metric"):
+            evidence[1][name] = evidence[0][name]
+    else:
+        evidence[1]["metric"] = "unknown_metric"
+    plan = artifacts.build_mode_comparison_plan(config)
+
+    with pytest.raises(ValueError, match=message):
+        artifacts._load_cell_reports(reports, plan)
+
+
+@pytest.mark.parametrize(
     "metric",
     (
         "buffered_f1",
@@ -872,14 +902,27 @@ def test_writer_rejects_coordinated_scanner_thinned_metric_tampering(
         == ("scanner_thinned", "top_truth_count", metric)
     )
     tampered = _different_scanner_metric_value(metric, original)
+    report_name = {
+        "buffered_f1": "buffered_overlap_radius2",
+        "hausdorff_p95": "surface_distance",
+        "edge_false_positive_fraction_of_candidates": "edge_false_positive",
+    }[metric]
     for label in ("RL-SCAN", "RL-REF", "RL-QUAL"):
-        entry = next(
+        evidence = cells[label]["scanner_metric_evidence"]
+        metric_entry = next(
             item
-            for item in cells[label]["scanner_metric_evidence"]
+            for item in evidence
             if (item["stage"], item["selection"], item["metric"])
             == ("scanner_thinned", "top_truth_count", metric)
         )
-        entry["value"] = tampered
+        metric_entry["value"] = tampered
+        quality_entry = next(
+            item
+            for item in evidence
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", "candidate_count")
+        )
+        quality_entry["quality_report"][report_name][metric] = tampered
 
     metric_rows = tuple(
         replace(row, value=tampered)
@@ -1080,6 +1123,9 @@ def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
     tmp_path: Path,
 ) -> None:
     bundle = _write_bundle(tmp_path / "coordinated-confidence")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    cells = reports[0]["cells"]
     metrics_path = bundle / "metrics_long.csv"
     with metrics_path.open(encoding="utf-8", newline="") as stream:
         metric_rows = list(csv.reader(stream))
@@ -1096,6 +1142,21 @@ def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
         == ("Q-SCAN", "scanner_confidence", "finite", "confidence_mean")
     )
     tampered_value = float(metric_row[metric_header.index("value")]) + 0.01
+    for label in ("Q-SCAN", "Q-REF", "Q-QUAL"):
+        evidence = next(
+            entry
+            for entry in cells[label]["scanner_metric_evidence"]
+            if (entry["stage"], entry["selection"], entry["metric"])
+            == ("scanner_confidence", "finite", "confidence_mean")
+        )
+        evidence["value"] = tampered_value
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
     metric_row[metric_header.index("value")] = repr(tampered_value)
     with metrics_path.open("w", encoding="utf-8", newline="") as stream:
         csv.writer(stream, lineterminator="\n").writerows(metric_rows)
@@ -1122,7 +1183,7 @@ def test_validator_rejects_coordinated_confidence_and_aggregate_tampering(
         csv.writer(stream, lineterminator="\n").writerows(aggregate_rows)
     _rehash(bundle, "metric_aggregates.csv")
 
-    with pytest.raises(ValueError, match="scalar evidence in cell_reports"):
+    with pytest.raises(ValueError, match="scanner_quality/scanner evidence"):
         validate_completed_bundle(bundle)
 
 
@@ -1148,14 +1209,27 @@ def test_validator_rejects_rehashed_coordinated_scanner_thinned_metric_tampering
         == ("scanner_thinned", "top_truth_count", metric)
     )
     tampered = _different_scanner_metric_value(metric, original)
+    report_name = {
+        "buffered_f1": "buffered_overlap_radius2",
+        "hausdorff_p95": "surface_distance",
+        "edge_false_positive_fraction_of_candidates": "edge_false_positive",
+    }[metric]
     for label in ("RL-SCAN", "RL-REF", "RL-QUAL"):
-        entry = next(
+        evidence = cells[label]["scanner_metric_evidence"]
+        metric_entry = next(
             item
-            for item in cells[label]["scanner_metric_evidence"]
+            for item in evidence
             if (item["stage"], item["selection"], item["metric"])
             == ("scanner_thinned", "top_truth_count", metric)
         )
-        entry["value"] = tampered
+        metric_entry["value"] = tampered
+        quality_entry = next(
+            item
+            for item in evidence
+            if (item["stage"], item["selection"], item["metric"])
+            == ("scanner_thinned", "top_truth_count", "candidate_count")
+        )
+        quality_entry["quality_report"][report_name][metric] = tampered
     reports_path.write_text(
         json.dumps(reports, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -1225,7 +1299,7 @@ def test_validator_rejects_rehashed_coordinated_scanner_thinned_metric_tampering
     )
     _rehash(bundle, "contrast_aggregates.csv")
 
-    with pytest.raises(ValueError, match="scanner_quality/scanner evidence"):
+    with pytest.raises(ValueError, match=metric):
         validate_completed_bundle(bundle)
 
 
