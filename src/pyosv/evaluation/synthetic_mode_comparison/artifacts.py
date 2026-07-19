@@ -279,10 +279,8 @@ _SKINNING_CONFIG_REPORT_SCHEMA = {
         ),
         "string",
     ),
-    **dict.fromkeys(
-        ("min_likelihood", "seed_min_ep"),
-        "optional_closed_unit_interval_number",
-    ),
+    "min_likelihood": "optional_nonnegative_number",
+    "seed_min_ep": "optional_closed_unit_interval_number",
     **dict.fromkeys(
         ("min_skin_size", "rv", "rw", "accepted_occupancy_radius"),
         "optional_nonnegative_integer",
@@ -311,8 +309,8 @@ _PRIMARY_SKINNER_DIAGNOSTIC_FIELDS = {
     "accepted_cell_count": "nonnegative_integer",
     "accepted_occupancy_radius": "nonnegative_integer",
     "seed_min_ep": "closed_unit_interval_number",
-    "seed_threshold": "closed_unit_interval_number",
-    "grow_threshold": "closed_unit_interval_number",
+    "seed_threshold": "nonnegative_number",
+    "grow_threshold": "nonnegative_number",
 }
 _SKINNING_DIAGNOSTIC_REPORT_SCHEMA = {
     **dict.fromkeys(

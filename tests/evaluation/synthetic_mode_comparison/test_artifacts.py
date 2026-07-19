@@ -26,7 +26,7 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     write_artifact_bundle,
 )
 from pyosv.evaluation.synthetic_mode_comparison import artifacts
-from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig
+from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig, SyntheticSkinningConfig
 
 
 @cache
@@ -137,6 +137,52 @@ def test_bundle_round_trip_preserves_integer_valued_real_config(tmp_path: Path) 
     bundle = write_artifact_bundle(result, tmp_path / "bundle", config=config)
 
     assert validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize("min_likelihood", (None, 0.0, 0.5, 1.0, 1.5))
+def test_bundle_round_trip_accepts_nonnegative_skinner_likelihood_thresholds(
+    tmp_path: Path, min_likelihood: float | None
+) -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        skinning_config=SyntheticSkinningConfig(min_likelihood=min_likelihood),
+        skinner_min_likelihood_explicit=True,
+    )
+    result = run_mode_comparison(config)
+    reports = result.as_dict()["cell_reports"]
+    downstream_cells = reports[0]["cells"]
+
+    for label in ("ORACLE-REF", "ORACLE-QUAL", "RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL"):
+        cell = downstream_cells[label]
+        assert cell["config"]["skinning"]["min_likelihood"] == min_likelihood
+        if min_likelihood is not None:
+            assert cell["skinning"]["diagnostics"]["seed_threshold"] == min_likelihood
+            assert cell["skinning"]["diagnostics"]["grow_threshold"] == min_likelihood
+
+    if min_likelihood is None:
+        for label in ("ORACLE-QUAL", "RL-QUAL", "Q-QUAL"):
+            assert downstream_cells[label]["config"]["skinning"]["adaptive_min_likelihood"]
+    if min_likelihood == 1.5:
+        assert all(
+            downstream_cells[label]["skinning"]["enabled"]
+            and downstream_cells[label]["skinning"]["diagnostics"]["skin_primary_count"] == 0
+            for label in (
+                "ORACLE-REF",
+                "ORACLE-QUAL",
+                "RL-REF",
+                "RL-QUAL",
+                "Q-REF",
+                "Q-QUAL",
+            )
+        )
+        assert any(row.stage == "skin" for row in result.metric_rows)
+
+    bundle = write_artifact_bundle(result, tmp_path / "bundle", config=config)
+
+    assert validate_completed_bundle(bundle)
+    artifact_reports = json.loads((bundle / "cell_reports.json").read_text(encoding="utf-8"))
+    assert artifact_reports == reports
 
 
 def test_default_manifest_records_only_minimal_case_set(tmp_path: Path) -> None:
@@ -712,6 +758,10 @@ def test_validator_rejects_rehashed_invalid_cell_report_contract(
             ),
             -1.0,
         ),
+        (("RL-REF", "config", "skinning", "min_likelihood"), -1.0),
+        (("RL-REF", "skinning", "diagnostics", "seed_min_ep"), 1.1),
+        (("RL-REF", "skinning", "diagnostics", "seed_threshold"), -1.0),
+        (("RL-REF", "skinning", "diagnostics", "grow_threshold"), -1.0),
     ),
 )
 def test_validator_rejects_rehashed_impossible_scalar_evidence(
@@ -761,6 +811,24 @@ def test_cell_report_loader_accepts_nonnegative_coverage_above_one() -> None:
         payload["skinning"]["diagnostics"]["skin_primary_cell_coverage_of_fvt_positive"] = 1.1
 
     artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
+
+
+def test_cell_report_loader_separates_planarity_and_likelihood_threshold_ranges() -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    cell = reports[0]["cells"]["RL-REF"]
+    for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+        diagnostics = payload["skinning"]["diagnostics"]
+        diagnostics["seed_threshold"] = 1.1
+        diagnostics["grow_threshold"] = 1.1
+
+    artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
+
+    for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+        payload["skinning"]["diagnostics"]["seed_min_ep"] = 1.1
+
+    with pytest.raises(ValueError, match="closed unit interval"):
+        artifacts._load_cell_reports(reports, artifacts.build_mode_comparison_plan(config))
 
 
 @pytest.mark.parametrize(
