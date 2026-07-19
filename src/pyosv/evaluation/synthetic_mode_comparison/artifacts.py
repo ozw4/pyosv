@@ -49,6 +49,11 @@ from .models import (
     ModeCellSpec,
     SyntheticModeComparisonPlan,
 )
+from .scalar_algebra import (
+    derived_scalars_close,
+    validate_downstream_quality_scalar_algebra,
+    validate_scanner_quality_scalar_algebra,
+)
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 2
@@ -212,7 +217,14 @@ _END_TO_END_REPORT_FIELDS = {
 }
 _BUFFERED_OVERLAP_REPORT_SCHEMA = {
     **dict.fromkeys(
-        ("candidate_count", "truth_count", "intersection_count", "union_count"),
+        (
+            "candidate_count",
+            "truth_count",
+            "intersection_count",
+            "union_count",
+            "candidate_in_truth_buffer_count",
+            "truth_in_candidate_buffer_count",
+        ),
         "nonnegative_integer",
     ),
     **dict.fromkeys(
@@ -981,20 +993,23 @@ def _load_cell_payload(
             context,
         )
         scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
-        _load_scanner_report(
+        scanner_report = _load_scanner_report(
             payload["scanner"],
             scanner_config,
             plan.shape,
             f"{context}.scanner",
         )
-        _load_scanner_quality_report(
+        scanner_quality = _load_scanner_quality_report(
             payload["scanner_quality"],
             buffer_radius=plan.truth_metric_config.buffer_radius,
+            shape=plan.shape,
             context=f"{context}.scanner_quality",
         )
         payload["scanner_metric_evidence"] = _load_scanner_metric_evidence(
             payload["scanner_metric_evidence"],
             scanner_backend=scanner_config.backend,
+            scanner_report=scanner_report,
+            scanner_quality=scanner_quality,
             context=f"{context}.scanner_metric_evidence",
         )
         return payload
@@ -1018,15 +1033,20 @@ def _load_cell_payload(
     if active_pipeline != cell.input_mode:
         raise ValueError(f"{context}.active_pipeline does not match the canonical cell")
     scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
-    _load_scanner_report(payload["scanner"], scanner_config, plan.shape, f"{context}.scanner")
-    _load_scanner_quality_report(
+    scanner_report = _load_scanner_report(
+        payload["scanner"], scanner_config, plan.shape, f"{context}.scanner"
+    )
+    scanner_quality = _load_scanner_quality_report(
         payload["scanner_quality"],
         buffer_radius=plan.truth_metric_config.buffer_radius,
+        shape=plan.shape,
         context=f"{context}.scanner_quality",
     )
     payload["scanner_metric_evidence"] = _load_scanner_metric_evidence(
         payload["scanner_metric_evidence"],
         scanner_backend=scanner_config.backend,
+        scanner_report=scanner_report,
+        scanner_quality=scanner_quality,
         context=f"{context}.scanner_metric_evidence",
     )
     pipelines = _object(payload["pipelines"], {cell.input_mode}, f"{context}.pipelines")
@@ -1046,6 +1066,7 @@ def _load_cell_payload(
     _load_scanner_quality_report(
         pipeline["scanner_quality"],
         buffer_radius=plan.truth_metric_config.buffer_radius,
+        shape=plan.shape,
         context=f"{pipeline_context}.scanner_quality",
     )
     for name in (*_DOWNSTREAM_REPORT_FIELDS, "scanner", "scanner_quality"):
@@ -1104,6 +1125,7 @@ def _load_downstream_sections(
         payload["quality"],
         enabled=enabled,
         buffer_radius=plan.truth_metric_config.buffer_radius,
+        shape=plan.shape,
         context=f"{context}.quality",
     )
 
@@ -1179,7 +1201,7 @@ def _load_array_summary(
 
 
 def _load_scanner_quality_report(
-    value: Any, *, buffer_radius: float, context: str
+    value: Any, *, buffer_radius: float, shape: tuple[int, int, int], context: str
 ) -> dict[str, Any]:
     payload = _object(value, _SCANNER_QUALITY_REPORT_FIELDS, context)
     truth_count = _object(
@@ -1197,7 +1219,7 @@ def _load_scanner_quality_report(
         buffer_radius,
         f"{context}.ft_top_truth_count.buffered_overlap_radius2.radius",
     )
-    distance = _load_scalar_report_object(
+    _load_scalar_report_object(
         truth_count["surface_distance"],
         _SURFACE_DISTANCE_REPORT_SCHEMA,
         f"{context}.ft_top_truth_count.surface_distance",
@@ -1207,19 +1229,13 @@ def _load_scanner_quality_report(
         {"raw_scan_top_truth_count", "used_attributes_top_truth_count"},
         f"{context}.orientation_error",
     )
-    orientation_reports = {}
     for name, item in orientation.items():
-        orientation_reports[name] = _load_scalar_report_object(
+        _load_scalar_report_object(
             item,
             _ORIENTATION_ERROR_REPORT_SCHEMA,
             f"{context}.orientation_error.{name}",
         )
-    _validate_candidate_count_consistency(
-        overlap=overlap,
-        distance=distance,
-        orientation=orientation_reports["raw_scan_top_truth_count"],
-        context=f"{context}.ft_top_truth_count",
-    )
+    validate_scanner_quality_scalar_algebra(payload, shape, context)
     _load_scalar_report_object(
         payload["input_association"],
         _INPUT_ASSOCIATION_REPORT_SCHEMA,
@@ -1229,7 +1245,12 @@ def _load_scanner_quality_report(
 
 
 def _load_scanner_metric_evidence(
-    value: Any, *, scanner_backend: str, context: str
+    value: Any,
+    *,
+    scanner_backend: str,
+    scanner_report: Mapping[str, Any],
+    scanner_quality: Mapping[str, Any],
+    context: str,
 ) -> list[dict[str, Any]]:
     entries = _array(value, context)
     definitions = scanner_metric_definitions(scanner_backend)
@@ -1272,7 +1293,82 @@ def _load_scanner_metric_evidence(
                 "direction": direction,
             }
         )
+    _validate_scanner_metric_evidence_consistency(
+        loaded,
+        scanner_report=scanner_report,
+        scanner_quality=scanner_quality,
+        context=context,
+    )
     return loaded
+
+
+def _validate_scanner_metric_evidence_consistency(
+    evidence: Sequence[Mapping[str, Any]],
+    *,
+    scanner_report: Mapping[str, Any],
+    scanner_quality: Mapping[str, Any],
+    context: str,
+) -> None:
+    truth_count = scanner_quality["ft_top_truth_count"]
+    overlap = truth_count["buffered_overlap_radius2"]
+    distance = truth_count["surface_distance"]
+    orientations = scanner_quality["orientation_error"]
+    raw_orientation = orientations["raw_scan_top_truth_count"]
+    thinned_orientation = orientations["used_attributes_top_truth_count"]
+    expected_values = {
+        ("scanner_raw", "all", "array_nonzero_fraction"): scanner_report["ft"]["nonzero_fraction"],
+        ("scanner_thinned", "all", "array_nonzero_fraction"): scanner_report["fet"][
+            "nonzero_fraction"
+        ],
+    }
+    quality_metrics = {
+        "candidate_count": overlap,
+        "buffered_precision": overlap,
+        "buffered_recall": overlap,
+        "buffered_f1": overlap,
+        "candidate_to_truth_median": distance,
+        "candidate_to_truth_p95": distance,
+        "truth_to_candidate_median": distance,
+        "truth_to_candidate_p95": distance,
+        "hausdorff_p95": distance,
+        "strike_median": raw_orientation,
+        "strike_p95": raw_orientation,
+        "dip_median": raw_orientation,
+        "dip_p95": raw_orientation,
+    }
+    expected_values.update(
+        {
+            ("scanner_raw", "top_truth_count", metric): source[metric]
+            for metric, source in quality_metrics.items()
+        }
+    )
+    expected_values.update(
+        {
+            ("scanner_thinned", "top_truth_count", "candidate_count"): thinned_orientation["count"],
+            **{
+                ("scanner_thinned", "top_truth_count", metric): thinned_orientation[metric]
+                for metric in ("strike_median", "strike_p95", "dip_median", "dip_p95")
+            },
+        }
+    )
+
+    for entry in evidence:
+        identity = tuple(entry[name] for name in ("stage", "selection", "metric"))
+        expected = expected_values.get(identity)
+        if expected is None:
+            continue
+        metric = entry["metric"]
+        actual = entry["value"]
+        matches = (
+            actual == float(expected)
+            if metric == "candidate_count"
+            else derived_scalars_close(float(actual), float(expected))
+        )
+        if not matches:
+            raise ValueError(
+                f"{context} {identity[0]}/{identity[1]}/{metric} "
+                "does not match scanner_quality/scanner evidence"
+            )
 
 
 def _load_skinning_diagnostics(value: Any, *, method: str, context: str) -> dict[str, Any]:
@@ -1312,7 +1408,12 @@ def _load_voting_report(
 
 
 def _load_downstream_quality_report(
-    value: Any, *, enabled: bool, buffer_radius: float, context: str
+    value: Any,
+    *,
+    enabled: bool,
+    buffer_radius: float,
+    shape: tuple[int, int, int],
+    context: str,
 ) -> dict[str, Any]:
     stage_names = (
         "fv_top_truth_count",
@@ -1321,9 +1422,8 @@ def _load_downstream_quality_report(
         "fvt_positive_top_truth_count",
     )
     payload = _object(value, {*stage_names, "edge_false_positive", "skin"}, context)
-    stages = {}
     for name in stage_names:
-        stages[name] = _load_quality_stage_report(
+        _load_quality_stage_report(
             payload[name],
             buffer_radius=buffer_radius,
             context=f"{context}.{name}",
@@ -1331,9 +1431,8 @@ def _load_downstream_quality_report(
 
     edge_names = {*stage_names, *(('skin',) if enabled else ())}
     edge = _object(payload["edge_false_positive"], edge_names, f"{context}.edge_false_positive")
-    edge_reports = {}
     for name, item in edge.items():
-        report = edge_reports[name] = _load_scalar_report_object(
+        report = _load_scalar_report_object(
             item,
             _EDGE_FALSE_POSITIVE_REPORT_SCHEMA,
             f"{context}.edge_false_positive.{name}",
@@ -1343,14 +1442,6 @@ def _load_downstream_quality_report(
             buffer_radius,
             f"{context}.edge_false_positive.{name}.truth_buffer_radius",
         )
-        if name in stages:
-            _validate_candidate_count_consistency(
-                overlap=stages[name]["buffered_overlap_radius2"],
-                distance=stages[name]["surface_distance"],
-                orientation=stages[name]["orientation_error"],
-                edge=report,
-                context=f"{context}.{name}",
-            )
 
     if not enabled:
         if payload["skin"] is not None:
@@ -1359,9 +1450,9 @@ def _load_downstream_quality_report(
         _load_skin_quality_report(
             payload["skin"],
             buffer_radius=buffer_radius,
-            edge_report=edge_reports["skin"],
             context=f"{context}.skin",
         )
+    validate_downstream_quality_scalar_algebra(payload, shape, context)
     return payload
 
 
@@ -1381,21 +1472,15 @@ def _load_quality_stage_report(value: Any, *, buffer_radius: float, context: str
         buffer_radius,
         f"{context}.buffered_overlap_radius2.radius",
     )
-    distance = _load_scalar_report_object(
+    _load_scalar_report_object(
         payload["surface_distance"],
         _SURFACE_DISTANCE_REPORT_SCHEMA,
         f"{context}.surface_distance",
     )
-    orientation = _load_scalar_report_object(
+    _load_scalar_report_object(
         payload["orientation_error"],
         _ORIENTATION_ERROR_REPORT_SCHEMA,
         f"{context}.orientation_error",
-    )
-    _validate_candidate_count_consistency(
-        overlap=overlap,
-        distance=distance,
-        orientation=orientation,
-        context=context,
     )
     return payload
 
@@ -1404,7 +1489,6 @@ def _load_skin_quality_report(
     value: Any,
     *,
     buffer_radius: float,
-    edge_report: Mapping[str, Any],
     context: str,
 ) -> dict[str, Any]:
     payload = _object(
@@ -1431,7 +1515,7 @@ def _load_skin_quality_report(
         buffer_radius,
         f"{context}.buffered_overlap_radius2.radius",
     )
-    distance = _load_scalar_report_object(
+    _load_scalar_report_object(
         payload["surface_distance"],
         _SURFACE_DISTANCE_REPORT_SCHEMA,
         f"{context}.surface_distance",
@@ -1440,14 +1524,6 @@ def _load_skin_quality_report(
         payload["orientation_error"],
         _ORIENTATION_ERROR_REPORT_SCHEMA,
         f"{context}.orientation_error",
-    )
-    _validate_candidate_count_consistency(
-        overlap=overlap,
-        distance=distance,
-        orientation=orientation,
-        orientation_duplicate_count=topology["duplicate_cell_count"],
-        edge=edge_report,
-        context=context,
     )
     if overlap["candidate_count"] != topology["unique_cell_count"]:
         raise ValueError(f"{context} candidate count must match the unique skin cell count")
@@ -1460,25 +1536,6 @@ def _load_skin_quality_report(
 def _validate_report_radius(value: Any, expected: float, context: str) -> None:
     if not _exact_json_value(value, float(expected)):
         raise ValueError(f"{context} does not match the truth metric configuration")
-
-
-def _validate_candidate_count_consistency(
-    *,
-    overlap: Mapping[str, Any],
-    distance: Mapping[str, Any],
-    context: str,
-    orientation: Mapping[str, Any] | None = None,
-    orientation_duplicate_count: int = 0,
-    edge: Mapping[str, Any] | None = None,
-) -> None:
-    candidate_count = overlap["candidate_count"]
-    compared_counts = [distance["candidate_count"]]
-    if orientation is not None:
-        compared_counts.append(orientation["count"] - orientation_duplicate_count)
-    if edge is not None:
-        compared_counts.append(edge["candidate_count"])
-    if any(value != candidate_count for value in compared_counts):
-        raise ValueError(f"{context} candidate counts must match for the same selection")
 
 
 def _load_component_topology_report(value: Any, context: str) -> dict[str, Any]:

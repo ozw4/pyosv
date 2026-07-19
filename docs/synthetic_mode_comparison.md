@@ -107,11 +107,14 @@ readers can call
 `validate_completed_bundle(path)` from
 `pyosv.evaluation.synthetic_mode_comparison`. A failed run does not publish a
 partial final bundle. Successful completion establishes that the recorded
-scalar evidence is internally and cross-cell consistent; validation does not
-rerun any volume calculation or independently prove that its computation was
-correct. Schema-v1 bundles do not contain complete scanner evidence and must be
-regenerated with the current writer; validation does not implicitly upgrade
-them to v2.
+scalar evidence is internally and cross-cell consistent. Overlap ratios,
+distance symmetric summaries, orientation percentile order, and edge
+false-positive fractions are checked algebraically with one strict numeric
+tolerance; empty distance reports use the metric implementation's
+volume-diagonal convention. Validation does not rerun any volume calculation
+or independently prove that its computation was correct. Schema-v1 bundles do
+not contain complete scanner evidence and must be regenerated with the current
+writer; validation does not implicitly upgrade them to v2.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect

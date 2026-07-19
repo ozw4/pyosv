@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import fields, replace
 from typing import Any
 
@@ -21,6 +22,9 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 from pyosv.evaluation.synthetic_mode_comparison.metrics import (
     build_scanner_metric_evidence,
     scanner_metric_definitions,
+)
+from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
+    validate_quality_scalar_algebra,
 )
 from pyosv.evaluation.synthetic_quality import PipelineArtifacts, SyntheticSkinningConfig
 from pyosv.evaluation.synthetic_quality.quality_metrics import (
@@ -103,10 +107,184 @@ def _quality_row_values(
     return {metric: float(source[metric]) for metric, source in sources.items()}
 
 
+def _algebra_reports() -> tuple[dict[str, Any], dict[str, Any]]:
+    shape = (3, 4, 5)
+    candidate = np.zeros(shape, dtype=bool)
+    truth = np.zeros(shape, dtype=bool)
+    candidate[1, 1, 1] = True
+    candidate[1, 1, 2] = True
+    truth[1, 1, 2] = True
+    truth[1, 1, 3] = True
+    zeros = np.zeros(shape, dtype=np.float32)
+    quality = _quality_metrics(
+        candidate,
+        truth_fault=truth,
+        truth_surface=truth,
+        predicted_strike=zeros,
+        predicted_dip=zeros,
+        truth_strike=zeros,
+        truth_dip=zeros,
+        buffer_radius=1.0,
+    )
+    edge = edge_false_positive_ratio(
+        candidate,
+        truth,
+        edge_margin=0,
+        truth_buffer_radius=1.0,
+    )
+    return quality, edge
+
+
 def _skin(indices: Sequence[tuple[int, int, int]]) -> FaultSkin:
     return FaultSkin.from_cells(
         FaultCell(float(i1), float(i2), float(i3), 0.8, 179.0, 45.0) for i1, i2, i3 in indices
     )
+
+
+def test_quality_scalar_algebra_accepts_canonical_reports_and_rounding_noise() -> None:
+    quality, edge = _algebra_reports()
+    distance = quality["surface_distance"]
+    distance["symmetric_chamfer_mean"] += 5.0e-13
+
+    validate_quality_scalar_algebra(
+        overlap=quality["buffered_overlap_radius2"],
+        distance=distance,
+        orientation=quality["orientation_error"],
+        edge=edge,
+        shape=(3, 4, 5),
+        context="quality.fixture",
+    )
+
+
+def test_overlap_monotonicity_accepts_rounding_noise_within_derived_tolerance() -> None:
+    quality, edge = _algebra_reports()
+    overlap = quality["buffered_overlap_radius2"]
+    overlap["candidate_in_truth_buffer_count"] = overlap["intersection_count"]
+    overlap["truth_in_candidate_buffer_count"] = overlap["intersection_count"]
+    overlap["buffered_precision"] = overlap["precision"] - 5.0e-13
+    overlap["buffered_recall"] = overlap["recall"]
+    overlap["buffered_f1"] = overlap["f1"]
+
+    validate_quality_scalar_algebra(
+        overlap=overlap,
+        distance=quality["surface_distance"],
+        orientation=quality["orientation_error"],
+        edge=edge,
+        shape=(3, 4, 5),
+        context="quality.fixture",
+    )
+
+
+@pytest.mark.parametrize(
+    ("block_name", "field", "replacement"),
+    (
+        ("buffered_overlap_radius2", "union_count", 4),
+        ("buffered_overlap_radius2", "precision", 0.75),
+        ("buffered_overlap_radius2", "candidate_in_truth_buffer_count", 0),
+        ("surface_distance", "candidate_to_truth_p90", -1.0),
+        ("surface_distance", "symmetric_chamfer_mean", 2.0),
+        ("surface_distance", "hausdorff_p95", 2.0),
+        ("orientation_error", "strike_p90", -1.0),
+        ("edge", "edge_candidate_count", 3),
+        ("edge", "edge_candidate_fraction", 0.5),
+    ),
+)
+def test_quality_scalar_algebra_rejects_inconsistent_reports(
+    block_name: str, field: str, replacement: float | int
+) -> None:
+    quality, edge = _algebra_reports()
+    quality = deepcopy(quality)
+    edge = deepcopy(edge)
+    block = edge if block_name == "edge" else quality[block_name]
+    block[field] = replacement
+
+    with pytest.raises(ValueError):
+        validate_quality_scalar_algebra(
+            overlap=quality["buffered_overlap_radius2"],
+            distance=quality["surface_distance"],
+            orientation=quality["orientation_error"],
+            edge=edge,
+            shape=(3, 4, 5),
+            context="quality.fixture",
+        )
+
+
+def test_quality_scalar_algebra_rejects_meaningful_derived_rounding_change() -> None:
+    quality, edge = _algebra_reports()
+    quality["surface_distance"]["symmetric_chamfer_mean"] += 1.0e-8
+
+    with pytest.raises(ValueError, match="symmetric_chamfer_mean"):
+        validate_quality_scalar_algebra(
+            overlap=quality["buffered_overlap_radius2"],
+            distance=quality["surface_distance"],
+            orientation=quality["orientation_error"],
+            edge=edge,
+            shape=(3, 4, 5),
+            context="quality.fixture",
+        )
+
+
+@pytest.mark.parametrize(
+    ("block_name", "field"),
+    (
+        ("surface_distance", "candidate_to_truth_mean"),
+        ("orientation_error", "dip_mean"),
+    ),
+)
+def test_quality_scalar_algebra_enforces_empty_distance_and_orientation_conventions(
+    block_name: str, field: str
+) -> None:
+    empty = np.zeros((3, 4, 5), dtype=bool)
+    zeros = np.zeros_like(empty, dtype=np.float32)
+    quality = _quality_metrics(
+        empty,
+        truth_fault=empty,
+        truth_surface=empty,
+        predicted_strike=zeros,
+        predicted_dip=zeros,
+        truth_strike=zeros,
+        truth_dip=zeros,
+        buffer_radius=1.0,
+    )
+    quality[block_name][field] = 1.0
+
+    with pytest.raises(ValueError):
+        validate_quality_scalar_algebra(
+            overlap=quality["buffered_overlap_radius2"],
+            distance=quality["surface_distance"],
+            orientation=quality["orientation_error"],
+            shape=(3, 4, 5),
+            context="quality.empty",
+        )
+
+
+def test_quality_scalar_algebra_enforces_one_empty_volume_diagonal_penalty() -> None:
+    shape = (3, 4, 5)
+    empty = np.zeros(shape, dtype=bool)
+    truth = np.zeros(shape, dtype=bool)
+    truth[1, 1, 1] = True
+    zeros = np.zeros(shape, dtype=np.float32)
+    quality = _quality_metrics(
+        empty,
+        truth_fault=truth,
+        truth_surface=truth,
+        predicted_strike=zeros,
+        predicted_dip=zeros,
+        truth_strike=zeros,
+        truth_dip=zeros,
+        buffer_radius=1.0,
+    )
+    quality["surface_distance"]["truth_to_candidate_mean"] = 0.0
+    quality["surface_distance"]["symmetric_chamfer_mean"] *= 0.5
+
+    with pytest.raises(ValueError, match="truth_to_candidate_mean"):
+        validate_quality_scalar_algebra(
+            overlap=quality["buffered_overlap_radius2"],
+            distance=quality["surface_distance"],
+            orientation=quality["orientation_error"],
+            shape=shape,
+            context="quality.one_empty",
+        )
 
 
 def _handcrafted_evaluation(*, empty_skins: bool = False):

@@ -1451,7 +1451,11 @@ report shape, including `scanner`, `scanner_quality`, `pyosv`, `quality`, and
 metric values, deltas versus the selected backend, and best-backend names for
 FVT positive buffered F1, skin buffered F1, and boundary edge false positives.
 `quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
-the truth target. `quality.*.surface_distance` uses the thin truth surface mask
+the truth target. Its overlap report records the exact integer numerators
+`candidate_in_truth_buffer_count` and `truth_in_candidate_buffer_count` in
+addition to the existing exact counts and derived exact/buffered ratios. These
+two fields are additive report evidence; the summary CSV v1 columns are
+unchanged. `quality.*.surface_distance` uses the thin truth surface mask
 defined by
 `abs(truth_distance) <= --truth-surface-half-width`.
 `quality.edge_false_positive` stores edge false-positive metrics for

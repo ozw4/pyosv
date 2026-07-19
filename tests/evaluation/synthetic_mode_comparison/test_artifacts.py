@@ -801,6 +801,53 @@ def test_validator_rejects_rehashed_impossible_scalar_evidence(
         validate_completed_bundle(bundle)
 
 
+@pytest.mark.parametrize(
+    ("stage", "metric"),
+    (
+        ("scanner_raw", "buffered_f1"),
+        ("scanner_thinned", "dip_median"),
+    ),
+)
+def test_cell_report_loader_rejects_scanner_metric_evidence_quality_mismatch(
+    stage: str, metric: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    evidence = reports[0]["cells"]["RL-SCAN"]["scanner_metric_evidence"]
+    entry = next(
+        item
+        for item in evidence
+        if item["stage"] == stage
+        and item["selection"] == "top_truth_count"
+        and item["metric"] == metric
+    )
+    entry["value"] = entry["value"] * 0.9 if entry["value"] else 0.01
+    plan = artifacts.build_mode_comparison_plan(config)
+
+    with pytest.raises(ValueError, match="does not match scanner_quality"):
+        artifacts._load_cell_reports(reports, plan)
+
+
+def test_scanner_quality_loader_accepts_distinct_raw_and_thinned_counts() -> None:
+    config, result = _fixture()
+    plan = artifacts.build_mode_comparison_plan(config)
+    quality = result.as_dict()["cell_reports"][0]["cells"]["RL-SCAN"]["scanner_quality"]
+    orientations = quality["orientation_error"]
+    orientations["used_attributes_top_truth_count"]["count"] = (
+        orientations["raw_scan_top_truth_count"]["count"] + 1
+    )
+
+    assert (
+        artifacts._load_scanner_quality_report(
+            quality,
+            buffer_radius=plan.truth_metric_config.buffer_radius,
+            shape=plan.shape,
+            context="scanner_quality",
+        )
+        == quality
+    )
+
+
 def test_validator_rejects_skin_orientation_candidate_count_mismatch(tmp_path: Path) -> None:
     bundle = _write_bundle(tmp_path / "skin-orientation-count-mismatch")
     reports_path = bundle / "cell_reports.json"

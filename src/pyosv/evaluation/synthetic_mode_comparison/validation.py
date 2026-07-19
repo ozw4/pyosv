@@ -37,6 +37,10 @@ from .metrics import (
     validate_metric_value,
 )
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
+from .scalar_algebra import (
+    validate_downstream_quality_scalar_algebra,
+    validate_scanner_quality_scalar_algebra,
+)
 from .trials import SyntheticTrialSpec
 
 _CACHE_COUNTERS = (
@@ -177,6 +181,19 @@ def _validate_cell_reports(
         cells = report["cells"]
         if not isinstance(cells, Mapping) or tuple(cells) != expected_labels:
             raise ValueError("cell report cells do not match the canonical cells and order")
+        try:
+            for label, payload in cells.items():
+                context = f"cell_reports[{trial.trial_id}].cells.{label}"
+                if "scanner_quality" in payload:
+                    validate_scanner_quality_scalar_algebra(
+                        payload["scanner_quality"], plan.shape, f"{context}.scanner_quality"
+                    )
+                if "quality" in payload:
+                    validate_downstream_quality_scalar_algebra(
+                        payload["quality"], plan.shape, f"{context}.quality"
+                    )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
 
     # The artifact loader owns the fixed recursive cell-report schema. Reuse it here
     # so in-memory results and persisted bundles enforce exactly the same scalar
