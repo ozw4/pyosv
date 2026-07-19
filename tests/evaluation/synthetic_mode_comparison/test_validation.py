@@ -15,7 +15,14 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     run_mode_comparison,
     validate_mode_comparison_result,
 )
-from pyosv.evaluation.synthetic_mode_comparison.validation import _expected_cache_counters
+from pyosv.evaluation.synthetic_mode_comparison.validation import (
+    _expected_cache_counters,
+    _validate_downstream_topology_algebra,
+)
+from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
+    validate_component_topology_algebra,
+    validate_skin_topology_algebra,
+)
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig, SyntheticVotingConfig
 
 
@@ -30,6 +37,137 @@ def config() -> SyntheticModeComparisonConfig:
 @pytest.fixture(scope="module")
 def result(config):
     return run_mode_comparison(config)
+
+
+def _valid_topology_reports():
+    topology = {
+        "skin_count": 2,
+        "cell_count": 4,
+        "unique_cell_count": 3,
+        "duplicate_cell_count": 1,
+        "largest_skin_size": 3,
+        "largest_skin_fraction": 0.75,
+        "small_skin_size": 2,
+        "small_skin_count": 1,
+        "small_skin_cell_count": 1,
+        "small_skin_cell_fraction": 0.25,
+    }
+    component = {
+        "truth_component_count": 2,
+        "covered_truth_component_count": 2,
+        "uncovered_truth_component_count": 0,
+        "skin_count": 2,
+        "skin_with_truth_count": 2,
+        "skin_without_truth_count": 0,
+        "over_merge_skin_count": 0,
+        "over_split_truth_component_count": 0,
+        "max_truth_components_per_skin": 1,
+        "max_skins_per_truth_component": 1,
+        "mean_skin_purity": 5.0 / 6.0,
+        "min_skin_purity": 2.0 / 3.0,
+        "mean_truth_component_recall": 0.75,
+        "min_truth_component_recall": 0.5,
+        "truth_components": [
+            {
+                "truth_id": 1,
+                "truth_cell_count": 2,
+                "covered_cell_count": 2,
+                "recall": 1.0,
+                "skin_count_touching": 1,
+                "dominant_skin_index": 0,
+                "dominant_skin_cell_count": 2,
+                "dominant_skin_fraction_of_truth": 1.0,
+            },
+            {
+                "truth_id": 2,
+                "truth_cell_count": 2,
+                "covered_cell_count": 1,
+                "recall": 0.5,
+                "skin_count_touching": 1,
+                "dominant_skin_index": 1,
+                "dominant_skin_cell_count": 1,
+                "dominant_skin_fraction_of_truth": 0.5,
+            },
+        ],
+        "skins": [
+            {
+                "skin_index": 0,
+                "cell_count": 3,
+                "truth_cell_count": 2,
+                "background_cell_count": 1,
+                "truth_component_count_touching": 1,
+                "dominant_truth_id": 1,
+                "dominant_truth_cell_count": 2,
+                "purity": 2.0 / 3.0,
+            },
+            {
+                "skin_index": 1,
+                "cell_count": 1,
+                "truth_cell_count": 1,
+                "background_cell_count": 0,
+                "truth_component_count_touching": 1,
+                "dominant_truth_id": 2,
+                "dominant_truth_cell_count": 1,
+                "purity": 1.0,
+            },
+        ],
+    }
+    return topology, component
+
+
+def _replace_nested(value, path, replacement) -> None:
+    for name in path[:-1]:
+        value = value[name]
+    value[path[-1]] = replacement
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    (
+        (("duplicate_cell_count",), 0),
+        (("largest_skin_fraction",), 0.5),
+        (("small_skin_cell_fraction",), 0.5),
+        (("unique_cell_count",), 5),
+        (("largest_skin_size",), 5),
+        (("small_skin_count",), 3),
+    ),
+)
+def test_skin_topology_algebra_rejects_inconsistent_summary(path, replacement) -> None:
+    topology, _ = _valid_topology_reports()
+    _replace_nested(topology, path, replacement)
+
+    with pytest.raises(ValueError):
+        validate_skin_topology_algebra(topology, "topology")
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    (
+        (("truth_component_count",), 3),
+        (("covered_truth_component_count",), 1),
+        (("skin_with_truth_count",), 1),
+        (("truth_components", 1, "recall"), 0.75),
+        (("truth_components", 1, "dominant_skin_index"), 2),
+        (("skins", 1, "background_cell_count"), 1),
+        (("skins", 0, "purity"), 0.5),
+        (("mean_skin_purity",), 0.5),
+        (("max_skins_per_truth_component",), 2),
+        (("skin_count",), 1),
+    ),
+)
+def test_component_topology_algebra_rejects_inconsistent_report(path, replacement) -> None:
+    topology, component = _valid_topology_reports()
+    _replace_nested(component, path, replacement)
+
+    with pytest.raises(ValueError):
+        validate_component_topology_algebra(component, topology, "component_topology")
+
+
+def test_topology_algebra_accepts_valid_duplicate_and_background_reports() -> None:
+    topology, component = _valid_topology_reports()
+
+    validate_skin_topology_algebra(topology, "topology")
+    validate_component_topology_algebra(component, topology, "component_topology")
 
 
 def test_complete_result_passes_without_mutation(result, config) -> None:
@@ -238,6 +376,34 @@ def test_in_memory_validation_applies_shared_overlap_algebra(result, config) -> 
 
     with pytest.raises(ValueError, match="union_count is inconsistent"):
         validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+def test_in_memory_validation_applies_skin_topology_algebra(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["RL-REF"]
+    for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+        downstream["pyosv"]["skins"]["largest_skin_fraction"] -= 0.1
+        downstream["quality"]["skin"]["topology"]["largest_skin_fraction"] -= 0.1
+
+    with pytest.raises(ValueError, match="largest_skin_fraction is inconsistent"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+def test_in_memory_validation_requires_matching_skin_topologies(result, config) -> None:
+    reports = result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["RL-REF"]
+    payload["pyosv"]["skins"]["largest_skin_fraction"] = 1
+
+    with pytest.raises(ValueError, match="pyosv.skins does not match quality.skin.topology"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+def test_in_memory_validation_requires_empty_skin_topology_when_disabled() -> None:
+    topology, _ = _valid_topology_reports()
+    payload = {"pyosv": {"skins": topology}, "quality": {"skin": None}}
+
+    with pytest.raises(ValueError, match="must be empty when skinning is disabled"):
+        _validate_downstream_topology_algebra(payload, False, "cell")
 
 
 def test_plan_metadata_numeric_type_tampering_is_rejected(result, config) -> None:

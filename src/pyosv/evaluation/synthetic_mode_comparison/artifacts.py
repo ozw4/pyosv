@@ -52,9 +52,11 @@ from .models import (
 )
 from .scalar_algebra import (
     derived_scalars_close,
+    validate_component_topology_algebra,
     validate_downstream_quality_scalar_algebra,
     validate_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
+    validate_skin_topology_algebra,
 )
 from .validation import validate_mode_comparison_result
 
@@ -1121,19 +1123,26 @@ def _load_downstream_sections(
         settings.voting_config,
         f"{pyosv_context}.voting",
     )
-    _load_scalar_report_object(
+    pyosv_topology = _load_scalar_report_object(
         pyosv_report["skins"],
         _SKIN_TOPOLOGY_REPORT_SCHEMA,
         f"{pyosv_context}.skins",
     )
+    validate_skin_topology_algebra(
+        pyosv_topology,
+        f"{pyosv_context}.skins",
+        require_empty=not enabled,
+    )
 
-    _load_downstream_quality_report(
+    quality = _load_downstream_quality_report(
         payload["quality"],
         enabled=enabled,
         buffer_radius=plan.truth_metric_config.buffer_radius,
         shape=plan.shape,
         context=f"{context}.quality",
     )
+    if enabled and not _exact_json_value(pyosv_topology, quality["skin"]["topology"]):
+        raise ValueError(f"{context}.pyosv.skins does not match quality.skin.topology")
 
 
 def _load_scanner_report(
@@ -1552,6 +1561,15 @@ def _load_downstream_quality_report(
             context=f"{context}.skin",
         )
     validate_downstream_quality_scalar_algebra(payload, shape, context)
+    if enabled:
+        skin = payload["skin"]
+        topology = skin["topology"]
+        validate_skin_topology_algebra(topology, f"{context}.skin.topology")
+        validate_component_topology_algebra(
+            skin["component_topology"],
+            topology,
+            f"{context}.skin.component_topology",
+        )
     return payload
 
 
