@@ -96,6 +96,111 @@ def _write_csv_dicts(path: Path, fields: list[str], rows: list[dict[str, str]]) 
         writer.writerows(rows)
 
 
+def _tamper_downstream_scalar_algebra(
+    reports: list[dict], tamper: str
+) -> dict[tuple[str, str, str, str], float]:
+    cells = reports[0]["cells"]
+
+    def quality_payloads(label: str) -> tuple[dict, ...]:
+        cell = cells[label]
+        payloads = [cell["quality"]]
+        if "active_pipeline" in cell:
+            payloads.append(cell["pipelines"][cell["active_pipeline"]]["quality"])
+        return tuple(payloads)
+
+    metric_updates: dict[tuple[str, str, str, str], float] = {}
+    if tamper == "fv_union_count":
+        for label in ("RL-REF", "RL-QUAL"):
+            for quality in quality_payloads(label):
+                overlap = quality["fv_top_truth_count"]["buffered_overlap_radius2"]
+                overlap["union_count"] = (
+                    overlap["candidate_count"]
+                    + overlap["truth_count"]
+                    - overlap["intersection_count"]
+                    + 1
+                )
+    elif tamper == "fvt_buffered_numerator":
+        for label in ("Q-REF", "Q-QUAL"):
+            for quality in quality_payloads(label):
+                overlap = quality["fvt_top_truth_count"]["buffered_overlap_radius2"]
+                overlap["candidate_in_truth_buffer_count"] = overlap["candidate_count"] - 1
+    elif tamper == "skin_empty_distance_penalty":
+        distance_metrics = (
+            "candidate_to_truth_median",
+            "candidate_to_truth_p95",
+            "truth_to_candidate_median",
+            "truth_to_candidate_p95",
+            "hausdorff_p95",
+        )
+        for quality in quality_payloads("Q-REF"):
+            distance = quality["skin"]["surface_distance"]
+            for name in (
+                "candidate_to_truth_mean",
+                "candidate_to_truth_median",
+                "candidate_to_truth_p90",
+                "candidate_to_truth_p95",
+                "truth_to_candidate_mean",
+                "truth_to_candidate_median",
+                "truth_to_candidate_p90",
+                "truth_to_candidate_p95",
+                "symmetric_chamfer_mean",
+                "hausdorff_p95",
+            ):
+                distance[name] = 0.0
+        metric_updates.update(
+            {("Q-REF", "skin", "skin_cells", name): 0.0 for name in distance_metrics}
+        )
+    elif tamper == "skin_orientation_zero":
+        orientation_metrics = ("strike_median", "strike_p95", "dip_median", "dip_p95")
+        for quality in quality_payloads("Q-REF"):
+            orientation = quality["skin"]["orientation_error"]
+            for name in (
+                "strike_mean",
+                "strike_median",
+                "strike_p90",
+                "strike_p95",
+                "dip_mean",
+                "dip_median",
+                "dip_p90",
+                "dip_p95",
+            ):
+                orientation[name] = 0.25
+        metric_updates.update(
+            {("Q-REF", "skin", "skin_cells", name): 0.25 for name in orientation_metrics}
+        )
+    elif tamper == "skin_edge_count_hierarchy":
+        for quality in quality_payloads("Q-REF"):
+            edge = quality["edge_false_positive"]["skin"]
+            edge["edge_candidate_count"] = edge["candidate_count"] + 1
+    else:
+        raise AssertionError(f"unknown downstream algebra tamper: {tamper}")
+    return metric_updates
+
+
+def _coherent_publication_rows(
+    result: SyntheticModeComparisonResult,
+    metric_updates: dict[tuple[str, str, str, str], float],
+) -> tuple[
+    tuple[MetricRow, ...],
+    tuple[AggregateRow, ...],
+    tuple[ContrastRow, ...],
+    tuple[AggregateRow, ...],
+]:
+    metric_rows = tuple(
+        replace(row, value=metric_updates[identity])
+        if (identity := (row.cell_label, row.stage, row.selection, row.metric)) in metric_updates
+        else row
+        for row in result.metric_rows
+    )
+    contrast_rows = compute_contrast_rows(metric_rows)
+    return (
+        metric_rows,
+        aggregate_metric_rows(metric_rows),
+        contrast_rows,
+        aggregate_contrast_rows(contrast_rows),
+    )
+
+
 def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path) -> None:
     bundle = _write_bundle(tmp_path / "bundle")
 
@@ -821,6 +926,70 @@ def test_validator_rejects_rehashed_impossible_scalar_evidence(
     _rehash(bundle, "cell_reports.json")
 
     with pytest.raises(ValueError):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("fv_union_count", "union_count"),
+        ("fvt_buffered_numerator", "buffered_precision"),
+        ("skin_empty_distance_penalty", "candidate_to_truth_mean"),
+        ("skin_orientation_zero", "strike_mean"),
+        ("skin_edge_count_hierarchy", "edge_candidate_count"),
+    ),
+)
+def test_downstream_scalar_algebra_tampering_is_rejected_across_artifact_paths(
+    tmp_path: Path, tamper: str, message: str
+) -> None:
+    config, result = _fixture()
+    reports = result.as_dict()["cell_reports"]
+    metric_updates = _tamper_downstream_scalar_algebra(reports, tamper)
+    metric_rows, metric_aggregates, contrast_rows, contrast_aggregates = _coherent_publication_rows(
+        result, metric_updates
+    )
+    plan = artifacts.build_mode_comparison_plan(config)
+
+    with pytest.raises(ValueError, match=message):
+        artifacts._load_cell_reports(reports, plan)
+
+    invalid = replace(
+        result,
+        cell_reports=tuple(reports),
+        metric_rows=metric_rows,
+        metric_aggregates=metric_aggregates,
+        contrast_rows=contrast_rows,
+        contrast_aggregates=contrast_aggregates,
+    )
+    writer_output = tmp_path / f"writer-{tamper}"
+    with pytest.raises(ValueError, match=message):
+        write_artifact_bundle(invalid, writer_output, config=config)
+    assert not writer_output.exists()
+    assert not list(tmp_path.glob(f".{writer_output.name}.tmp-*"))
+
+    bundle = _write_bundle(tmp_path / f"completed-{tamper}")
+    reports_path = bundle / "cell_reports.json"
+    persisted_reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    persisted_updates = _tamper_downstream_scalar_algebra(persisted_reports, tamper)
+    assert persisted_updates == metric_updates
+    reports_path.write_text(
+        json.dumps(persisted_reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    coherent_rows = {
+        "metrics_long.csv": (metric_rows, MetricRow),
+        "metric_aggregates.csv": (metric_aggregates, AggregateRow),
+        "contrasts.csv": (contrast_rows, ContrastRow),
+        "contrast_aggregates.csv": (contrast_aggregates, AggregateRow),
+    }
+    for filename, (rows, model) in coherent_rows.items():
+        (bundle / filename).write_bytes(artifacts._csv_bytes(rows, model))
+        _rehash(bundle, filename)
+
+    with pytest.raises(ValueError, match=message):
         validate_completed_bundle(bundle)
 
 
