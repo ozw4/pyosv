@@ -245,6 +245,8 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         "scanner_scan_thinning",
         "scanner_scalar_evidence",
         "scanner_scalar_evidence",
+        "voting_scalar_evidence",
+        "thinning_scalar_evidence",
         *("cell_execution" for _ in plan.cells),
         "metric_extraction",
         "contrast_extraction",
@@ -261,10 +263,18 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         assert tuple(row.cell_label for row in rows if row.stage == "cell_execution") == tuple(
             cell.label for cell in plan.cells
         )
-        assert all(row.call_count == 1 for row in rows)
-        assert all(row.shared_stage for row in rows[:6])
-        assert all(not row.shared_stage for row in rows[6 : 6 + len(plan.cells)])
-        assert all(row.shared_stage for row in rows[6 + len(plan.cells) :])
+        evidence_calls = {
+            row.stage: row.call_count
+            for row in rows
+            if row.stage in {"voting_scalar_evidence", "thinning_scalar_evidence"}
+        }
+        assert evidence_calls == {
+            "voting_scalar_evidence": 3,
+            "thinning_scalar_evidence": 6,
+        }
+        assert all(row.shared_stage for row in rows[:8])
+        assert all(not row.shared_stage for row in rows[8 : 8 + len(plan.cells)])
+        assert all(row.shared_stage for row in rows[8 + len(plan.cells) :])
     assert result.runtime_rows[-1].stage == "experiment_total"
     assert result.runtime_rows[-1].trial_id is None
     assert result.runtime_rows[-1].shared_stage is True

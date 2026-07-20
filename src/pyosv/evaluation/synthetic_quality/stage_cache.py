@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import InitVar, dataclass, field
 from numbers import Integral, Real
@@ -530,6 +530,9 @@ class DownstreamScalarEvidenceCache:
 
     case: InitVar[Synthetic3DCase | None] = None
     contract_version: int = SCALAR_EVIDENCE_CONTRACT_VERSION
+    build_timer: (
+        Callable[[str, Callable[[], DownstreamScalarEvidence]], DownstreamScalarEvidence] | None
+    ) = field(default=None, repr=False)
     _case: Synthetic3DCase | None = field(default=None, init=False, repr=False)
     _voting: dict[VotingScalarEvidenceKey, DownstreamScalarEvidence] = field(
         default_factory=dict, init=False
@@ -597,6 +600,24 @@ class DownstreamScalarEvidenceCache:
         self._voting[key] = result
         self.voting_builds += 1
 
+    def get_or_build_voting(
+        self,
+        key: VotingScalarEvidenceKey,
+        builder: Callable[[], DownstreamScalarEvidence],
+    ) -> DownstreamScalarEvidence:
+        """Return cached voting evidence or time and store one unique build."""
+
+        result = self.get_voting(key)
+        if result is not None:
+            return result
+        result = (
+            builder()
+            if self.build_timer is None
+            else self.build_timer("voting_scalar_evidence", builder)
+        )
+        self.put_voting(key, result)
+        return result
+
     def get_thinning(self, key: ThinningScalarEvidenceKey) -> DownstreamScalarEvidence | None:
         if not isinstance(key, ThinningScalarEvidenceKey):
             raise ValueError("thinning scalar evidence key has the wrong type")
@@ -616,6 +637,24 @@ class DownstreamScalarEvidenceCache:
             raise ValueError("thinning scalar evidence has the wrong type")
         self._thinning[key] = result
         self.thinning_builds += 1
+
+    def get_or_build_thinning(
+        self,
+        key: ThinningScalarEvidenceKey,
+        builder: Callable[[], DownstreamScalarEvidence],
+    ) -> DownstreamScalarEvidence:
+        """Return cached thinning evidence or time and store one unique build."""
+
+        result = self.get_thinning(key)
+        if result is not None:
+            return result
+        result = (
+            builder()
+            if self.build_timer is None
+            else self.build_timer("thinning_scalar_evidence", builder)
+        )
+        self.put_thinning(key, result)
+        return result
 
     def clear(self) -> None:
         self._voting.clear()

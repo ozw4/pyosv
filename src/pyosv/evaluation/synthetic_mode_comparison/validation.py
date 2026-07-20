@@ -12,6 +12,7 @@ from ..reporting.models import thaw_report_value
 from ..synthetic_quality import SyntheticSkinningConfig
 from ..synthetic_quality.stage_keys import (
     PipelineStageKeys,
+    build_final_thinning_stage_key,
     build_oracle_attribute_stage_key,
     build_primary_skinning_stage_key,
     build_scanner_attribute_stage_key,
@@ -547,6 +548,27 @@ def _validate_runtime_rows(
                 ),
             )
         )
+        voting_calls, thinning_calls = _expected_downstream_evidence_builds(plan, trial)
+        expected.extend(
+            (
+                (
+                    *trial_metadata,
+                    "voting_scalar_evidence",
+                    None,
+                    None,
+                    voting_calls,
+                    True,
+                ),
+                (
+                    *trial_metadata,
+                    "thinning_scalar_evidence",
+                    None,
+                    None,
+                    thinning_calls,
+                    True,
+                ),
+            )
+        )
         expected.extend(
             (
                 *trial_metadata,
@@ -568,6 +590,32 @@ def _validate_runtime_rows(
     expected.append((None, None, None, "experiment_total", None, None, 1, True))
     if actual != tuple(expected):
         raise ValueError("runtime_rows do not match canonical stage coverage and order")
+
+
+def _expected_downstream_evidence_builds(
+    plan: SyntheticModeComparisonPlan,
+    trial: SyntheticTrialSpec,
+) -> tuple[int, int]:
+    voting_keys = set()
+    thinning_keys = set()
+    variant_spec = get_variant_spec(plan.comparison_variant)
+    for cell in plan.cells:
+        if cell.scope == SCANNER_ONLY_SCOPE:
+            continue
+        keys = _resolved_stage_keys_for_cell(plan, cell, trial)
+        if keys.voting is None or keys.thinning is None:
+            raise ValueError("downstream cell is missing canonical scalar evidence keys")
+        target_source = "oracle_ft" if cell.input_mode == "oracle" else "scanner_fet"
+        final_thinning_key = build_final_thinning_stage_key(
+            thinning_key=keys.thinning,
+            variant_spec=variant_spec,
+            target_source=target_source,
+        )
+        if final_thinning_key is None:
+            raise ValueError("downstream cell is missing a final thinning evidence key")
+        voting_keys.add(keys.voting)
+        thinning_keys.add(final_thinning_key)
+    return len(voting_keys), len(thinning_keys)
 
 
 def _runtime_identity(row: RuntimeRow) -> tuple[Any, ...]:

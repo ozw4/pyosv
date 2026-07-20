@@ -43,8 +43,15 @@ _T = TypeVar("_T")
 
 
 class TrialRuntimeRecorder(Protocol):
-    """Receiver for scalar stage timings produced by one trial."""
+    """Atomic receiver for all scalar stage timings produced by one trial."""
 
+    def record_batch(
+        self,
+        rows: tuple[Mapping[str, Any], ...],
+    ) -> None: ...
+
+
+class _RuntimeRowSink(Protocol):
     def record(
         self,
         *,
@@ -55,6 +62,72 @@ class TrialRuntimeRecorder(Protocol):
         call_count: int = 1,
         shared_stage: bool,
     ) -> None: ...
+
+
+class _TrialRuntimeBuffer(_RuntimeRowSink):
+    """Collect trial rows until the complete trial can be committed atomically."""
+
+    def __init__(self) -> None:
+        self._rows: list[Mapping[str, Any]] = []
+
+    def record(
+        self,
+        *,
+        stage: str,
+        elapsed_seconds: float,
+        cell_label: str | None = None,
+        scanner_backend: str | None = None,
+        call_count: int = 1,
+        shared_stage: bool,
+    ) -> None:
+        self._rows.append(
+            {
+                "stage": stage,
+                "elapsed_seconds": elapsed_seconds,
+                "cell_label": cell_label,
+                "scanner_backend": scanner_backend,
+                "call_count": call_count,
+                "shared_stage": shared_stage,
+            }
+        )
+
+    @property
+    def rows(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(self._rows)
+
+
+class _DownstreamEvidenceRuntime:
+    """Accumulate successful cache-miss builder time without recording rows early."""
+
+    STAGES = ("voting_scalar_evidence", "thinning_scalar_evidence")
+
+    def __init__(self, clock: Any) -> None:
+        self._clock = clock
+        self._elapsed = dict.fromkeys(self.STAGES, 0.0)
+        self._calls = dict.fromkeys(self.STAGES, 0)
+
+    def time_build(self, stage: str, operation: Callable[[], _T]) -> _T:
+        if stage not in self._elapsed:
+            raise ValueError(f"unsupported downstream evidence runtime stage {stage!r}")
+        start = _clock_value(self._clock, stage)
+        result = operation()
+        end = _clock_value(self._clock, stage)
+        elapsed = end - start
+        if elapsed < 0.0:
+            raise ValueError(f"clock moved backwards while timing {stage!r}")
+        self._elapsed[stage] += elapsed
+        self._calls[stage] += 1
+        return result
+
+    @property
+    def total_elapsed(self) -> float:
+        return sum(self._elapsed.values())
+
+    def elapsed(self, stage: str) -> float:
+        return self._elapsed[stage]
+
+    def call_count(self, stage: str) -> int:
+        return self._calls[stage]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,11 +171,12 @@ def run_synthetic_trial(
     """Run every canonical cell for ``trial`` from one set of shared inputs."""
 
     _validate_trial(plan, trial)
+    runtime_buffer = _TrialRuntimeBuffer() if runtime_recorder is not None else None
     case = _timed_call(
         "case_generation",
         lambda: _build_trial_case(plan, trial),
         clock=clock,
-        runtime_recorder=runtime_recorder,
+        runtime_recorder=runtime_buffer,
         shared_stage=True,
     )
     if case.case_id != trial.case_id:
@@ -116,8 +190,13 @@ def run_synthetic_trial(
     truth_evidence = _build_trial_truth_evidence(case, trial, plan.truth_metric_config)
 
     stage_cache = PipelineStageCache(case)
-    scalar_evidence_cache = DownstreamScalarEvidenceCache(case)
+    evidence_runtime = _DownstreamEvidenceRuntime(clock) if runtime_buffer is not None else None
+    scalar_evidence_cache = DownstreamScalarEvidenceCache(
+        case,
+        build_timer=(evidence_runtime.time_build if evidence_runtime is not None else None),
+    )
     evaluations: dict[str, SyntheticCellEvaluation] = {}
+    cell_runtimes: list[tuple[ModeCellSpec, float]] = []
     try:
         prepared_inputs = prepare_case_inputs(
             case,
@@ -129,7 +208,7 @@ def run_synthetic_trial(
                 stage,
                 operation,
                 clock=clock,
-                runtime_recorder=runtime_recorder,
+                runtime_recorder=runtime_buffer,
                 scanner_backend=backend,
                 shared_stage=True,
             ),
@@ -138,36 +217,65 @@ def run_synthetic_trial(
             plan,
             prepared_inputs,
             clock=clock,
-            runtime_recorder=runtime_recorder,
+            runtime_recorder=runtime_buffer,
         )
         for cell in _execution_cells(plan):
-            evaluation = _timed_call(
-                "cell_execution",
-                lambda cell=cell: _evaluate_cell(
-                    plan,
-                    cell,
-                    prepared_inputs=prepared_inputs,
-                    stage_cache=stage_cache,
-                    scalar_evidence_cache=scalar_evidence_cache,
-                    prepared_scanner_scalar_evidence=(
-                        scanner_evidence[cell.scanner_backend]
-                        if cell.scanner_backend is not None
-                        else None
-                    ),
+            start = _clock_value(clock, "cell_execution")
+            child_start = evidence_runtime.total_elapsed if evidence_runtime is not None else 0.0
+            evaluation = _evaluate_cell(
+                plan,
+                cell,
+                prepared_inputs=prepared_inputs,
+                stage_cache=stage_cache,
+                scalar_evidence_cache=scalar_evidence_cache,
+                prepared_scanner_scalar_evidence=(
+                    scanner_evidence[cell.scanner_backend]
+                    if cell.scanner_backend is not None
+                    else None
                 ),
-                clock=clock,
-                runtime_recorder=runtime_recorder,
-                cell_label=cell.label,
-                scanner_backend=cell.scanner_backend,
-                shared_stage=False,
             )
+            end = _clock_value(clock, "cell_execution")
+            elapsed = end - start
+            child_elapsed = (
+                evidence_runtime.total_elapsed - child_start
+                if evidence_runtime is not None
+                else 0.0
+            )
+            if elapsed < 0.0:
+                raise ValueError("clock moved backwards while timing 'cell_execution'")
+            if child_elapsed > elapsed:
+                raise ValueError(
+                    "downstream scalar evidence elapsed exceeds parent "
+                    f"cell_execution elapsed for {cell.label!r}"
+                )
+            cell_runtimes.append((cell, elapsed - child_elapsed))
             evaluations[cell.label] = evaluation
+
+        if runtime_buffer is not None:
+            if evidence_runtime is None:
+                raise RuntimeError("downstream evidence runtime accumulator is missing")
+            for stage in _DownstreamEvidenceRuntime.STAGES:
+                runtime_buffer.record(
+                    stage=stage,
+                    elapsed_seconds=evidence_runtime.elapsed(stage),
+                    call_count=evidence_runtime.call_count(stage),
+                    shared_stage=True,
+                )
+            for cell, elapsed in cell_runtimes:
+                runtime_buffer.record(
+                    stage="cell_execution",
+                    elapsed_seconds=elapsed,
+                    cell_label=cell.label,
+                    scanner_backend=cell.scanner_backend,
+                    call_count=1,
+                    shared_stage=False,
+                )
 
         ordered_cells = tuple(evaluations[cell.label] for cell in plan.cells)
         report_payload = {
             evaluation.cell.label: evaluation.report_payload for evaluation in ordered_cells
         }
-        return SyntheticTrialEvaluation(
+        result = SyntheticTrialEvaluation(
             trial=trial,
             cells=ordered_cells,
             report_payload=report_payload,
@@ -175,6 +283,11 @@ def run_synthetic_trial(
             truth_evidence=truth_evidence,
             truth_metric_config=plan.truth_metric_config,
         )
+        if runtime_recorder is not None:
+            if runtime_buffer is None:
+                raise RuntimeError("trial runtime buffer is missing")
+            runtime_recorder.record_batch(runtime_buffer.rows)
+        return result
     finally:
         stage_cache.clear()
         scalar_evidence_cache.clear()
@@ -211,7 +324,7 @@ def _build_scanner_evidence(
     prepared_inputs: PreparedCaseInputs,
     *,
     clock: Any,
-    runtime_recorder: TrialRuntimeRecorder | None,
+    runtime_recorder: _RuntimeRowSink | None,
 ) -> dict[str, PreparedScannerScalarEvidence]:
     scanner = prepared_inputs.scanner
     if scanner is None:
@@ -308,7 +421,7 @@ def _timed_call(
     operation: Callable[[], _T],
     *,
     clock: Any,
-    runtime_recorder: TrialRuntimeRecorder | None,
+    runtime_recorder: _RuntimeRowSink | None,
     cell_label: str | None = None,
     scanner_backend: str | None = None,
     shared_stage: bool,

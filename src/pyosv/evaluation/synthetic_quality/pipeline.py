@@ -529,15 +529,9 @@ def run_voting_from_attributes(
             else SCALAR_EVIDENCE_CONTRACT_VERSION
         ),
     )
-    voting_evidence = (
-        scalar_evidence_cache.get_voting(voting_evidence_key)
-        if scalar_cache_enabled
-        and scalar_evidence_cache is not None
-        and voting_evidence_key is not None
-        else None
-    )
-    if voting_evidence is None:
-        voting_evidence = build_voting_scalar_evidence(
+
+    def build_voting_evidence() -> DownstreamScalarEvidence:
+        return build_voting_scalar_evidence(
             fv,
             vp=vp,
             vt=vt,
@@ -547,12 +541,17 @@ def run_voting_from_attributes(
             truth_dip=case.truth_dip,
             buffer_radius=buffer_radius,
         )
-        if (
-            scalar_cache_enabled
-            and scalar_evidence_cache is not None
-            and voting_evidence_key is not None
-        ):
-            scalar_evidence_cache.put_voting(voting_evidence_key, voting_evidence)
+
+    voting_evidence = (
+        scalar_evidence_cache.get_or_build_voting(
+            voting_evidence_key,
+            build_voting_evidence,
+        )
+        if scalar_cache_enabled
+        and scalar_evidence_cache is not None
+        and voting_evidence_key is not None
+        else build_voting_evidence()
+    )
 
     final_thinning_key = build_final_thinning_stage_key(
         thinning_key=thinning_key,
@@ -571,16 +570,9 @@ def run_voting_from_attributes(
             else SCALAR_EVIDENCE_CONTRACT_VERSION
         ),
     )
-    thinning_evidence = (
-        scalar_evidence_cache.get_thinning(thinning_evidence_key)
-        if scalar_cache_enabled
-        and final_thinning_key_safe
-        and scalar_evidence_cache is not None
-        and thinning_evidence_key is not None
-        else None
-    )
-    if thinning_evidence is None:
-        thinning_evidence = build_thinning_scalar_evidence(
+
+    def build_thinning_evidence() -> DownstreamScalarEvidence:
+        return build_thinning_scalar_evidence(
             fvt,
             vp=vp,
             vt=vt,
@@ -590,13 +582,18 @@ def run_voting_from_attributes(
             truth_dip=case.truth_dip,
             buffer_radius=buffer_radius,
         )
-        if (
-            scalar_cache_enabled
-            and final_thinning_key_safe
-            and scalar_evidence_cache is not None
-            and thinning_evidence_key is not None
-        ):
-            scalar_evidence_cache.put_thinning(thinning_evidence_key, thinning_evidence)
+
+    thinning_evidence = (
+        scalar_evidence_cache.get_or_build_thinning(
+            thinning_evidence_key,
+            build_thinning_evidence,
+        )
+        if scalar_cache_enabled
+        and final_thinning_key_safe
+        and scalar_evidence_cache is not None
+        and thinning_evidence_key is not None
+        else build_thinning_evidence()
+    )
 
     edge_false_positive_metrics = {
         "fv_top_truth_count": voting_evidence.edge_top_truth_count,

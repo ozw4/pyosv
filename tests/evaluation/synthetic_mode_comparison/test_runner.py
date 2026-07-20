@@ -164,6 +164,58 @@ def test_trial_scalar_evidence_counts_follow_unique_semantic_keys(monkeypatch) -
             )
 
 
+def test_downstream_scalar_evidence_runtime_is_shared_and_cell_exclusive() -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            shape=(9, 9, 9),
+            skinning_config=SyntheticSkinningConfig(enabled=False),
+        )
+    )
+    rows = []
+    clock_value = -1.0
+
+    class Recorder:
+        def record_batch(self, batch) -> None:
+            rows.extend(batch)
+
+    def clock() -> float:
+        nonlocal clock_value
+        clock_value += 1.0
+        return clock_value
+
+    run_synthetic_trial(
+        plan,
+        plan.trials[0],
+        clock=clock,
+        runtime_recorder=Recorder(),
+    )
+
+    shared = {
+        row["stage"]: row
+        for row in rows
+        if row["stage"] in {"voting_scalar_evidence", "thinning_scalar_evidence"}
+    }
+    assert shared["voting_scalar_evidence"] == {
+        "stage": "voting_scalar_evidence",
+        "elapsed_seconds": 3.0,
+        "cell_label": None,
+        "scanner_backend": None,
+        "call_count": 3,
+        "shared_stage": True,
+    }
+    assert shared["thinning_scalar_evidence"] == {
+        "stage": "thinning_scalar_evidence",
+        "elapsed_seconds": 6.0,
+        "cell_label": None,
+        "scanner_backend": None,
+        "call_count": 6,
+        "shared_stage": True,
+    }
+    cell_rows = [row for row in rows if row["stage"] == "cell_execution"]
+    assert tuple(row["cell_label"] for row in cell_rows) == tuple(cell.label for cell in plan.cells)
+    assert sum(row["elapsed_seconds"] for row in cell_rows) == 17.0
+
+
 def test_matching_workflow_thinning_config_reuses_scalar_evidence(monkeypatch) -> None:
     plan = build_mode_comparison_plan(
         SyntheticModeComparisonConfig(
@@ -181,7 +233,17 @@ def test_matching_workflow_thinning_config_reuses_scalar_evidence(monkeypatch) -
 
     monkeypatch.setattr(comparison_runner, "DownstreamScalarEvidenceCache", TrackingCache)
 
-    result = run_synthetic_trial(plan, plan.trials[0])
+    rows = []
+
+    class Recorder:
+        def record_batch(self, batch) -> None:
+            rows.extend(batch)
+
+    result = run_synthetic_trial(
+        plan,
+        plan.trials[0],
+        runtime_recorder=Recorder(),
+    )
 
     assert caches[0].stats == DownstreamScalarEvidenceCacheStats(
         voting_builds=3,
@@ -189,6 +251,8 @@ def test_matching_workflow_thinning_config_reuses_scalar_evidence(monkeypatch) -
         thinning_builds=3,
         thinning_reuses=3,
     )
+    thinning_runtime = next(row for row in rows if row["stage"] == "thinning_scalar_evidence")
+    assert thinning_runtime["call_count"] == 3
     for left, right in (
         ("ORACLE-REF", "ORACLE-QUAL"),
         ("RL-REF", "RL-QUAL"),
@@ -217,10 +281,22 @@ def test_without_oracle_isolation_voting_evidence_uses_two_attribute_keys(monkey
 
     monkeypatch.setattr(comparison_runner, "DownstreamScalarEvidenceCache", TrackingCache)
 
-    run_synthetic_trial(plan, plan.trials[0])
+    rows = []
+
+    class Recorder:
+        def record_batch(self, batch) -> None:
+            rows.extend(batch)
+
+    run_synthetic_trial(
+        plan,
+        plan.trials[0],
+        runtime_recorder=Recorder(),
+    )
 
     assert caches[0].stats.voting_builds == 2
     assert caches[0].stats.voting_reuses == 2
+    voting_runtime = next(row for row in rows if row["stage"] == "voting_scalar_evidence")
+    assert voting_runtime["call_count"] == 2
 
 
 def test_trial_records_one_immutable_truth_report_before_scanner_input(monkeypatch) -> None:
@@ -841,6 +917,11 @@ def test_scalar_evidence_failure_clears_case_local_caches(monkeypatch) -> None:
     plan = _plan()
     stage_caches = []
     scalar_caches = []
+    runtime_batches = []
+
+    class Recorder:
+        def record_batch(self, batch) -> None:
+            runtime_batches.append(batch)
 
     class TrackingStageCache(comparison_runner.PipelineStageCache):
         def __post_init__(self, case) -> None:
@@ -861,8 +942,13 @@ def test_scalar_evidence_failure_clears_case_local_caches(monkeypatch) -> None:
     )
 
     with pytest.raises(RuntimeError, match="evidence failed"):
-        run_synthetic_trial(plan, plan.trials[0])
+        run_synthetic_trial(
+            plan,
+            plan.trials[0],
+            runtime_recorder=Recorder(),
+        )
 
+    assert runtime_batches == []
     assert len(stage_caches) == len(scalar_caches) == 1
     assert stage_caches[0]._case is None
     assert not stage_caches[0]._seeds

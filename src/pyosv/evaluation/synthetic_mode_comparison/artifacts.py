@@ -64,7 +64,7 @@ from .scalar_algebra import (
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 3
-RUNTIME_CONTRACT_VERSION = 1
+RUNTIME_CONTRACT_VERSION = 2
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
 METRIC_REGISTRY_DEFINITION_VERSION = 1
@@ -764,6 +764,12 @@ def _load_bundle_objects(
         "runtime_contract_version",
         RUNTIME_CONTRACT_VERSION,
         "runtime",
+        legacy_messages={
+            1: (
+                "unsupported runtime contract version 1: legacy schema-v3 bundle "
+                "does not contain downstream shared scalar evidence attribution"
+            ),
+        },
     )
 
     manifest = _object(

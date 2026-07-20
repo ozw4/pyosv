@@ -937,6 +937,21 @@ def test_top_level_coverage_tampering_is_rejected(result, config, field) -> None
         validate_mode_comparison_result(bad, config)
 
 
+@pytest.mark.parametrize("tampering", ("call_count", "shared_stage", "order"))
+def test_downstream_runtime_attribution_tampering_is_rejected(result, config, tampering) -> None:
+    rows = list(result.runtime_rows)
+    index = next(index for index, row in enumerate(rows) if row.stage == "voting_scalar_evidence")
+    if tampering == "call_count":
+        rows[index] = replace(rows[index], call_count=rows[index].call_count + 1)
+    elif tampering == "shared_stage":
+        rows[index] = replace(rows[index], shared_stage=False)
+    else:
+        rows[index], rows[index + 1] = rows[index + 1], rows[index]
+
+    with pytest.raises(ValueError, match="runtime_rows"):
+        validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
 def test_unknown_nested_cell_report_field_is_rejected(result, config) -> None:
     reports = result.as_dict()["cell_reports"]
     reports[0]["cells"]["RL-SCAN"]["scanner"]["unexpected"] = 1

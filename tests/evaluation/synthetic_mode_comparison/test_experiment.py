@@ -17,6 +17,8 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     run_mode_comparison,
 )
+from pyosv.evaluation.synthetic_mode_comparison import experiment as comparison_experiment
+from pyosv.evaluation.synthetic_mode_comparison.builder import build_mode_comparison_plan
 from pyosv.evaluation.synthetic_quality import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
@@ -90,6 +92,8 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
         "scanner_scan_thinning",
         "scanner_scalar_evidence",
         "scanner_scalar_evidence",
+        "voting_scalar_evidence",
+        "thinning_scalar_evidence",
         *("cell_execution",) * 8,
         "metric_extraction",
         "contrast_extraction",
@@ -105,7 +109,16 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
         "quality",
     )
     assert all(row.shared_stage for row in scanner_rows)
-    assert all(row.call_count == 1 for row in result.runtime_rows)
+    evidence_rows = {
+        row.stage: row
+        for row in result.runtime_rows
+        if row.stage in {"voting_scalar_evidence", "thinning_scalar_evidence"}
+    }
+    assert evidence_rows["voting_scalar_evidence"].call_count == 3
+    assert evidence_rows["thinning_scalar_evidence"].call_count == 6
+    assert all(
+        row.call_count == 1 for row in result.runtime_rows if row not in evidence_rows.values()
+    )
     assert all(row.elapsed_seconds >= 0.0 for row in result.runtime_rows)
 
 
@@ -146,6 +159,31 @@ def test_runtime_row_rejects_invalid_elapsed(elapsed: float) -> None:
             call_count=1,
             shared_stage=True,
         )
+
+
+def test_trial_runtime_batch_validation_does_not_append_partial_rows() -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            case_ids=("single_vertical_plane",),
+            shape=(9, 9, 9),
+        )
+    )
+    output = []
+    recorder = comparison_experiment._ExperimentRuntimeRecorder(plan.trials[0], output)
+    valid = {
+        "stage": "case_generation",
+        "cell_label": None,
+        "scanner_backend": None,
+        "elapsed_seconds": 1.0,
+        "call_count": 1,
+        "shared_stage": True,
+    }
+    invalid = {**valid, "stage": "scanner_input_generation", "elapsed_seconds": -1.0}
+
+    with pytest.raises(ValueError, match="elapsed_seconds"):
+        recorder.record_batch((valid, invalid))
+
+    assert output == []
 
 
 def test_backwards_clock_fails_without_returning_a_result() -> None:

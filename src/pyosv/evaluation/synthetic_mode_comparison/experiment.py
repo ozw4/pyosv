@@ -194,6 +194,20 @@ class _ExperimentRuntimeRecorder(TrialRuntimeRecorder):
             )
         )
 
+    def record_batch(self, rows: tuple[Mapping[str, Any], ...]) -> None:
+        """Validate every trial row before atomically appending the batch."""
+
+        runtime_rows = tuple(
+            RuntimeRow(
+                case_id=self._trial.case_id,
+                trial_id=self._trial.trial_id,
+                seed=self._trial.seed,
+                **row,
+            )
+            for row in rows
+        )
+        self._output.extend(runtime_rows)
+
 
 def run_mode_comparison(
     config: SyntheticModeComparisonConfig,
