@@ -15,19 +15,25 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from pyosv import synthetic_metrics
 from pyosv.cells import FaultCell
 from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     SyntheticModeComparisonResult,
+    aggregate_contrast_rows,
+    aggregate_metric_rows,
     build_mode_comparison_plan,
+    compute_contrast_rows,
     run_mode_comparison,
     validate_completed_bundle,
     validate_mode_comparison_result,
     write_artifact_bundle,
 )
+from pyosv.evaluation.synthetic_mode_comparison import artifacts as comparison_artifacts
 from pyosv.evaluation.synthetic_mode_comparison import metrics as comparison_metrics
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
 from pyosv.evaluation.synthetic_mode_comparison.metrics import scanner_metric_definitions
+from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import volume_diagonal
 from pyosv.evaluation.synthetic_mode_comparison.validation import (
     _expected_cache_counters,
     _resolved_stage_keys_for_cell,
@@ -38,6 +44,7 @@ from pyosv.evaluation.synthetic_quality import (
     SyntheticVotingConfig,
 )
 from pyosv.evaluation.synthetic_quality import pipeline as quality_pipeline
+from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.evaluation.synthetic_quality import runner as quality_runner
 from pyosv.evaluation.synthetic_quality import scanner as quality_scanner
 from pyosv.evaluation.synthetic_quality.cases import CASE_IDS
@@ -97,6 +104,34 @@ def topology_config() -> SyntheticModeComparisonConfig:
 @pytest.fixture(scope="module")
 def topology_result(topology_config) -> SyntheticModeComparisonResult:
     return run_mode_comparison(topology_config, clock=_fixed_clock)
+
+
+@pytest.fixture(scope="module")
+def empty_skin_config() -> SyntheticModeComparisonConfig:
+    return SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=SHAPE,
+        skinning_config=SyntheticSkinningConfig(min_likelihood=1.5),
+    )
+
+
+@pytest.fixture(scope="module")
+def empty_skin_result(empty_skin_config) -> SyntheticModeComparisonResult:
+    return run_mode_comparison(empty_skin_config, clock=_fixed_clock)
+
+
+@pytest.fixture(scope="module")
+def radius_zero_config() -> SyntheticModeComparisonConfig:
+    return SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=SHAPE,
+        truth_metric_config=SyntheticTruthMetricConfig(buffer_radius=0.0),
+    )
+
+
+@pytest.fixture(scope="module")
+def radius_zero_result(radius_zero_config) -> SyntheticModeComparisonResult:
+    return run_mode_comparison(radius_zero_config, clock=_fixed_clock)
 
 
 def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
@@ -203,6 +238,38 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         {name: row[name] for name in expected_counters} == expected_counters
         for row in result.cache_stats
     )
+    expected_trial_stages = (
+        "case_generation",
+        "scanner_input_generation",
+        "scanner_scan_thinning",
+        "scanner_scan_thinning",
+        "scanner_scalar_evidence",
+        "scanner_scalar_evidence",
+        *("cell_execution" for _ in plan.cells),
+        "metric_extraction",
+        "contrast_extraction",
+        "trial_total",
+    )
+    for trial in plan.trials:
+        rows = tuple(row for row in result.runtime_rows if row.trial_id == trial.trial_id)
+        assert tuple(row.stage for row in rows) == expected_trial_stages
+        assert tuple(
+            row.scanner_backend
+            for row in rows
+            if row.stage in {"scanner_scan_thinning", "scanner_scalar_evidence"}
+        ) == ("reference-like", "quality", "reference-like", "quality")
+        assert tuple(row.cell_label for row in rows if row.stage == "cell_execution") == tuple(
+            cell.label for cell in plan.cells
+        )
+        assert all(row.call_count == 1 for row in rows)
+        assert all(row.shared_stage for row in rows[:6])
+        assert all(not row.shared_stage for row in rows[6 : 6 + len(plan.cells)])
+        assert all(row.shared_stage for row in rows[6 + len(plan.cells) :])
+    assert result.runtime_rows[-1].stage == "experiment_total"
+    assert result.runtime_rows[-1].trial_id is None
+    assert result.runtime_rows[-1].shared_stage is True
+    assert len(result.runtime_rows) == len(plan.trials) * len(expected_trial_stages) + 1
+    _assert_publication_scalar_contract(result)
     _assert_scalar_only(result)
 
     calls_before_validation = {key: Counter(value) for key, value in calls.items()}
@@ -236,11 +303,44 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
             assert payload["quality"]["skin"] is not None
             assert payload["pyosv"]["skins"] == payload["quality"]["skin"]["topology"]
 
+    _assert_publication_scalar_contract(topology_result)
+
     validate_mode_comparison_result(topology_result, topology_config)
     bundle = write_artifact_bundle(
         topology_result,
         tmp_path / "topology-cases",
         config=topology_config,
+    )
+    assert validate_completed_bundle(bundle)
+
+
+def test_empty_skin_control_preserves_overlap_degeneracy_and_round_trip(
+    empty_skin_config: SyntheticModeComparisonConfig,
+    empty_skin_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    empty_labels = []
+    for label, payload in empty_skin_result.cell_reports[0]["cells"].items():
+        if "quality" not in payload:
+            continue
+        skin = payload["quality"]["skin"]
+        if skin["topology"]["skin_count"]:
+            continue
+        empty_labels.append(label)
+        overlap = skin["buffered_overlap_radius2"]
+        assert overlap["candidate_count"] == 0
+        assert overlap["candidate_in_truth_buffer_count"] == 0
+        assert overlap["truth_in_candidate_buffer_count"] == 0
+        assert overlap["buffered_recall"] == 0.0
+        assert overlap["buffered_f1"] == 0.0
+        assert skin["component_topology"]["skins"] == ()
+    assert empty_labels
+    _assert_publication_scalar_contract(empty_skin_result)
+    validate_mode_comparison_result(empty_skin_result, empty_skin_config)
+    bundle = write_artifact_bundle(
+        empty_skin_result,
+        tmp_path / "empty-skin",
+        config=empty_skin_config,
     )
     assert validate_completed_bundle(bundle)
 
@@ -507,6 +607,123 @@ def test_rehashed_bundle_rejects_candidate_count_family_mismatch(
         validate_completed_bundle(bundle)
 
 
+def test_coherent_top_truth_count_family_tamper_is_rejected_everywhere(
+    default_config: SyntheticModeComparisonConfig,
+    default_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    tampered = _tamper_top_truth_count_family(default_result)
+
+    with pytest.raises(ValueError, match="top_truth_count candidate_count must equal"):
+        validate_mode_comparison_result(tampered, default_config)
+
+    bundle = write_artifact_bundle(
+        default_result,
+        tmp_path / "coherent-count-family",
+        config=default_config,
+    )
+    _replace_bundle_result_tables(bundle, tampered)
+    with pytest.raises(ValueError, match="top_truth_count candidate_count must equal"):
+        validate_completed_bundle(bundle)
+
+
+def test_empty_candidate_positive_buffered_recall_tamper_is_rejected_everywhere(
+    empty_skin_config: SyntheticModeComparisonConfig,
+    empty_skin_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = empty_skin_result.as_dict()["cell_reports"]
+    payload = next(
+        payload
+        for payload in reports[0]["cells"].values()
+        if "pipelines" in payload and payload["quality"]["skin"]["topology"]["skin_count"] == 0
+    )
+    for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+        overlap = downstream["quality"]["skin"]["buffered_overlap_radius2"]
+        overlap["truth_in_candidate_buffer_count"] = 1
+        overlap["buffered_recall"] = 1.0 / overlap["truth_count"]
+        overlap["buffered_f1"] = _f1(overlap["buffered_precision"], overlap["buffered_recall"])
+
+    _assert_report_tamper_rejected_in_memory_and_bundle(
+        config=empty_skin_config,
+        result=empty_skin_result,
+        reports=reports,
+        message="nonempty candidate mask",
+        bundle_path=tmp_path / "empty-buffered",
+    )
+
+
+def test_radius_zero_buffered_numerator_tamper_is_rejected_everywhere(
+    radius_zero_config: SyntheticModeComparisonConfig,
+    radius_zero_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = radius_zero_result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["Q-QUAL"]
+    for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+        overlap = downstream["quality"]["fv_top_truth_count"]["buffered_overlap_radius2"]
+        assert overlap["intersection_count"] < overlap["candidate_count"]
+        overlap["candidate_in_truth_buffer_count"] = overlap["intersection_count"] + 1
+        overlap["buffered_precision"] = (
+            overlap["candidate_in_truth_buffer_count"] / overlap["candidate_count"]
+        )
+        overlap["buffered_f1"] = _f1(overlap["buffered_precision"], overlap["buffered_recall"])
+
+    _assert_report_tamper_rejected_in_memory_and_bundle(
+        config=radius_zero_config,
+        result=radius_zero_result,
+        reports=reports,
+        message="radius-zero buffered overlap counts",
+        bundle_path=tmp_path / "radius-zero",
+    )
+
+
+def test_nonempty_distance_above_volume_diagonal_is_rejected_everywhere(
+    default_config: SyntheticModeComparisonConfig,
+    default_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = default_result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["Q-QUAL"]
+    for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+        distance = downstream["quality"]["fv_top_truth_count"]["surface_distance"]
+        assert distance["candidate_count"] > 0
+        assert distance["truth_count"] > 0
+        distance["candidate_to_truth_p95"] = volume_diagonal(SHAPE) + 1.0
+
+    _assert_report_tamper_rejected_in_memory_and_bundle(
+        config=default_config,
+        result=default_result,
+        reports=reports,
+        message="exceeds the volume diagonal",
+        bundle_path=tmp_path / "distance-diagonal",
+    )
+
+
+def test_coherent_skin_summary_tamper_is_rejected_everywhere(
+    default_config: SyntheticModeComparisonConfig,
+    default_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = default_result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["Q-QUAL"]
+    for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+        skin = downstream["quality"]["skin"]
+        topology = skin["topology"]
+        assert topology["largest_skin_size"] > 1
+        topology["largest_skin_size"] -= 1
+        topology["largest_skin_fraction"] = topology["largest_skin_size"] / topology["cell_count"]
+        downstream["pyosv"]["skins"].update(topology)
+
+    _assert_report_tamper_rejected_in_memory_and_bundle(
+        config=default_config,
+        result=default_result,
+        reports=reports,
+        message="does not match per-skin cell counts",
+        bundle_path=tmp_path / "skin-summary",
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
@@ -564,6 +781,9 @@ def test_semantic_and_artifact_validation_never_reexecutes_volume_stages(
         (comparison_runner, "_build_trial_case"),
         (quality_runner, "make_scanner_input_from_case"),
         (quality_scanner, "scan_backend_attributes"),
+        (comparison_metrics, "build_scanner_metric_evidence"),
+        (quality_metrics, "scanner_truth_quality"),
+        (synthetic_metrics, "distance_transform_edt"),
         (quality_pipeline.OptimalSurfaceVoter, "apply_voting_from_seeds"),
         (quality_pipeline.OptimalSurfaceVoter, "thin"),
         (quality_pipeline, "find_synthetic_skins"),
@@ -620,6 +840,170 @@ def test_volume_bearing_trial_evaluations_remain_sequential() -> None:
     gc.collect()
     assert maximum_live == 1
     assert len(live) == 0
+
+
+def _assert_publication_scalar_contract(result: SyntheticModeComparisonResult) -> None:
+    maximum_distance = volume_diagonal(SHAPE)
+    distance_names = (
+        "candidate_to_truth_mean",
+        "candidate_to_truth_median",
+        "candidate_to_truth_p90",
+        "candidate_to_truth_p95",
+        "truth_to_candidate_mean",
+        "truth_to_candidate_median",
+        "truth_to_candidate_p90",
+        "truth_to_candidate_p95",
+        "symmetric_chamfer_mean",
+        "hausdorff_p95",
+    )
+
+    def assert_distance(distance: Mapping[str, Any]) -> None:
+        assert all(0.0 <= distance[name] <= maximum_distance for name in distance_names)
+
+    for report in result.cell_reports:
+        for payload in report["cells"].values():
+            for evidence in payload.get("scanner_metric_evidence", ()):
+                quality = evidence.get("quality_report")
+                if quality is None:
+                    continue
+                overlap = quality["buffered_overlap_radius2"]
+                distance = quality["surface_distance"]
+                assert overlap["candidate_count"] == distance["truth_count"]
+                assert_distance(distance)
+
+            quality = payload.get("quality")
+            if quality is None:
+                continue
+            for stage in ("fv", "fvt"):
+                top = quality[f"{stage}_top_truth_count"]
+                positive = quality[f"{stage}_positive_top_truth_count"]
+                assert (
+                    top["buffered_overlap_radius2"]["candidate_count"]
+                    == top["surface_distance"]["truth_count"]
+                )
+                assert (
+                    positive["buffered_overlap_radius2"]["candidate_count"]
+                    <= positive["surface_distance"]["truth_count"]
+                )
+                assert_distance(top["surface_distance"])
+                assert_distance(positive["surface_distance"])
+
+            skin = quality["skin"]
+            if skin is None:
+                continue
+            assert_distance(skin["surface_distance"])
+            topology = skin["topology"]
+            sizes = [item["cell_count"] for item in skin["component_topology"]["skins"]]
+            threshold = payload["config"]["skinning"]["small_skin_size"]
+            small_sizes = [size for size in sizes if size < threshold]
+            total_size = sum(sizes)
+            assert topology["small_skin_size"] == threshold
+            assert topology["cell_count"] == total_size
+            assert topology["largest_skin_size"] == max(sizes, default=0)
+            assert topology["largest_skin_fraction"] == (
+                topology["largest_skin_size"] / total_size if total_size else 0.0
+            )
+            assert topology["small_skin_count"] == len(small_sizes)
+            assert topology["small_skin_cell_count"] == sum(small_sizes)
+            assert topology["small_skin_cell_fraction"] == (
+                sum(small_sizes) / total_size if total_size else 0.0
+            )
+
+
+def _tamper_top_truth_count_family(
+    result: SyntheticModeComparisonResult,
+) -> SyntheticModeComparisonResult:
+    reports = result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["Q-QUAL"]
+    metric_values: dict[str, float] = {}
+    for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+        quality = downstream["quality"]
+        selection = quality["fv_top_truth_count"]
+        overlap = selection["buffered_overlap_radius2"]
+        overlap["candidate_count"] += 1
+        overlap["union_count"] += 1
+        overlap["precision"] = overlap["intersection_count"] / overlap["candidate_count"]
+        overlap["f1"] = _f1(overlap["precision"], overlap["recall"])
+        overlap["jaccard"] = overlap["intersection_count"] / overlap["union_count"]
+        overlap["buffered_precision"] = (
+            overlap["candidate_in_truth_buffer_count"] / overlap["candidate_count"]
+        )
+        overlap["buffered_f1"] = _f1(overlap["buffered_precision"], overlap["buffered_recall"])
+        selection["surface_distance"]["candidate_count"] += 1
+        selection["orientation_error"]["count"] += 1
+        edge = quality["edge_false_positive"]["fv_top_truth_count"]
+        edge["candidate_count"] += 1
+        edge["edge_candidate_fraction"] = edge["edge_candidate_count"] / edge["candidate_count"]
+        edge["edge_false_positive_fraction_of_candidates"] = (
+            edge["edge_false_positive_count"] / edge["candidate_count"]
+        )
+        metric_values = {
+            "candidate_count": float(overlap["candidate_count"]),
+            "buffered_precision": overlap["buffered_precision"],
+            "buffered_f1": overlap["buffered_f1"],
+            "edge_false_positive_fraction_of_candidates": edge[
+                "edge_false_positive_fraction_of_candidates"
+            ],
+        }
+
+    rows = tuple(
+        replace(row, value=metric_values[row.metric])
+        if (
+            row.cell_label == "Q-QUAL"
+            and row.stage == "fv"
+            and row.selection == "top_truth_count"
+            and row.metric in metric_values
+        )
+        else row
+        for row in result.metric_rows
+    )
+    contrasts = compute_contrast_rows(rows)
+    return replace(
+        result,
+        cell_reports=tuple(reports),
+        metric_rows=rows,
+        contrast_rows=contrasts,
+        metric_aggregates=aggregate_metric_rows(rows),
+        contrast_aggregates=aggregate_contrast_rows(contrasts),
+    )
+
+
+def _assert_report_tamper_rejected_in_memory_and_bundle(
+    *,
+    config: SyntheticModeComparisonConfig,
+    result: SyntheticModeComparisonResult,
+    reports: list[dict[str, Any]],
+    message: str,
+    bundle_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+    bundle = write_artifact_bundle(result, bundle_path, config=config)
+    reports_path = bundle / "cell_reports.json"
+    _write_json(reports_path, reports)
+    _rehash(bundle, "cell_reports.json")
+    with pytest.raises(ValueError, match=message):
+        validate_completed_bundle(bundle)
+
+
+def _replace_bundle_result_tables(bundle: Path, result: SyntheticModeComparisonResult) -> None:
+    _write_json(bundle / "cell_reports.json", result.as_dict()["cell_reports"])
+    rows_by_filename = {
+        comparison_artifacts.METRICS_FILE: result.metric_rows,
+        comparison_artifacts.METRIC_AGGREGATES_FILE: result.metric_aggregates,
+        comparison_artifacts.CONTRASTS_FILE: result.contrast_rows,
+        comparison_artifacts.CONTRAST_AGGREGATES_FILE: result.contrast_aggregates,
+    }
+    for filename, rows in rows_by_filename.items():
+        model = comparison_artifacts._CSV_MODELS[filename]
+        (bundle / filename).write_bytes(comparison_artifacts._csv_bytes(rows, model))
+    for filename in ("cell_reports.json", *rows_by_filename):
+        _rehash(bundle, filename)
+
+
+def _f1(left: float, right: float) -> float:
+    return 2.0 * left * right / (left + right) if left + right else 0.0
 
 
 def _scanner_evidence(payload: Mapping[str, Any]) -> tuple[Any, Any]:

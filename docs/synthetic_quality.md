@@ -1438,15 +1438,21 @@ syntax. Invalid non-finite or negative truth-metric scalars are rejected during
 mode-comparison configuration, before the experiment starts. Cache counters
 are validated from resolved semantic stage keys, and shared scanner, voting,
 and conditionally shared thinning scalar evidence is compared across cells.
+Scanner scalar evidence is prepared once per trial and backend, reused by the
+scanner-only and end-to-end cells, and attributed to a shared runtime stage.
 Its authoritative artifact schema is v2: scanner publication metrics are
 joined totally to complete persisted scanner evidence, while v1 bundles lack
 that evidence and must be regenerated. Array summaries and overlap, distance,
 orientation, and edge report scalars are checked for their mathematical value,
-count, and derived-summary constraints. Skin and component topology summaries
-are checked against their per-truth and per-skin arrays. Success means the
-recorded scalar evidence is internally and cross-cell consistent, not that any
-volume calculation was independently rerun or proven correct, and it is not a
-tamper-prevention signature.
+count, and derived-summary constraints. Top-count selection cardinality is
+bound to truth-surface support; empty-mask and radius-zero buffered-overlap
+rules are enforced; and every distance summary is capped at the volume
+diagonal. Largest/small-skin summaries are recomputed from per-skin arrays and
+the effective `small_skin_size`, and component topology is checked against its
+per-truth and per-skin arrays. Success means the recorded scalar evidence is
+internally and cross-cell consistent, not that any volume calculation was
+independently rerun or proven correct, and it is not a tamper-prevention
+signature.
 
 When `--scanner-backend-matrix` is enabled, scanner pipeline variant reports
 also include `scanner_backend_matrix.backends.<backend>` for `reference-like`,

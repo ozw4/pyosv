@@ -114,14 +114,21 @@ partial final bundle. Successful completion establishes that the recorded
 scalar evidence is internally and cross-cell consistent. Overlap ratios,
 distance symmetric summaries, orientation percentile order, and edge
 false-positive fractions are checked algebraically with one strict numeric
-tolerance; empty distance reports use the metric implementation's
-volume-diagonal convention. Skin summaries and component-topology summaries
-are also checked against their per-truth and per-skin arrays, including counts,
-fractions, coverage, merge/split, purity, and recall relationships. Validation
-does not rerun any volume calculation, independently prove that its computation
-was correct, or provide a tamper-prevention signature. Schema-v1 bundles do not
-contain complete scanner evidence and must be regenerated with the current
-schema-v2 writer; validation does not implicitly upgrade them to v2.
+tolerance. A `top_truth_count` candidate count must equal the truth-surface
+support count, while a `positive_top_truth_count` candidate count may not
+exceed it. Empty candidate/truth masks cannot report buffered hits, radius-zero
+buffered numerators must equal the exact intersection, and every distance
+summary is bounded by the volume diagonal; empty distance reports use that
+same diagonal convention. Skin largest/small summaries are recomputed from the
+per-skin arrays and the effective `small_skin_size`, while component-topology
+summaries are checked against their per-truth and per-skin arrays. Prepared
+scanner scalar evidence is built once per trial and backend, reused by the
+scanner-only and end-to-end cells, and recorded as a shared runtime stage.
+Validation does not rerun any volume calculation, independently prove that its
+computation was correct, or provide a tamper-prevention signature. Schema-v1
+bundles do not contain complete scanner evidence and must be regenerated with
+the current schema-v2 writer; validation does not implicitly upgrade them to
+v2.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect
