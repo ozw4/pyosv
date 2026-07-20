@@ -26,6 +26,8 @@ from pyosv.evaluation.synthetic_mode_comparison.metrics import (
 from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
     validate_quality_scalar_algebra,
     validate_selection_cardinality,
+    validate_surface_distance_algebra,
+    volume_diagonal,
 )
 from pyosv.evaluation.synthetic_quality import PipelineArtifacts, SyntheticSkinningConfig
 from pyosv.evaluation.synthetic_quality.quality_metrics import (
@@ -155,6 +157,83 @@ def test_quality_scalar_algebra_accepts_canonical_reports_and_rounding_noise() -
         shape=(3, 4, 5),
         context="quality.fixture",
     )
+
+
+def test_volume_diagonal_uses_voxel_index_extents() -> None:
+    assert volume_diagonal((9, 9, 9)) == pytest.approx(8.0 * np.sqrt(3.0))
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        0.0,
+        8.0 * np.sqrt(3.0) - 1.0e-9,
+        8.0 * np.sqrt(3.0) + 5.0e-13,
+    ),
+)
+def test_surface_distance_algebra_accepts_reachable_nonempty_distances(value: float) -> None:
+    report = {
+        "candidate_count": 1,
+        "truth_count": 1,
+        **{
+            name: value
+            for name in (
+                "candidate_to_truth_mean",
+                "candidate_to_truth_median",
+                "candidate_to_truth_p90",
+                "candidate_to_truth_p95",
+                "truth_to_candidate_mean",
+                "truth_to_candidate_median",
+                "truth_to_candidate_p90",
+                "truth_to_candidate_p95",
+                "symmetric_chamfer_mean",
+                "hausdorff_p95",
+            )
+        },
+    }
+
+    validate_surface_distance_algebra(report, (9, 9, 9), "quality.surface_distance")
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "candidate_to_truth_mean",
+        "candidate_to_truth_median",
+        "candidate_to_truth_p90",
+        "candidate_to_truth_p95",
+        "truth_to_candidate_mean",
+        "truth_to_candidate_median",
+        "truth_to_candidate_p90",
+        "truth_to_candidate_p95",
+        "symmetric_chamfer_mean",
+        "hausdorff_p95",
+    ),
+)
+def test_surface_distance_algebra_rejects_each_unreachable_summary(field: str) -> None:
+    report = {
+        "candidate_count": 1,
+        "truth_count": 1,
+        **{
+            name: 0.0
+            for name in (
+                "candidate_to_truth_mean",
+                "candidate_to_truth_median",
+                "candidate_to_truth_p90",
+                "candidate_to_truth_p95",
+                "truth_to_candidate_mean",
+                "truth_to_candidate_median",
+                "truth_to_candidate_p90",
+                "truth_to_candidate_p95",
+                "symmetric_chamfer_mean",
+                "hausdorff_p95",
+            )
+        },
+    }
+    report[field] = volume_diagonal((9, 9, 9)) + 1.0e-6
+
+    with pytest.raises(ValueError, match=field):
+        validate_surface_distance_algebra(report, (9, 9, 9), "quality.surface_distance")
 
 
 @pytest.mark.parametrize(

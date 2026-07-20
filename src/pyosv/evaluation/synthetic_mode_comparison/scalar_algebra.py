@@ -451,7 +451,13 @@ def validate_surface_distance_algebra(
 
     candidate_count = _count(report, "candidate_count", context)
     truth_count = _count(report, "truth_count", context)
+    maximum_distance = volume_diagonal(shape)
     values = {name: _number(report, name, context) for name in _DISTANCE_SUMMARY_NAMES}
+    for name, value in values.items():
+        if value < 0.0:
+            raise ValueError(f"{context}.{name} must be non-negative")
+        if value > maximum_distance and not derived_scalars_close(value, maximum_distance):
+            raise ValueError(f"{context}.{name} exceeds the volume diagonal")
     for prefix in ("candidate_to_truth", "truth_to_candidate"):
         if not (values[f"{prefix}_median"] <= values[f"{prefix}_p90"] <= values[f"{prefix}_p95"]):
             raise ValueError(f"{context}.{prefix} must satisfy median <= p90 <= p95")
@@ -471,8 +477,7 @@ def validate_surface_distance_algebra(
     if candidate_count == 0 and truth_count == 0:
         expected = 0.0
     elif candidate_count == 0 or truth_count == 0:
-        dimensions = tuple(_positive_dimension(value, context) for value in shape)
-        expected = sqrt(fsum((value - 1.0) ** 2 for value in dimensions))
+        expected = maximum_distance
     else:
         return
     for name in _DISTANCE_SUMMARY_NAMES:
@@ -602,6 +607,15 @@ def derived_scalars_close(actual: float, expected: float) -> bool:
     )
 
 
+def volume_diagonal(shape: Sequence[int]) -> float:
+    """Return the largest voxel-index distance within a positive 3D shape."""
+
+    if len(shape) != 3:
+        raise ValueError("shape must contain exactly three positive integers")
+    dimensions = tuple(_positive_dimension(value, "volume") for value in shape)
+    return sqrt(fsum((value - 1.0) ** 2 for value in dimensions))
+
+
 def _meaningfully_below(actual: float, lower_bound: float) -> bool:
     return actual < lower_bound and not derived_scalars_close(actual, lower_bound)
 
@@ -639,4 +653,5 @@ __all__ = [
     "validate_selection_cardinality",
     "validate_skin_topology_algebra",
     "validate_surface_distance_algebra",
+    "volume_diagonal",
 ]

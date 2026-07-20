@@ -227,6 +227,71 @@ def _coherent_publication_rows(
     )
 
 
+def _tamper_surface_distance_upper_bound(
+    reports: list[dict], stage: str, selection: str
+) -> dict[tuple[str, str, str, str], float]:
+    distance_names = (
+        "candidate_to_truth_mean",
+        "candidate_to_truth_median",
+        "candidate_to_truth_p90",
+        "candidate_to_truth_p95",
+        "truth_to_candidate_mean",
+        "truth_to_candidate_median",
+        "truth_to_candidate_p90",
+        "truth_to_candidate_p95",
+        "symmetric_chamfer_mean",
+        "hausdorff_p95",
+    )
+    published_names = (
+        "candidate_to_truth_median",
+        "candidate_to_truth_p95",
+        "truth_to_candidate_median",
+        "truth_to_candidate_p95",
+        "hausdorff_p95",
+    )
+    unreachable = 20.0
+    metric_updates: dict[tuple[str, str, str, str], float] = {}
+
+    for label, cell in reports[0]["cells"].items():
+        distances = []
+        if stage.startswith("scanner_"):
+            evidence = cell.get("scanner_metric_evidence")
+            if evidence is None:
+                continue
+            quality_entry = next(
+                item
+                for item in evidence
+                if (item["stage"], item["selection"], item["metric"])
+                == (stage, selection, "candidate_count")
+            )
+            distances.append(quality_entry["quality_report"]["surface_distance"])
+            for item in evidence:
+                if (
+                    item["stage"] == stage
+                    and item["selection"] == selection
+                    and item["metric"] in published_names
+                ):
+                    item["value"] = unreachable
+        else:
+            quality_name = "skin" if stage == "skin" else f"{stage}_{selection}"
+            if quality_name not in cell.get("quality", {}):
+                continue
+            payloads = [cell["quality"]]
+            if "active_pipeline" in cell:
+                payloads.append(cell["pipelines"][cell["active_pipeline"]]["quality"])
+            for quality in payloads:
+                distances.append(quality[quality_name]["surface_distance"])
+
+        for distance in distances:
+            for name in distance_names:
+                distance[name] = unreachable
+        metric_updates.update(
+            {(label, stage, selection, name): unreachable for name in published_names}
+        )
+
+    return metric_updates
+
+
 def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path) -> None:
     bundle = _write_bundle(tmp_path / "bundle")
 
@@ -1018,6 +1083,48 @@ def test_downstream_scalar_algebra_tampering_is_rejected_across_artifact_paths(
         _rehash(bundle, filename)
 
     with pytest.raises(ValueError, match=message):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("stage", "selection"),
+    (
+        ("scanner_raw", "top_truth_count"),
+        ("scanner_thinned", "top_truth_count"),
+        ("fv", "top_truth_count"),
+        ("fvt", "top_truth_count"),
+        ("skin", "skin_cells"),
+    ),
+)
+def test_validator_rejects_rehashed_coherent_unreachable_surface_distances(
+    tmp_path: Path, stage: str, selection: str
+) -> None:
+    _, result = _fixture()
+    bundle = _write_bundle(tmp_path / f"unreachable-{stage}")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    metric_updates = _tamper_surface_distance_upper_bound(reports, stage, selection)
+    metric_rows, metric_aggregates, contrast_rows, contrast_aggregates = _coherent_publication_rows(
+        result, metric_updates
+    )
+
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+    coherent_rows = {
+        "metrics_long.csv": (metric_rows, MetricRow),
+        "metric_aggregates.csv": (metric_aggregates, AggregateRow),
+        "contrasts.csv": (contrast_rows, ContrastRow),
+        "contrast_aggregates.csv": (contrast_aggregates, AggregateRow),
+    }
+    for filename, (rows, model) in coherent_rows.items():
+        (bundle / filename).write_bytes(artifacts._csv_bytes(rows, model))
+        _rehash(bundle, filename)
+
+    with pytest.raises(ValueError, match="exceeds the volume diagonal"):
         validate_completed_bundle(bundle)
 
 
