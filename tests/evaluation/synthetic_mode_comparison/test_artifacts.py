@@ -1519,6 +1519,23 @@ def test_bundle_requires_empty_skin_topology_when_disabled(tmp_path: Path) -> No
         validate_completed_bundle(bundle)
 
 
+def test_bundle_accepts_explicit_small_skin_size_for_both_workflows(tmp_path: Path) -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        skinning_config=SyntheticSkinningConfig(small_skin_size=2),
+    )
+    result = run_mode_comparison(config)
+    reports = result.as_dict()["cell_reports"]
+    for label in ("RL-REF", "RL-QUAL"):
+        payload = reports[0]["cells"][label]
+        assert payload["config"]["skinning"]["small_skin_size"] == 2
+        assert payload["quality"]["skin"]["topology"]["small_skin_size"] == 2
+
+    bundle = write_artifact_bundle(result, tmp_path / "small-skin-size", config=config)
+    assert validate_completed_bundle(bundle)
+
+
 def test_cell_report_loader_accepts_nonnegative_coverage_above_one() -> None:
     config, result = _fixture()
     reports = result.as_dict()["cell_reports"]

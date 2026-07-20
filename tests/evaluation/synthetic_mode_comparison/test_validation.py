@@ -22,6 +22,7 @@ from pyosv.evaluation.synthetic_mode_comparison.validation import (
 from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
     validate_component_topology_algebra,
     validate_overlap_algebra,
+    validate_skin_report_topology_algebra,
     validate_skin_topology_algebra,
 )
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig, SyntheticVotingConfig
@@ -122,6 +123,59 @@ def _valid_topology_reports():
                 "dominant_truth_cell_count": 0,
                 "purity": 0.0,
             },
+        ],
+    }
+    return topology, component
+
+
+def _fragmentation_reports(cell_counts, small_skin_size):
+    total_cell_count = sum(cell_counts)
+    small_counts = [count for count in cell_counts if count < small_skin_size]
+    largest_skin_size = max(cell_counts, default=0)
+    topology = {
+        "skin_count": len(cell_counts),
+        "cell_count": total_cell_count,
+        "unique_cell_count": total_cell_count,
+        "duplicate_cell_count": 0,
+        "largest_skin_size": largest_skin_size,
+        "largest_skin_fraction": (
+            largest_skin_size / total_cell_count if total_cell_count else 0.0
+        ),
+        "small_skin_size": small_skin_size,
+        "small_skin_count": len(small_counts),
+        "small_skin_cell_count": sum(small_counts),
+        "small_skin_cell_fraction": (
+            sum(small_counts) / total_cell_count if total_cell_count else 0.0
+        ),
+    }
+    component = {
+        "truth_component_count": 0,
+        "covered_truth_component_count": 0,
+        "uncovered_truth_component_count": 0,
+        "skin_count": len(cell_counts),
+        "skin_with_truth_count": 0,
+        "skin_without_truth_count": len(cell_counts),
+        "over_merge_skin_count": 0,
+        "over_split_truth_component_count": 0,
+        "max_truth_components_per_skin": 0,
+        "max_skins_per_truth_component": 0,
+        "mean_skin_purity": 0.0,
+        "min_skin_purity": 0.0,
+        "mean_truth_component_recall": 0.0,
+        "min_truth_component_recall": 0.0,
+        "truth_components": [],
+        "skins": [
+            {
+                "skin_index": index,
+                "cell_count": count,
+                "truth_cell_count": 0,
+                "background_cell_count": count,
+                "truth_component_count_touching": 0,
+                "dominant_truth_id": None,
+                "dominant_truth_cell_count": 0,
+                "purity": 0.0,
+            }
+            for index, count in enumerate(cell_counts)
         ],
     }
     return topology, component
@@ -236,6 +290,98 @@ def test_topology_algebra_accepts_valid_duplicate_and_background_reports() -> No
 
     validate_skin_topology_algebra(topology, "topology")
     validate_component_topology_algebra(component, topology, "component_topology")
+
+
+@pytest.mark.parametrize("cell_counts", ((), (2,), (1, 2, 3)))
+def test_skin_report_topology_algebra_recomputes_fragmentation_from_per_skin_sizes(
+    cell_counts,
+) -> None:
+    topology, component = _fragmentation_reports(cell_counts, small_skin_size=2)
+
+    validate_skin_report_topology_algebra(
+        topology,
+        component,
+        "skin",
+        small_skin_size=2,
+    )
+
+
+def test_skin_report_topology_algebra_requires_effective_small_skin_size() -> None:
+    topology, component = _fragmentation_reports((1, 2, 3), small_skin_size=2)
+
+    with pytest.raises(ValueError, match="small_skin_size does not match"):
+        validate_skin_report_topology_algebra(
+            topology,
+            component,
+            "skin",
+            small_skin_size=3,
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "replacement"),
+    (
+        ("largest_skin_size", 2),
+        ("largest_skin_fraction", 0.4),
+        ("small_skin_count", 2),
+        ("small_skin_cell_count", 2),
+        ("small_skin_cell_fraction", 0.5),
+    ),
+)
+def test_skin_report_topology_algebra_rejects_fragmentation_summary_tampering(
+    name, replacement
+) -> None:
+    topology, component = _fragmentation_reports((1, 2, 3), small_skin_size=2)
+    topology[name] = replacement
+
+    with pytest.raises(ValueError):
+        validate_skin_report_topology_algebra(
+            topology,
+            component,
+            "skin",
+            small_skin_size=2,
+        )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"largest_skin_size": 2, "largest_skin_fraction": 2.0 / 6.0},
+        {
+            "small_skin_count": 2,
+            "small_skin_cell_count": 2,
+            "small_skin_cell_fraction": 2.0 / 6.0,
+        },
+    ),
+)
+def test_skin_report_topology_algebra_rejects_internally_coherent_summary_tampering(
+    updates,
+) -> None:
+    topology, component = _fragmentation_reports((1, 2, 3), small_skin_size=2)
+    topology.update(updates)
+
+    with pytest.raises(ValueError, match="does not match per-skin cell counts"):
+        validate_skin_report_topology_algebra(
+            topology,
+            component,
+            "skin",
+            small_skin_size=2,
+        )
+
+
+def test_skin_report_topology_algebra_rejects_per_skin_redistribution() -> None:
+    topology, component = _fragmentation_reports((1, 4), small_skin_size=2)
+    for item, count in zip(component["skins"], (2, 3), strict=True):
+        item["cell_count"] = count
+        item["background_cell_count"] = count
+
+    with pytest.raises(ValueError, match="does not match per-skin cell counts"):
+        validate_skin_report_topology_algebra(
+            topology,
+            component,
+            "skin",
+            small_skin_size=2,
+        )
 
 
 def test_complete_result_passes_without_mutation(result, config) -> None:
@@ -471,7 +617,11 @@ def test_in_memory_validation_requires_empty_skin_topology_when_disabled() -> No
     payload = {"pyosv": {"skins": topology}, "quality": {"skin": None}}
 
     with pytest.raises(ValueError, match="must be empty when skinning is disabled"):
-        _validate_downstream_topology_algebra(payload, False, "cell")
+        _validate_downstream_topology_algebra(
+            payload,
+            SyntheticSkinningConfig(enabled=False, small_skin_size=2),
+            "cell",
+        )
 
 
 def test_plan_metadata_numeric_type_tampering_is_rejected(result, config) -> None:

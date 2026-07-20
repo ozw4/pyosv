@@ -9,6 +9,7 @@ from numbers import Integral, Real
 from typing import Any
 
 from ..reporting.models import thaw_report_value
+from ..synthetic_quality import SyntheticSkinningConfig
 from ..synthetic_quality.stage_keys import (
     PipelineStageKeys,
     build_oracle_attribute_stage_key,
@@ -38,9 +39,9 @@ from .metrics import (
 )
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
 from .scalar_algebra import (
-    validate_component_topology_algebra,
     validate_downstream_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
+    validate_skin_report_topology_algebra,
     validate_skin_topology_algebra,
 )
 from .trials import SyntheticTrialSpec
@@ -194,13 +195,16 @@ def _validate_cell_reports(
                     validate_downstream_quality_scalar_algebra(
                         payload["quality"], plan.shape, f"{context}.quality"
                     )
-                    enabled = _workflow_settings(plan, cell).skinning_config.enabled
-                    _validate_downstream_topology_algebra(payload, enabled, context)
+                    settings = _workflow_settings(plan, cell)
+                    skinning_config = effective_skinning_config(
+                        get_variant_spec(plan.comparison_variant), settings.skinning_config
+                    )
+                    _validate_downstream_topology_algebra(payload, skinning_config, context)
                     if "pipelines" in payload:
                         pipeline = payload["pipelines"][cell.input_mode]
                         _validate_downstream_topology_algebra(
                             pipeline,
-                            enabled,
+                            skinning_config,
                             f"{context}.pipelines.{cell.input_mode}",
                         )
         except (KeyError, TypeError, ValueError) as error:
@@ -219,8 +223,9 @@ def _validate_cell_reports(
 
 
 def _validate_downstream_topology_algebra(
-    payload: Mapping[str, Any], enabled: bool, context: str
+    payload: Mapping[str, Any], skinning_config: SyntheticSkinningConfig, context: str
 ) -> None:
+    enabled = skinning_config.enabled
     topology = payload["pyosv"]["skins"]
     validate_skin_topology_algebra(
         topology,
@@ -237,11 +242,11 @@ def _validate_downstream_topology_algebra(
     if skin is None:
         raise ValueError(f"{context}.quality.skin must be present when skinning is enabled")
     quality_topology = skin["topology"]
-    validate_skin_topology_algebra(quality_topology, f"{context}.quality.skin.topology")
-    validate_component_topology_algebra(
-        skin["component_topology"],
+    validate_skin_report_topology_algebra(
         quality_topology,
-        f"{context}.quality.skin.component_topology",
+        skin["component_topology"],
+        f"{context}.quality.skin",
+        small_skin_size=skinning_config.small_skin_size,
     )
     if _wire_value(topology) != _wire_value(quality_topology):
         raise ValueError(f"{context}.pyosv.skins does not match quality.skin.topology")
