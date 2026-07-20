@@ -5,6 +5,8 @@ from .artifacts import (
     COMPLETION_SCHEMA_VERSION,
     HASHED_BUNDLE_FILES,
     REQUIRED_BUNDLE_FILES,
+    RUNTIME_CONTRACT_VERSION,
+    SCALAR_EVIDENCE_CONTRACT_VERSION,
     validate_completed_bundle,
     write_artifact_bundle,
 )
@@ -62,6 +64,8 @@ __all__ = [
     "ModeInputMode",
     "RuntimeRow",
     "REQUIRED_BUNDLE_FILES",
+    "RUNTIME_CONTRACT_VERSION",
+    "SCALAR_EVIDENCE_CONTRACT_VERSION",
     "SyntheticModeComparisonConfig",
     "SyntheticModeComparisonPlan",
     "SyntheticModeComparisonResult",

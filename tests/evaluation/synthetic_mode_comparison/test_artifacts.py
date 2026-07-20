@@ -15,6 +15,8 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     HASHED_BUNDLE_FILES,
     METRIC_SCHEMA_VERSION,
     REQUIRED_BUNDLE_FILES,
+    RUNTIME_CONTRACT_VERSION,
+    SCALAR_EVIDENCE_CONTRACT_VERSION,
     AggregateRow,
     ContrastRow,
     MetricRow,
@@ -29,7 +31,12 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     write_artifact_bundle,
 )
 from pyosv.evaluation.synthetic_mode_comparison import artifacts
-from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig, SyntheticSkinningConfig
+from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import volume_diagonal
+from pyosv.evaluation.synthetic_quality import (
+    SyntheticScannerConfig,
+    SyntheticSkinningConfig,
+    SyntheticTruthMetricConfig,
+)
 
 
 @cache
@@ -456,7 +463,9 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             assert next(csv.reader(stream)) == [field.name for field in fields(model)]
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 2
+    assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 3
+    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 3
+    assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 1
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
     assert manifest["resolved_plan"]["shape"] == [9, 9, 9]
@@ -491,6 +500,28 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             "sha256": hashlib.sha256(payload).hexdigest(),
             "size": len(payload),
         }
+
+
+@pytest.mark.parametrize(
+    ("name", "buffer_radius"),
+    (
+        ("fractional", 0.5),
+        ("full-volume", volume_diagonal((9, 9, 9))),
+    ),
+)
+def test_writer_validates_reachable_buffer_radius_regimes(
+    tmp_path: Path, name: str, buffer_radius: float
+) -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        truth_metric_config=SyntheticTruthMetricConfig(buffer_radius=buffer_radius),
+    )
+    result = run_mode_comparison(config)
+
+    bundle = write_artifact_bundle(result, tmp_path / name, config=config)
+
+    assert validate_completed_bundle(bundle)
 
 
 def test_bundle_round_trip_preserves_integer_valued_real_config(tmp_path: Path) -> None:
@@ -962,6 +993,124 @@ def test_validator_explicitly_rejects_rehashed_legacy_v1_bundle(tmp_path: Path) 
     _rehash(bundle, "manifest.json")
 
     with pytest.raises(ValueError, match="legacy bundle.*scanner metric evidence"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_explicitly_rejects_rehashed_legacy_v2_bundle(tmp_path: Path) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-v2")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_schema_version"] = 2
+    manifest.pop("scalar_evidence_contract_version")
+    manifest.pop("runtime_contract_version")
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy bundle.*runtime coverage"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_explicitly_rejects_rehashed_scalar_contract_v1_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-scalar-v1")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["scalar_evidence_contract_version"] = 1
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy schema-v3 bundle.*trial truth evidence"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_explicitly_rejects_rehashed_scalar_contract_v2_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-scalar-v2")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["scalar_evidence_contract_version"] = 2
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy schema-v3 bundle.*buffered overlap"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_rejects_rehashed_trial_truth_evidence_tampering(tmp_path: Path) -> None:
+    bundle = _write_bundle(tmp_path / "truth-evidence-tamper")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    reports[0]["truth_evidence"]["surface_voxel_count"] += 1
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError, match="truth_evidence.surface_voxel_count"):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "error"),
+    (
+        ("scalar_evidence_contract_version", None, "is required"),
+        ("scalar_evidence_contract_version", True, "must be an integer"),
+        ("scalar_evidence_contract_version", 1.0, "must be an integer"),
+        ("scalar_evidence_contract_version", -1, "unsupported scalar evidence"),
+        (
+            "scalar_evidence_contract_version",
+            SCALAR_EVIDENCE_CONTRACT_VERSION + 1,
+            "unsupported scalar evidence",
+        ),
+        ("runtime_contract_version", None, "is required"),
+        ("runtime_contract_version", True, "must be an integer"),
+        ("runtime_contract_version", 1.0, "must be an integer"),
+        ("runtime_contract_version", -1, "unsupported runtime"),
+        (
+            "runtime_contract_version",
+            RUNTIME_CONTRACT_VERSION + 1,
+            "unsupported runtime",
+        ),
+        ("unknown_contract_version", 1, "invalid fields.*unknown"),
+    ),
+)
+def test_validator_rejects_invalid_manifest_contract_version(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+    error: str,
+) -> None:
+    bundle = _write_bundle(tmp_path / f"invalid-{field}-{replacement!s}")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if replacement is None:
+        manifest.pop(field)
+    else:
+        manifest[field] = replacement
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match=error):
         validate_completed_bundle(bundle)
 
 

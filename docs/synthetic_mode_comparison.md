@@ -79,10 +79,17 @@ already exist.
 
 The successful command writes exactly these eight files atomically:
 
-- `manifest.json`: requested configuration, resolved canonical plan, case and
-  trial order, software versions, cache statistics, and source provenance.
-- `cell_reports.json`: ordered scalar cell reports. Artifact schema v2 records
-  the complete registry-ordered `scanner_metric_evidence` in every scanner-only
+- `manifest.json`: artifact schema v3 plus independent scalar-evidence and
+  runtime contract versions, requested configuration, resolved canonical plan,
+  case and trial order, software versions, cache statistics, and source
+  provenance. The current scalar-evidence contract version is 3 and the
+  runtime contract version is 1.
+- `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
+  one immutable `truth_evidence` object per trial, containing only the fault-
+  voxel and thin truth-surface voxel counts. Every scanner, `fv`, `fvt`, and
+  enabled-skin quality report is joined to those canonical trial counts; the
+  evidence object is not duplicated per cell. The file also records the
+  complete registry-ordered `scanner_metric_evidence` in every scanner-only
   and end-to-end scanner cell. Each scanner-stage candidate-count entry also
   carries the canonical overlap, distance, orientation, and edge source report
   needed to validate its publication metrics algebraically. Scanner publication
@@ -116,19 +123,29 @@ distance symmetric summaries, orientation percentile order, and edge
 false-positive fractions are checked algebraically with one strict numeric
 tolerance. A `top_truth_count` candidate count must equal the truth-surface
 support count, while a `positive_top_truth_count` candidate count may not
-exceed it. Empty candidate/truth masks cannot report buffered hits, radius-zero
-buffered numerators must equal the exact intersection, and every distance
-summary is bounded by the volume diagonal; empty distance reports use that
+exceed it. Empty candidate/truth masks cannot report buffered hits. For two
+nonempty masks, a buffer radius below one voxel requires both buffered
+numerators to equal the exact intersection, while a radius at least as large as
+the volume diagonal requires them to equal their respective source counts.
+These radius boundaries use exact unit-spacing voxel-grid semantics. Every
+distance summary is bounded by the volume diagonal; empty distance reports use that
 same diagonal convention. Skin largest/small summaries are recomputed from the
 per-skin arrays and the effective `small_skin_size`, while component-topology
 summaries are checked against their per-truth and per-skin arrays. Prepared
 scanner scalar evidence is built once per trial and backend, reused by the
 scanner-only and end-to-end cells, and recorded as a shared runtime stage.
-Validation does not rerun any volume calculation, independently prove that its
-computation was correct, or provide a tamper-prevention signature. Schema-v1
-bundles do not contain complete scanner evidence and must be regenerated with
-the current schema-v2 writer; validation does not implicitly upgrade them to
-v2.
+Validation uses the recorded trial truth counts and does not rerun the case
+generator or any volume calculation, independently prove that its computation
+was correct, or provide a tamper-prevention signature. Scalar-evidence contract
+version 1 schema-v3 bundles lack trial truth evidence and must be regenerated;
+they are not implicitly upgraded. Schema-v1
+bundles do not contain complete scanner evidence, while schema-v2 bundles do
+not uniquely identify their runtime coverage. Both must be regenerated with
+the current schema-v3 writer; validation does not implicitly upgrade them. The
+scalar-evidence contract version identifies the persisted cell-report evidence
+structure independently of the artifact schema. The runtime contract version
+independently identifies required runtime stage coverage, including the shared
+`scanner_scalar_evidence` row in version 1.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect

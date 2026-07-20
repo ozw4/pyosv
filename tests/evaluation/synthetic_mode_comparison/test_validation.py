@@ -214,7 +214,7 @@ def test_overlap_algebra_rejects_buffered_hits_against_an_empty_mask(
     report["buffered_f1"] = 2.0 * left * right / (left + right) if left + right else 0.0
 
     with pytest.raises(ValueError, match="nonempty .* mask"):
-        validate_overlap_algebra(report, "overlap")
+        validate_overlap_algebra(report, (1, 1, 2), "overlap")
 
 
 def test_overlap_algebra_rejects_radius_zero_buffered_hits_beyond_intersection() -> None:
@@ -224,7 +224,7 @@ def test_overlap_algebra_rejects_radius_zero_buffered_hits_beyond_intersection()
     report["radius"] = 0.0
 
     with pytest.raises(ValueError, match="radius-zero"):
-        validate_overlap_algebra(report, "overlap")
+        validate_overlap_algebra(report, (1, 1, 2), "overlap")
 
 
 def test_overlap_algebra_accepts_positive_radius_buffered_hits_beyond_intersection() -> None:
@@ -234,7 +234,90 @@ def test_overlap_algebra_accepts_positive_radius_buffered_hits_beyond_intersecti
 
     assert report["candidate_in_truth_buffer_count"] > report["intersection_count"]
     assert report["truth_in_candidate_buffer_count"] > report["intersection_count"]
-    validate_overlap_algebra(report, "overlap")
+    validate_overlap_algebra(report, (1, 1, 2), "overlap")
+
+
+@pytest.mark.parametrize("radius", (0.0, 0.5, np.nextafter(1.0, 0.0)))
+def test_overlap_algebra_requires_exact_overlap_for_fractional_radius(radius: float) -> None:
+    candidate = np.zeros((1, 1, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[0, 0, 1] = True
+    report = buffered_surface_overlap(candidate, truth, radius=float(radius))
+
+    assert report["candidate_in_truth_buffer_count"] == report["intersection_count"]
+    assert report["truth_in_candidate_buffer_count"] == report["intersection_count"]
+    validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+@pytest.mark.parametrize("radius", (0.5, np.nextafter(1.0, 0.0)))
+def test_overlap_algebra_rejects_fractional_buffered_hits_beyond_intersection(
+    radius: float,
+) -> None:
+    candidate = np.zeros((1, 1, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[0, 0, 1] = True
+    report = buffered_surface_overlap(candidate, truth, radius=1.0)
+    report["radius"] = radius
+
+    with pytest.raises(ValueError, match="fractional-radius"):
+        validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+@pytest.mark.parametrize("offset", (0.0, 1.0))
+def test_overlap_algebra_requires_source_counts_at_volume_diagonal(offset: float) -> None:
+    candidate = np.zeros((2, 2, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[1, 1, 1] = True
+    radius = np.sqrt(3.0) + offset
+    report = buffered_surface_overlap(candidate, truth, radius=radius)
+
+    assert report["candidate_in_truth_buffer_count"] == report["candidate_count"]
+    assert report["truth_in_candidate_buffer_count"] == report["truth_count"]
+    validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+def test_overlap_algebra_rejects_incomplete_hits_at_volume_diagonal() -> None:
+    candidate = np.zeros((2, 2, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[1, 1, 1] = True
+    diagonal = np.sqrt(3.0)
+    report = buffered_surface_overlap(candidate, truth, radius=np.nextafter(diagonal, 0.0))
+    report["radius"] = diagonal
+
+    with pytest.raises(ValueError, match="full-volume"):
+        validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+def test_overlap_algebra_does_not_expand_exact_radius_boundaries() -> None:
+    candidate = np.zeros((2, 2, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[1, 1, 1] = True
+    diagonal = np.sqrt(3.0)
+
+    radius_one = buffered_surface_overlap(candidate, truth, radius=1.0)
+    validate_overlap_algebra(radius_one, candidate.shape, "overlap")
+
+    below_diagonal = buffered_surface_overlap(candidate, truth, radius=np.nextafter(diagonal, 0.0))
+    validate_overlap_algebra(below_diagonal, candidate.shape, "overlap")
+
+
+@pytest.mark.parametrize(
+    ("candidate_value", "truth_value"),
+    ((True, True), (False, True), (True, False), (False, False)),
+)
+def test_overlap_algebra_handles_singleton_volume_and_empty_masks(
+    candidate_value: bool, truth_value: bool
+) -> None:
+    candidate = np.array([[[candidate_value]]])
+    truth = np.array([[[truth_value]]])
+    report = buffered_surface_overlap(candidate, truth, radius=0.0)
+
+    validate_overlap_algebra(report, candidate.shape, "overlap")
 
 
 @pytest.mark.parametrize(
@@ -522,6 +605,111 @@ def test_shared_scanner_input_tampering_is_rejected(result, config) -> None:
     reports[0]["cells"]["Q-SCAN"]["scanner"]["input"]["mean"] += 0.01
 
     with pytest.raises(ValueError, match="shared scanner input evidence"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+@pytest.mark.parametrize("field", ("fault_voxel_count", "surface_voxel_count"))
+def test_trial_truth_evidence_tampering_is_rejected(result, config, field: str) -> None:
+    reports = result.as_dict()["cell_reports"]
+    reports[0]["truth_evidence"][field] += 1
+
+    with pytest.raises(ValueError, match=rf"truth_evidence.{field}"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("missing_field", "missing: surface_voxel_count"),
+        ("wrong_order", "fields do not match the canonical schema and order"),
+        ("boolean_count", "must be an integer"),
+    ),
+)
+def test_trial_truth_evidence_schema_is_strict_in_memory(
+    result, config, mutation: str, message: str
+) -> None:
+    reports = result.as_dict()["cell_reports"]
+    evidence = reports[0]["truth_evidence"]
+    if mutation == "missing_field":
+        del evidence["surface_voxel_count"]
+    elif mutation == "wrong_order":
+        reports[0]["truth_evidence"] = {
+            "surface_voxel_count": evidence["surface_voxel_count"],
+            "fault_voxel_count": evidence["fault_voxel_count"],
+        }
+    else:
+        evidence["fault_voxel_count"] = True
+
+    with pytest.raises(ValueError, match=message):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+def _increment_overlap_truth_count(report: dict) -> None:
+    overlap = report["buffered_overlap_radius2"]
+    overlap["truth_count"] += 1
+    overlap["union_count"] = (
+        overlap["candidate_count"] + overlap["truth_count"] - overlap["intersection_count"]
+    )
+    overlap["recall"] = overlap["intersection_count"] / overlap["truth_count"]
+    overlap["f1"] = (
+        2.0 * overlap["precision"] * overlap["recall"] / (overlap["precision"] + overlap["recall"])
+    )
+    overlap["jaccard"] = overlap["intersection_count"] / overlap["union_count"]
+    overlap["buffered_recall"] = overlap["truth_in_candidate_buffer_count"] / overlap["truth_count"]
+    overlap["buffered_f1"] = (
+        2.0
+        * overlap["buffered_precision"]
+        * overlap["buffered_recall"]
+        / (overlap["buffered_precision"] + overlap["buffered_recall"])
+    )
+
+
+@pytest.mark.parametrize("stage", ("scanner_raw", "scanner_thinned"))
+def test_scanner_truth_targets_are_joined_to_trial_evidence_in_memory(
+    result, config, stage: str
+) -> None:
+    reports = result.as_dict()["cell_reports"]
+    cell = reports[0]["cells"]["RL-SCAN"]
+    entry = next(
+        entry
+        for entry in cell["scanner_metric_evidence"]
+        if entry["stage"] == stage and "quality_report" in entry
+    )
+    _increment_overlap_truth_count(entry["quality_report"])
+    overlap = entry["quality_report"]["buffered_overlap_radius2"]
+    for metric in ("buffered_recall", "buffered_f1"):
+        metric_entry = next(
+            item
+            for item in cell["scanner_metric_evidence"]
+            if item["stage"] == stage and item["metric"] == metric
+        )
+        metric_entry["value"] = overlap[metric]
+    if stage == "scanner_raw":
+        _increment_overlap_truth_count(cell["scanner_quality"]["ft_top_truth_count"])
+
+    with pytest.raises(ValueError, match="truth_evidence.fault_voxel_count"):
+        validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
+
+
+@pytest.mark.parametrize(
+    "quality_name",
+    (
+        "fv_top_truth_count",
+        "fv_positive_top_truth_count",
+        "fvt_top_truth_count",
+        "fvt_positive_top_truth_count",
+        "skin",
+    ),
+)
+def test_downstream_truth_targets_are_joined_to_trial_evidence_in_memory(
+    result, config, quality_name: str
+) -> None:
+    reports = result.as_dict()["cell_reports"]
+    cell = reports[0]["cells"]["RL-QUAL"]
+    for payload in (cell, cell["pipelines"][cell["active_pipeline"]]):
+        _increment_overlap_truth_count(payload["quality"][quality_name])
+
+    with pytest.raises(ValueError, match="truth_evidence.fault_voxel_count"):
         validate_mode_comparison_result(replace(result, cell_reports=tuple(reports)), config)
 
 

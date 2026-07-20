@@ -369,6 +369,7 @@ def _cell_report(
         "case_id": trial.case_id,
         "trial_id": trial.trial_id,
         "seed": trial.seed,
+        "truth_evidence": _json_safe(evaluation.truth_evidence),
         "cells": _json_safe(evaluation.report_payload),
     }
 

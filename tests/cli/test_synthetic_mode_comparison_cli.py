@@ -7,7 +7,10 @@ import pytest
 
 from pyosv.cli import synthetic_mode_comparison
 from pyosv.evaluation.synthetic_mode_comparison import (
+    ARTIFACT_SCHEMA_VERSION,
     REQUIRED_BUNDLE_FILES,
+    RUNTIME_CONTRACT_VERSION,
+    SCALAR_EVIDENCE_CONTRACT_VERSION,
     SyntheticModeComparisonConfig,
     validate_completed_bundle,
 )
@@ -264,7 +267,9 @@ def test_real_small_skip_skinning_cli_writes_a_valid_bundle(
     assert validate_completed_bundle(output)
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     reports = json.loads((output / "cell_reports.json").read_text(encoding="utf-8"))
-    assert manifest["artifact_schema_version"] == 2
+    assert manifest["artifact_schema_version"] == ARTIFACT_SCHEMA_VERSION == 3
+    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 3
+    assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 1
     assert manifest["input_config"]["skinning_config"]["enabled"] is False
     assert {
         label

@@ -62,6 +62,48 @@ def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> 
     assert result.stage_cache_stats.voting_hits == 3
 
 
+def test_trial_records_one_immutable_truth_report_before_scanner_input(monkeypatch) -> None:
+    plan = _plan()
+    original = comparison_runner.quality_metrics.truth_report
+    calls = 0
+
+    def tracking_truth_report(case, truth_metric_config):
+        nonlocal calls
+        calls += 1
+        return original(case, truth_metric_config)
+
+    monkeypatch.setattr(comparison_runner.quality_metrics, "truth_report", tracking_truth_report)
+
+    result = run_synthetic_trial(plan, plan.trials[0])
+
+    assert calls == 1
+    assert tuple(result.truth_evidence) == ("fault_voxel_count", "surface_voxel_count")
+    assert result.truth_evidence["surface_voxel_count"] > 0
+    with pytest.raises(TypeError):
+        result.truth_evidence["surface_voxel_count"] = 0  # type: ignore[index]
+
+
+def test_invalid_trial_truth_report_fails_before_scanner_input(monkeypatch) -> None:
+    plan = _plan()
+    prepared = False
+
+    def fail_if_prepared(*args, **kwargs):
+        nonlocal prepared
+        prepared = True
+        raise AssertionError("scanner preparation must not run")
+
+    monkeypatch.setattr(
+        comparison_runner.quality_metrics,
+        "truth_report",
+        lambda case, config: {"fault_voxel_count": 1, "surface_voxel_count": 0},
+    )
+    monkeypatch.setattr(comparison_runner, "prepare_case_inputs", fail_if_prepared)
+
+    with pytest.raises(ValueError, match="empty truth-surface support"):
+        run_synthetic_trial(plan, plan.trials[0])
+    assert not prepared
+
+
 def test_runtime_looks_up_the_resolved_keys_for_each_downstream_cell(monkeypatch) -> None:
     plan = _plan()
     looked_up = {stage: [] for stage in ("seed", "voting", "thinning", "primary_skinning")}

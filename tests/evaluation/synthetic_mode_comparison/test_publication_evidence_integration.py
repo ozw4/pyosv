@@ -820,6 +820,7 @@ def test_volume_bearing_trial_evaluations_remain_sequential() -> None:
         evaluation.trial = trial
         evaluation.report_payload = {cell.label: {} for cell in plan.cells}
         evaluation.stage_cache_stats = zero_stats
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         evaluation.volume = np.ones(SHAPE, dtype=np.float32)
         live.add(evaluation)
         maximum_live = max(maximum_live, len(live))
