@@ -31,7 +31,12 @@ from pyosv.evaluation.synthetic_mode_comparison import (
     write_artifact_bundle,
 )
 from pyosv.evaluation.synthetic_mode_comparison import artifacts
-from pyosv.evaluation.synthetic_quality import SyntheticScannerConfig, SyntheticSkinningConfig
+from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import volume_diagonal
+from pyosv.evaluation.synthetic_quality import (
+    SyntheticScannerConfig,
+    SyntheticSkinningConfig,
+    SyntheticTruthMetricConfig,
+)
 
 
 @cache
@@ -459,7 +464,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 3
-    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 2
+    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 3
     assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 1
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
@@ -495,6 +500,28 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
             "sha256": hashlib.sha256(payload).hexdigest(),
             "size": len(payload),
         }
+
+
+@pytest.mark.parametrize(
+    ("name", "buffer_radius"),
+    (
+        ("fractional", 0.5),
+        ("full-volume", volume_diagonal((9, 9, 9))),
+    ),
+)
+def test_writer_validates_reachable_buffer_radius_regimes(
+    tmp_path: Path, name: str, buffer_radius: float
+) -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        truth_metric_config=SyntheticTruthMetricConfig(buffer_radius=buffer_radius),
+    )
+    result = run_mode_comparison(config)
+
+    bundle = write_artifact_bundle(result, tmp_path / name, config=config)
+
+    assert validate_completed_bundle(bundle)
 
 
 def test_bundle_round_trip_preserves_integer_valued_real_config(tmp_path: Path) -> None:
@@ -1002,6 +1029,24 @@ def test_validator_explicitly_rejects_rehashed_scalar_contract_v1_bundle(
     _rehash(bundle, "manifest.json")
 
     with pytest.raises(ValueError, match="legacy schema-v3 bundle.*trial truth evidence"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_explicitly_rejects_rehashed_scalar_contract_v2_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-scalar-v2")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["scalar_evidence_contract_version"] = 2
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy schema-v3 bundle.*buffered overlap"):
         validate_completed_bundle(bundle)
 
 

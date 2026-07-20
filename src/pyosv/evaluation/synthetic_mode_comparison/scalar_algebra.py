@@ -46,7 +46,7 @@ def validate_quality_scalar_algebra(
 ) -> None:
     """Validate one selection's quality reports without loading any volumes."""
 
-    validate_overlap_algebra(overlap, f"{context}.buffered_overlap_radius2")
+    validate_overlap_algebra(overlap, shape, f"{context}.buffered_overlap_radius2")
     validate_surface_distance_algebra(distance, shape, f"{context}.surface_distance")
     validate_orientation_algebra(orientation, f"{context}.orientation_error")
     if edge is not None:
@@ -441,7 +441,7 @@ def validate_component_topology_algebra(
             _require_close(report, name, float(expected), context)
 
 
-def validate_overlap_algebra(report: Mapping[str, Any], context: str) -> None:
+def validate_overlap_algebra(report: Mapping[str, Any], shape: Sequence[int], context: str) -> None:
     """Validate exact and buffered overlap counts and derived ratios."""
 
     candidate_count = _count(report, "candidate_count", context)
@@ -451,6 +451,7 @@ def validate_overlap_algebra(report: Mapping[str, Any], context: str) -> None:
     candidate_buffer_count = _count(report, "candidate_in_truth_buffer_count", context)
     truth_buffer_count = _count(report, "truth_in_candidate_buffer_count", context)
     radius = _number(report, "radius", context)
+    maximum_distance = volume_diagonal(shape)
 
     if intersection_count > min(candidate_count, truth_count):
         raise ValueError(f"{context}.intersection_count exceeds a source count")
@@ -468,12 +469,23 @@ def validate_overlap_algebra(report: Mapping[str, Any], context: str) -> None:
         raise ValueError(f"{context} buffered overlap counts require a nonempty candidate mask")
     if truth_count == 0 and (candidate_buffer_count != 0 or truth_buffer_count != 0):
         raise ValueError(f"{context} buffered overlap counts require a nonempty truth mask")
-    if radius == 0.0 and (
-        candidate_buffer_count != intersection_count or truth_buffer_count != intersection_count
-    ):
-        raise ValueError(
-            f"{context} radius-zero buffered overlap counts must equal intersection_count"
-        )
+    if candidate_count != 0 and truth_count != 0:
+        if 0.0 <= radius < 1.0 and (
+            candidate_buffer_count != intersection_count or truth_buffer_count != intersection_count
+        ):
+            if radius == 0.0:
+                raise ValueError(
+                    f"{context} radius-zero buffered overlap counts must equal intersection_count"
+                )
+            raise ValueError(
+                f"{context} fractional-radius buffered overlap counts must equal intersection_count"
+            )
+        if radius >= maximum_distance and (
+            candidate_buffer_count != candidate_count or truth_buffer_count != truth_count
+        ):
+            raise ValueError(
+                f"{context} full-volume buffered overlap counts must equal their source counts"
+            )
 
     precision = _precision(intersection_count, candidate_count)
     recall = _recall(intersection_count, truth_count)

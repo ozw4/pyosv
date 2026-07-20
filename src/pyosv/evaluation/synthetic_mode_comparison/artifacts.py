@@ -63,7 +63,7 @@ from .scalar_algebra import (
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 3
-SCALAR_EVIDENCE_CONTRACT_VERSION = 2
+SCALAR_EVIDENCE_CONTRACT_VERSION = 3
 RUNTIME_CONTRACT_VERSION = 1
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
@@ -748,11 +748,16 @@ def _load_bundle_objects(
         "scalar_evidence_contract_version",
         SCALAR_EVIDENCE_CONTRACT_VERSION,
         "scalar evidence",
-        legacy_version=1,
-        legacy_message=(
-            "unsupported scalar evidence contract version 1: legacy schema-v3 bundle "
-            "does not contain trial truth evidence"
-        ),
+        legacy_messages={
+            1: (
+                "unsupported scalar evidence contract version 1: legacy schema-v3 bundle "
+                "does not contain trial truth evidence"
+            ),
+            2: (
+                "unsupported scalar evidence contract version 2: legacy schema-v3 bundle "
+                "does not validate buffered overlap radius regimes"
+            ),
+        },
     )
     _manifest_contract_version(
         manifest_value,
@@ -2444,15 +2449,14 @@ def _manifest_contract_version(
     supported_version: int,
     contract_name: str,
     *,
-    legacy_version: int | None = None,
-    legacy_message: str | None = None,
+    legacy_messages: Mapping[int, str] | None = None,
 ) -> int:
     if field not in manifest:
         raise ValueError(f"manifest {field} is required")
     version = _integer(manifest[field], f"manifest {field}")
     if version != supported_version:
-        if version == legacy_version and legacy_message is not None:
-            raise ValueError(legacy_message)
+        if legacy_messages is not None and version in legacy_messages:
+            raise ValueError(legacy_messages[version])
         raise ValueError(f"unsupported {contract_name} contract version")
     return version
 

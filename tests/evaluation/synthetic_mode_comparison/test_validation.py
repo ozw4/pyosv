@@ -214,7 +214,7 @@ def test_overlap_algebra_rejects_buffered_hits_against_an_empty_mask(
     report["buffered_f1"] = 2.0 * left * right / (left + right) if left + right else 0.0
 
     with pytest.raises(ValueError, match="nonempty .* mask"):
-        validate_overlap_algebra(report, "overlap")
+        validate_overlap_algebra(report, (1, 1, 2), "overlap")
 
 
 def test_overlap_algebra_rejects_radius_zero_buffered_hits_beyond_intersection() -> None:
@@ -224,7 +224,7 @@ def test_overlap_algebra_rejects_radius_zero_buffered_hits_beyond_intersection()
     report["radius"] = 0.0
 
     with pytest.raises(ValueError, match="radius-zero"):
-        validate_overlap_algebra(report, "overlap")
+        validate_overlap_algebra(report, (1, 1, 2), "overlap")
 
 
 def test_overlap_algebra_accepts_positive_radius_buffered_hits_beyond_intersection() -> None:
@@ -234,7 +234,90 @@ def test_overlap_algebra_accepts_positive_radius_buffered_hits_beyond_intersecti
 
     assert report["candidate_in_truth_buffer_count"] > report["intersection_count"]
     assert report["truth_in_candidate_buffer_count"] > report["intersection_count"]
-    validate_overlap_algebra(report, "overlap")
+    validate_overlap_algebra(report, (1, 1, 2), "overlap")
+
+
+@pytest.mark.parametrize("radius", (0.0, 0.5, np.nextafter(1.0, 0.0)))
+def test_overlap_algebra_requires_exact_overlap_for_fractional_radius(radius: float) -> None:
+    candidate = np.zeros((1, 1, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[0, 0, 1] = True
+    report = buffered_surface_overlap(candidate, truth, radius=float(radius))
+
+    assert report["candidate_in_truth_buffer_count"] == report["intersection_count"]
+    assert report["truth_in_candidate_buffer_count"] == report["intersection_count"]
+    validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+@pytest.mark.parametrize("radius", (0.5, np.nextafter(1.0, 0.0)))
+def test_overlap_algebra_rejects_fractional_buffered_hits_beyond_intersection(
+    radius: float,
+) -> None:
+    candidate = np.zeros((1, 1, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[0, 0, 1] = True
+    report = buffered_surface_overlap(candidate, truth, radius=1.0)
+    report["radius"] = radius
+
+    with pytest.raises(ValueError, match="fractional-radius"):
+        validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+@pytest.mark.parametrize("offset", (0.0, 1.0))
+def test_overlap_algebra_requires_source_counts_at_volume_diagonal(offset: float) -> None:
+    candidate = np.zeros((2, 2, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[1, 1, 1] = True
+    radius = np.sqrt(3.0) + offset
+    report = buffered_surface_overlap(candidate, truth, radius=radius)
+
+    assert report["candidate_in_truth_buffer_count"] == report["candidate_count"]
+    assert report["truth_in_candidate_buffer_count"] == report["truth_count"]
+    validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+def test_overlap_algebra_rejects_incomplete_hits_at_volume_diagonal() -> None:
+    candidate = np.zeros((2, 2, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[1, 1, 1] = True
+    diagonal = np.sqrt(3.0)
+    report = buffered_surface_overlap(candidate, truth, radius=np.nextafter(diagonal, 0.0))
+    report["radius"] = diagonal
+
+    with pytest.raises(ValueError, match="full-volume"):
+        validate_overlap_algebra(report, candidate.shape, "overlap")
+
+
+def test_overlap_algebra_does_not_expand_exact_radius_boundaries() -> None:
+    candidate = np.zeros((2, 2, 2), dtype=bool)
+    truth = np.zeros_like(candidate)
+    candidate[0, 0, 0] = True
+    truth[1, 1, 1] = True
+    diagonal = np.sqrt(3.0)
+
+    radius_one = buffered_surface_overlap(candidate, truth, radius=1.0)
+    validate_overlap_algebra(radius_one, candidate.shape, "overlap")
+
+    below_diagonal = buffered_surface_overlap(candidate, truth, radius=np.nextafter(diagonal, 0.0))
+    validate_overlap_algebra(below_diagonal, candidate.shape, "overlap")
+
+
+@pytest.mark.parametrize(
+    ("candidate_value", "truth_value"),
+    ((True, True), (False, True), (True, False), (False, False)),
+)
+def test_overlap_algebra_handles_singleton_volume_and_empty_masks(
+    candidate_value: bool, truth_value: bool
+) -> None:
+    candidate = np.array([[[candidate_value]]])
+    truth = np.array([[[truth_value]]])
+    report = buffered_surface_overlap(candidate, truth, radius=0.0)
+
+    validate_overlap_algebra(report, candidate.shape, "overlap")
 
 
 @pytest.mark.parametrize(

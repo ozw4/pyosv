@@ -82,7 +82,7 @@ The successful command writes exactly these eight files atomically:
 - `manifest.json`: artifact schema v3 plus independent scalar-evidence and
   runtime contract versions, requested configuration, resolved canonical plan,
   case and trial order, software versions, cache statistics, and source
-  provenance. The current scalar-evidence contract version is 2 and the
+  provenance. The current scalar-evidence contract version is 3 and the
   runtime contract version is 1.
 - `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
   one immutable `truth_evidence` object per trial, containing only the fault-
@@ -123,9 +123,12 @@ distance symmetric summaries, orientation percentile order, and edge
 false-positive fractions are checked algebraically with one strict numeric
 tolerance. A `top_truth_count` candidate count must equal the truth-surface
 support count, while a `positive_top_truth_count` candidate count may not
-exceed it. Empty candidate/truth masks cannot report buffered hits, radius-zero
-buffered numerators must equal the exact intersection, and every distance
-summary is bounded by the volume diagonal; empty distance reports use that
+exceed it. Empty candidate/truth masks cannot report buffered hits. For two
+nonempty masks, a buffer radius below one voxel requires both buffered
+numerators to equal the exact intersection, while a radius at least as large as
+the volume diagonal requires them to equal their respective source counts.
+These radius boundaries use exact unit-spacing voxel-grid semantics. Every
+distance summary is bounded by the volume diagonal; empty distance reports use that
 same diagonal convention. Skin largest/small summaries are recomputed from the
 per-skin arrays and the effective `small_skin_size`, while component-topology
 summaries are checked against their per-truth and per-skin arrays. Prepared
