@@ -1440,9 +1440,11 @@ are validated from resolved semantic stage keys, and shared scanner, voting,
 and conditionally shared thinning scalar evidence is compared across cells.
 Scanner scalar evidence is prepared once per trial and backend, reused by the
 scanner-only and end-to-end cells, and attributed to a shared runtime stage.
-Its authoritative artifact schema is v2: scanner publication metrics are
-joined totally to complete persisted scanner evidence, while v1 bundles lack
-that evidence and must be regenerated. Array summaries and overlap, distance,
+Its authoritative artifact schema is v3, with independent scalar-evidence and
+runtime contract versions. Scanner publication metrics are joined totally to
+complete persisted scanner evidence. V1 bundles lack that evidence, while v2
+bundles do not uniquely identify runtime coverage; both must be regenerated.
+Array summaries and overlap, distance,
 orientation, and edge report scalars are checked for their mathematical value,
 count, and derived-summary constraints. Top-count selection cardinality is
 bound to truth-surface support; empty-mask and radius-zero buffered-overlap

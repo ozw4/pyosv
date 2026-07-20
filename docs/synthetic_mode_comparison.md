@@ -79,9 +79,12 @@ already exist.
 
 The successful command writes exactly these eight files atomically:
 
-- `manifest.json`: requested configuration, resolved canonical plan, case and
-  trial order, software versions, cache statistics, and source provenance.
-- `cell_reports.json`: ordered scalar cell reports. Artifact schema v2 records
+- `manifest.json`: artifact schema v3 plus independent scalar-evidence and
+  runtime contract versions, requested configuration, resolved canonical plan,
+  case and trial order, software versions, cache statistics, and source
+  provenance. The current scalar-evidence and runtime contract versions are
+  both 1.
+- `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
   the complete registry-ordered `scanner_metric_evidence` in every scanner-only
   and end-to-end scanner cell. Each scanner-stage candidate-count entry also
   carries the canonical overlap, distance, orientation, and edge source report
@@ -126,9 +129,13 @@ scanner scalar evidence is built once per trial and backend, reused by the
 scanner-only and end-to-end cells, and recorded as a shared runtime stage.
 Validation does not rerun any volume calculation, independently prove that its
 computation was correct, or provide a tamper-prevention signature. Schema-v1
-bundles do not contain complete scanner evidence and must be regenerated with
-the current schema-v2 writer; validation does not implicitly upgrade them to
-v2.
+bundles do not contain complete scanner evidence, while schema-v2 bundles do
+not uniquely identify their runtime coverage. Both must be regenerated with
+the current schema-v3 writer; validation does not implicitly upgrade them. The
+scalar-evidence contract version identifies the persisted cell-report evidence
+structure independently of the artifact schema. The runtime contract version
+independently identifies required runtime stage coverage, including the shared
+`scanner_scalar_evidence` row in version 1.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect

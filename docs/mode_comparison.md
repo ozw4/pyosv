@@ -240,8 +240,10 @@ existing operational validation paths.
   atomically write its scalar artifact bundle, validate completion, and print
   the completed output path. `validate_completed_bundle()` checks cross-file
   scalar semantics in addition to hashes and syntax. The authoritative writer
-  emits artifact schema v2; schema-v1 bundles lack complete scanner evidence
-  and must be regenerated. Scanner publication metrics are joined totally to
+  emits artifact schema v3 with independently versioned scalar-evidence and
+  runtime contracts. Schema-v1 bundles lack complete scanner evidence, while
+  schema-v2 bundles do not uniquely identify runtime coverage; both must be
+  regenerated. Scanner publication metrics are joined totally to
   the persisted registry-ordered evidence. This scanner evidence is prepared
   once per trial and backend, reused by scanner-only and end-to-end cells, and
   attributed to a shared runtime stage. Runtime and validation derive cache

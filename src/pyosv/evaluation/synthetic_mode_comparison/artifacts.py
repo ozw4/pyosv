@@ -62,7 +62,9 @@ from .scalar_algebra import (
 )
 from .validation import validate_mode_comparison_result
 
-ARTIFACT_SCHEMA_VERSION = 2
+ARTIFACT_SCHEMA_VERSION = 3
+SCALAR_EVIDENCE_CONTRACT_VERSION = 1
+RUNTIME_CONTRACT_VERSION = 1
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
 METRIC_REGISTRY_DEFINITION_VERSION = 1
@@ -149,6 +151,8 @@ _CSV_TUPLE_FIELDS = {CONTRASTS_FILE: {"component_cells"}}
 
 _MANIFEST_FIELDS = {
     "artifact_schema_version",
+    "scalar_evidence_contract_version",
+    "runtime_contract_version",
     "metric_schema_version",
     "canonical_cells",
     "input_config",
@@ -718,13 +722,13 @@ def validate_completed_bundle(path: str | PathLike[str]) -> bool:
 def _load_bundle_objects(
     payloads: Mapping[str, bytes],
 ) -> tuple[SyntheticModeComparisonConfig, SyntheticModeComparisonResult]:
-    manifest = _object(
-        _read_json_bytes(payloads[MANIFEST_FILE], MANIFEST_FILE),
-        _MANIFEST_FIELDS,
-        "manifest.json",
-    )
+    manifest_value = _read_json_bytes(payloads[MANIFEST_FILE], MANIFEST_FILE)
+    if not isinstance(manifest_value, dict):
+        raise ValueError("manifest.json must be an object")
+    if "artifact_schema_version" not in manifest_value:
+        raise ValueError("manifest artifact_schema_version is required")
     artifact_schema_version = _integer(
-        manifest["artifact_schema_version"], "manifest artifact_schema_version"
+        manifest_value["artifact_schema_version"], "manifest artifact_schema_version"
     )
     if artifact_schema_version != ARTIFACT_SCHEMA_VERSION:
         if artifact_schema_version == 1:
@@ -732,7 +736,31 @@ def _load_bundle_objects(
                 "unsupported artifact schema version 1: legacy bundle does not contain "
                 "complete scanner metric evidence"
             )
+        if artifact_schema_version == 2:
+            raise ValueError(
+                "unsupported artifact schema version 2: legacy bundle does not uniquely "
+                "identify runtime coverage"
+            )
         raise ValueError("unsupported artifact schema version")
+
+    _manifest_contract_version(
+        manifest_value,
+        "scalar_evidence_contract_version",
+        SCALAR_EVIDENCE_CONTRACT_VERSION,
+        "scalar evidence",
+    )
+    _manifest_contract_version(
+        manifest_value,
+        "runtime_contract_version",
+        RUNTIME_CONTRACT_VERSION,
+        "runtime",
+    )
+
+    manifest = _object(
+        manifest_value,
+        _MANIFEST_FIELDS,
+        "manifest.json",
+    )
     metric_schema_version = _integer(
         manifest["metric_schema_version"], "manifest metric_schema_version"
     )
@@ -1846,6 +1874,8 @@ def _build_manifest(
     software_versions, software_version_status = _software_versions()
     return {
         "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+        "scalar_evidence_contract_version": SCALAR_EVIDENCE_CONTRACT_VERSION,
+        "runtime_contract_version": RUNTIME_CONTRACT_VERSION,
         "metric_schema_version": METRIC_SCHEMA_VERSION,
         "canonical_cells": [
             {
@@ -2309,6 +2339,20 @@ def _integer(value: Any, context: str) -> int:
     return value
 
 
+def _manifest_contract_version(
+    manifest: Mapping[str, Any],
+    field: str,
+    supported_version: int,
+    contract_name: str,
+) -> int:
+    if field not in manifest:
+        raise ValueError(f"manifest {field} is required")
+    version = _integer(manifest[field], f"manifest {field}")
+    if version != supported_version:
+        raise ValueError(f"unsupported {contract_name} contract version")
+    return version
+
+
 def _optional_integer(value: Any, context: str) -> int | None:
     if value is None:
         return None
@@ -2390,6 +2434,8 @@ __all__ = [
     "COMPLETION_SCHEMA_VERSION",
     "HASHED_BUNDLE_FILES",
     "REQUIRED_BUNDLE_FILES",
+    "RUNTIME_CONTRACT_VERSION",
+    "SCALAR_EVIDENCE_CONTRACT_VERSION",
     "validate_completed_bundle",
     "write_artifact_bundle",
 ]
