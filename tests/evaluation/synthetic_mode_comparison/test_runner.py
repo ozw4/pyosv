@@ -34,6 +34,20 @@ def _plan():
     return build_mode_comparison_plan(SyntheticModeComparisonConfig(shape=(9, 9, 9)))
 
 
+def _prepared_scalar_evidence(plan, case, prepared, backend="reference-like"):
+    assert prepared.scanner is not None
+    attributes = prepared.scanner.by_backend[backend]
+    return comparison_runner._prepare_scanner_scalar_evidence(
+        case=case,
+        scanner_backend=backend,
+        scanner_config=replace(plan.scanner_template, backend=backend),
+        truth_metric_config=plan.truth_metric_config,
+        scanner_report=attributes.report,
+        scanner_volumes=attributes.volumes,
+        metric_evidence_builder=comparison_metrics.build_scanner_metric_evidence,
+    )
+
+
 def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> None:
     plan = _plan()
 
@@ -92,6 +106,8 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     scanner_cell_active = False
     voter_call_phases: list[bool] = []
     skinner_call_phases: list[bool] = []
+    scanner_quality_calls = 0
+    metric_calls = {name: 0 for name in ("top_k", "overlap", "distance", "orientation", "edge")}
 
     original_case_factory = comparison_runner._build_trial_case
     original_scanner_input = quality_runner.make_scanner_input_from_case
@@ -101,6 +117,14 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     original_evidence = comparison_metrics.build_scanner_metric_evidence
     original_voter_apply = quality_pipeline.OptimalSurfaceVoter.apply_voting_from_seeds
     original_skinner = quality_pipeline.find_synthetic_skins
+    original_scanner_quality = quality_runner.quality_metrics.scanner_truth_quality
+    original_metric_operations = {
+        "top_k": comparison_metrics.top_truth_count_mask,
+        "overlap": comparison_metrics.buffered_surface_overlap,
+        "distance": comparison_metrics.surface_distance_metrics,
+        "orientation": comparison_metrics.masked_orientation_error,
+        "edge": comparison_metrics.edge_false_positive_ratio,
+    }
 
     def counted_case_factory(*args, **kwargs):
         nonlocal case_factory_calls
@@ -141,6 +165,18 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
         skinner_call_phases.append(scanner_cell_active)
         return original_skinner(*args, **kwargs)
 
+    def counted_scanner_quality(*args, **kwargs):
+        nonlocal scanner_quality_calls
+        scanner_quality_calls += 1
+        return original_scanner_quality(*args, **kwargs)
+
+    def counted_metric(name):
+        def operation(*args, **kwargs):
+            metric_calls[name] += 1
+            return original_metric_operations[name](*args, **kwargs)
+
+        return operation
+
     monkeypatch.setattr(comparison_runner, "_build_trial_case", counted_case_factory)
     monkeypatch.setattr(quality_runner, "make_scanner_input_from_case", counted_scanner_input)
     monkeypatch.setattr(quality_scanner, "scan_backend_attributes", counted_backend_scan)
@@ -153,6 +189,19 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
         tracked_voter_apply,
     )
     monkeypatch.setattr(quality_pipeline, "find_synthetic_skins", tracked_skinner)
+    monkeypatch.setattr(
+        quality_runner.quality_metrics,
+        "scanner_truth_quality",
+        counted_scanner_quality,
+    )
+    for name, attribute in (
+        ("top_k", "top_truth_count_mask"),
+        ("overlap", "buffered_surface_overlap"),
+        ("distance", "surface_distance_metrics"),
+        ("orientation", "masked_orientation_error"),
+        ("edge", "edge_false_positive_ratio"),
+    ):
+        monkeypatch.setattr(comparison_metrics, attribute, counted_metric(name))
 
     run_synthetic_trial(plan, plan.trials[0])
 
@@ -161,6 +210,8 @@ def test_trial_prepares_each_shared_scanner_stage_once(monkeypatch) -> None:
     assert scan_backends == ["reference-like", "quality"]
     assert scanner_thin_calls == 2
     assert evidence_backends == ["reference-like", "quality"]
+    assert scanner_quality_calls == 0
+    assert metric_calls == {name: 4 for name in metric_calls}
     assert voter_call_phases and not any(voter_call_phases)
     assert skinner_call_phases and not any(skinner_call_phases)
 
@@ -416,6 +467,97 @@ def test_downstream_cells_match_standalone_case_variant_runs() -> None:
         assert isinstance(actual.artifacts, PipelineArtifacts)
         for name, volume in standalone.artifacts.volumes.items():
             assert np.array_equal(actual.artifacts.volumes[name], volume)
+
+
+def test_prepared_scanner_scalar_evidence_matches_legacy_pipeline() -> None:
+    plan = _plan()
+    case = comparison_runner._build_trial_case(plan, plan.trials[0])
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=plan.scanner_template,
+        input_mode="scanner",
+        scanner_backend_matrix=False,
+    )
+    evidence = _prepared_scalar_evidence(plan, case, prepared)
+    settings = plan.reference_workflow_settings
+    common = {
+        "voting_config": settings.voting_config,
+        "scanner_config": plan.scanner_template,
+        "truth_metric_config": plan.truth_metric_config,
+        "skinning_config": settings.skinning_config,
+        "variant": plan.comparison_variant,
+        "input_mode": "scanner",
+        "scanner_backend_matrix": False,
+        "include_thinning_diagnostic": False,
+        "include_scanner_downstream_diagnostics": False,
+        "prepared_inputs": prepared,
+    }
+
+    legacy = run_case_variant(case, **common)
+    injected = run_case_variant(
+        case,
+        prepared_scanner_scalar_evidence=evidence,
+        **common,
+    )
+
+    assert injected.report_payload == legacy.report_payload
+    assert injected.report_payload["scanner"] is evidence.scanner_report
+    assert injected.report_payload["scanner_quality"] is evidence.scanner_quality_report
+    for name, volume in legacy.artifacts.volumes.items():
+        assert np.array_equal(injected.artifacts.volumes[name], volume)
+
+
+@pytest.mark.parametrize(
+    ("evidence_changes", "message"),
+    (
+        ({"case_id": "other-case"}, "case"),
+        ({"case_token": 0}, "case identity"),
+        ({"shape": (8, 9, 9)}, "shape"),
+        (
+            {
+                "scanner_backend": "quality",
+                "scanner_config": replace(_plan().scanner_template, backend="quality"),
+            },
+            "backend",
+        ),
+        (
+            {"truth_metric_config": SyntheticTruthMetricConfig(buffer_radius=1.0)},
+            "truth metric config",
+        ),
+    ),
+)
+def test_prepared_scanner_scalar_evidence_mismatch_fails_before_voting(
+    monkeypatch, evidence_changes, message
+) -> None:
+    plan = _plan()
+    case = comparison_runner._build_trial_case(plan, plan.trials[0])
+    prepared = prepare_case_inputs(
+        case,
+        scanner_config=plan.scanner_template,
+        input_mode="both",
+        scanner_backend_matrix=False,
+    )
+    evidence = replace(_prepared_scalar_evidence(plan, case, prepared), **evidence_changes)
+    voting = Mock()
+    monkeypatch.setattr(quality_runner, "run_voting_from_attributes", voting)
+
+    with pytest.raises(ValueError, match=message):
+        run_case_variant(
+            case,
+            voting_config=plan.reference_workflow_settings.voting_config,
+            scanner_config=plan.scanner_template,
+            truth_metric_config=plan.truth_metric_config,
+            skinning_config=plan.reference_workflow_settings.skinning_config,
+            variant=plan.comparison_variant,
+            input_mode="both",
+            scanner_backend_matrix=False,
+            include_thinning_diagnostic=False,
+            include_scanner_downstream_diagnostics=False,
+            prepared_inputs=prepared,
+            prepared_scanner_scalar_evidence=evidence,
+        )
+
+    voting.assert_not_called()
 
 
 def test_all_cells_complete_with_skinning_disabled_contract() -> None:

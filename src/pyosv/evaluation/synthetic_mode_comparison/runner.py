@@ -16,7 +16,12 @@ from ..synthetic_quality.cases import EXTENDED_CASES
 from ..synthetic_quality.config import SyntheticScannerConfig, SyntheticTruthMetricConfig
 from ..synthetic_quality.models import PipelineArtifacts
 from ..synthetic_quality.profiles import ResolvedWorkflowSettings
-from ..synthetic_quality.runner import PreparedCaseInputs, prepare_case_inputs, run_case_variant
+from ..synthetic_quality.runner import (
+    PreparedCaseInputs,
+    PreparedScannerScalarEvidence,
+    prepare_case_inputs,
+    run_case_variant,
+)
 from ..synthetic_quality.stage_cache import PipelineStageCache, PipelineStageCacheStats
 from .models import (
     END_TO_END_SCOPE,
@@ -115,7 +120,12 @@ def run_synthetic_trial(
                 shared_stage=True,
             ),
         )
-        scanner_evidence = _build_scanner_evidence(plan, prepared_inputs)
+        scanner_evidence = _build_scanner_evidence(
+            plan,
+            prepared_inputs,
+            clock=clock,
+            runtime_recorder=runtime_recorder,
+        )
         for cell in _execution_cells(plan):
             evaluation = _timed_call(
                 "cell_execution",
@@ -124,7 +134,7 @@ def run_synthetic_trial(
                     cell,
                     prepared_inputs=prepared_inputs,
                     stage_cache=stage_cache,
-                    scanner_metric_evidence=(
+                    prepared_scanner_scalar_evidence=(
                         scanner_evidence[cell.scanner_backend]
                         if cell.scanner_backend is not None
                         else None
@@ -159,50 +169,119 @@ def _evaluate_cell(
     *,
     prepared_inputs: PreparedCaseInputs,
     stage_cache: PipelineStageCache,
-    scanner_metric_evidence: tuple[Mapping[str, Any], ...] | None,
+    prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None,
 ) -> SyntheticCellEvaluation:
     if cell.scope == SCANNER_ONLY_SCOPE:
         return _evaluate_scanner_cell(
             cell,
             prepared_inputs=prepared_inputs,
             scanner_config=replace(plan.scanner_template, backend=cell.scanner_backend),
-            truth_metric_config=plan.truth_metric_config,
-            scanner_metric_evidence=scanner_metric_evidence,
+            prepared_scanner_scalar_evidence=prepared_scanner_scalar_evidence,
         )
     return _evaluate_downstream_cell(
         plan,
         cell,
         prepared_inputs=prepared_inputs,
         stage_cache=stage_cache,
-        scanner_metric_evidence=scanner_metric_evidence,
+        prepared_scanner_scalar_evidence=prepared_scanner_scalar_evidence,
     )
 
 
 def _build_scanner_evidence(
     plan: SyntheticModeComparisonPlan,
     prepared_inputs: PreparedCaseInputs,
-) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    *,
+    clock: Any,
+    runtime_recorder: TrialRuntimeRecorder | None,
+) -> dict[str, PreparedScannerScalarEvidence]:
     scanner = prepared_inputs.scanner
     if scanner is None:
         raise RuntimeError("mode comparison requires prepared scanner attributes")
     from .metrics import build_scanner_metric_evidence
 
     case = prepared_inputs.case
-    return {
-        backend: build_scanner_metric_evidence(
+    result = {}
+    for backend, attributes in scanner.by_backend.items():
+        result[backend] = _timed_call(
+            "scanner_scalar_evidence",
+            lambda backend=backend, attributes=attributes: _prepare_scanner_scalar_evidence(
+                case=case,
+                scanner_backend=backend,
+                scanner_config=replace(plan.scanner_template, backend=backend),
+                truth_metric_config=plan.truth_metric_config,
+                scanner_report=attributes.report,
+                scanner_volumes=attributes.volumes,
+                metric_evidence_builder=build_scanner_metric_evidence,
+            ),
+            clock=clock,
+            runtime_recorder=runtime_recorder,
             scanner_backend=backend,
-            scanner_volumes=attributes.volumes,
-            scanner_report=attributes.report,
-            shape=case.shape,
-            truth_fault=case.truth_fault_mask,
-            truth_distance=case.truth_distance,
-            truth_strike=case.truth_strike,
-            truth_dip=case.truth_dip,
-            truth_surface_half_width=plan.truth_metric_config.truth_surface_half_width,
-            buffer_radius=plan.truth_metric_config.buffer_radius,
+            shared_stage=True,
         )
-        for backend, attributes in scanner.by_backend.items()
+    return result
+
+
+def _prepare_scanner_scalar_evidence(
+    *,
+    case: Synthetic3DCase,
+    scanner_backend: str,
+    scanner_config: SyntheticScannerConfig,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    scanner_report: Mapping[str, Any],
+    scanner_volumes: Mapping[str, np.ndarray],
+    metric_evidence_builder: Callable[..., tuple[Mapping[str, Any], ...]],
+) -> PreparedScannerScalarEvidence:
+    metric_evidence = metric_evidence_builder(
+        scanner_backend=scanner_backend,
+        scanner_volumes=scanner_volumes,
+        scanner_report=scanner_report,
+        shape=case.shape,
+        truth_fault=case.truth_fault_mask,
+        truth_distance=case.truth_distance,
+        truth_strike=case.truth_strike,
+        truth_dip=case.truth_dip,
+        truth_surface_half_width=truth_metric_config.truth_surface_half_width,
+        buffer_radius=truth_metric_config.buffer_radius,
+    )
+    quality_by_stage = {
+        entry["stage"]: entry["quality_report"]
+        for entry in metric_evidence
+        if "quality_report" in entry
     }
+    try:
+        raw_quality = quality_by_stage["scanner_raw"]
+        thinned_quality = quality_by_stage["scanner_thinned"]
+    except KeyError as error:
+        raise ValueError("scanner metric evidence is missing canonical quality reports") from error
+    half_width = truth_metric_config.truth_surface_half_width
+    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(half_width)
+    far_from_truth_mask = np.abs(case.truth_distance) >= np.float32(max(3.0, half_width + 2.0))
+    scanner_quality_report = {
+        "ft_top_truth_count": {
+            "buffered_overlap_radius2": raw_quality["buffered_overlap_radius2"],
+            "surface_distance": raw_quality["surface_distance"],
+        },
+        "orientation_error": {
+            "raw_scan_top_truth_count": raw_quality["orientation_error"],
+            "used_attributes_top_truth_count": thinned_quality["orientation_error"],
+        },
+        "input_association": quality_metrics.scanner_input_association(
+            scanner_volumes["scanner_input"],
+            truth_surface_mask=truth_surface_mask,
+            far_from_truth_mask=far_from_truth_mask,
+        ),
+    }
+    return PreparedScannerScalarEvidence(
+        case_id=case.case_id,
+        case_token=id(case),
+        shape=case.shape,
+        scanner_backend=scanner_backend,
+        scanner_config=scanner_config,
+        truth_metric_config=truth_metric_config,
+        scanner_report=scanner_report,
+        scanner_quality_report=scanner_quality_report,
+        scanner_metric_evidence=metric_evidence,
+    )
 
 
 def _timed_call(
@@ -287,24 +366,19 @@ def _evaluate_scanner_cell(
     *,
     prepared_inputs: PreparedCaseInputs,
     scanner_config: SyntheticScannerConfig,
-    truth_metric_config: SyntheticTruthMetricConfig,
-    scanner_metric_evidence: tuple[Mapping[str, Any], ...] | None,
+    prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None,
 ) -> SyntheticCellEvaluation:
     scanner = prepared_inputs.scanner
     if scanner is None or cell.scanner_backend is None:
         raise RuntimeError("scanner-only comparison cell requires prepared scanner attributes")
-    if scanner_metric_evidence is None:
-        raise RuntimeError("scanner-only comparison cell requires scanner metric evidence")
+    if prepared_scanner_scalar_evidence is None:
+        raise RuntimeError("scanner-only comparison cell requires scanner scalar evidence")
     attributes = scanner.by_backend[cell.scanner_backend]
     scanner_volumes = attributes.volumes
     report = {
-        "scanner": dict(attributes.report),
-        "scanner_quality": quality_metrics.scanner_truth_quality(
-            prepared_inputs.case,
-            scanner_volumes=scanner_volumes,
-            truth_metric_config=truth_metric_config,
-        ),
-        "scanner_metric_evidence": scanner_metric_evidence,
+        "scanner": prepared_scanner_scalar_evidence.scanner_report,
+        "scanner_quality": prepared_scanner_scalar_evidence.scanner_quality_report,
+        "scanner_metric_evidence": (prepared_scanner_scalar_evidence.scanner_metric_evidence),
     }
     return SyntheticCellEvaluation(
         cell=cell,
@@ -320,7 +394,7 @@ def _evaluate_downstream_cell(
     *,
     prepared_inputs: PreparedCaseInputs,
     stage_cache: PipelineStageCache,
-    scanner_metric_evidence: tuple[Mapping[str, Any], ...] | None,
+    prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None,
 ) -> SyntheticCellEvaluation:
     if cell.workflow_mode == "reference":
         settings = plan.reference_workflow_settings
@@ -349,15 +423,16 @@ def _evaluate_downstream_cell(
         include_scanner_downstream_diagnostics=False,
         include_scanner_boundary_stage_diagnostics=False,
         prepared_inputs=prepared_inputs,
+        prepared_scanner_scalar_evidence=prepared_scanner_scalar_evidence,
         stage_cache=stage_cache,
     )
     report_payload = evaluation.report_payload
     if cell.scope == END_TO_END_SCOPE:
-        if scanner_metric_evidence is None:
+        if prepared_scanner_scalar_evidence is None:
             raise RuntimeError("end-to-end scanner cell requires scanner metric evidence")
         report_payload = {
             **report_payload,
-            "scanner_metric_evidence": scanner_metric_evidence,
+            "scanner_metric_evidence": (prepared_scanner_scalar_evidence.scanner_metric_evidence),
         }
     return SyntheticCellEvaluation(
         cell=cell,

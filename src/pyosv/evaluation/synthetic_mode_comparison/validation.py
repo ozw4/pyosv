@@ -537,6 +537,22 @@ def _validate_runtime_rows(
                     True,
                 ),
                 (*trial_metadata, "scanner_scan_thinning", None, "quality", 1, True),
+                (
+                    *trial_metadata,
+                    "scanner_scalar_evidence",
+                    None,
+                    "reference-like",
+                    1,
+                    True,
+                ),
+                (
+                    *trial_metadata,
+                    "scanner_scalar_evidence",
+                    None,
+                    "quality",
+                    1,
+                    True,
+                ),
             )
         )
         expected.extend(

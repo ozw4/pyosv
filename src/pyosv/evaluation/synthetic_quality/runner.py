@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from numbers import Real
 from typing import Any
 
 import numpy as np
@@ -89,6 +90,116 @@ class PreparedCaseInputs:
     case: Synthetic3DCase
     oracle: OrientationField3D
     scanner: PreparedScannerInput | None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedScannerScalarEvidence:
+    """Immutable scalar scanner reports prepared for one case and backend."""
+
+    case_id: str
+    case_token: int
+    shape: tuple[int, int, int]
+    scanner_backend: str
+    scanner_config: SyntheticScannerConfig
+    truth_metric_config: SyntheticTruthMetricConfig
+    scanner_report: Mapping[str, Any]
+    scanner_quality_report: Mapping[str, Any]
+    scanner_metric_evidence: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.case_id, str) or not self.case_id:
+            raise ValueError("case_id must be a non-empty string")
+        if isinstance(self.case_token, bool) or not isinstance(self.case_token, int):
+            raise ValueError("case_token must be an integer")
+        if (
+            not isinstance(self.shape, tuple)
+            or len(self.shape) != 3
+            or any(
+                isinstance(size, bool) or not isinstance(size, int) or size <= 0
+                for size in self.shape
+            )
+        ):
+            raise ValueError("shape must be a positive three-dimensional tuple")
+        if not isinstance(self.scanner_config, SyntheticScannerConfig):
+            raise ValueError("scanner_config must be a SyntheticScannerConfig")
+        if self.scanner_backend != self.scanner_config.backend:
+            raise ValueError("scanner_backend must match scanner_config.backend")
+        if not isinstance(self.truth_metric_config, SyntheticTruthMetricConfig):
+            raise ValueError("truth_metric_config must be a SyntheticTruthMetricConfig")
+        if not isinstance(self.scanner_report, Mapping):
+            raise ValueError("scanner_report must be a mapping")
+        if not isinstance(self.scanner_quality_report, Mapping):
+            raise ValueError("scanner_quality_report must be a mapping")
+        if not isinstance(self.scanner_metric_evidence, tuple) or any(
+            not isinstance(entry, Mapping) for entry in self.scanner_metric_evidence
+        ):
+            raise ValueError("scanner_metric_evidence must be a tuple of mappings")
+        for name in (
+            "scanner_report",
+            "scanner_quality_report",
+            "scanner_metric_evidence",
+        ):
+            value = getattr(self, name)
+            object.__setattr__(self, name, _freeze_scalar_evidence_payload(value, name))
+
+
+class _ImmutableScalarMapping(dict[str, Any]):
+    def _immutable(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("prepared scanner scalar evidence is immutable")
+
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    __setitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+
+class _ImmutableScalarList(list[Any]):
+    def _immutable(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("prepared scanner scalar evidence is immutable")
+
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    __setitem__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+
+def _freeze_scalar_evidence_payload(value: Any, context: str) -> Any:
+    if isinstance(value, Mapping):
+        frozen = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{context} keys must be strings")
+            frozen[key] = _freeze_scalar_evidence_payload(item, f"{context}.{key}")
+        return _ImmutableScalarMapping(frozen)
+    if isinstance(value, tuple):
+        return tuple(
+            _freeze_scalar_evidence_payload(item, f"{context}[{index}]")
+            for index, item in enumerate(value)
+        )
+    if isinstance(value, list):
+        return _ImmutableScalarList(
+            _freeze_scalar_evidence_payload(item, f"{context}[{index}]")
+            for index, item in enumerate(value)
+        )
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, Real):
+        if not np.isfinite(value):
+            raise ValueError(f"{context} must contain only finite scalars")
+        return value
+    raise ValueError(f"{context} must contain scalar-only report values")
 
 
 def _oracle_attribute_stage_key(
@@ -300,8 +411,16 @@ def run_scanner_pipeline(
         build_scanner_boundary_stage_diagnostics
     ),
     prepared_scanner: PreparedScannerInput | None = None,
+    prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None = None,
     stage_cache: PipelineStageCache | None = None,
 ) -> PipelineEvaluation:
+    if prepared_scanner_scalar_evidence is not None:
+        _validate_prepared_scanner_scalar_evidence(
+            prepared_scanner_scalar_evidence,
+            case=case,
+            scanner_config=scanner_config,
+            truth_metric_config=truth_metric_config,
+        )
     if prepared_scanner is None:
         scanner = scanner_attributes_from_case(case, scanner_config)
         attribute_stage_key = _scanner_attribute_stage_key(case, scanner_config)
@@ -310,6 +429,11 @@ def run_scanner_pipeline(
         attribute_stage_key = _prepared_scanner_attribute_stage_key(
             prepared_scanner, scanner_config.backend
         )
+    if (
+        prepared_scanner_scalar_evidence is not None
+        and scanner.report != prepared_scanner_scalar_evidence.scanner_report
+    ):
+        raise ValueError("prepared scanner scalar evidence does not match scanner report")
     scanner_volumes = dict(scanner.volumes)
     evaluation = run_voting_from_attributes(
         case,
@@ -334,12 +458,16 @@ def run_scanner_pipeline(
     )
     report = dict(evaluation.report_payload)
     volumes = dict(evaluation.artifacts.volumes)
-    report["scanner"] = dict(scanner.report)
-    report["scanner_quality"] = quality_metrics.scanner_truth_quality(
-        case,
-        scanner_volumes=scanner_volumes,
-        truth_metric_config=truth_metric_config,
-    )
+    if prepared_scanner_scalar_evidence is None:
+        report["scanner"] = dict(scanner.report)
+        report["scanner_quality"] = quality_metrics.scanner_truth_quality(
+            case,
+            scanner_volumes=scanner_volumes,
+            truth_metric_config=truth_metric_config,
+        )
+    else:
+        report["scanner"] = prepared_scanner_scalar_evidence.scanner_report
+        report["scanner_quality"] = prepared_scanner_scalar_evidence.scanner_quality_report
     if include_scanner_downstream_diagnostics:
         report["scanner_downstream"] = scanner_downstream_diagnostic_runner(
             case=case,
@@ -427,11 +555,19 @@ def run_case_variant(
         build_scanner_boundary_stage_diagnostics
     ),
     prepared_inputs: PreparedCaseInputs | None = None,
+    prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None = None,
     stage_cache: PipelineStageCache | None = None,
 ) -> PipelineEvaluation:
     variant_spec = get_variant_spec(variant)
     valid_input_mode = validate_input_mode(input_mode)
     effective_skinning = effective_skinning_config(variant_spec, skinning_config)
+    if prepared_scanner_scalar_evidence is not None:
+        _validate_prepared_scanner_scalar_evidence(
+            prepared_scanner_scalar_evidence,
+            case=case,
+            scanner_config=scanner_config,
+            truth_metric_config=truth_metric_config,
+        )
     if prepared_inputs is None:
         prepared_inputs = prepare_case_inputs(
             case,
@@ -486,6 +622,7 @@ def run_case_variant(
         scanner_stage_loss_diagnostic_runner=scanner_stage_loss_diagnostic_runner,
         scanner_boundary_stage_diagnostic_runner=scanner_boundary_stage_diagnostic_runner,
         prepared_scanner=prepared_inputs.scanner,
+        prepared_scanner_scalar_evidence=prepared_scanner_scalar_evidence,
         stage_cache=stage_cache,
     )
     active = "scanner" if valid_input_mode == "scanner" else "oracle"
@@ -726,6 +863,29 @@ def _prepared_scanner_attributes(
         raise ValueError(
             f"prepared scanner input is missing backend {scanner_config.backend!r}"
         ) from error
+
+
+def _validate_prepared_scanner_scalar_evidence(
+    prepared: PreparedScannerScalarEvidence,
+    *,
+    case: Synthetic3DCase,
+    scanner_config: SyntheticScannerConfig,
+    truth_metric_config: SyntheticTruthMetricConfig,
+) -> None:
+    if not isinstance(prepared, PreparedScannerScalarEvidence):
+        raise ValueError("prepared_scanner_scalar_evidence must be PreparedScannerScalarEvidence")
+    if prepared.scanner_backend != scanner_config.backend:
+        raise ValueError("prepared scanner scalar evidence does not match scanner backend")
+    if prepared.case_id != case.case_id:
+        raise ValueError("prepared scanner scalar evidence does not match case")
+    if prepared.case_token != id(case):
+        raise ValueError("prepared scanner scalar evidence does not match case identity")
+    if prepared.shape != case.shape:
+        raise ValueError("prepared scanner scalar evidence does not match shape")
+    if prepared.scanner_config != scanner_config:
+        raise ValueError("prepared scanner scalar evidence does not match scanner configuration")
+    if prepared.truth_metric_config != truth_metric_config:
+        raise ValueError("prepared scanner scalar evidence does not match truth metric config")
 
 
 def _scanner_backend_matrix_comparison(
