@@ -133,19 +133,48 @@ def test_buffered_surface_overlap_empty_mask_conventions() -> None:
     assert both_empty["precision"] == 1.0
     assert both_empty["recall"] == 1.0
     assert both_empty["f1"] == 1.0
+    assert both_empty["jaccard"] == 1.0
+    assert both_empty["buffered_precision"] == 1.0
+    assert both_empty["buffered_recall"] == 1.0
     assert both_empty["buffered_f1"] == 1.0
+    assert both_empty["candidate_in_truth_buffer_count"] == 0
+    assert both_empty["truth_in_candidate_buffer_count"] == 0
 
     missing_candidate = buffered_surface_overlap(empty, truth, radius=1.0)
     assert missing_candidate["precision"] == 1.0
     assert missing_candidate["recall"] == 0.0
+    assert missing_candidate["f1"] == 0.0
+    assert missing_candidate["jaccard"] == 0.0
     assert missing_candidate["buffered_precision"] == 1.0
     assert missing_candidate["buffered_recall"] == 0.0
+    assert missing_candidate["buffered_f1"] == 0.0
+    assert missing_candidate["candidate_in_truth_buffer_count"] == 0
+    assert missing_candidate["truth_in_candidate_buffer_count"] == 0
 
     false_positive = buffered_surface_overlap(truth, empty, radius=1.0)
     assert false_positive["precision"] == 0.0
     assert false_positive["recall"] == 1.0
+    assert false_positive["f1"] == 0.0
+    assert false_positive["jaccard"] == 0.0
     assert false_positive["buffered_precision"] == 0.0
     assert false_positive["buffered_recall"] == 1.0
+    assert false_positive["buffered_f1"] == 0.0
+    assert false_positive["candidate_in_truth_buffer_count"] == 0
+    assert false_positive["truth_in_candidate_buffer_count"] == 0
+
+
+def test_buffered_surface_overlap_radius_zero_matches_exact_overlap() -> None:
+    candidate = np.array([True, True, False, False])
+    truth = np.array([False, True, True, False])
+
+    overlap = buffered_surface_overlap(candidate, truth, radius=0.0)
+
+    assert overlap["intersection_count"] == 1
+    assert overlap["candidate_in_truth_buffer_count"] == 1
+    assert overlap["truth_in_candidate_buffer_count"] == 1
+    assert overlap["buffered_precision"] == overlap["precision"] == 0.5
+    assert overlap["buffered_recall"] == overlap["recall"] == 0.5
+    assert overlap["buffered_f1"] == overlap["f1"] == 0.5
 
 
 @pytest.mark.parametrize(
