@@ -30,16 +30,22 @@ from pyosv.evaluation.synthetic_quality.stage_keys import (
     THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD,
     THIN_HYBRID_V2_EDGE_MARGIN,
     THIN_PLATEAU_TOLERANCE,
+    build_final_thinning_stage_key,
     build_primary_skinning_stage_key,
     build_seed_stage_key,
+    build_thinning_scalar_evidence_key,
     build_thinning_stage_key,
+    build_voting_scalar_evidence_key,
     build_voting_stage_key,
     resolve_stage_target_source,
 )
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
+    DownstreamScalarEvidence,
+    DownstreamScalarEvidenceCache,
     PipelineStageCache,
     PrimarySkinningStageResult,
+    SCALAR_EVIDENCE_CONTRACT_VERSION,
     SeedStageResult,
     ThinningStageResult,
     VotingStageResult,
@@ -79,6 +85,7 @@ NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
 # Case-local cache DAG (variant-specific work remains outside cached nodes):
 # attributes -> seeds -> voting(fv/vp/vt) -> base thinning(fvt)
 #   -> post-thinning -> primary skinning/min-size -> fallback -> metrics -> artifacts.
+# Scalar evidence is cached separately at voting and final post-thinning semantic keys.
 # Primary snapshots are cloned before diagnostics and fallback so mutable skins,
 # cell links, and diagnostics never cross a variant boundary.
 
@@ -103,6 +110,109 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
         "mean": mean,
         "nonzero_fraction": quality_metrics.array_nonzero_fraction(values),
     }
+
+
+def _build_downstream_scalar_evidence(
+    values: np.ndarray,
+    *,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+    buffer_radius: float,
+) -> DownstreamScalarEvidence:
+    top = top_truth_count_mask(values, truth_surface_mask)
+    positive_top = top_positive_truth_count_mask(values, truth_surface_mask)
+
+    def quality(candidate_mask: np.ndarray) -> dict[str, Any]:
+        return {
+            "buffered_overlap_radius2": buffered_surface_overlap(
+                candidate_mask,
+                truth_fault_mask,
+                radius=buffer_radius,
+            ),
+            "surface_distance": surface_distance_metrics(
+                candidate_mask,
+                truth_surface_mask,
+            ),
+            "orientation_error": masked_orientation_error(
+                vp,
+                vt,
+                truth_strike,
+                truth_dip,
+                candidate_mask,
+            ),
+        }
+
+    return DownstreamScalarEvidence(
+        array_summary=_array_summary(values),
+        top_truth_count=quality(top),
+        positive_top_truth_count=quality(positive_top),
+        edge_top_truth_count=edge_false_positive_ratio(
+            top,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
+        edge_positive_top_truth_count=edge_false_positive_ratio(
+            positive_top,
+            truth_surface_mask,
+            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            truth_buffer_radius=buffer_radius,
+        ),
+    )
+
+
+def build_voting_scalar_evidence(
+    fv: np.ndarray,
+    *,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+    buffer_radius: float,
+) -> DownstreamScalarEvidence:
+    """Build the canonical scalar report fragments for ``fv``."""
+
+    return _build_downstream_scalar_evidence(
+        fv,
+        vp=vp,
+        vt=vt,
+        truth_fault_mask=truth_fault_mask,
+        truth_surface_mask=truth_surface_mask,
+        truth_strike=truth_strike,
+        truth_dip=truth_dip,
+        buffer_radius=buffer_radius,
+    )
+
+
+def build_thinning_scalar_evidence(
+    fvt: np.ndarray,
+    *,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    truth_fault_mask: np.ndarray,
+    truth_surface_mask: np.ndarray,
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+    buffer_radius: float,
+) -> DownstreamScalarEvidence:
+    """Build the canonical scalar report fragments for final ``fvt``."""
+
+    return _build_downstream_scalar_evidence(
+        fvt,
+        vp=vp,
+        vt=vt,
+        truth_fault_mask=truth_fault_mask,
+        truth_surface_mask=truth_surface_mask,
+        truth_strike=truth_strike,
+        truth_dip=truth_dip,
+        buffer_radius=buffer_radius,
+    )
 
 
 def _skin_cell_json(cell: Any) -> dict[str, float | int]:
@@ -171,11 +281,14 @@ def run_voting_from_attributes(
         ..., dict[str, float | None]
     ] = fvt_recenter_target_distance_diagnostics,
     stage_cache: PipelineStageCache | None = None,
+    scalar_evidence_cache: DownstreamScalarEvidenceCache | None = None,
     attribute_stage_key: AttributeStageKey | None = None,
 ) -> PipelineEvaluation:
     OrientationField3D(ft=ft, pt=pt, tt=tt)
     if stage_cache is not None:
         stage_cache.bind_case(case)
+    if scalar_evidence_cache is not None:
+        scalar_evidence_cache.bind_case(case)
     voter = OptimalSurfaceVoter(
         ru=voting_config.ru,
         rv=voting_config.rv,
@@ -203,7 +316,7 @@ def run_voting_from_attributes(
         voter.set_surface_orientation_smoothing(voting_patch.orientation_smoothing)
     if voting_patch.final_normalization_smoothing is not None:
         voter.set_final_normalization_smoothing(voting_patch.final_normalization_smoothing)
-    cache_enabled = stage_cache is not None and attribute_stage_key is not None
+    semantic_keys_safe = attribute_stage_key is not None
     if (
         variant_spec.seed_policy == "boundary_seed_retention_v1"
         and fvt_recenter_target is not None
@@ -212,12 +325,15 @@ def run_voting_from_attributes(
         # A caller-provided target needs its own semantic token. The report
         # runners use the attribute likelihood itself; unknown combinations
         # conservatively bypass both dependent stages.
-        cache_enabled = False
-    primary_skinning_cache_enabled = cache_enabled and not (
+        semantic_keys_safe = False
+    cache_enabled = stage_cache is not None and semantic_keys_safe
+    scalar_cache_enabled = scalar_evidence_cache is not None and semantic_keys_safe
+    final_thinning_key_safe = semantic_keys_safe and not (
         variant_spec.post_thinning_policy != "none"
         and fvt_recenter_target is not None
         and fvt_recenter_target is not ft
     )
+    primary_skinning_cache_enabled = cache_enabled and final_thinning_key_safe
     seed_key = build_seed_stage_key(
         attribute_key=attribute_stage_key,
         voting_config=voting_config,
@@ -401,35 +517,92 @@ def run_voting_from_attributes(
     )
     truth_surface_mask = np.abs(case.truth_distance) <= np.float32(truth_surface_half_width)
     truth_fault_mask = np.asarray(case.truth_fault_mask, dtype=bool)
-    fv_top_truth_count = top_truth_count_mask(fv, truth_surface_mask)
-    fvt_top_truth_count = top_truth_count_mask(fvt, truth_surface_mask)
-    fv_positive_top_truth_count = top_positive_truth_count_mask(fv, truth_surface_mask)
-    fvt_positive_top_truth_count = top_positive_truth_count_mask(fvt, truth_surface_mask)
+    voting_evidence_key = build_voting_scalar_evidence_key(
+        case_id=case.case_id,
+        case_token=id(case),
+        shape=case.shape,
+        voting_key=voting_key,
+        truth_metric_config=truth_metric_config,
+        contract_version=(
+            scalar_evidence_cache.contract_version
+            if scalar_evidence_cache is not None
+            else SCALAR_EVIDENCE_CONTRACT_VERSION
+        ),
+    )
+    voting_evidence = (
+        scalar_evidence_cache.get_voting(voting_evidence_key)
+        if scalar_cache_enabled
+        and scalar_evidence_cache is not None
+        and voting_evidence_key is not None
+        else None
+    )
+    if voting_evidence is None:
+        voting_evidence = build_voting_scalar_evidence(
+            fv,
+            vp=vp,
+            vt=vt,
+            truth_fault_mask=truth_fault_mask,
+            truth_surface_mask=truth_surface_mask,
+            truth_strike=case.truth_strike,
+            truth_dip=case.truth_dip,
+            buffer_radius=buffer_radius,
+        )
+        if (
+            scalar_cache_enabled
+            and scalar_evidence_cache is not None
+            and voting_evidence_key is not None
+        ):
+            scalar_evidence_cache.put_voting(voting_evidence_key, voting_evidence)
+
+    final_thinning_key = build_final_thinning_stage_key(
+        thinning_key=thinning_key,
+        variant_spec=variant_spec,
+        target_source=fvt_recenter_target_source,
+    )
+    thinning_evidence_key = build_thinning_scalar_evidence_key(
+        case_id=case.case_id,
+        case_token=id(case),
+        shape=case.shape,
+        final_thinning_key=final_thinning_key,
+        truth_metric_config=truth_metric_config,
+        contract_version=(
+            scalar_evidence_cache.contract_version
+            if scalar_evidence_cache is not None
+            else SCALAR_EVIDENCE_CONTRACT_VERSION
+        ),
+    )
+    thinning_evidence = (
+        scalar_evidence_cache.get_thinning(thinning_evidence_key)
+        if scalar_cache_enabled
+        and final_thinning_key_safe
+        and scalar_evidence_cache is not None
+        and thinning_evidence_key is not None
+        else None
+    )
+    if thinning_evidence is None:
+        thinning_evidence = build_thinning_scalar_evidence(
+            fvt,
+            vp=vp,
+            vt=vt,
+            truth_fault_mask=truth_fault_mask,
+            truth_surface_mask=truth_surface_mask,
+            truth_strike=case.truth_strike,
+            truth_dip=case.truth_dip,
+            buffer_radius=buffer_radius,
+        )
+        if (
+            scalar_cache_enabled
+            and final_thinning_key_safe
+            and scalar_evidence_cache is not None
+            and thinning_evidence_key is not None
+        ):
+            scalar_evidence_cache.put_thinning(thinning_evidence_key, thinning_evidence)
+
     edge_false_positive_metrics = {
-        "fv_top_truth_count": edge_false_positive_ratio(
-            fv_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fvt_top_truth_count": edge_false_positive_ratio(
-            fvt_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fv_positive_top_truth_count": edge_false_positive_ratio(
-            fv_positive_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
-        "fvt_positive_top_truth_count": edge_false_positive_ratio(
-            fvt_positive_top_truth_count,
-            truth_surface_mask,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            truth_buffer_radius=buffer_radius,
-        ),
+        "fv_top_truth_count": voting_evidence.edge_top_truth_count,
+        "fvt_top_truth_count": thinning_evidence.edge_top_truth_count,
+        "fv_positive_top_truth_count": voting_evidence.edge_positive_top_truth_count,
+        "fvt_positive_top_truth_count": thinning_evidence.edge_positive_top_truth_count,
     }
     report = {
         "config": {
@@ -437,8 +610,8 @@ def run_voting_from_attributes(
         },
         "skinning": {"enabled": skinning_config.enabled},
         "pyosv": {
-            "fv": _array_summary(fv),
-            "fvt": _array_summary(fvt),
+            "fv": voting_evidence.array_summary,
+            "fvt": thinning_evidence.array_summary,
             "voting": {
                 "surface_voting_boundary_policy": voter.surface_voting_boundary_policy,
                 "surface_support_min_fraction": float(surface_support_min_fraction),
@@ -447,78 +620,10 @@ def run_voting_from_attributes(
             },
         },
         "quality": {
-            "fv_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fv_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fv_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fv_top_truth_count,
-                ),
-            },
-            "fvt_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fvt_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fvt_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fvt_top_truth_count,
-                ),
-            },
-            "fv_positive_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fv_positive_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fv_positive_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fv_positive_top_truth_count,
-                ),
-            },
-            "fvt_positive_top_truth_count": {
-                "buffered_overlap_radius2": buffered_surface_overlap(
-                    fvt_positive_top_truth_count,
-                    truth_fault_mask,
-                    radius=buffer_radius,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    fvt_positive_top_truth_count,
-                    truth_surface_mask,
-                ),
-                "orientation_error": masked_orientation_error(
-                    vp,
-                    vt,
-                    case.truth_strike,
-                    case.truth_dip,
-                    fvt_positive_top_truth_count,
-                ),
-            },
+            "fv_top_truth_count": voting_evidence.top_truth_count,
+            "fvt_top_truth_count": thinning_evidence.top_truth_count,
+            "fv_positive_top_truth_count": voting_evidence.positive_top_truth_count,
+            "fvt_positive_top_truth_count": thinning_evidence.positive_top_truth_count,
             "edge_false_positive": edge_false_positive_metrics,
         },
     }
@@ -591,7 +696,11 @@ def run_voting_from_attributes(
             skin_diagnostics,
             skins,
             shape=case.shape,
-            fvt_positive_candidate_count=int(np.count_nonzero(fvt_positive_top_truth_count)),
+            fvt_positive_candidate_count=int(
+                thinning_evidence.positive_top_truth_count["buffered_overlap_radius2"][
+                    "candidate_count"
+                ]
+            ),
             small_skin_size=skinning_config.small_skin_size,
         )
         apply_boundary_skinner_fallback(

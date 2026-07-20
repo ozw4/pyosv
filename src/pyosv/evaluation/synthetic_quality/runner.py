@@ -47,6 +47,7 @@ from pyosv.evaluation.synthetic_quality.stage_keys import (
 )
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
+    DownstreamScalarEvidenceCache,
     PipelineStageCache,
 )
 from pyosv.evaluation.synthetic_quality.variants import (
@@ -363,6 +364,7 @@ def run_oracle_pipeline(
     ),
     prepared_oracle: OrientationField3D | None = None,
     stage_cache: PipelineStageCache | None = None,
+    scalar_evidence_cache: DownstreamScalarEvidenceCache | None = None,
 ) -> PipelineEvaluation:
     oracle = (
         OrientationField3D(ft=case.ft_oracle, pt=case.pt_oracle, tt=case.tt_oracle)
@@ -384,6 +386,7 @@ def run_oracle_pipeline(
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         stage_cache=stage_cache,
+        scalar_evidence_cache=scalar_evidence_cache,
         attribute_stage_key=_oracle_attribute_stage_key(case, oracle),
     )
 
@@ -413,6 +416,7 @@ def run_scanner_pipeline(
     prepared_scanner: PreparedScannerInput | None = None,
     prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None = None,
     stage_cache: PipelineStageCache | None = None,
+    scalar_evidence_cache: DownstreamScalarEvidenceCache | None = None,
 ) -> PipelineEvaluation:
     if prepared_scanner_scalar_evidence is not None:
         _validate_prepared_scanner_scalar_evidence(
@@ -454,6 +458,7 @@ def run_scanner_pipeline(
         thinning_diagnostic_runner=thinning_diagnostic_runner,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         stage_cache=stage_cache,
+        scalar_evidence_cache=scalar_evidence_cache,
         attribute_stage_key=attribute_stage_key,
     )
     report = dict(evaluation.report_payload)
@@ -520,6 +525,7 @@ def run_scanner_pipeline(
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
             prepared_scanner=prepared_scanner,
             stage_cache=stage_cache,
+            scalar_evidence_cache=scalar_evidence_cache,
         )
     volumes.update(scanner_volumes)
     return PipelineEvaluation(
@@ -557,6 +563,7 @@ def run_case_variant(
     prepared_inputs: PreparedCaseInputs | None = None,
     prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None = None,
     stage_cache: PipelineStageCache | None = None,
+    scalar_evidence_cache: DownstreamScalarEvidenceCache | None = None,
 ) -> PipelineEvaluation:
     variant_spec = get_variant_spec(variant)
     valid_input_mode = validate_input_mode(input_mode)
@@ -589,6 +596,7 @@ def run_case_variant(
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
             prepared_oracle=prepared_inputs.oracle,
             stage_cache=stage_cache,
+            scalar_evidence_cache=scalar_evidence_cache,
         )
 
     outputs: dict[str, PipelineEvaluation] = {}
@@ -604,6 +612,7 @@ def run_case_variant(
             recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
             prepared_oracle=prepared_inputs.oracle,
             stage_cache=stage_cache,
+            scalar_evidence_cache=scalar_evidence_cache,
         )
     outputs["scanner"] = run_scanner_pipeline(
         case,
@@ -624,6 +633,7 @@ def run_case_variant(
         prepared_scanner=prepared_inputs.scanner,
         prepared_scanner_scalar_evidence=prepared_scanner_scalar_evidence,
         stage_cache=stage_cache,
+        scalar_evidence_cache=scalar_evidence_cache,
     )
     active = "scanner" if valid_input_mode == "scanner" else "oracle"
     active_output = outputs[active]
@@ -815,6 +825,7 @@ def _scanner_backend_matrix_report(
     recenter_distance_diagnostic_runner: Callable[..., Any],
     prepared_scanner: PreparedScannerInput | None,
     stage_cache: PipelineStageCache | None,
+    scalar_evidence_cache: DownstreamScalarEvidenceCache | None,
 ) -> dict[str, Any]:
     reports = {}
     backends = SCANNER_BACKEND_MATRIX_BACKENDS
@@ -840,6 +851,7 @@ def _scanner_backend_matrix_report(
                     recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
                     prepared_scanner=prepared_scanner,
                     stage_cache=stage_cache,
+                    scalar_evidence_cache=scalar_evidence_cache,
                 ).report_payload
             )
     return {

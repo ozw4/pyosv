@@ -23,7 +23,11 @@ from ..synthetic_quality.runner import (
     prepare_case_inputs,
     run_case_variant,
 )
-from ..synthetic_quality.stage_cache import PipelineStageCache, PipelineStageCacheStats
+from ..synthetic_quality.stage_cache import (
+    DownstreamScalarEvidenceCache,
+    PipelineStageCache,
+    PipelineStageCacheStats,
+)
 from .models import (
     END_TO_END_SCOPE,
     ORACLE_WORKFLOW_ISOLATION_SCOPE,
@@ -112,6 +116,7 @@ def run_synthetic_trial(
     truth_evidence = _build_trial_truth_evidence(case, trial, plan.truth_metric_config)
 
     stage_cache = PipelineStageCache(case)
+    scalar_evidence_cache = DownstreamScalarEvidenceCache(case)
     evaluations: dict[str, SyntheticCellEvaluation] = {}
     try:
         prepared_inputs = prepare_case_inputs(
@@ -143,6 +148,7 @@ def run_synthetic_trial(
                     cell,
                     prepared_inputs=prepared_inputs,
                     stage_cache=stage_cache,
+                    scalar_evidence_cache=scalar_evidence_cache,
                     prepared_scanner_scalar_evidence=(
                         scanner_evidence[cell.scanner_backend]
                         if cell.scanner_backend is not None
@@ -171,6 +177,7 @@ def run_synthetic_trial(
         )
     finally:
         stage_cache.clear()
+        scalar_evidence_cache.clear()
 
 
 def _evaluate_cell(
@@ -179,6 +186,7 @@ def _evaluate_cell(
     *,
     prepared_inputs: PreparedCaseInputs,
     stage_cache: PipelineStageCache,
+    scalar_evidence_cache: DownstreamScalarEvidenceCache,
     prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None,
 ) -> SyntheticCellEvaluation:
     if cell.scope == SCANNER_ONLY_SCOPE:
@@ -193,6 +201,7 @@ def _evaluate_cell(
         cell,
         prepared_inputs=prepared_inputs,
         stage_cache=stage_cache,
+        scalar_evidence_cache=scalar_evidence_cache,
         prepared_scanner_scalar_evidence=prepared_scanner_scalar_evidence,
     )
 
@@ -417,6 +426,7 @@ def _evaluate_downstream_cell(
     *,
     prepared_inputs: PreparedCaseInputs,
     stage_cache: PipelineStageCache,
+    scalar_evidence_cache: DownstreamScalarEvidenceCache,
     prepared_scanner_scalar_evidence: PreparedScannerScalarEvidence | None,
 ) -> SyntheticCellEvaluation:
     if cell.workflow_mode == "reference":
@@ -448,6 +458,7 @@ def _evaluate_downstream_cell(
         prepared_inputs=prepared_inputs,
         prepared_scanner_scalar_evidence=prepared_scanner_scalar_evidence,
         stage_cache=stage_cache,
+        scalar_evidence_cache=scalar_evidence_cache,
     )
     report_payload = evaluation.report_payload
     if cell.scope == END_TO_END_SCOPE:

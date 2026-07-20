@@ -25,8 +25,21 @@ from pyosv.evaluation.synthetic_quality.runner import (
     prepare_case_inputs,
     run_case_variant,
 )
-from pyosv.evaluation.synthetic_quality.stage_cache import AttributeStageKey, PipelineStageCache
-from pyosv.evaluation.synthetic_quality.stage_cache import PrimarySkinningStageResult
+from pyosv.evaluation.synthetic_quality.stage_cache import (
+    AttributeStageKey,
+    DownstreamScalarEvidence,
+    DownstreamScalarEvidenceCache,
+    PipelineStageCache,
+    PrimarySkinningStageResult,
+)
+from pyosv.evaluation.synthetic_quality.stage_keys import (
+    build_final_thinning_stage_key,
+    build_seed_stage_key,
+    build_thinning_scalar_evidence_key,
+    build_thinning_stage_key,
+    build_voting_scalar_evidence_key,
+    build_voting_stage_key,
+)
 from pyosv.evaluation.synthetic_quality.variants import get_variant_spec
 from pyosv.evaluation.reporting.artifacts import write_case_skins_json, write_case_volumes
 from pyosv.evaluation.reporting.csv_v1 import write_summary_csv
@@ -41,6 +54,7 @@ def _run_variant(
     variant: str,
     *,
     cache: PipelineStageCache | None,
+    scalar_cache: DownstreamScalarEvidenceCache | None = None,
     case: Synthetic3DCase | None = None,
     voting_config: SyntheticVotingConfig = SyntheticVotingConfig(),
     skinning_config: SyntheticSkinningConfig = SyntheticSkinningConfig(enabled=False),
@@ -59,7 +73,39 @@ def _run_variant(
         include_thinning_diagnostic=False,
         include_scanner_downstream_diagnostics=False,
         stage_cache=cache,
+        scalar_evidence_cache=scalar_cache,
     )
+
+
+def _scalar_stage_keys(case: Synthetic3DCase, *, target_source: str = "oracle_ft"):
+    voting_config = SyntheticVotingConfig()
+    variant_spec = get_variant_spec("current_default")
+    attribute = AttributeStageKey(case.case_id, case.shape, "oracle")
+    seed = build_seed_stage_key(
+        attribute_key=attribute,
+        voting_config=voting_config,
+        variant_spec=variant_spec,
+        target_source=target_source,
+    )
+    voting = build_voting_stage_key(
+        seed_key=seed,
+        voting_config=voting_config,
+        variant_spec=variant_spec,
+    )
+    thinning = build_thinning_stage_key(
+        voting_key=voting,
+        voting_config=voting_config,
+        variant_spec=variant_spec,
+    )
+    final_thinning = build_final_thinning_stage_key(
+        thinning_key=thinning,
+        variant_spec=variant_spec,
+        target_source=target_source,
+    )
+    assert voting is not None
+    assert thinning is not None
+    assert final_thinning is not None
+    return voting, thinning, final_thinning
 
 
 def test_identical_seed_and_voting_stages_are_called_once(
@@ -102,6 +148,119 @@ def test_identical_seed_and_voting_stages_are_called_once(
     assert calls == {"seed": 1, "voting": 1}
     assert cache.stats.seed_hits == 1
     assert cache.stats.voting_hits == 1
+
+
+def test_scalar_evidence_keys_include_every_invalidation_dimension() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    voting, thinning, final_thinning = _scalar_stage_keys(case)
+    truth_config = SyntheticTruthMetricConfig()
+    voting_kwargs = {
+        "case_id": case.case_id,
+        "case_token": id(case),
+        "shape": case.shape,
+        "voting_key": voting,
+        "truth_metric_config": truth_config,
+        "contract_version": 3,
+    }
+    voting_keys = {
+        build_voting_scalar_evidence_key(**voting_kwargs),
+        build_voting_scalar_evidence_key(**{**voting_kwargs, "case_id": "other_case"}),
+        build_voting_scalar_evidence_key(**{**voting_kwargs, "case_token": id(case) + 1}),
+        build_voting_scalar_evidence_key(**{**voting_kwargs, "shape": (11, 9, 9)}),
+        build_voting_scalar_evidence_key(
+            **{
+                **voting_kwargs,
+                "truth_metric_config": replace(truth_config, buffer_radius=3.0),
+            }
+        ),
+        build_voting_scalar_evidence_key(**{**voting_kwargs, "contract_version": 4}),
+    }
+    assert None not in voting_keys
+    assert len(voting_keys) == 6
+
+    recenter_spec = get_variant_spec("voter_thin_hybrid_v2_recenter_scanner_target")
+    recentered_scanner = build_final_thinning_stage_key(
+        thinning_key=thinning,
+        variant_spec=recenter_spec,
+        target_source="scanner_fet",
+    )
+    recentered_custom = build_final_thinning_stage_key(
+        thinning_key=thinning,
+        variant_spec=recenter_spec,
+        target_source="custom_target",
+    )
+    thinning_kwargs = {
+        "case_id": case.case_id,
+        "case_token": id(case),
+        "shape": case.shape,
+        "truth_metric_config": truth_config,
+        "contract_version": 3,
+    }
+    thinning_keys = {
+        build_thinning_scalar_evidence_key(
+            **thinning_kwargs,
+            final_thinning_key=final_thinning,
+        ),
+        build_thinning_scalar_evidence_key(
+            **thinning_kwargs,
+            final_thinning_key=recentered_scanner,
+        ),
+        build_thinning_scalar_evidence_key(
+            **thinning_kwargs,
+            final_thinning_key=recentered_custom,
+        ),
+    }
+    assert None not in thinning_keys
+    assert len(thinning_keys) == 3
+
+
+def test_downstream_scalar_evidence_is_scalar_only_and_recursively_immutable() -> None:
+    evidence = DownstreamScalarEvidence(
+        array_summary={"shape": [9, 9, 9], "mean": np.float32(0.25)},
+        top_truth_count={"overlap": {"value": 1.0}},
+        positive_top_truth_count={"distance": [0.0, 1.0]},
+        edge_top_truth_count={"ratio": 0.0},
+        edge_positive_top_truth_count={"ratio": 0.5},
+    )
+
+    assert json.loads(json.dumps(evidence.array_summary)) == {
+        "shape": [9, 9, 9],
+        "mean": 0.25,
+    }
+    with pytest.raises(TypeError, match="immutable"):
+        evidence.array_summary["mean"] = 1.0
+    with pytest.raises(TypeError, match="immutable"):
+        evidence.array_summary["shape"][0] = 1
+    with pytest.raises(TypeError, match="immutable"):
+        evidence.top_truth_count["overlap"]["value"] = 0.0
+    with pytest.raises(ValueError, match="scalar-only"):
+        DownstreamScalarEvidence(
+            array_summary={"array": np.zeros(1, dtype=np.float32)},
+            top_truth_count={},
+            positive_top_truth_count={},
+            edge_top_truth_count={},
+            edge_positive_top_truth_count={},
+        )
+
+
+def test_evidence_builder_exception_does_not_register_partial_cache_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = DownstreamScalarEvidenceCache(case)
+    monkeypatch.setattr(
+        pipeline,
+        "build_voting_scalar_evidence",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("evidence failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="evidence failed"):
+        _run_variant("current_default", cache=None, scalar_cache=cache, case=case)
+
+    assert cache.stats.voting_builds == 0
+    assert cache.stats.thinning_builds == 0
+    assert not cache._voting
+    assert not cache._thinning
 
 
 def test_replaced_prepared_oracle_bypasses_stage_cache(
@@ -463,6 +622,81 @@ def _assert_nested_equal(actual: object, expected: object) -> None:
             _assert_nested_equal(actual[key], expected[key])
         return
     assert actual == expected
+
+
+def test_scalar_cache_reuse_is_numerically_identical_to_legacy_execution() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    legacy = _run_variant("current_default", cache=None, case=case)
+    scalar_cache = DownstreamScalarEvidenceCache(case)
+
+    first = _run_variant(
+        "current_default",
+        cache=None,
+        scalar_cache=scalar_cache,
+        case=case,
+    )
+    reused = _run_variant(
+        "current_default",
+        cache=None,
+        scalar_cache=scalar_cache,
+        case=case,
+    )
+
+    assert scalar_cache.stats.voting_builds == scalar_cache.stats.thinning_builds == 1
+    assert scalar_cache.stats.voting_reuses == scalar_cache.stats.thinning_reuses == 1
+    for evaluation in (first, reused):
+        _assert_nested_equal(evaluation.report_payload, legacy.report_payload)
+        _assert_nested_equal(evaluation.artifacts.volumes, legacy.artifacts.volumes)
+
+
+def test_unavailable_semantic_key_bypasses_scalar_cache_and_matches_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    custom_oracle = OrientationField3D(
+        ft=case.ft_oracle.copy(),
+        pt=case.pt_oracle.copy(),
+        tt=case.tt_oracle.copy(),
+    )
+    prepared = PreparedCaseInputs(case, custom_oracle, None)
+    cache = DownstreamScalarEvidenceCache(case)
+    calls = {"voting": 0, "thinning": 0}
+    original_voting = pipeline.build_voting_scalar_evidence
+    original_thinning = pipeline.build_thinning_scalar_evidence
+
+    def counted_voting(*args, **kwargs):
+        calls["voting"] += 1
+        return original_voting(*args, **kwargs)
+
+    def counted_thinning(*args, **kwargs):
+        calls["thinning"] += 1
+        return original_thinning(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "build_voting_scalar_evidence", counted_voting)
+    monkeypatch.setattr(pipeline, "build_thinning_scalar_evidence", counted_thinning)
+    common = dict(
+        voting_config=SyntheticVotingConfig(),
+        scanner_config=SyntheticScannerConfig(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant="current_default",
+        input_mode="oracle",
+        scanner_backend_matrix=False,
+        include_thinning_diagnostic=False,
+        include_scanner_downstream_diagnostics=False,
+        prepared_inputs=prepared,
+    )
+
+    legacy = run_case_variant(case, scalar_evidence_cache=None, **common)
+    bypassed = run_case_variant(case, scalar_evidence_cache=cache, **common)
+
+    assert calls == {"voting": 2, "thinning": 2}
+    assert cache.stats.voting_builds == cache.stats.voting_reuses == 0
+    assert cache.stats.thinning_builds == cache.stats.thinning_reuses == 0
+    assert not cache._voting
+    assert not cache._thinning
+    _assert_nested_equal(bypassed.report_payload, legacy.report_payload)
+    _assert_nested_equal(bypassed.artifacts.volumes, legacy.artifacts.volumes)
 
 
 def _write_report_outputs(

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import InitVar, dataclass, field
+from numbers import Integral, Real
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -12,11 +14,79 @@ from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
 
 if TYPE_CHECKING:
+    from pyosv.evaluation.synthetic_quality.config import SyntheticTruthMetricConfig
     from pyosv.synthetic3d import Synthetic3DCase
 
 
 ScalarStageSetting = str | int | float | bool
 DiagnosticItems = tuple[tuple[str, Any], ...]
+SCALAR_EVIDENCE_CONTRACT_VERSION = 3
+
+
+class ImmutableScalarMapping(dict[str, Any]):
+    """JSON-serializable mapping that cannot be changed after construction."""
+
+    def _immutable(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("downstream scalar evidence is immutable")
+
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    __setitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+
+class ImmutableScalarList(list[Any]):
+    """JSON-serializable list that cannot be changed after construction."""
+
+    def _immutable(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("downstream scalar evidence is immutable")
+
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    __setitem__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+
+def freeze_scalar_evidence(value: Any, context: str) -> Any:
+    """Validate and recursively freeze one JSON-safe scalar payload."""
+
+    if isinstance(value, Mapping):
+        frozen = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{context} keys must be strings")
+            frozen[key] = freeze_scalar_evidence(item, f"{context}.{key}")
+        return ImmutableScalarMapping(frozen)
+    if isinstance(value, tuple):
+        return tuple(
+            freeze_scalar_evidence(item, f"{context}[{index}]") for index, item in enumerate(value)
+        )
+    if isinstance(value, list):
+        return ImmutableScalarList(
+            freeze_scalar_evidence(item, f"{context}[{index}]") for index, item in enumerate(value)
+        )
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        normalized = float(value)
+        if not np.isfinite(normalized):
+            raise ValueError(f"{context} must contain only finite scalars")
+        return normalized
+    raise ValueError(f"{context} must contain scalar-only report values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +184,66 @@ class ThinningStageKey:
     orientation_source: str
     tie_break_policy: str
     plateau_tolerance: float
+
+
+@dataclass(frozen=True, slots=True)
+class FinalThinningStageKey:
+    """Semantic identity of final ``fvt`` after variant post-processing."""
+
+    thinning: ThinningStageKey
+    post_thinning_policy: str
+    post_thinning_target_source: str | None
+    post_thinning_max_shift: int | None
+    post_thinning_edge_margin: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class VotingScalarEvidenceKey:
+    """Case, truth configuration, and voting identity for scalar evidence."""
+
+    case_id: str
+    case_token: int
+    shape: tuple[int, int, int]
+    voting: VotingStageKey
+    truth_metric_config: SyntheticTruthMetricConfig
+    contract_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class ThinningScalarEvidenceKey:
+    """Case, truth configuration, and final-thinning scalar identity."""
+
+    case_id: str
+    case_token: int
+    shape: tuple[int, int, int]
+    thinning: FinalThinningStageKey
+    truth_metric_config: SyntheticTruthMetricConfig
+    contract_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class DownstreamScalarEvidence:
+    """Immutable scalar-only report fragments for one array stage."""
+
+    array_summary: Mapping[str, Any]
+    top_truth_count: Mapping[str, Any]
+    positive_top_truth_count: Mapping[str, Any]
+    edge_top_truth_count: Mapping[str, Any]
+    edge_positive_top_truth_count: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        for name in (
+            "array_summary",
+            "top_truth_count",
+            "positive_top_truth_count",
+            "edge_top_truth_count",
+            "edge_positive_top_truth_count",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                freeze_scalar_evidence(getattr(self, name), name),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,6 +513,113 @@ class PipelineStageCache:
         self._voting.clear()
         self._thinning.clear()
         self._primary_skinning.clear()
+        self._case = None
+
+
+@dataclass(frozen=True, slots=True)
+class DownstreamScalarEvidenceCacheStats:
+    voting_builds: int
+    voting_reuses: int
+    thinning_builds: int
+    thinning_reuses: int
+
+
+@dataclass(slots=True)
+class DownstreamScalarEvidenceCache:
+    """Process-local scalar cache owned by one synthetic trial."""
+
+    case: InitVar[Synthetic3DCase | None] = None
+    contract_version: int = SCALAR_EVIDENCE_CONTRACT_VERSION
+    _case: Synthetic3DCase | None = field(default=None, init=False, repr=False)
+    _voting: dict[VotingScalarEvidenceKey, DownstreamScalarEvidence] = field(
+        default_factory=dict, init=False
+    )
+    _thinning: dict[ThinningScalarEvidenceKey, DownstreamScalarEvidence] = field(
+        default_factory=dict, init=False
+    )
+    voting_builds: int = field(default=0, init=False)
+    voting_reuses: int = field(default=0, init=False)
+    thinning_builds: int = field(default=0, init=False)
+    thinning_reuses: int = field(default=0, init=False)
+
+    def __post_init__(self, case: Synthetic3DCase | None) -> None:
+        if isinstance(self.contract_version, bool) or not isinstance(self.contract_version, int):
+            raise ValueError("scalar evidence contract_version must be an integer")
+        if self.contract_version < 1:
+            raise ValueError("scalar evidence contract_version must be positive")
+        self._case = case
+
+    def bind_case(self, case: Synthetic3DCase) -> None:
+        if self._case is None:
+            self._case = case
+        elif self._case is not case:
+            raise ValueError("downstream scalar evidence cache must not be reused across cases")
+
+    @property
+    def stats(self) -> DownstreamScalarEvidenceCacheStats:
+        return DownstreamScalarEvidenceCacheStats(
+            voting_builds=self.voting_builds,
+            voting_reuses=self.voting_reuses,
+            thinning_builds=self.thinning_builds,
+            thinning_reuses=self.thinning_reuses,
+        )
+
+    def _validate_key(
+        self,
+        key: VotingScalarEvidenceKey | ThinningScalarEvidenceKey,
+    ) -> None:
+        if self._case is None:
+            raise ValueError("downstream scalar evidence cache is not bound to a case")
+        if key.contract_version != self.contract_version:
+            raise ValueError("scalar evidence key uses a different contract version")
+        if (
+            key.case_token != id(self._case)
+            or key.case_id != self._case.case_id
+            or key.shape != self._case.shape
+        ):
+            raise ValueError("scalar evidence key does not match the bound case")
+
+    def get_voting(self, key: VotingScalarEvidenceKey) -> DownstreamScalarEvidence | None:
+        if not isinstance(key, VotingScalarEvidenceKey):
+            raise ValueError("voting scalar evidence key has the wrong type")
+        self._validate_key(key)
+        result = self._voting.get(key)
+        if result is not None:
+            self.voting_reuses += 1
+        return result
+
+    def put_voting(self, key: VotingScalarEvidenceKey, result: DownstreamScalarEvidence) -> None:
+        if not isinstance(key, VotingScalarEvidenceKey):
+            raise ValueError("voting scalar evidence key has the wrong type")
+        self._validate_key(key)
+        if not isinstance(result, DownstreamScalarEvidence):
+            raise ValueError("voting scalar evidence has the wrong type")
+        self._voting[key] = result
+        self.voting_builds += 1
+
+    def get_thinning(self, key: ThinningScalarEvidenceKey) -> DownstreamScalarEvidence | None:
+        if not isinstance(key, ThinningScalarEvidenceKey):
+            raise ValueError("thinning scalar evidence key has the wrong type")
+        self._validate_key(key)
+        result = self._thinning.get(key)
+        if result is not None:
+            self.thinning_reuses += 1
+        return result
+
+    def put_thinning(
+        self, key: ThinningScalarEvidenceKey, result: DownstreamScalarEvidence
+    ) -> None:
+        if not isinstance(key, ThinningScalarEvidenceKey):
+            raise ValueError("thinning scalar evidence key has the wrong type")
+        self._validate_key(key)
+        if not isinstance(result, DownstreamScalarEvidence):
+            raise ValueError("thinning scalar evidence has the wrong type")
+        self._thinning[key] = result
+        self.thinning_builds += 1
+
+    def clear(self) -> None:
+        self._voting.clear()
+        self._thinning.clear()
         self._case = None
 
 

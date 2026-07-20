@@ -22,12 +22,14 @@ from pyosv.evaluation.synthetic_mode_comparison.validation import (
 from pyosv.evaluation.synthetic_quality import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
+    SyntheticVotingConfig,
 )
 from pyosv.evaluation.synthetic_quality import pipeline as quality_pipeline
 from pyosv.evaluation.synthetic_quality import runner as quality_runner
 from pyosv.evaluation.synthetic_quality import scanner as quality_scanner
 from pyosv.evaluation.synthetic_quality.models import PipelineArtifacts
 from pyosv.evaluation.synthetic_quality.runner import prepare_case_inputs, run_case_variant
+from pyosv.evaluation.synthetic_quality.stage_cache import DownstreamScalarEvidenceCacheStats
 
 
 def _plan():
@@ -48,6 +50,20 @@ def _prepared_scalar_evidence(plan, case, prepared, backend="reference-like"):
     )
 
 
+def _assert_type_sensitive_equal(actual, expected) -> None:
+    assert type(actual) is type(expected)
+    if isinstance(expected, dict):
+        assert tuple(actual) == tuple(expected)
+        for key in expected:
+            _assert_type_sensitive_equal(actual[key], expected[key])
+    elif isinstance(expected, (list, tuple)):
+        assert len(actual) == len(expected)
+        for actual_item, expected_item in zip(actual, expected):
+            _assert_type_sensitive_equal(actual_item, expected_item)
+    else:
+        assert actual == expected
+
+
 def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> None:
     plan = _plan()
 
@@ -60,6 +76,151 @@ def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> 
     assert result.stage_cache_stats.seed_hits == 3
     assert result.stage_cache_stats.voting_misses == 3
     assert result.stage_cache_stats.voting_hits == 3
+
+
+def test_trial_scalar_evidence_counts_follow_unique_semantic_keys(monkeypatch) -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            shape=(9, 9, 9),
+            skinning_config=SyntheticSkinningConfig(enabled=False),
+        )
+    )
+    caches = []
+    metric_calls = {
+        name: 0
+        for name in (
+            "top_truth",
+            "top_positive_truth",
+            "overlap",
+            "distance",
+            "orientation",
+            "edge",
+        )
+    }
+    originals = {
+        "top_truth": quality_pipeline.top_truth_count_mask,
+        "top_positive_truth": quality_pipeline.top_positive_truth_count_mask,
+        "overlap": quality_pipeline.buffered_surface_overlap,
+        "distance": quality_pipeline.surface_distance_metrics,
+        "orientation": quality_pipeline.masked_orientation_error,
+        "edge": quality_pipeline.edge_false_positive_ratio,
+    }
+
+    class TrackingCache(comparison_runner.DownstreamScalarEvidenceCache):
+        def __post_init__(self, case) -> None:
+            super().__post_init__(case)
+            caches.append(self)
+
+    def counted(name):
+        def operation(*args, **kwargs):
+            metric_calls[name] += 1
+            return originals[name](*args, **kwargs)
+
+        return operation
+
+    monkeypatch.setattr(comparison_runner, "DownstreamScalarEvidenceCache", TrackingCache)
+    for name, attribute in (
+        ("top_truth", "top_truth_count_mask"),
+        ("top_positive_truth", "top_positive_truth_count_mask"),
+        ("overlap", "buffered_surface_overlap"),
+        ("distance", "surface_distance_metrics"),
+        ("orientation", "masked_orientation_error"),
+        ("edge", "edge_false_positive_ratio"),
+    ):
+        monkeypatch.setattr(quality_pipeline, attribute, counted(name))
+
+    result = run_synthetic_trial(plan, plan.trials[0])
+
+    assert len(caches) == 1
+    assert caches[0].stats == DownstreamScalarEvidenceCacheStats(
+        voting_builds=3,
+        voting_reuses=3,
+        thinning_builds=6,
+        thinning_reuses=0,
+    )
+    assert metric_calls == {
+        "top_truth": 9,
+        "top_positive_truth": 9,
+        "overlap": 18,
+        "distance": 18,
+        "orientation": 18,
+        "edge": 18,
+    }
+    assert caches[0]._case is None
+    assert not caches[0]._voting
+    assert not caches[0]._thinning
+
+    cells = result.report_payload
+    for left, right in (
+        ("ORACLE-REF", "ORACLE-QUAL"),
+        ("RL-REF", "RL-QUAL"),
+        ("Q-REF", "Q-QUAL"),
+    ):
+        _assert_type_sensitive_equal(cells[left]["pyosv"]["fv"], cells[right]["pyosv"]["fv"])
+        for name in ("fv_top_truth_count", "fv_positive_top_truth_count"):
+            _assert_type_sensitive_equal(
+                cells[left]["quality"][name],
+                cells[right]["quality"][name],
+            )
+
+
+def test_matching_workflow_thinning_config_reuses_scalar_evidence(monkeypatch) -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            shape=(9, 9, 9),
+            voting_config=SyntheticVotingConfig(voter_thin_mode="reference"),
+            skinning_config=SyntheticSkinningConfig(enabled=False),
+        )
+    )
+    caches = []
+
+    class TrackingCache(comparison_runner.DownstreamScalarEvidenceCache):
+        def __post_init__(self, case) -> None:
+            super().__post_init__(case)
+            caches.append(self)
+
+    monkeypatch.setattr(comparison_runner, "DownstreamScalarEvidenceCache", TrackingCache)
+
+    result = run_synthetic_trial(plan, plan.trials[0])
+
+    assert caches[0].stats == DownstreamScalarEvidenceCacheStats(
+        voting_builds=3,
+        voting_reuses=3,
+        thinning_builds=3,
+        thinning_reuses=3,
+    )
+    for left, right in (
+        ("ORACLE-REF", "ORACLE-QUAL"),
+        ("RL-REF", "RL-QUAL"),
+        ("Q-REF", "Q-QUAL"),
+    ):
+        _assert_type_sensitive_equal(
+            result.report_payload[left]["pyosv"]["fvt"],
+            result.report_payload[right]["pyosv"]["fvt"],
+        )
+
+
+def test_without_oracle_isolation_voting_evidence_uses_two_attribute_keys(monkeypatch) -> None:
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            shape=(9, 9, 9),
+            include_oracle_workflow_isolation=False,
+            skinning_config=SyntheticSkinningConfig(enabled=False),
+        )
+    )
+    caches = []
+
+    class TrackingCache(comparison_runner.DownstreamScalarEvidenceCache):
+        def __post_init__(self, case) -> None:
+            super().__post_init__(case)
+            caches.append(self)
+
+    monkeypatch.setattr(comparison_runner, "DownstreamScalarEvidenceCache", TrackingCache)
+
+    run_synthetic_trial(plan, plan.trials[0])
+
+    assert caches[0].stats.voting_builds == 2
+    assert caches[0].stats.voting_reuses == 2
 
 
 def test_trial_records_one_immutable_truth_report_before_scanner_input(monkeypatch) -> None:
@@ -676,29 +837,42 @@ def test_trial_shape_mismatch_fails_before_scanner_preparation(monkeypatch) -> N
     assert not prepared
 
 
-def test_cell_failure_clears_case_local_cache(monkeypatch) -> None:
+def test_scalar_evidence_failure_clears_case_local_caches(monkeypatch) -> None:
     plan = _plan()
-    caches = []
+    stage_caches = []
+    scalar_caches = []
 
-    class TrackingCache(comparison_runner.PipelineStageCache):
+    class TrackingStageCache(comparison_runner.PipelineStageCache):
         def __post_init__(self, case) -> None:
             super().__post_init__(case)
-            caches.append(self)
+            stage_caches.append(self)
 
-    monkeypatch.setattr(comparison_runner, "PipelineStageCache", TrackingCache)
+    class TrackingScalarCache(comparison_runner.DownstreamScalarEvidenceCache):
+        def __post_init__(self, case) -> None:
+            super().__post_init__(case)
+            scalar_caches.append(self)
+
+    monkeypatch.setattr(comparison_runner, "PipelineStageCache", TrackingStageCache)
+    monkeypatch.setattr(comparison_runner, "DownstreamScalarEvidenceCache", TrackingScalarCache)
     monkeypatch.setattr(
-        comparison_runner,
-        "run_case_variant",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("cell failed")),
+        quality_pipeline,
+        "build_thinning_scalar_evidence",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("evidence failed")),
     )
 
-    with pytest.raises(RuntimeError, match="cell failed"):
+    with pytest.raises(RuntimeError, match="evidence failed"):
         run_synthetic_trial(plan, plan.trials[0])
 
-    assert len(caches) == 1
-    assert caches[0]._case is None
-    assert not caches[0]._seeds
-    assert not caches[0]._voting
+    assert len(stage_caches) == len(scalar_caches) == 1
+    assert stage_caches[0]._case is None
+    assert not stage_caches[0]._seeds
+    assert not stage_caches[0]._voting
+    assert not stage_caches[0]._thinning
+    assert scalar_caches[0].stats.voting_builds == 1
+    assert scalar_caches[0].stats.thinning_builds == 0
+    assert scalar_caches[0]._case is None
+    assert not scalar_caches[0]._voting
+    assert not scalar_caches[0]._thinning
 
 
 def test_trial_and_cell_evaluations_are_frozen() -> None:

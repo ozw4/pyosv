@@ -16,12 +16,21 @@ from pyosv.voting3d import (
 )
 from pyosv.experimental.boundary_thinning import FVT_RECENTER_MAX_SHIFT
 
-from .config import SyntheticScannerConfig, SyntheticSkinningConfig, SyntheticVotingConfig
+from .config import (
+    SyntheticScannerConfig,
+    SyntheticSkinningConfig,
+    SyntheticTruthMetricConfig,
+    SyntheticVotingConfig,
+)
 from .stage_cache import (
     AttributeStageKey,
+    FinalThinningStageKey,
     PrimarySkinningStageKey,
+    SCALAR_EVIDENCE_CONTRACT_VERSION,
     SeedStageKey,
+    ThinningScalarEvidenceKey,
     ThinningStageKey,
+    VotingScalarEvidenceKey,
     VotingStageKey,
 )
 from .variants import VariantSpec, effective_thin_mode
@@ -191,6 +200,82 @@ def build_thinning_stage_key(
             "attribute_ft" if thin_mode in {"hybrid_v2", "normal_plateau"} else "voting_fv"
         ),
         plateau_tolerance=THIN_PLATEAU_TOLERANCE,
+    )
+
+
+def build_final_thinning_stage_key(
+    *,
+    thinning_key: ThinningStageKey | None,
+    variant_spec: VariantSpec,
+    target_source: str | None,
+) -> FinalThinningStageKey | None:
+    """Build the identity of final ``fvt`` including post-thinning semantics."""
+
+    if thinning_key is None:
+        return None
+    post_thinning_target_source = None
+    if variant_spec.post_thinning_policy != "none":
+        post_thinning_target_source = resolve_stage_target_source(target_source)
+    return FinalThinningStageKey(
+        thinning=thinning_key,
+        post_thinning_policy=variant_spec.post_thinning_policy,
+        post_thinning_target_source=post_thinning_target_source,
+        post_thinning_max_shift=(
+            FVT_RECENTER_MAX_SHIFT
+            if variant_spec.post_thinning_policy == "recenter_scanner_target"
+            else None
+        ),
+        post_thinning_edge_margin=(
+            quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
+            if variant_spec.post_thinning_policy != "none"
+            else None
+        ),
+    )
+
+
+def build_voting_scalar_evidence_key(
+    *,
+    case_id: str,
+    case_token: int,
+    shape: tuple[int, int, int],
+    voting_key: VotingStageKey | None,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    contract_version: int = SCALAR_EVIDENCE_CONTRACT_VERSION,
+) -> VotingScalarEvidenceKey | None:
+    """Build the complete identity for reusable voting scalar evidence."""
+
+    if voting_key is None:
+        return None
+    return VotingScalarEvidenceKey(
+        case_id=case_id,
+        case_token=case_token,
+        shape=shape,
+        voting=voting_key,
+        truth_metric_config=truth_metric_config,
+        contract_version=contract_version,
+    )
+
+
+def build_thinning_scalar_evidence_key(
+    *,
+    case_id: str,
+    case_token: int,
+    shape: tuple[int, int, int],
+    final_thinning_key: FinalThinningStageKey | None,
+    truth_metric_config: SyntheticTruthMetricConfig,
+    contract_version: int = SCALAR_EVIDENCE_CONTRACT_VERSION,
+) -> ThinningScalarEvidenceKey | None:
+    """Build the complete identity for reusable final-thinning evidence."""
+
+    if final_thinning_key is None:
+        return None
+    return ThinningScalarEvidenceKey(
+        case_id=case_id,
+        case_token=case_token,
+        shape=shape,
+        thinning=final_thinning_key,
+        truth_metric_config=truth_metric_config,
+        contract_version=contract_version,
     )
 
 

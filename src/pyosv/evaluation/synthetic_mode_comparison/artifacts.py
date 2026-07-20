@@ -35,6 +35,7 @@ from ..synthetic_quality import (
     SyntheticVotingConfig,
 )
 from ..synthetic_quality.variants import effective_skinning_config, get_variant_spec
+from ..synthetic_quality.stage_cache import SCALAR_EVIDENCE_CONTRACT_VERSION
 from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
 from .contrasts import AggregateRow, ContrastRow
@@ -63,7 +64,6 @@ from .scalar_algebra import (
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 3
-SCALAR_EVIDENCE_CONTRACT_VERSION = 3
 RUNTIME_CONTRACT_VERSION = 1
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
