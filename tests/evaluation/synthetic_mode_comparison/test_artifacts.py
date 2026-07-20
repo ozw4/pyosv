@@ -124,6 +124,25 @@ def _tamper_downstream_scalar_algebra(
             for quality in quality_payloads(label):
                 overlap = quality["fvt_top_truth_count"]["buffered_overlap_radius2"]
                 overlap["candidate_in_truth_buffer_count"] = overlap["candidate_count"] - 1
+    elif tamper == "skin_empty_candidate_buffered_hit":
+        for quality in quality_payloads("Q-REF"):
+            overlap = quality["skin"]["buffered_overlap_radius2"]
+            assert overlap["candidate_count"] == 0
+            assert overlap["truth_count"] > 0
+            overlap["truth_in_candidate_buffer_count"] = 1
+            overlap["buffered_recall"] = 1.0 / overlap["truth_count"]
+            overlap["buffered_f1"] = (
+                2.0
+                * overlap["buffered_precision"]
+                * overlap["buffered_recall"]
+                / (overlap["buffered_precision"] + overlap["buffered_recall"])
+            )
+        metric_updates.update(
+            {
+                ("Q-REF", "skin", "skin_cells", metric): overlap[metric]
+                for metric in ("buffered_recall", "buffered_f1")
+            }
+        )
     elif tamper == "skin_empty_distance_penalty":
         distance_metrics = (
             "candidate_to_truth_median",
@@ -941,6 +960,7 @@ def test_validator_rejects_rehashed_impossible_scalar_evidence(
     (
         ("fv_union_count", "union_count"),
         ("fvt_buffered_numerator", "buffered_precision"),
+        ("skin_empty_candidate_buffered_hit", "nonempty candidate mask"),
         ("skin_empty_distance_penalty", "candidate_to_truth_mean"),
         ("skin_orientation_zero", "strike_mean"),
         ("skin_edge_count_hierarchy", "edge_candidate_count"),

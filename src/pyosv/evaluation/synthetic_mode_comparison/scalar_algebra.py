@@ -394,6 +394,7 @@ def validate_overlap_algebra(report: Mapping[str, Any], context: str) -> None:
     union_count = _count(report, "union_count", context)
     candidate_buffer_count = _count(report, "candidate_in_truth_buffer_count", context)
     truth_buffer_count = _count(report, "truth_in_candidate_buffer_count", context)
+    radius = _number(report, "radius", context)
 
     if intersection_count > min(candidate_count, truth_count):
         raise ValueError(f"{context}.intersection_count exceeds a source count")
@@ -406,6 +407,16 @@ def validate_overlap_algebra(report: Mapping[str, Any], context: str) -> None:
     if not intersection_count <= truth_buffer_count <= truth_count:
         raise ValueError(
             f"{context}.truth_in_candidate_buffer_count is inconsistent with overlap counts"
+        )
+    if candidate_count == 0 and (candidate_buffer_count != 0 or truth_buffer_count != 0):
+        raise ValueError(f"{context} buffered overlap counts require a nonempty candidate mask")
+    if truth_count == 0 and (candidate_buffer_count != 0 or truth_buffer_count != 0):
+        raise ValueError(f"{context} buffered overlap counts require a nonempty truth mask")
+    if radius == 0.0 and (
+        candidate_buffer_count != intersection_count or truth_buffer_count != intersection_count
+    ):
+        raise ValueError(
+            f"{context} radius-zero buffered overlap counts must equal intersection_count"
         )
 
     precision = _precision(intersection_count, candidate_count)

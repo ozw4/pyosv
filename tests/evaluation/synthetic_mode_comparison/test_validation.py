@@ -21,9 +21,11 @@ from pyosv.evaluation.synthetic_mode_comparison.validation import (
 )
 from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
     validate_component_topology_algebra,
+    validate_overlap_algebra,
     validate_skin_topology_algebra,
 )
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig, SyntheticVotingConfig
+from pyosv.synthetic_metrics import buffered_surface_overlap
 
 
 @pytest.fixture(scope="module")
@@ -129,6 +131,56 @@ def _replace_nested(value, path, replacement) -> None:
     for name in path[:-1]:
         value = value[name]
     value[path[-1]] = replacement
+
+
+@pytest.mark.parametrize(
+    ("candidate", "truth", "numerator"),
+    (
+        ([False, False], [True, False], "truth_in_candidate_buffer_count"),
+        ([True, False], [False, False], "candidate_in_truth_buffer_count"),
+    ),
+)
+def test_overlap_algebra_rejects_buffered_hits_against_an_empty_mask(
+    candidate, truth, numerator
+) -> None:
+    report = buffered_surface_overlap(np.array(candidate), np.array(truth), radius=1.0)
+    report[numerator] = 1
+    report["buffered_precision"] = (
+        report["candidate_in_truth_buffer_count"] / report["candidate_count"]
+        if report["candidate_count"]
+        else 1.0
+    )
+    report["buffered_recall"] = (
+        report["truth_in_candidate_buffer_count"] / report["truth_count"]
+        if report["truth_count"]
+        else 1.0
+    )
+    left = report["buffered_precision"]
+    right = report["buffered_recall"]
+    report["buffered_f1"] = 2.0 * left * right / (left + right) if left + right else 0.0
+
+    with pytest.raises(ValueError, match="nonempty .* mask"):
+        validate_overlap_algebra(report, "overlap")
+
+
+def test_overlap_algebra_rejects_radius_zero_buffered_hits_beyond_intersection() -> None:
+    candidate = np.array([True, False])
+    truth = np.array([False, True])
+    report = buffered_surface_overlap(candidate, truth, radius=1.0)
+    report["radius"] = 0.0
+
+    with pytest.raises(ValueError, match="radius-zero"):
+        validate_overlap_algebra(report, "overlap")
+
+
+def test_overlap_algebra_accepts_positive_radius_buffered_hits_beyond_intersection() -> None:
+    candidate = np.array([True, False])
+    truth = np.array([False, True])
+    report = buffered_surface_overlap(candidate, truth, radius=1.0)
+
+    assert report["candidate_in_truth_buffer_count"] > report["intersection_count"]
+    assert report["truth_in_candidate_buffer_count"] > report["intersection_count"]
+    validate_overlap_algebra(report, "overlap")
 
 
 @pytest.mark.parametrize(
