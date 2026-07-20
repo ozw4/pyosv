@@ -25,6 +25,7 @@ from pyosv.evaluation.synthetic_mode_comparison.metrics import (
 )
 from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
     validate_quality_scalar_algebra,
+    validate_selection_cardinality,
 )
 from pyosv.evaluation.synthetic_quality import PipelineArtifacts, SyntheticSkinningConfig
 from pyosv.evaluation.synthetic_quality.quality_metrics import (
@@ -154,6 +155,46 @@ def test_quality_scalar_algebra_accepts_canonical_reports_and_rounding_noise() -
         shape=(3, 4, 5),
         context="quality.fixture",
     )
+
+
+@pytest.mark.parametrize(
+    ("selection", "candidate_count", "truth_count"),
+    (
+        ("top_truth_count", 4, 4),
+        ("positive_top_truth_count", 4, 4),
+        ("positive_top_truth_count", 3, 4),
+        ("top_truth_count", 0, 0),
+    ),
+)
+def test_selection_cardinality_accepts_canonical_counts(
+    selection: str, candidate_count: int, truth_count: int
+) -> None:
+    validate_selection_cardinality(
+        selection=selection,
+        candidate_count=candidate_count,
+        truth_count=truth_count,
+        context="quality.fixture",
+    )
+
+
+@pytest.mark.parametrize(
+    ("selection", "candidate_count", "truth_count"),
+    (
+        ("top_truth_count", 3, 4),
+        ("top_truth_count", 5, 4),
+        ("positive_top_truth_count", 5, 4),
+    ),
+)
+def test_selection_cardinality_rejects_impossible_counts(
+    selection: str, candidate_count: int, truth_count: int
+) -> None:
+    with pytest.raises(ValueError, match="surface_distance.truth_count"):
+        validate_selection_cardinality(
+            selection=selection,
+            candidate_count=candidate_count,
+            truth_count=truth_count,
+            context="quality.fixture",
+        )
 
 
 def test_overlap_monotonicity_accepts_rounding_noise_within_derived_tolerance() -> None:

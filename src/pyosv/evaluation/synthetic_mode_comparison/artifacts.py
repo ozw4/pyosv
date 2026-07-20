@@ -56,6 +56,7 @@ from .scalar_algebra import (
     validate_downstream_quality_scalar_algebra,
     validate_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
+    validate_selection_cardinality,
     validate_skin_topology_algebra,
 )
 from .validation import validate_mode_comparison_result
@@ -1316,6 +1317,7 @@ def _load_scanner_metric_evidence(
         if definition.metric == "candidate_count":
             loaded_entry["quality_report"] = _load_scanner_evidence_quality_report(
                 entry["quality_report"],
+                selection=definition.selection,
                 buffer_radius=buffer_radius,
                 shape=shape,
                 context=f"{entry_context}.quality_report",
@@ -1356,6 +1358,19 @@ def _validate_scanner_metric_evidence_consistency(
         raise ValueError(f"{context} must contain one quality report for each scanner stage")
     raw_quality = quality_reports[("scanner_raw", "top_truth_count")]
     thinned_quality = quality_reports[("scanner_thinned", "top_truth_count")]
+    for field in ("candidate_count", "truth_count"):
+        raw_report = (
+            raw_quality["buffered_overlap_radius2"]
+            if field == "candidate_count"
+            else raw_quality["surface_distance"]
+        )
+        thinned_report = (
+            thinned_quality["buffered_overlap_radius2"]
+            if field == "candidate_count"
+            else thinned_quality["surface_distance"]
+        )
+        if raw_report[field] != thinned_report[field]:
+            raise ValueError(f"{context} scanner raw and thinned {field} must match")
     for evidence_report, legacy_report, report_name in (
         (
             raw_quality["buffered_overlap_radius2"],
@@ -1432,6 +1447,7 @@ def _validate_scanner_metric_evidence_consistency(
 def _load_scanner_evidence_quality_report(
     value: Any,
     *,
+    selection: str,
     buffer_radius: float,
     shape: tuple[int, int, int],
     context: str,
@@ -1474,6 +1490,12 @@ def _load_scanner_evidence_quality_report(
         orientation=payload["orientation_error"],
         edge=edge,
         shape=shape,
+        context=context,
+    )
+    validate_selection_cardinality(
+        selection=selection,
+        candidate_count=payload["buffered_overlap_radius2"]["candidate_count"],
+        truth_count=payload["surface_distance"]["truth_count"],
         context=context,
     )
     return payload

@@ -61,10 +61,36 @@ def validate_quality_scalar_algebra(
     )
 
 
+def validate_selection_cardinality(
+    *,
+    selection: str,
+    candidate_count: Any,
+    truth_count: Any,
+    context: str,
+) -> None:
+    """Validate candidate cardinality against the generating truth-surface support."""
+
+    candidate = _nonnegative_integer(candidate_count, f"{context}.candidate_count")
+    truth = _nonnegative_integer(truth_count, f"{context}.truth_count")
+    if selection == "top_truth_count":
+        if candidate != truth:
+            raise ValueError(
+                f"{context} top_truth_count candidate_count must equal surface_distance.truth_count"
+            )
+    elif selection == "positive_top_truth_count":
+        if candidate > truth:
+            raise ValueError(
+                f"{context} positive_top_truth_count candidate_count must not exceed "
+                "surface_distance.truth_count"
+            )
+    else:
+        raise ValueError(f"{context}.selection has unsupported cardinality semantics")
+
+
 def validate_scanner_quality_scalar_algebra(
     report: Mapping[str, Any], shape: Sequence[int], context: str
 ) -> None:
-    """Validate raw and thinned scanner quality without mixing their count families."""
+    """Validate raw and thinned scanner quality top-truth cardinality."""
 
     truth_count = report["ft_top_truth_count"]
     orientations = report["orientation_error"]
@@ -75,9 +101,20 @@ def validate_scanner_quality_scalar_algebra(
         shape=shape,
         context=f"{context}.ft_top_truth_count",
     )
-    validate_orientation_algebra(
-        orientations["used_attributes_top_truth_count"],
-        f"{context}.orientation_error.used_attributes_top_truth_count",
+    validate_selection_cardinality(
+        selection="top_truth_count",
+        candidate_count=truth_count["buffered_overlap_radius2"]["candidate_count"],
+        truth_count=truth_count["surface_distance"]["truth_count"],
+        context=f"{context}.ft_top_truth_count",
+    )
+    thinned_context = f"{context}.orientation_error.used_attributes_top_truth_count"
+    thinned_orientation = orientations["used_attributes_top_truth_count"]
+    validate_orientation_algebra(thinned_orientation, thinned_context)
+    validate_selection_cardinality(
+        selection="top_truth_count",
+        candidate_count=thinned_orientation["count"],
+        truth_count=truth_count["surface_distance"]["truth_count"],
+        context=thinned_context,
     )
 
 
@@ -87,11 +124,11 @@ def validate_downstream_quality_scalar_algebra(
     """Validate every downstream selection in one quality report."""
 
     edges = report["edge_false_positive"]
-    for name in (
-        "fv_top_truth_count",
-        "fvt_top_truth_count",
-        "fv_positive_top_truth_count",
-        "fvt_positive_top_truth_count",
+    for name, selection in (
+        ("fv_top_truth_count", "top_truth_count"),
+        ("fvt_top_truth_count", "top_truth_count"),
+        ("fv_positive_top_truth_count", "positive_top_truth_count"),
+        ("fvt_positive_top_truth_count", "positive_top_truth_count"),
     ):
         stage = report[name]
         validate_quality_scalar_algebra(
@@ -100,6 +137,12 @@ def validate_downstream_quality_scalar_algebra(
             orientation=stage["orientation_error"],
             edge=edges[name],
             shape=shape,
+            context=f"{context}.{name}",
+        )
+        validate_selection_cardinality(
+            selection=selection,
+            candidate_count=stage["buffered_overlap_radius2"]["candidate_count"],
+            truth_count=stage["surface_distance"]["truth_count"],
             context=f"{context}.{name}",
         )
     skin = report["skin"]
@@ -582,6 +625,7 @@ __all__ = [
     "validate_overlap_algebra",
     "validate_quality_scalar_algebra",
     "validate_scanner_quality_scalar_algebra",
+    "validate_selection_cardinality",
     "validate_skin_topology_algebra",
     "validate_surface_distance_algebra",
 ]

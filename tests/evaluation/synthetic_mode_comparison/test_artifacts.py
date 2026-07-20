@@ -1131,7 +1131,7 @@ def test_writer_rejects_coordinated_scanner_thinned_metric_tampering(
     assert not list(tmp_path.glob(f".{output.name}.tmp-*"))
 
 
-def test_scanner_quality_loader_accepts_distinct_raw_and_thinned_counts() -> None:
+def test_scanner_quality_loader_rejects_distinct_raw_and_thinned_counts() -> None:
     config, result = _fixture()
     plan = artifacts.build_mode_comparison_plan(config)
     quality = result.as_dict()["cell_reports"][0]["cells"]["RL-SCAN"]["scanner_quality"]
@@ -1140,15 +1140,13 @@ def test_scanner_quality_loader_accepts_distinct_raw_and_thinned_counts() -> Non
         orientations["raw_scan_top_truth_count"]["count"] + 1
     )
 
-    assert (
+    with pytest.raises(ValueError, match="top_truth_count candidate_count"):
         artifacts._load_scanner_quality_report(
             quality,
             buffer_radius=plan.truth_metric_config.buffer_radius,
             shape=plan.shape,
             context="scanner_quality",
         )
-        == quality
-    )
 
 
 def test_validator_rejects_skin_orientation_candidate_count_mismatch(tmp_path: Path) -> None:
