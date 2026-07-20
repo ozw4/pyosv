@@ -11,6 +11,7 @@ from typing import Any, Protocol, TypeVar
 import numpy as np
 from pyosv.synthetic3d import Synthetic3DCase
 
+from ..reporting.models import freeze_report_value
 from ..synthetic_quality import quality_metrics
 from ..synthetic_quality.cases import EXTENDED_CASES
 from ..synthetic_quality.config import SyntheticScannerConfig, SyntheticTruthMetricConfig
@@ -72,7 +73,15 @@ class SyntheticTrialEvaluation:
     cells: tuple[SyntheticCellEvaluation, ...]
     report_payload: Mapping[str, Mapping[str, Any]]
     stage_cache_stats: PipelineStageCacheStats
+    truth_evidence: Mapping[str, int]
     truth_metric_config: SyntheticTruthMetricConfig = SyntheticTruthMetricConfig()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "truth_evidence",
+            freeze_report_value(_validate_trial_truth_evidence(self.truth_evidence)),
+        )
 
 
 def run_synthetic_trial(
@@ -100,7 +109,7 @@ def run_synthetic_trial(
         raise ValueError(
             f"case factory returned shape {case.shape}, expected trial shape {trial.shape}"
         )
-    _validate_truth_surface_support(case, trial, plan.truth_metric_config)
+    truth_evidence = _build_trial_truth_evidence(case, trial, plan.truth_metric_config)
 
     stage_cache = PipelineStageCache(case)
     evaluations: dict[str, SyntheticCellEvaluation] = {}
@@ -157,6 +166,7 @@ def run_synthetic_trial(
             cells=ordered_cells,
             report_payload=report_payload,
             stage_cache_stats=stage_cache.stats,
+            truth_evidence=truth_evidence,
             truth_metric_config=plan.truth_metric_config,
         )
     finally:
@@ -340,19 +350,32 @@ def _build_trial_case(
     return definitions[trial.case_id].build_case(trial.shape, seed=trial.seed)
 
 
-def _validate_truth_surface_support(
+def _build_trial_truth_evidence(
     case: Synthetic3DCase,
     trial: SyntheticTrialSpec,
     truth_metric_config: SyntheticTruthMetricConfig,
-) -> None:
-    half_width = truth_metric_config.truth_surface_half_width
-    truth_surface_mask = np.abs(case.truth_distance) <= np.float32(half_width)
-    if np.count_nonzero(truth_surface_mask) == 0:
+) -> Mapping[str, int]:
+    evidence = quality_metrics.truth_report(case, truth_metric_config)
+    evidence = _validate_trial_truth_evidence(evidence)
+    if evidence["surface_voxel_count"] == 0:
         raise ValueError(
             "empty truth-surface support in mode-comparison configuration: "
             f"case_id={case.case_id!r}, trial_id={trial.trial_id!r}, "
-            f"shape={case.shape}, truth_surface_half_width={half_width}"
+            f"shape={case.shape}, "
+            f"truth_surface_half_width={truth_metric_config.truth_surface_half_width}"
         )
+    return freeze_report_value(evidence)
+
+
+def _validate_trial_truth_evidence(evidence: Any) -> Mapping[str, int]:
+    expected_fields = ("fault_voxel_count", "surface_voxel_count")
+    if not isinstance(evidence, Mapping) or tuple(evidence) != expected_fields:
+        raise ValueError("trial truth evidence fields do not match the canonical schema and order")
+    for name in expected_fields:
+        value = evidence[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"trial truth evidence {name} must be a non-negative integer")
+    return evidence
 
 
 def _execution_cells(plan: SyntheticModeComparisonPlan) -> tuple[ModeCellSpec, ...]:

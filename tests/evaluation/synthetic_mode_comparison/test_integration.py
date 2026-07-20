@@ -399,6 +399,7 @@ def test_validation_failure_releases_volume_bearing_evaluations_sequentially() -
         evaluation.trial = trial
         evaluation.report_payload = {cell.label: {} for cell in plan.cells}
         evaluation.stage_cache_stats = zero_stats
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         evaluation.volume = np.ones(SHAPE, dtype=np.float32)
         live.add(evaluation)
         maximum_live = max(maximum_live, len(live))
@@ -438,6 +439,7 @@ def test_failures_do_not_publish_partial_experiment_or_artifact(
         evaluation.trial = trial
         evaluation.report_payload = {cell.label: {} for cell in plan.cells}
         evaluation.stage_cache_stats = PipelineStageCacheStats(*(0,) * 8)
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         return evaluation
 
     with pytest.raises(RuntimeError, match="experiment failed"):

@@ -169,18 +169,21 @@ def _validate_cell_reports(
     expected_trials = plan.trials
     if not isinstance(reports, tuple) or len(reports) != len(expected_trials):
         raise ValueError("cell_reports must contain exactly one report per canonical trial")
+
+    # The artifact loader owns the fixed recursive cell-report schema, including
+    # trial truth-evidence types and every stage-to-truth-target join.  Validate
+    # and normalize through that contract before applying the in-memory algebra
+    # checks below, without regenerating a case or running an experiment stage.
+    from .artifacts import _load_cell_reports
+
+    wire_reports = [thaw_report_value(report) for report in reports]
+    try:
+        validated_reports = _load_cell_reports(wire_reports, plan)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
+
     expected_labels = tuple(cell.label for cell in plan.cells)
-    for report, trial in zip(reports, expected_trials):
-        if not isinstance(report, Mapping):
-            raise ValueError("cell_reports must contain only mappings")
-        if set(report) != {"case_id", "trial_id", "seed", "cells"}:
-            raise ValueError("cell report fields do not match the canonical schema")
-        if (report["case_id"], report["trial_id"], report["seed"]) != (
-            trial.case_id,
-            trial.trial_id,
-            trial.seed,
-        ):
-            raise ValueError("cell report trial metadata does not match the canonical trial")
+    for report, trial in zip(validated_reports, expected_trials, strict=True):
         cells = report["cells"]
         if not isinstance(cells, Mapping) or tuple(cells) != expected_labels:
             raise ValueError("cell report cells do not match the canonical cells and order")
@@ -209,17 +212,6 @@ def _validate_cell_reports(
                         )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
-
-    # The artifact loader owns the fixed recursive cell-report schema. Reuse it here
-    # so in-memory results and persisted bundles enforce exactly the same scalar
-    # evidence contract without running any experiment stage.
-    from .artifacts import _load_cell_reports
-
-    wire_reports = [thaw_report_value(report) for report in reports]
-    try:
-        _load_cell_reports(wire_reports, plan)
-    except ValueError as error:
-        raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
 
 
 def _validate_downstream_topology_algebra(

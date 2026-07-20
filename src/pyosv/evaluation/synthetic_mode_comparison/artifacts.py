@@ -63,7 +63,7 @@ from .scalar_algebra import (
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 3
-SCALAR_EVIDENCE_CONTRACT_VERSION = 1
+SCALAR_EVIDENCE_CONTRACT_VERSION = 2
 RUNTIME_CONTRACT_VERSION = 1
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
@@ -748,6 +748,11 @@ def _load_bundle_objects(
         "scalar_evidence_contract_version",
         SCALAR_EVIDENCE_CONTRACT_VERSION,
         "scalar evidence",
+        legacy_version=1,
+        legacy_message=(
+            "unsupported scalar evidence contract version 1: legacy schema-v3 bundle "
+            "does not contain trial truth evidence"
+        ),
     )
     _manifest_contract_version(
         manifest_value,
@@ -992,12 +997,22 @@ def _load_cell_reports(
         context = f"cell_reports[{index}]"
         report = _object(
             report_value,
-            {"case_id", "trial_id", "seed", "cells"},
+            {"case_id", "trial_id", "seed", "truth_evidence", "cells"},
             context,
         )
-        _string(report["case_id"], f"{context}.case_id")
-        _string(report["trial_id"], f"{context}.trial_id")
-        _optional_integer(report["seed"], f"{context}.seed")
+        if tuple(report) != ("case_id", "trial_id", "seed", "truth_evidence", "cells"):
+            raise ValueError(f"{context} fields do not match the canonical schema and order")
+        trial = plan.trials[index]
+        metadata = (
+            _string(report["case_id"], f"{context}.case_id"),
+            _string(report["trial_id"], f"{context}.trial_id"),
+            _optional_integer(report["seed"], f"{context}.seed"),
+        )
+        if metadata != (trial.case_id, trial.trial_id, trial.seed):
+            raise ValueError(f"{context} trial metadata does not match the canonical trial")
+        truth_evidence = _load_trial_truth_evidence(
+            report["truth_evidence"], f"{context}.truth_evidence"
+        )
         cells = _object(report["cells"], set(expected_cells), f"{context}.cells")
         if tuple(cells) != tuple(expected_cells):
             raise ValueError("cell report cells do not match the canonical cells and order")
@@ -1010,8 +1025,92 @@ def _load_cell_reports(
             )
             for label, payload in cells.items()
         }
-        output.append({**report, "cells": loaded_cells})
+        _validate_trial_truth_targets(
+            loaded_cells,
+            truth_evidence=truth_evidence,
+            context=context,
+        )
+        output.append({**report, "truth_evidence": truth_evidence, "cells": loaded_cells})
     return tuple(output)
+
+
+def _load_trial_truth_evidence(value: Any, context: str) -> dict[str, int]:
+    fields = ("fault_voxel_count", "surface_voxel_count")
+    evidence = _object(value, set(fields), context)
+    if tuple(evidence) != fields:
+        raise ValueError(f"{context} fields do not match the canonical schema and order")
+    return {name: _nonnegative_integer(evidence[name], f"{context}.{name}") for name in fields}
+
+
+def _validate_trial_truth_targets(
+    cells: Mapping[str, Mapping[str, Any]],
+    *,
+    truth_evidence: Mapping[str, int],
+    context: str,
+) -> None:
+    fault_count = truth_evidence["fault_voxel_count"]
+    surface_count = truth_evidence["surface_voxel_count"]
+    for label, payload in cells.items():
+        cell_context = f"{context}.cells.{label}"
+        if "scanner_quality" in payload:
+            scanner_quality = payload["scanner_quality"]["ft_top_truth_count"]
+            _require_truth_target_counts(
+                scanner_quality,
+                fault_count=fault_count,
+                surface_count=surface_count,
+                context=f"{cell_context}.scanner_quality.ft_top_truth_count",
+            )
+            for entry in payload["scanner_metric_evidence"]:
+                if "quality_report" in entry:
+                    _require_truth_target_counts(
+                        entry["quality_report"],
+                        fault_count=fault_count,
+                        surface_count=surface_count,
+                        context=(
+                            f"{cell_context}.scanner_metric_evidence."
+                            f"{entry['stage']}.{entry['selection']}"
+                        ),
+                    )
+        if "quality" not in payload:
+            continue
+        quality = payload["quality"]
+        for stage in ("fv", "fvt"):
+            for selection in ("top_truth_count", "positive_top_truth_count"):
+                name = f"{stage}_{selection}"
+                _require_truth_target_counts(
+                    quality[name],
+                    fault_count=fault_count,
+                    surface_count=surface_count,
+                    context=f"{cell_context}.quality.{name}",
+                )
+        if quality["skin"] is not None:
+            _require_truth_target_counts(
+                quality["skin"],
+                fault_count=fault_count,
+                surface_count=surface_count,
+                context=f"{cell_context}.quality.skin",
+            )
+
+
+def _require_truth_target_counts(
+    report: Mapping[str, Any],
+    *,
+    fault_count: int,
+    surface_count: int,
+    context: str,
+) -> None:
+    overlap_count = report["buffered_overlap_radius2"]["truth_count"]
+    if overlap_count != fault_count:
+        raise ValueError(
+            f"{context}.buffered_overlap_radius2.truth_count does not match "
+            "trial truth_evidence.fault_voxel_count"
+        )
+    distance_count = report["surface_distance"]["truth_count"]
+    if distance_count != surface_count:
+        raise ValueError(
+            f"{context}.surface_distance.truth_count does not match "
+            "trial truth_evidence.surface_voxel_count"
+        )
 
 
 def _load_cell_payload(
@@ -2344,11 +2443,16 @@ def _manifest_contract_version(
     field: str,
     supported_version: int,
     contract_name: str,
+    *,
+    legacy_version: int | None = None,
+    legacy_message: str | None = None,
 ) -> int:
     if field not in manifest:
         raise ValueError(f"manifest {field} is required")
     version = _integer(manifest[field], f"manifest {field}")
     if version != supported_version:
+        if version == legacy_version and legacy_message is not None:
+            raise ValueError(legacy_message)
         raise ValueError(f"unsupported {contract_name} contract version")
     return version
 

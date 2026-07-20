@@ -82,10 +82,14 @@ The successful command writes exactly these eight files atomically:
 - `manifest.json`: artifact schema v3 plus independent scalar-evidence and
   runtime contract versions, requested configuration, resolved canonical plan,
   case and trial order, software versions, cache statistics, and source
-  provenance. The current scalar-evidence and runtime contract versions are
-  both 1.
+  provenance. The current scalar-evidence contract version is 2 and the
+  runtime contract version is 1.
 - `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
-  the complete registry-ordered `scanner_metric_evidence` in every scanner-only
+  one immutable `truth_evidence` object per trial, containing only the fault-
+  voxel and thin truth-surface voxel counts. Every scanner, `fv`, `fvt`, and
+  enabled-skin quality report is joined to those canonical trial counts; the
+  evidence object is not duplicated per cell. The file also records the
+  complete registry-ordered `scanner_metric_evidence` in every scanner-only
   and end-to-end scanner cell. Each scanner-stage candidate-count entry also
   carries the canonical overlap, distance, orientation, and edge source report
   needed to validate its publication metrics algebraically. Scanner publication
@@ -127,8 +131,11 @@ per-skin arrays and the effective `small_skin_size`, while component-topology
 summaries are checked against their per-truth and per-skin arrays. Prepared
 scanner scalar evidence is built once per trial and backend, reused by the
 scanner-only and end-to-end cells, and recorded as a shared runtime stage.
-Validation does not rerun any volume calculation, independently prove that its
-computation was correct, or provide a tamper-prevention signature. Schema-v1
+Validation uses the recorded trial truth counts and does not rerun the case
+generator or any volume calculation, independently prove that its computation
+was correct, or provide a tamper-prevention signature. Scalar-evidence contract
+version 1 schema-v3 bundles lack trial truth evidence and must be regenerated;
+they are not implicitly upgraded. Schema-v1
 bundles do not contain complete scanner evidence, while schema-v2 bundles do
 not uniquely identify their runtime coverage. Both must be regenerated with
 the current schema-v3 writer; validation does not implicitly upgrade them. The

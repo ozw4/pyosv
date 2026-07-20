@@ -40,6 +40,17 @@ def test_small_experiment_returns_json_safe_scalar_evidence() -> None:
     assert len(result.trial_metadata) == 1
     assert len(result.cell_reports) == 1
     assert result.cell_reports[0]["trial_id"] == result.trial_metadata[0]["trial_id"]
+    assert tuple(result.cell_reports[0]) == (
+        "case_id",
+        "trial_id",
+        "seed",
+        "truth_evidence",
+        "cells",
+    )
+    assert tuple(result.cell_reports[0]["truth_evidence"]) == (
+        "fault_voxel_count",
+        "surface_voxel_count",
+    )
     assert result.cache_stats[0]["trial_id"] == result.trial_metadata[0]["trial_id"]
     assert {row.trial_id for row in result.metric_rows} == {"single_vertical_plane"}
     assert {row.trial_id for row in result.contrast_rows} == {"single_vertical_plane"}
@@ -162,6 +173,7 @@ def test_clock_regression_between_timed_stages_fails() -> None:
         evaluation.trial = trial
         evaluation.report_payload = {cell.label: {} for cell in plan.cells}
         evaluation.stage_cache_stats = zero_stats
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         return evaluation
 
     with pytest.raises(ValueError, match="clock moved backwards"):
@@ -194,6 +206,7 @@ def test_invalid_fake_runner_preserves_trial_order_and_releases_each_evaluation(
         evaluation.report_payload = {cell.label: {"scalar": np.float32(1.0)} for cell in plan.cells}
         evaluation.artifacts = {"temporary": np.ones((2, 2))}
         evaluation.stage_cache_stats = zero_stats
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         references.append(weakref.ref(evaluation))
         runtime_recorder.record(
             stage="case_generation",
@@ -244,6 +257,7 @@ def test_array_in_cell_report_is_rejected_instead_of_retained_as_lists() -> None
         evaluation.trial = trial
         evaluation.report_payload = {cell.label: {"volume": np.ones((2, 2))} for cell in plan.cells}
         evaluation.stage_cache_stats = zero_stats
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         return evaluation
 
     with pytest.raises(ValueError, match="scalar-only.*NumPy arrays"):
@@ -292,6 +306,7 @@ def test_result_rejects_array_in_injected_metric_row() -> None:
         evaluation.trial = trial
         evaluation.report_payload = {cell.label: {} for cell in plan.cells}
         evaluation.stage_cache_stats = zero_stats
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         return evaluation
 
     with pytest.raises(ValueError, match="scalar-only.*NumPy arrays"):
@@ -321,6 +336,7 @@ def test_processing_failure_releases_trial_evaluation(failure_stage: str) -> Non
         evaluation.report_payload = {cell.label: {} for cell in plan.cells}
         evaluation.artifacts = {"temporary": np.ones((2, 2))}
         evaluation.stage_cache_stats = zero_stats
+        evaluation.truth_evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
         references.append(weakref.ref(evaluation))
         return evaluation
 

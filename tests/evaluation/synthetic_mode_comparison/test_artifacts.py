@@ -459,7 +459,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 3
-    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 1
+    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 2
     assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 1
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
@@ -984,6 +984,40 @@ def test_validator_explicitly_rejects_rehashed_legacy_v2_bundle(tmp_path: Path) 
     _rehash(bundle, "manifest.json")
 
     with pytest.raises(ValueError, match="legacy bundle.*runtime coverage"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_explicitly_rejects_rehashed_scalar_contract_v1_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-scalar-v1")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["scalar_evidence_contract_version"] = 1
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy schema-v3 bundle.*trial truth evidence"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_rejects_rehashed_trial_truth_evidence_tampering(tmp_path: Path) -> None:
+    bundle = _write_bundle(tmp_path / "truth-evidence-tamper")
+    reports_path = bundle / "cell_reports.json"
+    reports = json.loads(reports_path.read_text(encoding="utf-8"))
+    reports[0]["truth_evidence"]["surface_voxel_count"] += 1
+    reports_path.write_text(
+        json.dumps(reports, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "cell_reports.json")
+
+    with pytest.raises(ValueError, match="truth_evidence.surface_voxel_count"):
         validate_completed_bundle(bundle)
 
 
