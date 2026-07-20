@@ -211,6 +211,62 @@ def validate_skin_topology_algebra(
             raise ValueError(f"{context} empty skin topology must contain only zero counts")
 
 
+def validate_skin_report_topology_algebra(
+    topology: Mapping[str, Any],
+    component_topology: Mapping[str, Any],
+    context: str,
+    *,
+    small_skin_size: int,
+) -> None:
+    """Validate one enabled skin report against its effective fragmentation threshold."""
+
+    validate_skin_topology_algebra(
+        topology,
+        f"{context}.topology",
+    )
+    validate_component_topology_algebra(
+        component_topology,
+        topology,
+        f"{context}.component_topology",
+    )
+
+    threshold = _nonnegative_integer(small_skin_size, "effective small_skin_size")
+    if _count(topology, "small_skin_size", f"{context}.topology") != threshold:
+        raise ValueError(
+            f"{context}.topology.small_skin_size does not match the effective configuration"
+        )
+    skins = _mapping_array(component_topology, "skins", f"{context}.component_topology")
+    cell_counts = [
+        _count(item, "cell_count", f"{context}.component_topology.skins[{index}]")
+        for index, item in enumerate(skins)
+    ]
+    total_cell_count = sum(cell_counts)
+    largest_skin_size = max(cell_counts, default=0)
+    small_cell_counts = [count for count in cell_counts if count < threshold]
+    small_skin_cell_count = sum(small_cell_counts)
+
+    expected_counts = {
+        "largest_skin_size": largest_skin_size,
+        "small_skin_count": len(small_cell_counts),
+        "small_skin_cell_count": small_skin_cell_count,
+    }
+    for name, expected in expected_counts.items():
+        if _count(topology, name, f"{context}.topology") != expected:
+            raise ValueError(f"{context}.topology.{name} does not match per-skin cell counts")
+    _require_close(
+        topology,
+        "largest_skin_fraction",
+        largest_skin_size / total_cell_count if total_cell_count else 0.0,
+        f"{context}.topology",
+    )
+    _require_close(
+        topology,
+        "small_skin_cell_fraction",
+        small_skin_cell_count / total_cell_count if total_cell_count else 0.0,
+        f"{context}.topology",
+    )
+
+
 def validate_component_topology_algebra(
     report: Mapping[str, Any],
     topology: Mapping[str, Any],
@@ -651,6 +707,7 @@ __all__ = [
     "validate_quality_scalar_algebra",
     "validate_scanner_quality_scalar_algebra",
     "validate_selection_cardinality",
+    "validate_skin_report_topology_algebra",
     "validate_skin_topology_algebra",
     "validate_surface_distance_algebra",
     "volume_diagonal",

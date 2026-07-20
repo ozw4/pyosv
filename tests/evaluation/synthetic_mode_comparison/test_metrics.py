@@ -789,6 +789,9 @@ def test_scanner_evidence_is_complete_registry_ordered_and_shared_by_backend() -
         assert all(
             cells[label].report_payload["scanner_metric_evidence"] is evidence for label in labels
         )
+        for report_name in ("scanner", "scanner_quality"):
+            report = cells[labels[0]].report_payload[report_name]
+            assert all(cells[label].report_payload[report_name] is report for label in labels)
 
     assert all(
         "scanner_metric_evidence" not in cells[label].report_payload

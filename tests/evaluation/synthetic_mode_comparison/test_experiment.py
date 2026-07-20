@@ -77,6 +77,8 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
         "scanner_input_generation",
         "scanner_scan_thinning",
         "scanner_scan_thinning",
+        "scanner_scalar_evidence",
+        "scanner_scalar_evidence",
         *("cell_execution",) * 8,
         "metric_extraction",
         "contrast_extraction",
@@ -86,6 +88,8 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
     scanner_rows = [row for row in result.runtime_rows if row.stage.startswith("scanner_")]
     assert tuple(row.scanner_backend for row in scanner_rows) == (
         None,
+        "reference-like",
+        "quality",
         "reference-like",
         "quality",
     )

@@ -271,6 +271,7 @@ def build_scanner_metric_evidence(
 
     values: dict[tuple[str, str, str], float | int] = {}
     quality_reports: dict[tuple[str, str], Mapping[str, Any]] = {}
+    candidate_masks: dict[str, np.ndarray] = {}
     scanner_summary = _mapping(scanner_report, "scanner")
     for stage, names in (
         ("scanner_raw", ("scanner_ft", "scanner_pt", "scanner_tt")),
@@ -289,6 +290,7 @@ def build_scanner_metric_evidence(
             _required(array_summary, "nonzero_fraction"),
         )
         candidate = top_truth_count_mask(likelihood, truth_surface)
+        candidate_masks[stage] = candidate
         overlap = buffered_surface_overlap(candidate, fault, radius=radius)
         surface_distance = surface_distance_metrics(candidate, truth_surface)
         orientation_error = masked_orientation_error(
@@ -320,10 +322,12 @@ def build_scanner_metric_evidence(
         confidence = _finite_array(
             _required(scanner_volumes, "scanner_confidence"), shape, "scanner_confidence"
         )
-        raw = _finite_array(_required(scanner_volumes, "scanner_ft"), shape, "scanner_ft")
-        raw_support = top_truth_count_mask(raw, truth_surface)
         _put_summaries(values, "finite", confidence.ravel())
-        _put_summaries(values, "raw_top_truth_count", confidence[raw_support])
+        _put_summaries(
+            values,
+            "raw_top_truth_count",
+            confidence[candidate_masks["scanner_raw"]],
+        )
 
     expected = {
         (definition.stage, definition.selection, definition.metric) for definition in definitions

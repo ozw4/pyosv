@@ -34,6 +34,7 @@ from ..synthetic_quality import (
     SyntheticTruthMetricConfig,
     SyntheticVotingConfig,
 )
+from ..synthetic_quality.variants import effective_skinning_config, get_variant_spec
 from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
 from .contrasts import AggregateRow, ContrastRow
@@ -52,11 +53,11 @@ from .models import (
 )
 from .scalar_algebra import (
     derived_scalars_close,
-    validate_component_topology_algebra,
     validate_downstream_quality_scalar_algebra,
     validate_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
     validate_selection_cardinality,
+    validate_skin_report_topology_algebra,
     validate_skin_topology_algebra,
 )
 from .validation import validate_mode_comparison_result
@@ -1090,6 +1091,9 @@ def _load_downstream_sections(
     settings: ResolvedWorkflowSettings,
     context: str,
 ) -> None:
+    effective_skinning = effective_skinning_config(
+        get_variant_spec(plan.comparison_variant), settings.skinning_config
+    )
     config_context = f"{context}.config"
     config = _object(payload["config"], {"skinning"}, config_context)
     skinning_config = _load_scalar_report_object(
@@ -1097,7 +1101,7 @@ def _load_downstream_sections(
         _SKINNING_CONFIG_REPORT_SCHEMA,
         f"{config_context}.skinning",
     )
-    if not _exact_json_value(skinning_config, settings.skinning_config.as_report_dict()):
+    if not _exact_json_value(skinning_config, effective_skinning.as_report_dict()):
         raise ValueError(
             f"{config_context}.skinning does not match the resolved workflow configuration"
         )
@@ -1138,6 +1142,7 @@ def _load_downstream_sections(
     quality = _load_downstream_quality_report(
         payload["quality"],
         enabled=enabled,
+        small_skin_size=effective_skinning.small_skin_size,
         buffer_radius=plan.truth_metric_config.buffer_radius,
         shape=plan.shape,
         context=f"{context}.quality",
@@ -1541,6 +1546,7 @@ def _load_downstream_quality_report(
     value: Any,
     *,
     enabled: bool,
+    small_skin_size: int,
     buffer_radius: float,
     shape: tuple[int, int, int],
     context: str,
@@ -1586,11 +1592,11 @@ def _load_downstream_quality_report(
     if enabled:
         skin = payload["skin"]
         topology = skin["topology"]
-        validate_skin_topology_algebra(topology, f"{context}.skin.topology")
-        validate_component_topology_algebra(
-            skin["component_topology"],
+        validate_skin_report_topology_algebra(
             topology,
-            f"{context}.skin.component_topology",
+            skin["component_topology"],
+            f"{context}.skin",
+            small_skin_size=small_skin_size,
         )
     return payload
 
