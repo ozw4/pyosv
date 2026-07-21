@@ -241,17 +241,24 @@ existing operational validation paths.
   the completed output path. `validate_completed_bundle()` checks cross-file
   scalar semantics in addition to hashes and syntax. The authoritative writer
   emits artifact schema v3 with independently versioned scalar-evidence and
-  runtime contracts. Schema-v1 bundles lack complete scanner evidence, while
+  runtime contracts (currently scalar-evidence version 3 and runtime version
+  2). Each trial has one canonical truth-evidence object, and scanner, voting,
+  thinning, and enabled-skin reports bind their fault-band and thin-surface
+  truth counts to it. Schema-v1 bundles lack complete scanner evidence, while
   schema-v2 bundles do not uniquely identify runtime coverage; both must be
   regenerated. Scanner publication metrics are joined totally to
   the persisted registry-ordered evidence. This scanner evidence is prepared
   once per trial and backend, reused by scanner-only and end-to-end cells, and
   attributed to a shared runtime stage. Runtime and validation derive cache
-  hit/miss expectations from the same resolved semantic stage keys. Validation
-  binds top-count selections to truth-surface cardinality, enforces empty-mask
-  and radius-zero buffered-overlap rules, caps every distance summary at the
-  volume diagonal, and recomputes largest/small-skin summaries from per-skin
-  arrays and the effective configuration. It also validates orientation, edge,
+  hit/miss expectations from the same resolved semantic stage keys. Voting and
+  thinning scalar evidence is built once per unique trial-local semantic key
+  and attributed to shared runtime rows; `cell_execution` contains only the
+  remaining cell-exclusive time. Validation
+  binds top-count selections to truth-surface cardinality, enforces empty-mask,
+  radius-zero, fractional-radius, and full-volume buffered-overlap rules, caps
+  every distance summary at the volume diagonal, and recomputes
+  largest/small-skin summaries from per-skin arrays and the effective
+  configuration. It also validates orientation, edge,
   and component-topology algebra and compares shared scanner, voting, and
   conditionally shared thinning evidence across cells. Passing it demonstrates
   consistency of the recorded scalar evidence, not an independent

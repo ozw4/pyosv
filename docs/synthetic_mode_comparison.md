@@ -83,7 +83,7 @@ The successful command writes exactly these eight files atomically:
   runtime contract versions, requested configuration, resolved canonical plan,
   case and trial order, software versions, cache statistics, and source
   provenance. The current scalar-evidence contract version is 3 and the
-  runtime contract version is 1.
+  runtime contract version is 2.
 - `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
   one immutable `truth_evidence` object per trial, containing only the fault-
   voxel and thin truth-surface voxel counts. Every scanner, `fv`, `fvt`, and

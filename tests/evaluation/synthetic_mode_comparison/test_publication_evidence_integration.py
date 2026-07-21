@@ -134,6 +134,36 @@ def radius_zero_result(radius_zero_config) -> SyntheticModeComparisonResult:
     return run_mode_comparison(radius_zero_config, clock=_fixed_clock)
 
 
+@pytest.fixture(scope="module")
+def fractional_radius_config() -> SyntheticModeComparisonConfig:
+    return SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=SHAPE,
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        truth_metric_config=SyntheticTruthMetricConfig(buffer_radius=0.5),
+    )
+
+
+@pytest.fixture(scope="module")
+def fractional_radius_result(fractional_radius_config) -> SyntheticModeComparisonResult:
+    return run_mode_comparison(fractional_radius_config, clock=_fixed_clock)
+
+
+@pytest.fixture(scope="module")
+def full_volume_radius_config() -> SyntheticModeComparisonConfig:
+    return SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=SHAPE,
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        truth_metric_config=SyntheticTruthMetricConfig(buffer_radius=volume_diagonal(SHAPE)),
+    )
+
+
+@pytest.fixture(scope="module")
+def full_volume_radius_result(full_volume_radius_config) -> SyntheticModeComparisonResult:
+    return run_mode_comparison(full_volume_radius_config, clock=_fixed_clock)
+
+
 def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -154,6 +184,8 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     original_ensemble_scan = quality_scanner.scan_ensemble_attributes
     original_scanner_thin = FaultOrientScanner3.thin
     original_scanner_evidence = comparison_metrics.build_scanner_metric_evidence
+    original_voting_evidence = quality_pipeline.build_voting_scalar_evidence
+    original_thinning_evidence = quality_pipeline.build_thinning_scalar_evidence
 
     def counted_case_factory(plan, trial):
         nonlocal active_trial
@@ -184,6 +216,14 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         calls[active_trial][f"{backend}_evidence"] += 1
         return original_scanner_evidence(*args, **kwargs)
 
+    def counted_voting_evidence(*args, **kwargs):
+        calls[active_trial]["voting_evidence"] += 1
+        return original_voting_evidence(*args, **kwargs)
+
+    def counted_thinning_evidence(*args, **kwargs):
+        calls[active_trial]["thinning_evidence"] += 1
+        return original_thinning_evidence(*args, **kwargs)
+
     monkeypatch.setattr(comparison_runner, "_build_trial_case", counted_case_factory)
     monkeypatch.setattr(quality_runner, "make_scanner_input_from_case", counted_scanner_input)
     monkeypatch.setattr(quality_scanner, "scan_backend_attributes", counted_backend_scan)
@@ -193,6 +233,16 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         comparison_metrics,
         "build_scanner_metric_evidence",
         counted_scanner_evidence,
+    )
+    monkeypatch.setattr(
+        quality_pipeline,
+        "build_voting_scalar_evidence",
+        counted_voting_evidence,
+    )
+    monkeypatch.setattr(
+        quality_pipeline,
+        "build_thinning_scalar_evidence",
+        counted_thinning_evidence,
     )
 
     result = run_mode_comparison(config, clock=_fixed_clock)
@@ -220,6 +270,8 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
                 "quality_scan": 1,
                 "quality_thin": 1,
                 "quality_evidence": 1,
+                "voting_evidence": 3,
+                "thinning_evidence": 6,
             }
         )
     _assert_scanner_publication_identity(result)
@@ -280,12 +332,26 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     assert result.runtime_rows[-1].shared_stage is True
     assert len(result.runtime_rows) == len(plan.trials) * len(expected_trial_stages) + 1
     _assert_publication_scalar_contract(result)
+    _assert_trial_truth_targets(result)
     _assert_scalar_only(result)
 
     calls_before_validation = {key: Counter(value) for key, value in calls.items()}
     validate_mode_comparison_result(result, config)
     bundle = write_artifact_bundle(result, tmp_path / "extended-smoke", config=config)
     assert validate_completed_bundle(bundle)
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["artifact_schema_version"] == comparison_artifacts.ARTIFACT_SCHEMA_VERSION == 3
+    assert (
+        manifest["scalar_evidence_contract_version"]
+        == comparison_artifacts.SCALAR_EVIDENCE_CONTRACT_VERSION
+        == 3
+    )
+    assert (
+        manifest["runtime_contract_version"] == comparison_artifacts.RUNTIME_CONTRACT_VERSION == 2
+    )
+    assert tuple(sorted(path.name for path in bundle.iterdir())) == tuple(
+        sorted(comparison_artifacts.REQUIRED_BUNDLE_FILES)
+    )
     assert calls == calls_before_validation
 
 
@@ -314,6 +380,7 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
             assert payload["pyosv"]["skins"] == payload["quality"]["skin"]["topology"]
 
     _assert_publication_scalar_contract(topology_result)
+    _assert_trial_truth_targets(topology_result)
 
     validate_mode_comparison_result(topology_result, topology_config)
     bundle = write_artifact_bundle(
@@ -322,6 +389,175 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
         config=topology_config,
     )
     assert validate_completed_bundle(bundle)
+
+
+def test_buffer_radius_regimes_round_trip_with_deterministic_numerators(
+    radius_zero_config: SyntheticModeComparisonConfig,
+    radius_zero_result: SyntheticModeComparisonResult,
+    fractional_radius_config: SyntheticModeComparisonConfig,
+    fractional_radius_result: SyntheticModeComparisonResult,
+    full_volume_radius_config: SyntheticModeComparisonConfig,
+    full_volume_radius_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    regimes = (
+        ("zero", radius_zero_config, radius_zero_result, "intersection"),
+        (
+            "fractional",
+            fractional_radius_config,
+            fractional_radius_result,
+            "intersection",
+        ),
+        (
+            "full-volume",
+            full_volume_radius_config,
+            full_volume_radius_result,
+            "source",
+        ),
+    )
+    for name, config, result, expected in regimes:
+        for overlap in _downstream_overlap_reports(result):
+            if expected == "intersection":
+                assert overlap["candidate_in_truth_buffer_count"] == overlap["intersection_count"]
+                assert overlap["truth_in_candidate_buffer_count"] == overlap["intersection_count"]
+            else:
+                assert overlap["candidate_in_truth_buffer_count"] == overlap["candidate_count"]
+                assert overlap["truth_in_candidate_buffer_count"] == overlap["truth_count"]
+        validate_mode_comparison_result(result, config)
+        bundle = write_artifact_bundle(result, tmp_path / name, config=config)
+        assert validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("fixture_prefix", "message"),
+    (
+        ("fractional_radius", "fractional-radius buffered overlap counts"),
+        ("full_volume_radius", "full-volume buffered overlap counts"),
+    ),
+)
+def test_buffer_radius_regime_tampering_is_rejected_everywhere(
+    fixture_prefix: str,
+    message: str,
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+) -> None:
+    config = request.getfixturevalue(f"{fixture_prefix}_config")
+    result = request.getfixturevalue(f"{fixture_prefix}_result")
+    reports = result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["Q-QUAL"]
+    for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+        overlap = downstream["quality"]["fv_top_truth_count"]["buffered_overlap_radius2"]
+        if fixture_prefix == "fractional_radius":
+            assert overlap["intersection_count"] < overlap["candidate_count"]
+            overlap["candidate_in_truth_buffer_count"] = overlap["intersection_count"] + 1
+        else:
+            assert overlap["candidate_count"] > 0
+            overlap["candidate_in_truth_buffer_count"] = overlap["candidate_count"] - 1
+        overlap["buffered_precision"] = (
+            overlap["candidate_in_truth_buffer_count"] / overlap["candidate_count"]
+        )
+        overlap["buffered_f1"] = _f1(overlap["buffered_precision"], overlap["buffered_recall"])
+
+    _assert_report_tamper_rejected_in_memory_and_bundle(
+        config=config,
+        result=result,
+        reports=reports,
+        message=message,
+        bundle_path=tmp_path / fixture_prefix,
+    )
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("stage_fault", "truth_evidence.fault_voxel_count"),
+        ("stage_surface", "truth_evidence.surface_voxel_count"),
+        ("trial_fault", "truth_evidence.fault_voxel_count"),
+        ("trial_surface", "truth_evidence.surface_voxel_count"),
+    ),
+)
+def test_truth_target_tampering_is_rejected_everywhere(
+    tamper: str,
+    message: str,
+    default_config: SyntheticModeComparisonConfig,
+    default_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = default_result.as_dict()["cell_reports"]
+    if tamper.startswith("trial_"):
+        reports[0]["truth_evidence"][f"{tamper.removeprefix('trial_')}_voxel_count"] += 1
+    else:
+        payload = reports[0]["cells"]["Q-QUAL"]
+        for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+            if tamper == "stage_fault":
+                quality_report = downstream["quality"]["fv_top_truth_count"]
+                _increment_overlap_truth_count(quality_report["buffered_overlap_radius2"])
+            else:
+                quality_report = downstream["quality"]["fv_positive_top_truth_count"]
+                quality_report["surface_distance"]["truth_count"] += 1
+
+    _assert_report_tamper_rejected_in_memory_and_bundle(
+        config=default_config,
+        result=default_result,
+        reports=reports,
+        message=message,
+        bundle_path=tmp_path / tamper,
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ("missing_shared", "extra_shared", "wrong_call_count", "cell_double_attribution"),
+)
+def test_runtime_contract_tampering_is_rejected_everywhere(
+    tamper: str,
+    default_config: SyntheticModeComparisonConfig,
+    default_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    rows = list(default_result.runtime_rows)
+    index = next(index for index, row in enumerate(rows) if row.stage == "voting_scalar_evidence")
+    if tamper == "missing_shared":
+        rows.pop(index)
+    elif tamper == "extra_shared":
+        rows.insert(index, rows[index])
+    elif tamper == "wrong_call_count":
+        rows[index] = replace(rows[index], call_count=rows[index].call_count + 1)
+    else:
+        cell = build_mode_comparison_plan(default_config).cells[0]
+        duplicated_runtime = replace(
+            rows[index],
+            stage="cell_execution",
+            cell_label=cell.label,
+            scanner_backend=cell.scanner_backend,
+            call_count=1,
+            shared_stage=False,
+        )
+        cell_index = next(
+            row_index
+            for row_index, row in enumerate(rows)
+            if row.stage == "cell_execution" and row.cell_label == cell.label
+        )
+        rows.insert(cell_index, duplicated_runtime)
+    tampered_rows = tuple(rows)
+
+    with pytest.raises(ValueError, match="runtime_rows"):
+        validate_mode_comparison_result(
+            replace(default_result, runtime_rows=tampered_rows), default_config
+        )
+
+    bundle = write_artifact_bundle(
+        default_result,
+        tmp_path / tamper,
+        config=default_config,
+    )
+    runtime_path = bundle / comparison_artifacts.RUNTIME_FILE
+    runtime_path.write_bytes(
+        comparison_artifacts._csv_bytes(tampered_rows, comparison_artifacts.RuntimeRow)
+    )
+    _rehash(bundle, comparison_artifacts.RUNTIME_FILE)
+    with pytest.raises(ValueError, match="runtime_rows"):
+        validate_completed_bundle(bundle)
 
 
 def test_empty_skin_control_preserves_overlap_degeneracy_and_round_trip(
@@ -376,6 +612,7 @@ def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
                 "primary_skinning_hits": 0,
                 "primary_skinning_misses": 6,
             },
+            (3, 6),
         ),
         (
             shared_config,
@@ -390,12 +627,21 @@ def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
                 "primary_skinning_hits": 3,
                 "primary_skinning_misses": 3,
             },
+            (3, 3),
         ),
     )
-    for index, (config, result, expected) in enumerate(expected_by_config):
+    for index, (config, result, expected, evidence_calls) in enumerate(expected_by_config):
         plan = build_mode_comparison_plan(config)
         assert _expected_cache_counters(plan) == expected
         assert {name: result.cache_stats[0][name] for name in expected} == expected
+        assert (
+            tuple(
+                row.call_count
+                for row in result.runtime_rows
+                if row.stage in {"voting_scalar_evidence", "thinning_scalar_evidence"}
+            )
+            == evidence_calls
+        )
         validate_mode_comparison_result(result, config)
         bundle = write_artifact_bundle(result, tmp_path / f"cache-{index}", config=config)
         assert validate_completed_bundle(bundle)
@@ -796,6 +1042,8 @@ def test_semantic_and_artifact_validation_never_reexecutes_volume_stages(
         (synthetic_metrics, "distance_transform_edt"),
         (quality_pipeline.OptimalSurfaceVoter, "apply_voting_from_seeds"),
         (quality_pipeline.OptimalSurfaceVoter, "thin"),
+        (quality_pipeline, "build_voting_scalar_evidence"),
+        (quality_pipeline, "build_thinning_scalar_evidence"),
         (quality_pipeline, "find_synthetic_skins"),
         (comparison_metrics, "extract_trial_metric_rows"),
     )
@@ -921,6 +1169,54 @@ def _assert_publication_scalar_contract(result: SyntheticModeComparisonResult) -
             )
 
 
+def _assert_trial_truth_targets(result: SyntheticModeComparisonResult) -> None:
+    assert len(result.cell_reports) == len(result.trial_metadata)
+    for report in result.cell_reports:
+        assert tuple(report["truth_evidence"]) == (
+            "fault_voxel_count",
+            "surface_voxel_count",
+        )
+        evidence = report["truth_evidence"]
+        for payload in report["cells"].values():
+            scanner_quality = payload.get("scanner_quality")
+            if scanner_quality is not None:
+                _assert_report_truth_targets(scanner_quality["ft_top_truth_count"], evidence)
+            for entry in payload.get("scanner_metric_evidence", ()):
+                quality_report = entry.get("quality_report")
+                if quality_report is not None:
+                    _assert_report_truth_targets(quality_report, evidence)
+            quality = payload.get("quality")
+            if quality is None:
+                continue
+            for stage in ("fv", "fvt"):
+                for selection in ("top_truth_count", "positive_top_truth_count"):
+                    _assert_report_truth_targets(quality[f"{stage}_{selection}"], evidence)
+            if quality["skin"] is not None:
+                _assert_report_truth_targets(quality["skin"], evidence)
+
+
+def _assert_report_truth_targets(report: Mapping[str, Any], evidence: Mapping[str, int]) -> None:
+    assert report["buffered_overlap_radius2"]["truth_count"] == evidence["fault_voxel_count"]
+    assert report["surface_distance"]["truth_count"] == evidence["surface_voxel_count"]
+
+
+def _downstream_overlap_reports(
+    result: SyntheticModeComparisonResult,
+) -> tuple[Mapping[str, Any], ...]:
+    reports = []
+    for trial_report in result.cell_reports:
+        for payload in trial_report["cells"].values():
+            quality = payload.get("quality")
+            if quality is None:
+                continue
+            for stage in ("fv", "fvt"):
+                for selection in ("top_truth_count", "positive_top_truth_count"):
+                    reports.append(quality[f"{stage}_{selection}"]["buffered_overlap_radius2"])
+            if quality["skin"] is not None:
+                reports.append(quality["skin"]["buffered_overlap_radius2"])
+    return tuple(reports)
+
+
 def _tamper_top_truth_count_family(
     result: SyntheticModeComparisonResult,
 ) -> SyntheticModeComparisonResult:
@@ -1015,6 +1311,18 @@ def _replace_bundle_result_tables(bundle: Path, result: SyntheticModeComparisonR
 
 def _f1(left: float, right: float) -> float:
     return 2.0 * left * right / (left + right) if left + right else 0.0
+
+
+def _increment_overlap_truth_count(overlap: dict[str, Any]) -> None:
+    overlap["truth_count"] += 1
+    overlap["union_count"] = (
+        overlap["candidate_count"] + overlap["truth_count"] - overlap["intersection_count"]
+    )
+    overlap["recall"] = overlap["intersection_count"] / overlap["truth_count"]
+    overlap["f1"] = _f1(overlap["precision"], overlap["recall"])
+    overlap["jaccard"] = overlap["intersection_count"] / overlap["union_count"]
+    overlap["buffered_recall"] = overlap["truth_in_candidate_buffer_count"] / overlap["truth_count"]
+    overlap["buffered_f1"] = _f1(overlap["buffered_precision"], overlap["buffered_recall"])
 
 
 def _scanner_evidence(payload: Mapping[str, Any]) -> tuple[Any, Any]:
