@@ -197,14 +197,21 @@ def test_run_fingerprint_rejects_dataset_identity_mismatches(tmp_path: Path) -> 
         replace(valid, dataset_id="other-dataset"),
         replace(valid, files=valid.files[:-1]),
         replace(valid, files=(replace(first_file, filename="other.dat"), *valid.files[1:])),
-        replace(valid, files=(replace(first_file, shape=(1, 1, 1)), *valid.files[1:])),
-        replace(valid, files=(replace(first_file, storage_dtype="<f4"), *valid.files[1:])),
-        replace(valid, files=(replace(first_file, size=1), *valid.files[1:])),
     )
 
     for identity in mismatches:
         with pytest.raises(ValueError, match="dataset identity"):
             run_fingerprint(plan, identity, implementation=_IMPLEMENTATION)
+
+    for field, value in (
+        ("shape", (1, 1, 1)),
+        ("storage_dtype", "<f4"),
+        ("size", 1),
+    ):
+        corrupted = _identity(tmp_path / field)
+        object.__setattr__(corrupted.files[0], field, value)
+        with pytest.raises(ValueError, match="dataset identity"):
+            run_fingerprint(plan, corrupted, implementation=_IMPLEMENTATION)
 
 
 def test_run_fingerprint_revalidates_dataset_checksum(tmp_path: Path) -> None:

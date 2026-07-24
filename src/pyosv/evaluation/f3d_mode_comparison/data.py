@@ -164,7 +164,36 @@ class F3FileIdentity:
     storage_dtype: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.role, str) or not self.role.strip():
+            raise ValueError("role must be a non-empty string")
+        if (
+            not isinstance(self.filename, str)
+            or not self.filename.strip()
+            or Path(self.filename).name != self.filename
+        ):
+            raise ValueError("filename must be a non-empty basename")
+        if not isinstance(self.resolved_path, Path):
+            raise ValueError("resolved_path must be a pathlib.Path")
+        if not self.resolved_path.is_absolute() or ".." in self.resolved_path.parts:
+            raise ValueError("resolved_path must be an absolute normalized path")
+        if isinstance(self.size, bool) or not isinstance(self.size, int) or self.size <= 0:
+            raise ValueError("size must be a positive integer")
         _validated_sha256(self.sha256)
+        shape = _validated_shape(self.shape)
+        try:
+            storage_dtype = np.dtype(self.storage_dtype)
+        except TypeError as error:
+            raise ValueError("storage_dtype must be big-endian float32") from error
+        if storage_dtype.str != F3D_DTYPE:
+            raise ValueError(f"storage_dtype must be {F3D_DTYPE!r}")
+        expected_size = prod(shape) * storage_dtype.itemsize
+        if self.size != expected_size:
+            raise ValueError(
+                "size does not match shape and storage_dtype: "
+                f"expected {expected_size}, got {self.size}"
+            )
+        object.__setattr__(self, "shape", shape)
+        object.__setattr__(self, "storage_dtype", storage_dtype.str)
 
     @property
     def computation_identity(self) -> dict[str, object]:
@@ -195,6 +224,34 @@ class F3DatasetIdentity:
     dataset_id: str
     files: tuple[F3FileIdentity, ...]
     data_root: Path = field(compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dataset_id, str) or not self.dataset_id.strip():
+            raise ValueError("dataset_id must be a non-empty string")
+        if not isinstance(self.files, tuple) or not self.files:
+            raise ValueError("files must be a non-empty tuple of F3FileIdentity values")
+        if not isinstance(self.data_root, Path):
+            raise ValueError("data_root must be a pathlib.Path")
+        if not self.data_root.is_absolute() or ".." in self.data_root.parts:
+            raise ValueError("data_root must be an absolute normalized path")
+
+        roles: set[str] = set()
+        filenames: set[str] = set()
+        first_layout: tuple[int, tuple[int, int, int], str] | None = None
+        for item in self.files:
+            if not isinstance(item, F3FileIdentity):
+                raise ValueError("files must contain only F3FileIdentity values")
+            if item.role in roles:
+                raise ValueError(f"duplicate file role: {item.role}")
+            if item.filename in filenames:
+                raise ValueError(f"duplicate provenance filename: {item.filename}")
+            roles.add(item.role)
+            filenames.add(item.filename)
+            layout = (item.size, item.shape, item.storage_dtype)
+            if first_layout is None:
+                first_layout = layout
+            elif layout != first_layout:
+                raise ValueError("dataset files must share size, shape, and storage_dtype")
 
     @property
     def computation_identity(self) -> dict[str, object]:

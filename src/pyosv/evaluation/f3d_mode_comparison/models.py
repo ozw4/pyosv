@@ -11,7 +11,7 @@ from ..synthetic_quality import (
     resolve_workflow_settings,
 )
 from .config import F3ScannerConfig, F3VotingControls
-from .data import F3DatasetSpec
+from .data import F3DatasetSpec, OFFICIAL_F3_DATASET_SPEC
 
 F3ScannerBackend = Literal["reference-like", "quality"]
 F3WorkflowMode = Literal["reference", "quality"]
@@ -84,8 +84,8 @@ class F3ModeComparisonPlan:
     fixed_control_evidence: F3FixedControlEvidence
 
     def __post_init__(self) -> None:
-        if not isinstance(self.dataset_spec, F3DatasetSpec):
-            raise ValueError("dataset_spec must be an F3DatasetSpec")
+        if self.dataset_spec != OFFICIAL_F3_DATASET_SPEC:
+            raise ValueError("dataset_spec must be the official F3 dataset spec")
         if self.cells != canonical_f3_cells():
             raise ValueError("cells must match the canonical F3 cells and order")
         if self.reference_like_scanner_config.backend != "reference-like":

@@ -24,6 +24,7 @@ from pyosv.evaluation.synthetic_quality.models import (
     SkinningResult3D,
 )
 from pyosv.evaluation.synthetic_quality.stage_keys import (
+    DEFAULT_PRIMARY_SKINNER_IDENTITY,
     build_thinning_scalar_evidence_key,
     build_voting_scalar_evidence_key,
 )
@@ -312,6 +313,7 @@ def run_voting_from_attributes(
         fvt_recenter_target_source=fvt_recenter_target_source,
         recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
         primary_skinner=find_synthetic_skins,
+        primary_skinner_identity=DEFAULT_PRIMARY_SKINNER_IDENTITY,
         boundary_fallback_runner=apply_boundary_skinner_fallback,
     )
     voting_controls = workflow_result.effective_settings.controls

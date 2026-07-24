@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from pyosv.evaluation.f3d_mode_comparison import (
+    F3DatasetIdentity,
     F3DatasetSpec,
     F3FileIdentity,
     F3VolumeSource,
@@ -64,6 +66,89 @@ def test_file_identity_rejects_invalid_checksum(tmp_path: Path, sha256: object) 
             shape=spec.shape,
             storage_dtype=spec.storage_dtype,
         )
+
+
+def _file_identity(
+    tmp_path: Path,
+    *,
+    role: str = "input",
+    filename: str = "ep.dat",
+    shape: tuple[int, int, int] = (2, 3, 4),
+) -> F3FileIdentity:
+    return F3FileIdentity(
+        role=role,
+        filename=filename,
+        resolved_path=tmp_path / filename,
+        size=int(np.prod(shape)) * np.dtype(">f4").itemsize,
+        sha256="0" * 64,
+        shape=shape,
+        storage_dtype=">f4",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("role", "", "role"),
+        ("filename", "../ep.dat", "filename"),
+        ("resolved_path", Path("ep.dat"), "resolved_path"),
+        ("size", 95, "size"),
+        ("shape", (2, 3, 0), "shape"),
+        ("storage_dtype", "<f4", "storage_dtype"),
+    ),
+)
+def test_file_identity_validates_content_and_provenance_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    identity = _file_identity(tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        replace(identity, **{field: value})
+
+
+def test_dataset_identity_validates_layout_roles_and_provenance(tmp_path: Path) -> None:
+    input_identity = _file_identity(tmp_path)
+    reference_identity = _file_identity(
+        tmp_path,
+        role="reference",
+        filename="fl.dat",
+    )
+    valid = F3DatasetIdentity(
+        dataset_id="fixture",
+        files=(input_identity, reference_identity),
+        data_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="dataset_id"):
+        replace(valid, dataset_id="")
+    with pytest.raises(ValueError, match="non-empty tuple"):
+        replace(valid, files=())
+    with pytest.raises(ValueError, match="duplicate file role"):
+        replace(
+            valid,
+            files=(
+                input_identity,
+                replace(reference_identity, role="input"),
+            ),
+        )
+    with pytest.raises(ValueError, match="share size, shape, and storage_dtype"):
+        replace(
+            valid,
+            files=(
+                input_identity,
+                _file_identity(
+                    tmp_path,
+                    role="reference",
+                    filename="fl.dat",
+                    shape=(1, 3, 8),
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="data_root"):
+        replace(valid, data_root=Path("relative"))
 
 
 def test_read_only_storage_memmap_and_native_copy(tmp_path: Path) -> None:

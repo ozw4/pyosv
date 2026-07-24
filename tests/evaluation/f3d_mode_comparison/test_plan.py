@@ -7,6 +7,7 @@ import pytest
 
 from pyosv.evaluation.f3d_mode_comparison import (
     F3CellSpec,
+    F3DatasetSpec,
     F3ModeComparisonConfig,
     F3ScannerConfig,
     F3VotingControls,
@@ -105,6 +106,19 @@ def test_builder_rejects_noncanonical_dataset() -> None:
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig(shape=(421, 400, 100)))
     with pytest.raises(ValueError, match="input_file must be 'ep.dat'"):
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig(input_file="xs.dat"))
+
+
+def test_plan_model_rejects_nonofficial_fixture_dataset() -> None:
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    fixture_spec = F3DatasetSpec(
+        dataset_id="fixture",
+        shape=(2, 3, 4),
+        files={"input": "ep.dat"},
+        expected_bytes=96,
+    )
+
+    with pytest.raises(ValueError, match="official F3 dataset spec"):
+        replace(plan, dataset_spec=fixture_spec)
 
 
 @pytest.mark.parametrize(

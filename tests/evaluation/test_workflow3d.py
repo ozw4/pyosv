@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -257,6 +259,72 @@ def test_generic_core_matches_synthetic_path(
         )
 
 
+def test_generic_core_matches_pre_extraction_golden() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    voting = SyntheticVotingConfig()
+    skinning = SyntheticSkinningConfig(enabled=True)
+    variant = get_variant_spec("current_default")
+
+    result = execute_workflow3d(
+        ft=case.ft_oracle,
+        pt=case.pt_oracle,
+        tt=case.tt_oracle,
+        attribute_identity=_identity(shape=case.shape),
+        voting_settings=voting,
+        voting_controls=VolumeVotingControls.resolve(voting, variant),
+        skinning_settings=skinning,
+        variant_spec=variant,
+    )
+
+    # Fixed from the synthetic pipeline before the generic-core extraction.
+    expected_volume_sha256 = {
+        "fv": "2e9867e0a46d3022d695543513d4e491db3fbdfeb065881926f246f20c37ae8a",
+        "vp": "3dae92d06f364fa6ea8e434c89a3d9d40cb995af8e46e50fff5ff91bd28fe112",
+        "vt": "1485b0fb89803162cb8a7c8128d9c4189efd7407550984ad62fb406a1f006c67",
+        "fvt": "01b222b444bbc9d0b7b355123a2d746489039e0d16f621bd07f17a69953c1e65",
+    }
+    assert {
+        name: hashlib.sha256(
+            np.asarray(getattr(result, name), dtype="<f4", order="C").tobytes()
+        ).hexdigest()
+        for name in expected_volume_sha256
+    } == expected_volume_sha256
+
+    cells = [
+        sorted(
+            [
+                float(cell.x1),
+                float(cell.x2),
+                float(cell.x3),
+                int(cell.i1),
+                int(cell.i2),
+                int(cell.i3),
+                float(cell.fl),
+                float(cell.fp),
+                float(cell.ft),
+            ]
+            for cell in skin
+        )
+        for skin in result.skins
+    ]
+
+    def json_sha256(value: object) -> str:
+        payload = json.dumps(
+            value,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    assert json_sha256(cells) == (
+        "d69c93830b1b67e88fa1f5332cc464f830b4a3bcc8fbeb77c0facb10a8d4739b"
+    )
+    assert json_sha256(dict(result.diagnostics.voting)) == (
+        "5882a130a398d273211c1947ad93a3b031d53a5bf3a4f7e05762f2a993d2ac9a"
+    )
+
+
 def test_skinning_preserves_primary_payload_before_boundary_fallback() -> None:
     events: list[str] = []
 
@@ -346,7 +414,7 @@ def test_timer_exception_does_not_cache_partial_voting_result() -> None:
     assert cache.stats.thinning_misses == 1
 
 
-def test_builder_exception_does_not_cache_partial_skinning_result() -> None:
+def test_injected_skinner_exception_does_not_cache_partial_result() -> None:
     cache = PipelineStageCache()
     ft, pt, tt = _attributes()
     voting = SyntheticVotingConfig(ru=0, rv=1, rw=1, seed_distance=0)
@@ -369,19 +437,18 @@ def test_builder_exception_does_not_cache_partial_skinning_result() -> None:
     with pytest.raises(RuntimeError, match="builder failed"):
         execute_workflow3d(**kwargs, primary_skinner=fail_primary)
 
-    assert cache.stats.primary_skinning_misses == 1
+    assert cache.stats.primary_skinning_misses == 0
 
     def empty_primary(*args: object, **kwargs: object) -> list[object]:
         return []
 
     execute_workflow3d(**kwargs, primary_skinner=empty_primary)
-    assert cache.stats.primary_skinning_misses == 2
     execute_workflow3d(**kwargs, primary_skinner=empty_primary)
-    assert cache.stats.primary_skinning_hits == 1
+    assert cache.stats.primary_skinning_hits == cache.stats.primary_skinning_misses == 0
 
     with pytest.raises(RuntimeError, match="builder failed"):
         execute_workflow3d(**kwargs, primary_skinner=fail_primary)
-    assert cache.stats.primary_skinning_misses == 3
+    assert cache.stats.primary_skinning_misses == 0
 
 
 def test_external_seed_target_hides_unsafe_downstream_keys() -> None:
@@ -452,7 +519,7 @@ def test_external_recenter_target_hides_only_affected_keys() -> None:
     assert cache.stats.primary_skinning_hits == cache.stats.primary_skinning_misses == 0
 
 
-def test_injected_primary_skinners_have_distinct_keys_and_cache_entries() -> None:
+def test_stateful_injected_primary_skinner_bypasses_cache() -> None:
     cache = PipelineStageCache()
     ft, pt, tt = _attributes()
     voting = SyntheticVotingConfig(ru=0, rv=1, rw=1, seed_distance=0)
@@ -469,19 +536,62 @@ def test_injected_primary_skinners_have_distinct_keys_and_cache_entries() -> Non
         "stage_cache": cache,
     }
 
-    def first_skinner(*args: object, **kwargs: object) -> list[list[FaultCell]]:
-        return [[FaultCell(1, 1, 1, 1.0, 0.0, 90.0)]]
+    class StatefulSkinner:
+        location = 1
 
-    def second_skinner(*args: object, **kwargs: object) -> list[list[FaultCell]]:
-        return [[FaultCell(3, 3, 3, 1.0, 0.0, 90.0)]]
+        def __call__(
+            self,
+            *args: object,
+            **kwargs: object,
+        ) -> list[list[FaultCell]]:
+            i = self.location
+            return [[FaultCell(i, i, i, 1.0, 0.0, 90.0)]]
 
-    first = execute_workflow3d(**common, primary_skinner=first_skinner)
-    second = execute_workflow3d(**common, primary_skinner=second_skinner)
+    skinner = StatefulSkinner()
+    first = execute_workflow3d(**common, primary_skinner=skinner)
+    skinner.location = 3
+    second = execute_workflow3d(**common, primary_skinner=skinner)
 
-    assert first.stage_keys.primary_skinning != second.stage_keys.primary_skinning
+    assert first.stage_keys.primary_skinning is None
+    assert second.stage_keys.primary_skinning is None
     assert [(cell.i3, cell.i2, cell.i1) for cell in first.skins[0]] == [(1, 1, 1)]
     assert [(cell.i3, cell.i2, cell.i1) for cell in second.skins[0]] == [(3, 3, 3)]
-    assert cache.stats.primary_skinning_misses == 2
+    assert cache.stats.primary_skinning_hits == cache.stats.primary_skinning_misses == 0
+
+
+def test_injected_primary_skinner_with_explicit_identity_uses_cache() -> None:
+    cache = PipelineStageCache()
+    calls = 0
+
+    def primary_skinner(*args: object, **kwargs: object) -> list[object]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    ft, pt, tt = _attributes()
+    voting = SyntheticVotingConfig(ru=0, rv=1, rw=1, seed_distance=0)
+    variant = VariantSpec("fixture", experimental=False)
+    common = {
+        "ft": ft,
+        "pt": pt,
+        "tt": tt,
+        "attribute_identity": _identity(),
+        "voting_settings": voting,
+        "voting_controls": VolumeVotingControls.resolve(voting, variant),
+        "skinning_settings": SyntheticSkinningConfig(enabled=True),
+        "variant_spec": variant,
+        "stage_cache": cache,
+        "primary_skinner": primary_skinner,
+        "primary_skinner_identity": "test.primary-skinner.v1",
+    }
+
+    first = execute_workflow3d(**common)
+    second = execute_workflow3d(**common)
+
+    assert first.stage_keys.primary_skinning == second.stage_keys.primary_skinning
+    assert calls == 1
+    assert cache.stats.primary_skinning_misses == 1
+    assert cache.stats.primary_skinning_hits == 1
 
 
 @pytest.mark.parametrize(

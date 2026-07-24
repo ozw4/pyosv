@@ -296,12 +296,17 @@ def _readonly_clone(value: np.ndarray) -> np.ndarray:
     return result
 
 
-def _primary_skinner_identity(primary_skinner: Callable[..., list[Any]]) -> str:
+def _resolve_primary_skinner_identity(
+    primary_skinner: Callable[..., list[Any]],
+    explicit_identity: str | None,
+) -> str | None:
+    if explicit_identity is not None:
+        if not isinstance(explicit_identity, str) or not explicit_identity.strip():
+            raise ValueError("primary_skinner_identity must be a non-empty string")
+        return explicit_identity
     if primary_skinner is find_synthetic_skins:
         return DEFAULT_PRIMARY_SKINNER_IDENTITY
-    module = getattr(primary_skinner, "__module__", type(primary_skinner).__module__)
-    qualname = getattr(primary_skinner, "__qualname__", type(primary_skinner).__qualname__)
-    return f"{module}.{qualname}@{id(primary_skinner)}"
+    return None
 
 
 def execute_workflow3d(
@@ -323,6 +328,7 @@ def execute_workflow3d(
         ..., dict[str, float | None]
     ] = fvt_recenter_target_distance_diagnostics,
     primary_skinner: Callable[..., list[Any]] = find_synthetic_skins,
+    primary_skinner_identity: str | None = None,
     boundary_fallback_runner: Callable[..., None] = apply_boundary_skinner_fallback,
 ) -> Workflow3DResult:
     """Execute seed selection through skinning without truth or reference data."""
@@ -571,12 +577,20 @@ def execute_workflow3d(
         variant_spec=variant_spec,
         target_source=fvt_recenter_target_source,
     )
-    primary_key = build_primary_skinning_stage_key(
-        thinning_key=thinning_key if final_thinning_key_safe else None,
-        skinning_config=skinning_settings,
-        variant_spec=variant_spec,
-        target_source=fvt_recenter_target_source,
-        skinner_identity=_primary_skinner_identity(primary_skinner),
+    resolved_primary_skinner_identity = _resolve_primary_skinner_identity(
+        primary_skinner,
+        primary_skinner_identity,
+    )
+    primary_key = (
+        None
+        if resolved_primary_skinner_identity is None
+        else build_primary_skinning_stage_key(
+            thinning_key=thinning_key if final_thinning_key_safe else None,
+            skinning_config=skinning_settings,
+            variant_spec=variant_spec,
+            target_source=fvt_recenter_target_source,
+            skinner_identity=resolved_primary_skinner_identity,
+        )
     )
     primary_cache_enabled = stage_cache is not None and primary_key is not None
     if skinning_settings.enabled:
