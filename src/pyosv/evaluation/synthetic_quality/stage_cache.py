@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import InitVar, dataclass, field
 from numbers import Integral, Real
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import numpy as np
 
@@ -399,6 +399,19 @@ class PrimarySkinningStageResult:
         )
 
 
+_PipelineStageResultT = TypeVar("_PipelineStageResultT")
+
+
+class PipelineStageBuildTimer(Protocol):
+    """Synchronous wrapper around one cache-miss stage build."""
+
+    def __call__(
+        self,
+        stage: str,
+        operation: Callable[[], _PipelineStageResultT],
+    ) -> _PipelineStageResultT: ...
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineStageCacheStats:
     seed_hits: int
@@ -416,6 +429,7 @@ class PipelineStageCache:
     """Cache whose owner limits its lifetime to one synthetic case."""
 
     case: InitVar[Synthetic3DCase | None] = None
+    build_timer: PipelineStageBuildTimer | None = field(default=None, repr=False)
     _case: Synthetic3DCase | None = field(default=None, init=False, repr=False)
     _seeds: dict[SeedStageKey, SeedStageResult] = field(default_factory=dict, init=False)
     _voting: dict[VotingStageKey, VotingStageResult] = field(default_factory=dict, init=False)
@@ -469,6 +483,22 @@ class PipelineStageCache:
     def put_seed(self, key: SeedStageKey, result: SeedStageResult) -> None:
         self._seeds[key] = result
 
+    def get_or_build_seed(
+        self,
+        key: SeedStageKey,
+        builder: Callable[[], SeedStageResult],
+    ) -> SeedStageResult:
+        """Return a cached seed result or time and store one completed build."""
+
+        result = self.get_seed(key)
+        if result is not None:
+            return result
+        result = (
+            builder() if self.build_timer is None else self.build_timer("seed_selection", builder)
+        )
+        self.put_seed(key, result)
+        return result
+
     def get_voting(self, key: VotingStageKey) -> VotingStageResult | None:
         result = self._voting.get(key)
         if result is None:
@@ -480,6 +510,22 @@ class PipelineStageCache:
     def put_voting(self, key: VotingStageKey, result: VotingStageResult) -> None:
         self._voting[key] = result
 
+    def get_or_build_voting(
+        self,
+        key: VotingStageKey,
+        builder: Callable[[], VotingStageResult],
+    ) -> VotingStageResult:
+        """Return a cached voting result or time and store one completed build."""
+
+        result = self.get_voting(key)
+        if result is not None:
+            return result
+        result = (
+            builder() if self.build_timer is None else self.build_timer("voting_volume", builder)
+        )
+        self.put_voting(key, result)
+        return result
+
     def get_thinning(self, key: ThinningStageKey) -> ThinningStageResult | None:
         result = self._thinning.get(key)
         if result is None:
@@ -490,6 +536,22 @@ class PipelineStageCache:
 
     def put_thinning(self, key: ThinningStageKey, result: ThinningStageResult) -> None:
         self._thinning[key] = result
+
+    def get_or_build_thinning(
+        self,
+        key: ThinningStageKey,
+        builder: Callable[[], ThinningStageResult],
+    ) -> ThinningStageResult:
+        """Return a cached thinning result or time and store one completed build."""
+
+        result = self.get_thinning(key)
+        if result is not None:
+            return result
+        result = (
+            builder() if self.build_timer is None else self.build_timer("base_thinning", builder)
+        )
+        self.put_thinning(key, result)
+        return result
 
     def get_primary_skinning(
         self, key: PrimarySkinningStageKey
@@ -505,6 +567,22 @@ class PipelineStageCache:
         self, key: PrimarySkinningStageKey, result: PrimarySkinningStageResult
     ) -> None:
         self._primary_skinning[key] = result
+
+    def get_or_build_primary_skinning(
+        self,
+        key: PrimarySkinningStageKey,
+        builder: Callable[[], PrimarySkinningStageResult],
+    ) -> PrimarySkinningStageResult:
+        """Return cached primary skins or time and store one completed build."""
+
+        result = self.get_primary_skinning(key)
+        if result is not None:
+            return result
+        result = (
+            builder() if self.build_timer is None else self.build_timer("primary_skinning", builder)
+        )
+        self.put_primary_skinning(key, result)
+        return result
 
     def clear(self) -> None:
         """Release all case-local stage values and end this cache scope."""
