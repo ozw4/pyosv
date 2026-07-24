@@ -129,6 +129,8 @@ def test_cache_hits_return_independent_read_only_volumes() -> None:
     assert first.fv is not second.fv
     assert not first.fv.flags.writeable
     assert not second.fv.flags.writeable
+    assert not first.skin.primary_mask.flags.writeable
+    assert not second.skin.primary_mask.flags.writeable
 
 
 def test_missing_identity_bypasses_cache_build_timer() -> None:

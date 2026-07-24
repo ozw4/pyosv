@@ -296,6 +296,12 @@ def _readonly_clone(value: np.ndarray) -> np.ndarray:
     return result
 
 
+def _readonly_bool_clone(value: np.ndarray) -> np.ndarray:
+    result = np.array(value, dtype=bool, copy=True, order="C")
+    result.flags.writeable = False
+    return result
+
+
 def _resolve_primary_skinner_identity(
     primary_skinner: Callable[..., list[Any]],
     explicit_identity: str | None,
@@ -676,7 +682,7 @@ def execute_workflow3d(
         skin=Workflow3DSkinResult(
             enabled=skinning_settings.enabled,
             skins=tuple(skins),
-            primary_mask=primary_mask.copy(),
+            primary_mask=_readonly_bool_clone(primary_mask),
             diagnostics=frozen_skinning,
         ),
         diagnostics=Workflow3DDiagnostics(

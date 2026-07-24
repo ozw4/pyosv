@@ -90,16 +90,17 @@ class F3ScannerConfig:
         if self.backend not in F3_SCANNER_BACKENDS:
             raise ValueError("backend must be 'reference-like' or 'quality'")
         for name in ("phi_min", "phi_max", "theta_min", "theta_max"):
-            _finite_float(getattr(self, name), name)
+            object.__setattr__(self, name, _finite_float(getattr(self, name), name))
         if self.phi_max < self.phi_min:
             raise ValueError("phi_max must be greater than or equal to phi_min")
         if self.theta_max < self.theta_min:
             raise ValueError("theta_max must be greater than or equal to theta_min")
-        _positive_float(self.sigma1, "sigma1")
-        _positive_float(self.sigma2, "sigma2")
+        object.__setattr__(self, "sigma1", _positive_float(self.sigma1, "sigma1"))
+        object.__setattr__(self, "sigma2", _positive_float(self.sigma2, "sigma2"))
         factor = _positive_int(self.refinement_factor, "refinement_factor")
         if factor > 4:
             raise ValueError("refinement_factor must be between 1 and 4")
+        object.__setattr__(self, "refinement_factor", factor)
         if self.orientation_backend not in {"rotate_shear", "directional"}:
             raise ValueError("orientation_backend must be 'rotate_shear' or 'directional'")
         if self.interpolation_backend not in {"scipy", "structured_linear"}:
@@ -109,14 +110,23 @@ class F3ScannerConfig:
             raise ValueError("interpolation_order must be between 0 and 5")
         if self.interpolation_backend == "structured_linear" and order != 1:
             raise ValueError("structured_linear requires interpolation_order=1")
+        object.__setattr__(self, "interpolation_order", order)
         if self.smoothing_sigma is not None:
-            _positive_float(self.smoothing_sigma, "smoothing_sigma")
+            object.__setattr__(
+                self,
+                "smoothing_sigma",
+                _positive_float(self.smoothing_sigma, "smoothing_sigma"),
+            )
         _bool(self.normalize, "normalize")
         if self.dtype != "float32":
             raise ValueError("dtype must be 'float32'")
         if self.scanner_thin_mode not in {"none", "reference", "normal"}:
             raise ValueError("scanner_thin_mode must be 'none', 'reference', or 'normal'")
-        _positive_float(self.reference_thin_sigma, "reference_thin_sigma")
+        object.__setattr__(
+            self,
+            "reference_thin_sigma",
+            _positive_float(self.reference_thin_sigma, "reference_thin_sigma"),
+        )
         _bool(self.remove_edge_effects, "remove_edge_effects")
 
     @property
@@ -152,12 +162,21 @@ class F3VotingControls:
 
     def __post_init__(self) -> None:
         for name in ("ru", "rv", "rw", "seed_distance", "attribute_smoothing"):
-            _nonnegative_int(getattr(self, name), name)
-        _nonnegative_float(self.seed_threshold, "seed_threshold")
+            object.__setattr__(
+                self,
+                name,
+                _nonnegative_int(getattr(self, name), name),
+            )
+        object.__setattr__(
+            self,
+            "seed_threshold",
+            _nonnegative_float(self.seed_threshold, "seed_threshold"),
+        )
         for name in ("strain_max1", "strain_max2"):
             value = _positive_float(getattr(self, name), name)
             if value > 1.0:
                 raise ValueError(f"{name} must be at most 1")
+            object.__setattr__(self, name, value)
         for name in (
             "surface_smoothing1",
             "surface_smoothing2",
@@ -165,14 +184,27 @@ class F3VotingControls:
             "final_normalization_smoothing",
             "surface_support_exponent",
         ):
-            _nonnegative_float(getattr(self, name), name)
-        _positive_float(self.reference_thin_sigma, "reference_thin_sigma")
+            object.__setattr__(
+                self,
+                name,
+                _nonnegative_float(getattr(self, name), name),
+            )
+        object.__setattr__(
+            self,
+            "reference_thin_sigma",
+            _positive_float(self.reference_thin_sigma, "reference_thin_sigma"),
+        )
         support_fraction = _nonnegative_float(
             self.surface_support_min_fraction,
             "surface_support_min_fraction",
         )
         if support_fraction > 1.0:
             raise ValueError("surface_support_min_fraction must be at most 1")
+        object.__setattr__(
+            self,
+            "surface_support_min_fraction",
+            support_fraction,
+        )
         if self.surface_voting_boundary_policy not in {
             "reference",
             "masked_in_bounds",

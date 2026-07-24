@@ -435,6 +435,7 @@ def write_or_reuse_stage(
         for artifact in artifacts:
             path = temporary_path / artifact.filename
             _validate_numpy_artifact(path, artifact)
+            _fsync_file(path)
             artifact_files[artifact.filename] = _file_metadata(path)
 
         stage_manifest = {
@@ -859,6 +860,12 @@ def _write_bytes(path: Path, payload: bytes) -> None:
         os.fsync(stream.fileno())
 
 
+def _fsync_file(path: Path) -> None:
+    _require_regular_nonsymlink(path, f"artifact file {path.name}")
+    with path.open("rb") as stream:
+        os.fsync(stream.fileno())
+
+
 def _file_metadata(path: Path) -> dict[str, Any]:
     _require_regular_nonsymlink(path, f"artifact file {path.name}")
     digest = hashlib.sha256()
@@ -1073,14 +1080,9 @@ def _cleanup_path_if_identity(
 
 def _fsync_directory(path: Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError:
-        return
+    descriptor = os.open(path, flags)
     try:
         os.fsync(descriptor)
-    except OSError:
-        pass
     finally:
         os.close(descriptor)
 

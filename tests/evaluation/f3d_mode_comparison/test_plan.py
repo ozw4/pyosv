@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
+from pyosv.evaluation.f3d_mode_comparison.artifacts import canonical_json_bytes
 from pyosv.evaluation.f3d_mode_comparison import (
     F3CellSpec,
     F3DatasetSpec,
@@ -252,3 +254,32 @@ def test_plan_serialization_is_deterministic_and_json_safe() -> None:
         sort_keys=True,
         allow_nan=False,
     )
+
+
+def test_numpy_numeric_config_values_are_normalized_before_serialization() -> None:
+    scanner = replace(
+        F3ScannerConfig(),
+        phi_min=np.float32(0.0),
+        refinement_factor=np.int64(2),
+        interpolation_order=np.int64(1),
+    )
+    voting = replace(
+        F3VotingControls(),
+        ru=np.int64(10),
+        seed_threshold=np.float32(0.3),
+        strain_max1=np.float32(0.25),
+    )
+    plan = build_f3d_mode_comparison_plan(
+        F3ModeComparisonConfig(
+            scanner_template=scanner,
+            voting_controls=voting,
+        )
+    )
+
+    assert type(scanner.phi_min) is float
+    assert type(scanner.refinement_factor) is int
+    assert type(scanner.interpolation_order) is int
+    assert type(voting.ru) is int
+    assert type(voting.seed_threshold) is float
+    assert type(voting.strain_max1) is float
+    canonical_json_bytes(plan.as_dict())

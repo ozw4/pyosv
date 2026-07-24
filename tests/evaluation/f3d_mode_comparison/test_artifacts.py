@@ -521,6 +521,57 @@ def test_stage_fault_does_not_publish_or_leave_temporary_directory(
     assert list(parent.iterdir()) == []
 
 
+def test_stage_fsyncs_callback_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path / "run")
+    synced: list[str] = []
+    original = artifacts_module._fsync_file
+
+    def track_fsync(path: Path) -> None:
+        synced.append(path.name)
+        original(path)
+
+    monkeypatch.setattr(artifacts_module, "_fsync_file", track_fsync)
+
+    _stage(workspace)
+
+    assert synced == ["fv.npy"]
+
+
+def test_stage_artifact_fsync_failure_cleans_temporary_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path / "run")
+    parent = workspace.path / "stages" / "voting"
+    monkeypatch.setattr(
+        artifacts_module,
+        "_fsync_file",
+        lambda path: (_ for _ in ()).throw(OSError("artifact fsync fault")),
+    )
+
+    with pytest.raises(OSError, match="artifact fsync fault"):
+        _stage(workspace)
+
+    assert list(parent.iterdir()) == []
+
+
+def test_directory_fsync_failure_is_propagated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        artifacts_module.os,
+        "fsync",
+        lambda descriptor: (_ for _ in ()).throw(OSError("directory fsync fault")),
+    )
+
+    with pytest.raises(OSError, match="directory fsync fault"):
+        artifacts_module._fsync_directory(tmp_path)
+
+
 def test_resume_cleans_only_owned_nonsymlink_temporary_directories(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path / "run")
     parent = workspace.path / "stages" / "scanner"
