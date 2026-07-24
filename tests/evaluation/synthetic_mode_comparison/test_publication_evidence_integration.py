@@ -100,6 +100,20 @@ def shared_result(shared_config) -> SyntheticModeComparisonResult:
 
 
 @pytest.fixture(scope="module")
+def shared_thinning_config() -> SyntheticModeComparisonConfig:
+    return SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=SHAPE,
+        voting_config=SyntheticVotingConfig(),
+    )
+
+
+@pytest.fixture(scope="module")
+def shared_thinning_result(shared_thinning_config) -> SyntheticModeComparisonResult:
+    return run_mode_comparison(shared_thinning_config, clock=_fixed_clock)
+
+
+@pytest.fixture(scope="module")
 def topology_config() -> SyntheticModeComparisonConfig:
     return SyntheticModeComparisonConfig(
         case_ids=("single_vertical_plane", "parallel_planes", "crossing_planes"),
@@ -190,6 +204,10 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     original_ensemble_scan = quality_scanner.scan_ensemble_attributes
     original_scanner_thin = FaultOrientScanner3.thin
     original_scanner_evidence = comparison_metrics.build_scanner_metric_evidence
+    original_seed_selector = quality_pipeline.OptimalSurfaceVoter.pick_seeds
+    original_voter = quality_pipeline.OptimalSurfaceVoter.apply_voting_from_seeds
+    original_thinner = quality_pipeline.OptimalSurfaceVoter.thin
+    original_skinner = quality_pipeline.find_synthetic_skins
     original_voting_evidence = quality_pipeline.build_voting_scalar_evidence
     original_thinning_evidence = quality_pipeline.build_thinning_scalar_evidence
 
@@ -222,6 +240,22 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         calls[active_trial][f"{backend}_evidence"] += 1
         return original_scanner_evidence(*args, **kwargs)
 
+    def counted_seed_selector(*args, **kwargs):
+        calls[active_trial]["seed_selector"] += 1
+        return original_seed_selector(*args, **kwargs)
+
+    def counted_voter(*args, **kwargs):
+        calls[active_trial]["voter"] += 1
+        return original_voter(*args, **kwargs)
+
+    def counted_thinner(*args, **kwargs):
+        calls[active_trial]["thinner"] += 1
+        return original_thinner(*args, **kwargs)
+
+    def counted_skinner(*args, **kwargs):
+        calls[active_trial]["skinner"] += 1
+        return original_skinner(*args, **kwargs)
+
     def counted_voting_evidence(*args, **kwargs):
         calls[active_trial]["voting_evidence"] += 1
         return original_voting_evidence(*args, **kwargs)
@@ -240,6 +274,14 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         "build_scanner_metric_evidence",
         counted_scanner_evidence,
     )
+    monkeypatch.setattr(quality_pipeline.OptimalSurfaceVoter, "pick_seeds", counted_seed_selector)
+    monkeypatch.setattr(
+        quality_pipeline.OptimalSurfaceVoter,
+        "apply_voting_from_seeds",
+        counted_voter,
+    )
+    monkeypatch.setattr(quality_pipeline.OptimalSurfaceVoter, "thin", counted_thinner)
+    monkeypatch.setattr(quality_pipeline, "find_synthetic_skins", counted_skinner)
     monkeypatch.setattr(
         quality_pipeline,
         "build_voting_scalar_evidence",
@@ -276,6 +318,9 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
                 "quality_scan": 1,
                 "quality_thin": 1,
                 "quality_evidence": 1,
+                "seed_selector": 3,
+                "voter": 3,
+                "thinner": 6,
                 "voting_evidence": 3,
                 "thinning_evidence": 6,
             }
@@ -385,6 +430,11 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
     topology_result: SyntheticModeComparisonResult,
     tmp_path: Path,
 ) -> None:
+    metrics = {
+        (row.trial_id, row.cell_label, row.metric): row.value
+        for row in topology_result.metric_rows
+        if row.stage == "skin" and row.selection == "skin_cells"
+    }
     assert tuple(report["case_id"] for report in topology_result.cell_reports) == (
         "single_vertical_plane",
         "parallel_planes",
@@ -413,6 +463,47 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
                 sum(item["covered_cell_count"] for item in component["truth_components"])
                 == payload["quality"]["skin"]["buffered_overlap_radius2"]["intersection_count"]
             )
+            per_skin_pairs = {
+                (incidence["truth_id"], skin["skin_index"])
+                for skin in component["skins"]
+                for incidence in skin["truth_component_cell_counts"]
+            }
+            per_truth_pairs = {
+                (truth["truth_id"], incidence["skin_index"])
+                for truth in component["truth_components"]
+                for incidence in truth["skin_cell_counts"]
+            }
+            assert per_skin_pairs == per_truth_pairs
+            threshold = component["qualification_min_fraction"]
+            for skin in component["skins"]:
+                expected = sum(
+                    incidence["cell_count"] / skin["cell_count"] >= threshold
+                    for incidence in skin["truth_component_cell_counts"]
+                )
+                assert skin["qualifying_truth_component_count"] == expected
+            for truth in component["truth_components"]:
+                expected = sum(
+                    incidence["covered_cell_count"] / truth["truth_cell_count"] >= threshold
+                    for incidence in truth["skin_cell_counts"]
+                )
+                assert truth["qualifying_skin_count"] == expected
+            assert component["over_merge_skin_count"] == sum(
+                skin["qualifying_truth_component_count"] >= 2 for skin in component["skins"]
+            )
+            assert component["over_split_truth_component_count"] == sum(
+                truth["qualifying_skin_count"] >= 2 for truth in component["truth_components"]
+            )
+            for metric in (
+                "covered_truth_component_count",
+                "uncovered_truth_component_count",
+                "over_merge_skin_count",
+                "over_split_truth_component_count",
+                "mean_skin_purity",
+                "min_skin_purity",
+                "mean_truth_component_recall",
+                "min_truth_component_recall",
+            ):
+                assert metrics[(report["trial_id"], label, metric)] == component[metric]
 
     for cache, trial in zip(topology_result.cache_stats, topology_result.trial_metadata):
         assert cache["primary_skinning_hits"] == 0
@@ -468,8 +559,10 @@ def test_in_memory_validation_calls_component_topology_evidence_binding(
         ("scalar_evidence_contract_version", 1),
         ("scalar_evidence_contract_version", 2),
         ("scalar_evidence_contract_version", 3),
+        ("scalar_evidence_contract_version", 4),
         ("runtime_contract_version", 1),
         ("runtime_contract_version", 2),
+        ("runtime_contract_version", 3),
     ),
 )
 def test_publication_bundle_explicitly_rejects_every_legacy_contract(
@@ -655,6 +748,9 @@ def test_volume_capacity_tampering_is_rejected_everywhere(
         "extra_shared_volume",
         "wrong_volume_call_count",
         "cell_double_attribution",
+        "move_owned_to_shared",
+        "wrong_owner",
+        "double_count_shared_seed",
         "stage_exceeds_trial",
         "experiment_below_trials",
     ),
@@ -689,6 +785,37 @@ def test_runtime_contract_tampering_is_rejected_everywhere(
             if row.stage == "cell_execution" and row.cell_label == cell.label
         )
         rows.insert(cell_index, duplicated_runtime)
+    elif tamper in {"move_owned_to_shared", "wrong_owner"}:
+        owned_index = next(
+            row_index
+            for row_index, row in enumerate(rows)
+            if row.stage == "base_thinning" and row.cell_label == "ORACLE-REF"
+        )
+        if tamper == "move_owned_to_shared":
+            rows[owned_index] = replace(
+                rows[owned_index],
+                cell_label=None,
+                scanner_backend=None,
+                shared_stage=True,
+            )
+        else:
+            rows[owned_index] = replace(rows[owned_index], cell_label="ORACLE-QUAL")
+    elif tamper == "double_count_shared_seed":
+        cell = build_mode_comparison_plan(default_config).cells[0]
+        seed_index = next(
+            row_index
+            for row_index, row in enumerate(rows)
+            if row.stage == "seed_selection" and row.shared_stage
+        )
+        rows.insert(
+            seed_index + 1,
+            replace(
+                rows[seed_index],
+                cell_label=cell.label,
+                scanner_backend=cell.scanner_backend,
+                shared_stage=False,
+            ),
+        )
     elif tamper == "stage_exceeds_trial":
         trial_total = next(row.elapsed_seconds for row in rows if row.stage == "trial_total")
         rows[index] = replace(rows[index], elapsed_seconds=trial_total + 1.0)
@@ -754,6 +881,8 @@ def test_empty_skin_control_preserves_overlap_degeneracy_and_round_trip(
 def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
     default_config: SyntheticModeComparisonConfig,
     default_result: SyntheticModeComparisonResult,
+    shared_thinning_config: SyntheticModeComparisonConfig,
+    shared_thinning_result: SyntheticModeComparisonResult,
     shared_config: SyntheticModeComparisonConfig,
     shared_result: SyntheticModeComparisonResult,
     tmp_path: Path,
@@ -773,6 +902,21 @@ def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
                 "primary_skinning_misses": 6,
             },
             (3, 0, 6),
+        ),
+        (
+            shared_thinning_config,
+            shared_thinning_result,
+            {
+                "seed_hits": 3,
+                "seed_misses": 3,
+                "voting_hits": 3,
+                "voting_misses": 3,
+                "thinning_hits": 3,
+                "thinning_misses": 3,
+                "primary_skinning_hits": 0,
+                "primary_skinning_misses": 6,
+            },
+            (3, 3, 0),
         ),
         (
             shared_config,
@@ -806,6 +950,20 @@ def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
             if not row.shared_stage and row.stage == "thinning_scalar_evidence"
         )
         assert (*shared_calls, owned_thinning_calls) == evidence_calls
+        attribution = build_runtime_attribution_plan(plan, plan.trials[0])
+        owned_stages = Counter(entry.stage for entry in attribution.cell_owned_entries())
+        if config is default_config:
+            assert owned_stages == Counter(
+                {
+                    "base_thinning": 6,
+                    "primary_skinning": 6,
+                    "thinning_scalar_evidence": 6,
+                }
+            )
+        elif config is shared_thinning_config:
+            assert owned_stages == Counter({"primary_skinning": 6})
+        else:
+            assert not owned_stages
         validate_mode_comparison_result(result, config)
         bundle = write_artifact_bundle(result, tmp_path / f"cache-{index}", config=config)
         assert validate_completed_bundle(bundle)
@@ -818,6 +976,15 @@ def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
     assert (
         shared_plan.reference_workflow_settings.skinning_config
         == shared_plan.quality_workflow_settings.skinning_config
+    )
+    shared_thinning_plan = build_mode_comparison_plan(shared_thinning_config)
+    assert (
+        shared_thinning_plan.reference_workflow_settings.voting_config
+        == shared_thinning_plan.quality_workflow_settings.voting_config
+    )
+    assert (
+        shared_thinning_plan.reference_workflow_settings.skinning_config
+        != shared_thinning_plan.quality_workflow_settings.skinning_config
     )
 
 
@@ -949,6 +1116,113 @@ def test_component_topology_tampering_is_rejected_in_memory_and_after_rehash(
     _write_json(reports_path, persisted)
     _rehash(bundle, "cell_reports.json")
     with pytest.raises(ValueError, match=message):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "truth_total_and_recall",
+        "covered_total_overlap_and_metric",
+        "incidence_pair",
+        "qualifying_count",
+        "over_merge_and_aggregates",
+    ),
+)
+def test_coherent_component_publication_tampering_is_rejected_everywhere(
+    tamper: str,
+    topology_config: SyntheticModeComparisonConfig,
+    topology_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = topology_result.as_dict()["cell_reports"]
+    payload = reports[0]["cells"]["ORACLE-REF"]
+    downstreams = (payload,)
+    for downstream in downstreams:
+        skin = downstream["quality"]["skin"]
+        component = skin["component_topology"]
+        truth = component["truth_components"][0]
+        if tamper == "truth_total_and_recall":
+            truth["truth_cell_count"] += 1
+            truth["recall"] = truth["covered_cell_count"] / truth["truth_cell_count"]
+            truth["dominant_skin_fraction_of_truth"] = (
+                truth["dominant_skin_cell_count"] / truth["truth_cell_count"]
+            )
+            component["mean_truth_component_recall"] = truth["recall"]
+            component["min_truth_component_recall"] = truth["recall"]
+        elif tamper == "covered_total_overlap_and_metric":
+            truth["covered_cell_count"] -= 1
+            truth["skin_cell_counts"][0]["covered_cell_count"] -= 1
+            truth["dominant_skin_cell_count"] -= 1
+            truth["recall"] = truth["covered_cell_count"] / truth["truth_cell_count"]
+            truth["dominant_skin_fraction_of_truth"] = (
+                truth["dominant_skin_cell_count"] / truth["truth_cell_count"]
+            )
+            component["mean_truth_component_recall"] = truth["recall"]
+            component["min_truth_component_recall"] = truth["recall"]
+            overlap = skin["buffered_overlap_radius2"]
+            overlap["intersection_count"] -= 1
+            overlap["union_count"] += 1
+            overlap["truth_in_candidate_buffer_count"] -= 1
+            overlap["precision"] = overlap["intersection_count"] / overlap["candidate_count"]
+            overlap["recall"] = overlap["intersection_count"] / overlap["truth_count"]
+            overlap["f1"] = _f1(overlap["precision"], overlap["recall"])
+            overlap["jaccard"] = overlap["intersection_count"] / overlap["union_count"]
+            overlap["buffered_recall"] = (
+                overlap["truth_in_candidate_buffer_count"] / overlap["truth_count"]
+            )
+            overlap["buffered_f1"] = _f1(overlap["buffered_precision"], overlap["buffered_recall"])
+        elif tamper == "incidence_pair":
+            component["skins"][0]["truth_component_cell_counts"][0]["truth_id"] += 1
+        elif tamper == "qualifying_count":
+            component["skins"][0]["qualifying_truth_component_count"] = 0
+        else:
+            assert tamper == "over_merge_and_aggregates"
+            component["over_merge_skin_count"] = 1
+
+    tampered = _replace_component_publication_metrics(
+        topology_result,
+        reports,
+        trial_id=reports[0]["trial_id"],
+        cell_label="ORACLE-REF",
+    )
+    if tamper == "covered_total_overlap_and_metric":
+        overlap = payload["quality"]["skin"]["buffered_overlap_radius2"]
+        overlap_metric_rows = {
+            row.metric: row.value
+            for row in tampered.metric_rows
+            if row.trial_id == reports[0]["trial_id"]
+            and row.cell_label == "ORACLE-REF"
+            and row.stage == "skin"
+            and row.selection == "skin_cells"
+        }
+        assert {
+            name: overlap_metric_rows[name]
+            for name in (
+                "candidate_count",
+                "buffered_precision",
+                "buffered_recall",
+                "buffered_f1",
+            )
+        } == {
+            name: overlap[name]
+            for name in (
+                "candidate_count",
+                "buffered_precision",
+                "buffered_recall",
+                "buffered_f1",
+            )
+        }
+    with pytest.raises(ValueError, match="component"):
+        validate_mode_comparison_result(tampered, topology_config)
+
+    bundle = write_artifact_bundle(
+        topology_result,
+        tmp_path / f"coherent-component-{tamper}",
+        config=topology_config,
+    )
+    _replace_bundle_result_tables(bundle, tampered)
+    with pytest.raises(ValueError, match="component"):
         validate_completed_bundle(bundle)
 
 
@@ -1520,6 +1794,63 @@ def _replace_bundle_result_tables(bundle: Path, result: SyntheticModeComparisonR
         (bundle / filename).write_bytes(comparison_artifacts._csv_bytes(rows, model))
     for filename in ("cell_reports.json", *rows_by_filename):
         _rehash(bundle, filename)
+
+
+def _replace_component_publication_metrics(
+    result: SyntheticModeComparisonResult,
+    reports: list[dict[str, Any]],
+    *,
+    trial_id: str,
+    cell_label: str,
+) -> SyntheticModeComparisonResult:
+    skin = reports[0]["cells"][cell_label]["quality"]["skin"]
+    component = skin["component_topology"]
+    overlap = skin["buffered_overlap_radius2"]
+    metric_values = {
+        name: component[name]
+        for name in (
+            "covered_truth_component_count",
+            "uncovered_truth_component_count",
+            "over_merge_skin_count",
+            "over_split_truth_component_count",
+            "mean_skin_purity",
+            "min_skin_purity",
+            "mean_truth_component_recall",
+            "min_truth_component_recall",
+        )
+    }
+    metric_values.update(
+        {
+            name: overlap[name]
+            for name in (
+                "candidate_count",
+                "buffered_precision",
+                "buffered_recall",
+                "buffered_f1",
+            )
+        }
+    )
+    rows = tuple(
+        replace(row, value=metric_values[row.metric])
+        if (
+            row.trial_id == trial_id
+            and row.cell_label == cell_label
+            and row.stage == "skin"
+            and row.selection == "skin_cells"
+            and row.metric in metric_values
+        )
+        else row
+        for row in result.metric_rows
+    )
+    contrasts = compute_contrast_rows(rows)
+    return replace(
+        result,
+        cell_reports=tuple(reports),
+        metric_rows=rows,
+        contrast_rows=contrasts,
+        metric_aggregates=aggregate_metric_rows(rows),
+        contrast_aggregates=aggregate_contrast_rows(contrasts),
+    )
 
 
 def _f1(left: float, right: float) -> float:

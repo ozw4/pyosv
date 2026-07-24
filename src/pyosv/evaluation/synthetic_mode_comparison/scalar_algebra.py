@@ -425,6 +425,8 @@ def validate_component_topology_algebra(
     skin_qualifying_counts: list[int] = []
     skin_incidence: dict[tuple[int, int], int] = {}
     total_skin_cells = 0
+    total_truth_cells = 0
+    total_background_cells = 0
     actually_with_truth_count = 0
     for index, item in enumerate(skins):
         item_context = f"{context}.skins[{index}]"
@@ -502,6 +504,8 @@ def validate_component_topology_algebra(
         else:
             actually_with_truth_count += 1
         total_skin_cells += cell_count
+        total_truth_cells += truth_cell_count
+        total_background_cells += background_cell_count
         purities.append(purity)
         skin_touching_counts.append(touching_count)
         skin_qualifying_counts.append(qualifying_truth_count)
@@ -510,6 +514,21 @@ def validate_component_topology_algebra(
         raise ValueError(f"{context}.skin_with_truth_count does not match skins")
     if total_skin_cells != _count(topology, "cell_count", f"{context}.topology"):
         raise ValueError(f"{context} per-skin cell count does not match skin topology")
+
+    covered_truth_cells = sum(
+        _count(item, "covered_cell_count", f"{context}.truth_components[{index}]")
+        for index, item in enumerate(truth_components)
+    )
+    unique_cell_count = _count(topology, "unique_cell_count", f"{context}.topology")
+    unique_background_cells = unique_cell_count - covered_truth_cells
+    if covered_truth_cells > total_truth_cells or unique_background_cells < 0:
+        raise ValueError(
+            f"{context} unique covered truth cells are inconsistent with per-skin incidence"
+        )
+    if unique_background_cells > total_background_cells:
+        raise ValueError(
+            f"{context} unique background cells are inconsistent with per-skin incidence"
+        )
 
     if set(skin_incidence) != set(truth_incidence):
         raise ValueError(f"{context} per-skin and per-truth incidence pair sets do not match")

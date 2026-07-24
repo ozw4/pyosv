@@ -390,6 +390,23 @@ def test_topology_algebra_accepts_valid_duplicate_and_background_reports() -> No
     validate_component_topology_algebra(component, topology, "component_topology")
 
 
+def test_component_topology_rejects_impossible_unique_truth_background_partition() -> None:
+    topology, component = _valid_topology_reports()
+    topology["unique_cell_count"] = topology["cell_count"]
+    topology["duplicate_cell_count"] = 0
+    truth = component["truth_components"][0]
+    truth["covered_cell_count"] = 1
+    truth["recall"] = 0.5
+    truth["dominant_skin_cell_count"] = 1
+    truth["dominant_skin_fraction_of_truth"] = 0.5
+    truth["skin_cell_counts"][0]["covered_cell_count"] = 1
+    component["mean_truth_component_recall"] = 0.5
+    component["min_truth_component_recall"] = 0.5
+
+    with pytest.raises(ValueError, match="unique background cells"):
+        validate_component_topology_algebra(component, topology, "component_topology")
+
+
 @pytest.mark.parametrize(
     ("fault_voxel_count", "intersection_count", "message"),
     (

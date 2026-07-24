@@ -136,9 +136,14 @@ canonical volume capacity. Skin `unique_cell_count` has the same bound;
 `cell_count` and skin orientation count may exceed it only through the
 validated duplicate-cell contract.
 Skin largest/small summaries are recomputed from the per-skin arrays and the
-effective `small_skin_size`, while component-topology summaries are checked
-against their per-truth and per-skin arrays. Prepared scanner scalar evidence
-is built once per trial and backend, reused by the
+effective `small_skin_size`. Enabled-skin component topology persists the
+canonical qualification threshold, duplicate-inclusive truth-component counts
+per skin, and unique covered-cell counts per truth component and skin. The two
+incidence views must contain the same truth/skin pairs. Dominant and qualifying
+incidence, over-merge/over-split, purity, recall, and their publication
+MetricRows are recomputed from those tables. Truth-component totals are bound
+to trial truth evidence, and covered totals are bound to the exact skin-overlap
+intersection. Prepared scanner scalar evidence is built once per trial and backend, reused by the
 scanner-only and end-to-end cells, and recorded as a shared runtime stage.
 Seed selection, voting volume, base thinning, primary skinning, voting scalar
 evidence, and final-thinning scalar evidence are attributed from their
@@ -158,7 +163,7 @@ times to be no greater than each `trial_total`, and the sum of all
 Validation uses the recorded trial truth counts and does not rerun the case
 generator or any volume calculation, independently prove that its computation
 was correct, or provide a tamper-prevention signature. Scalar-evidence contract
-versions 1 through 3 schema-v3 bundles predate part or all of this evidence
+versions 1 through 4 schema-v3 bundles predate part or all of this evidence
 contract and must be regenerated; they are not implicitly upgraded. Schema-v1
 bundles do not contain complete scanner evidence, while schema-v2 bundles do
 not uniquely identify their runtime coverage. Both must be regenerated with
