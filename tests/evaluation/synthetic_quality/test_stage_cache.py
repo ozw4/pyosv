@@ -444,15 +444,23 @@ def test_replaced_prepared_oracle_bypasses_stage_cache(
     cache = PipelineStageCache(case, build_timer=record_build)
 
     run_case_variant(case, prepared_inputs=prepared, stage_cache=cache, **common)
-    run_case_variant(
+    bypassed = run_case_variant(
         case,
         prepared_inputs=PreparedCaseInputs(case, custom_oracle, None),
         stage_cache=cache,
         **common,
     )
+    legacy = run_case_variant(
+        case,
+        prepared_inputs=PreparedCaseInputs(case, custom_oracle, None),
+        stage_cache=None,
+        **common,
+    )
 
-    assert calls == 2
+    assert calls == 3
     assert stages == ["seed_selection", "voting_volume", "base_thinning"]
+    _assert_nested_equal(bypassed.report_payload, legacy.report_payload)
+    _assert_nested_equal(bypassed.artifacts.volumes, legacy.artifacts.volumes)
 
 
 def test_replaced_prepared_scanner_bypasses_stage_cache(

@@ -234,13 +234,13 @@ def test_shared_child_runtime_is_aggregated_and_cell_exclusive() -> None:
     assert sum(row["elapsed_seconds"] for row in cell_rows) == 29.0
 
 
-def test_cell_exclusive_elapsed_preserves_tolerance_bounded_child_overrun() -> None:
+def test_cell_exclusive_elapsed_normalizes_tolerance_bounded_child_overrun() -> None:
     exclusive_elapsed = comparison_runner._exclusive_cell_elapsed(
         1.0,
         1.0 + 5.0e-13,
         cell_label="ORACLE-REF",
     )
-    assert exclusive_elapsed < 0.0
+    assert exclusive_elapsed == 0.0
 
     with pytest.raises(ValueError, match="shared child runtime elapsed exceeds parent"):
         comparison_runner._exclusive_cell_elapsed(

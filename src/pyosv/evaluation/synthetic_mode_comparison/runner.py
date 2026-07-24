@@ -324,7 +324,10 @@ def _exclusive_cell_elapsed(
         raise ValueError(
             f"shared child runtime elapsed exceeds parent cell_execution elapsed for {cell_label!r}"
         )
-    return fsum((elapsed, -child_elapsed))
+    exclusive_elapsed = fsum((elapsed, -child_elapsed))
+    if exclusive_elapsed < 0.0:
+        return 0.0
+    return exclusive_elapsed
 
 
 def _evaluate_cell(
