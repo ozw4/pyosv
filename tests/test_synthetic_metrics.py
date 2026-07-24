@@ -537,6 +537,39 @@ def test_component_aware_skin_topology_metrics_counts_over_split() -> None:
     assert metrics["truth_components"][0]["recall"] == pytest.approx(1.0)
 
 
+def test_component_topology_persists_qualifying_incidence_and_tie_breaks() -> None:
+    truth_fault_id = np.array([[[1, 1, 1, 1, 2, 2, 0]]], dtype=np.int32)
+    skins = [
+        _skin_from_indices([(0, 0, 0), (0, 0, 0), (4, 0, 0), (6, 0, 0)]),
+        _skin_from_indices([(1, 0, 0)]),
+        _skin_from_indices([(6, 0, 0)]),
+    ]
+
+    metrics = component_aware_skin_topology_metrics(
+        skins,
+        truth_fault_id.shape,
+        truth_fault_id,
+        min_fraction=0.25,
+    )
+
+    assert metrics["qualification_min_fraction"] == 0.25
+    assert metrics["skins"][0]["truth_component_cell_counts"] == [
+        {"truth_id": 1, "cell_count": 2},
+        {"truth_id": 2, "cell_count": 1},
+    ]
+    assert metrics["skins"][0]["qualifying_truth_component_count"] == 2
+    assert metrics["skins"][2]["truth_component_cell_counts"] == []
+    assert metrics["skins"][2]["qualifying_truth_component_count"] == 0
+    assert metrics["truth_components"][0]["skin_cell_counts"] == [
+        {"skin_index": 0, "covered_cell_count": 1},
+        {"skin_index": 1, "covered_cell_count": 1},
+    ]
+    assert metrics["truth_components"][0]["dominant_skin_index"] == 0
+    assert metrics["truth_components"][0]["qualifying_skin_count"] == 2
+    assert metrics["over_merge_skin_count"] == 1
+    assert metrics["over_split_truth_component_count"] == 1
+
+
 def test_component_aware_skin_topology_metrics_counts_background_and_purity() -> None:
     truth_fault_id = np.array([[[1, 1, 0]]], dtype=np.int32)
     skin = _skin_from_indices([(0, 0, 0), (1, 0, 0), (2, 0, 0)])

@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "check_synthetic_quality_refactor_contract.py"
@@ -79,6 +81,57 @@ def test_json_contract_allows_only_additive_buffered_overlap_counts() -> None:
     assert contract._json_differences(expected, actual) == [
         "JSON $.buffered_overlap_radius2.unexpected_count: unexpected in actual output"
     ]
+
+
+def test_json_contract_allows_only_additive_component_incidence_fields() -> None:
+    expected = {
+        "component_topology": {
+            "truth_components": [{"truth_id": 1}],
+            "skins": [{"skin_index": 0}],
+        }
+    }
+    actual = {
+        "component_topology": {
+            "qualification_min_fraction": 0.05,
+            "truth_components": [
+                {
+                    "truth_id": 1,
+                    "skin_cell_counts": [{"skin_index": 0, "covered_cell_count": 2}],
+                    "qualifying_skin_count": 1,
+                }
+            ],
+            "skins": [
+                {
+                    "skin_index": 0,
+                    "truth_component_cell_counts": [{"truth_id": 1, "cell_count": 2}],
+                    "qualifying_truth_component_count": 1,
+                }
+            ],
+        }
+    }
+
+    assert contract._json_differences(expected, actual) == []
+    actual["component_topology"]["unexpected_summary"] = 1
+    assert contract._json_differences(expected, actual) == [
+        "JSON $.component_topology.unexpected_summary: unexpected in actual output"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "key"),
+    (
+        (
+            "$.component_topology.truth_components[0].skin_cell_counts[0]",
+            "qualifying_skin_count",
+        ),
+        (
+            "$.component_topology.skins[0].truth_component_cell_counts[0]",
+            "qualifying_truth_component_count",
+        ),
+    ),
+)
+def test_component_incidence_additions_are_limited_to_array_items(path: str, key: str) -> None:
+    assert not contract._is_additive_component_topology_field(path, key)
 
 
 def test_artifact_manifest_does_not_follow_symlinks(tmp_path: Path) -> None:

@@ -54,6 +54,7 @@ from .models import (
 )
 from .scalar_algebra import (
     derived_scalars_close,
+    validate_component_topology_evidence,
     validate_downstream_quality_scalar_algebra,
     validate_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
@@ -65,7 +66,7 @@ from .scalar_algebra import (
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 3
-RUNTIME_CONTRACT_VERSION = 3
+RUNTIME_CONTRACT_VERSION = 4
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
 METRIC_REGISTRY_DEFINITION_VERSION = 1
@@ -516,6 +517,7 @@ _EDGE_FALSE_POSITIVE_REPORT_SCHEMA = {
     "truth_buffer_radius": "nonnegative_number",
 }
 _COMPONENT_TOPOLOGY_SUMMARY_SCHEMA = {
+    "qualification_min_fraction": "closed_unit_interval_number",
     **dict.fromkeys(
         (
             "truth_component_count",
@@ -549,6 +551,7 @@ _TRUTH_COMPONENT_REPORT_SCHEMA = {
             "covered_cell_count",
             "skin_count_touching",
             "dominant_skin_cell_count",
+            "qualifying_skin_count",
         ),
         "nonnegative_integer",
     ),
@@ -567,11 +570,20 @@ _SKIN_COMPONENT_REPORT_SCHEMA = {
             "background_cell_count",
             "truth_component_count_touching",
             "dominant_truth_cell_count",
+            "qualifying_truth_component_count",
         ),
         "nonnegative_integer",
     ),
     "dominant_truth_id": "optional_nonnegative_integer",
     "purity": "closed_unit_interval_number",
+}
+_TRUTH_SKIN_INCIDENCE_SCHEMA = {
+    "skin_index": "nonnegative_integer",
+    "covered_cell_count": "nonnegative_integer",
+}
+_SKIN_TRUTH_INCIDENCE_SCHEMA = {
+    "truth_id": "nonnegative_integer",
+    "cell_count": "nonnegative_integer",
 }
 
 
@@ -762,6 +774,10 @@ def _load_bundle_objects(
                 "unsupported scalar evidence contract version 3: legacy schema-v3 bundle "
                 "does not constrain mask-derived counts to the canonical volume capacity"
             ),
+            4: (
+                "unsupported scalar evidence contract version 4: legacy schema-v3 bundle "
+                "does not persist component incidence or bind it to trial truth and skin overlap"
+            ),
         },
     )
     _manifest_contract_version(
@@ -777,6 +793,10 @@ def _load_bundle_objects(
             2: (
                 "unsupported runtime contract version 2: legacy schema-v3 bundle "
                 "does not contain shared volume-stage attribution or elapsed algebra"
+            ),
+            3: (
+                "unsupported runtime contract version 3: legacy schema-v3 bundle "
+                "does not distinguish shared and cell-owned cacheable stage runtime"
             ),
         },
     )
@@ -1118,6 +1138,12 @@ def _validate_trial_truth_targets(
                 fault_count=fault_count,
                 surface_count=surface_count,
                 context=f"{cell_context}.quality.skin",
+            )
+            validate_component_topology_evidence(
+                quality["skin"]["component_topology"],
+                truth_evidence,
+                quality["skin"]["buffered_overlap_radius2"],
+                f"{cell_context}.quality.skin.component_topology",
             )
 
 
@@ -1848,13 +1874,42 @@ def _load_component_topology_report(value: Any, context: str) -> dict[str, Any]:
         context,
     )
     _load_scalar_report_fields(payload, _COMPONENT_TOPOLOGY_SUMMARY_SCHEMA, context)
-    for name, schema in (
-        ("truth_components", _TRUTH_COMPONENT_REPORT_SCHEMA),
-        ("skins", _SKIN_COMPONENT_REPORT_SCHEMA),
-    ):
-        items = _array(payload[name], f"{context}.{name}")
-        for index, item in enumerate(items):
-            _load_scalar_report_object(item, schema, f"{context}.{name}[{index}]")
+    truth_components = _array(payload["truth_components"], f"{context}.truth_components")
+    for index, value in enumerate(truth_components):
+        item_context = f"{context}.truth_components[{index}]"
+        item = _object(
+            value,
+            {*_TRUTH_COMPONENT_REPORT_SCHEMA, "skin_cell_counts"},
+            item_context,
+        )
+        _load_scalar_report_fields(item, _TRUTH_COMPONENT_REPORT_SCHEMA, item_context)
+        incidence = _array(item["skin_cell_counts"], f"{item_context}.skin_cell_counts")
+        for incidence_index, incidence_item in enumerate(incidence):
+            _load_scalar_report_object(
+                incidence_item,
+                _TRUTH_SKIN_INCIDENCE_SCHEMA,
+                f"{item_context}.skin_cell_counts[{incidence_index}]",
+            )
+
+    skins = _array(payload["skins"], f"{context}.skins")
+    for index, value in enumerate(skins):
+        item_context = f"{context}.skins[{index}]"
+        item = _object(
+            value,
+            {*_SKIN_COMPONENT_REPORT_SCHEMA, "truth_component_cell_counts"},
+            item_context,
+        )
+        _load_scalar_report_fields(item, _SKIN_COMPONENT_REPORT_SCHEMA, item_context)
+        incidence = _array(
+            item["truth_component_cell_counts"],
+            f"{item_context}.truth_component_cell_counts",
+        )
+        for incidence_index, incidence_item in enumerate(incidence):
+            _load_scalar_report_object(
+                incidence_item,
+                _SKIN_TRUTH_INCIDENCE_SCHEMA,
+                f"{item_context}.truth_component_cell_counts[{incidence_index}]",
+            )
     return payload
 
 

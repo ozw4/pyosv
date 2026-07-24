@@ -157,7 +157,8 @@ def test_identical_seed_and_voting_stages_are_called_once(
 def test_pipeline_stage_build_timer_wraps_shared_misses_in_stage_order() -> None:
     stages: list[str] = []
 
-    def record_build(stage, operation):
+    def record_build(stage, semantic_key, operation):
+        assert semantic_key is not None
         stages.append(stage)
         return operation()
 
@@ -192,7 +193,8 @@ def test_pipeline_stage_build_timer_wraps_shared_misses_in_stage_order() -> None
 def test_pipeline_stage_build_timer_skips_primary_when_skinning_is_disabled() -> None:
     stages: list[str] = []
 
-    def record_build(stage, operation):
+    def record_build(stage, semantic_key, operation):
+        assert semantic_key is not None
         stages.append(stage)
         return operation()
 
@@ -266,8 +268,9 @@ def test_pipeline_stage_timer_exception_does_not_register_partial_entry() -> Non
     voting_key, _, _ = _scalar_stage_keys(case)
     operation_called = False
 
-    def fail_timer(stage, operation):
+    def fail_timer(stage, semantic_key, operation):
         assert stage == "seed_selection"
+        assert semantic_key == voting_key.seed
         raise RuntimeError("timer failed")
 
     cache = PipelineStageCache(case, build_timer=fail_timer)
@@ -437,7 +440,8 @@ def test_replaced_prepared_oracle_bypasses_stage_cache(
     )
     stages: list[str] = []
 
-    def record_build(stage, operation):
+    def record_build(stage, semantic_key, operation):
+        assert semantic_key is not None
         stages.append(stage)
         return operation()
 

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 ScalarStageSetting = str | int | float | bool
 DiagnosticItems = tuple[tuple[str, Any], ...]
-SCALAR_EVIDENCE_CONTRACT_VERSION = 4
+SCALAR_EVIDENCE_CONTRACT_VERSION = 5
 
 
 class ImmutableScalarMapping(dict[str, Any]):
@@ -408,6 +408,7 @@ class PipelineStageBuildTimer(Protocol):
     def __call__(
         self,
         stage: str,
+        semantic_key: Any,
         operation: Callable[[], _PipelineStageResultT],
     ) -> _PipelineStageResultT: ...
 
@@ -494,7 +495,9 @@ class PipelineStageCache:
         if result is not None:
             return result
         result = (
-            builder() if self.build_timer is None else self.build_timer("seed_selection", builder)
+            builder()
+            if self.build_timer is None
+            else self.build_timer("seed_selection", key, builder)
         )
         self.put_seed(key, result)
         return result
@@ -521,7 +524,9 @@ class PipelineStageCache:
         if result is not None:
             return result
         result = (
-            builder() if self.build_timer is None else self.build_timer("voting_volume", builder)
+            builder()
+            if self.build_timer is None
+            else self.build_timer("voting_volume", key, builder)
         )
         self.put_voting(key, result)
         return result
@@ -548,7 +553,9 @@ class PipelineStageCache:
         if result is not None:
             return result
         result = (
-            builder() if self.build_timer is None else self.build_timer("base_thinning", builder)
+            builder()
+            if self.build_timer is None
+            else self.build_timer("base_thinning", key, builder)
         )
         self.put_thinning(key, result)
         return result
@@ -579,7 +586,9 @@ class PipelineStageCache:
         if result is not None:
             return result
         result = (
-            builder() if self.build_timer is None else self.build_timer("primary_skinning", builder)
+            builder()
+            if self.build_timer is None
+            else self.build_timer("primary_skinning", key, builder)
         )
         self.put_primary_skinning(key, result)
         return result
@@ -609,7 +618,11 @@ class DownstreamScalarEvidenceCache:
     case: InitVar[Synthetic3DCase | None] = None
     contract_version: int = SCALAR_EVIDENCE_CONTRACT_VERSION
     build_timer: (
-        Callable[[str, Callable[[], DownstreamScalarEvidence]], DownstreamScalarEvidence] | None
+        Callable[
+            [str, Any, Callable[[], DownstreamScalarEvidence]],
+            DownstreamScalarEvidence,
+        ]
+        | None
     ) = field(default=None, repr=False)
     _case: Synthetic3DCase | None = field(default=None, init=False, repr=False)
     _voting: dict[VotingScalarEvidenceKey, DownstreamScalarEvidence] = field(
@@ -691,7 +704,7 @@ class DownstreamScalarEvidenceCache:
         result = (
             builder()
             if self.build_timer is None
-            else self.build_timer("voting_scalar_evidence", builder)
+            else self.build_timer("voting_scalar_evidence", key, builder)
         )
         self.put_voting(key, result)
         return result
@@ -729,7 +742,7 @@ class DownstreamScalarEvidenceCache:
         result = (
             builder()
             if self.build_timer is None
-            else self.build_timer("thinning_scalar_evidence", builder)
+            else self.build_timer("thinning_scalar_evidence", key, builder)
         )
         self.put_thinning(key, result)
         return result

@@ -1440,17 +1440,19 @@ are validated from resolved semantic stage keys, and shared scanner, voting,
 and conditionally shared thinning scalar evidence is compared across cells.
 Scanner scalar evidence is prepared once per trial and backend, reused by the
 scanner-only and end-to-end cells, and attributed to a shared runtime stage.
-Voting and thinning scalar evidence is built once per unique trial-local
-semantic key and attributed to shared runtime rows; `cell_execution` contains
-only the remaining cell-exclusive time. Seed selection, voting volume, base
-thinning, and primary skinning are also attributed once per successful
-cache-miss build to shared runtime rows; cache hits add neither calls nor
-elapsed time. These rows are a within-experiment breakdown rather than
-isolated-process benchmarks. Their disjoint elapsed sum may not exceed
+Voting and thinning scalar evidence, seed selection, voting volume, base
+thinning, and primary skinning are attributed by trial-local semantic-key
+reference count. Keys referenced by multiple cells use a shared row; a
+successfully built key referenced by one cell uses an owner-labelled row.
+Cache hits add neither calls nor elapsed time. `cell_execution` contains only
+the remaining cell-exclusive time, so mode-owned runtime is that residual plus
+the cell's owner-labelled rows without any implicit share of shared rows.
+These rows are a within-experiment breakdown rather than isolated-process
+benchmarks. Their disjoint elapsed sum may not exceed
 `trial_total`, and the sum of trial totals may not exceed `experiment_total`.
 Its authoritative artifact schema is v3, with independent scalar-evidence and
-runtime contract versions (currently scalar-evidence version 4 and runtime
-version 3). Each trial persists one canonical truth-evidence object; all
+runtime contract versions (currently scalar-evidence version 5 and runtime
+version 4). Each trial persists one canonical truth-evidence object; all
 scanner, voting, thinning, and enabled-skin quality reports bind their
 fault-band and thin-surface truth counts to it. Scanner publication metrics are
 joined totally to complete persisted scanner evidence. V1 bundles lack that
@@ -1465,8 +1467,14 @@ capped at the volume diagonal. Truth evidence and mask-derived report counts
 are bounded by the canonical volume capacity; duplicate skin cells may raise
 total cell and skin orientation counts above that capacity, but unique cells
 may not. Largest/small-skin summaries are recomputed from
-per-skin arrays and the effective `small_skin_size`, and component topology is
-checked against its per-truth and per-skin arrays. Success means the recorded scalar evidence is
+per-skin arrays and the effective `small_skin_size`. Component topology stores
+the canonical qualification threshold, duplicate-inclusive truth-component
+counts per skin, and unique covered-cell counts per truth component and skin.
+Dominant incidence, qualifying incidence, over-merge/over-split, purity, and
+recall are recomputed from those tables. Truth-component cell totals must equal
+the trial fault-voxel evidence, and covered-component totals must equal the
+exact skin-overlap intersection. Scalar-evidence v1-v4 bundles do not satisfy
+this complete contract and are rejected without implicit upgrade. Success means the recorded scalar evidence is
 internally and cross-cell consistent, not that any volume calculation was
 independently rerun or proven correct, and it is not a tamper-prevention
 signature.

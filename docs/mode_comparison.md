@@ -241,21 +241,30 @@ existing operational validation paths.
   the completed output path. `validate_completed_bundle()` checks cross-file
   scalar semantics in addition to hashes and syntax. The authoritative writer
   emits artifact schema v3 with independently versioned scalar-evidence and
-  runtime contracts (currently scalar-evidence version 4 and runtime version
-  3). Each trial has one canonical truth-evidence object, and scanner, voting,
+  runtime contracts (currently scalar-evidence version 5 and runtime version
+  4). Each trial has one canonical truth-evidence object, and scanner, voting,
   thinning, and enabled-skin reports bind their fault-band and thin-surface
   truth counts to it. Schema-v1 bundles lack complete scanner evidence, while
   schema-v2 bundles do not uniquely identify runtime coverage; both must be
-  regenerated. Scanner publication metrics are joined totally to
+  regenerated. Enabled-skin component topology persists both duplicate-inclusive
+  per-skin truth-component counts and per-skin unique coverage counts for each
+  truth component. Its qualification threshold and all dominant, qualifying,
+  over-merge, over-split, purity, and recall summaries are recomputed from
+  those incidence tables. Truth-component totals are bound to trial truth
+  evidence, and covered totals are bound to the exact skin-overlap
+  intersection. Scalar-evidence v1-v4 bundles lack part of this current
+  evidence contract and are rejected without upgrade. Scanner publication metrics are joined totally to
   the persisted registry-ordered evidence. This scanner evidence is prepared
   once per trial and backend, reused by scanner-only and end-to-end cells, and
   attributed to a shared runtime stage. Runtime and validation derive cache
   hit/miss expectations from the same resolved semantic stage keys. Voting and
-  thinning scalar evidence is built once per unique trial-local semantic key
-  and attributed to shared runtime rows. Seed selection, voting volume, base
-  thinning, and primary skinning are likewise timed once per successful
-  cache-miss build in shared rows; cache hits add neither calls nor elapsed
-  time. `cell_execution` contains only the remaining cell-exclusive time.
+  thinning scalar evidence, seed selection, voting volume, base thinning, and
+  primary skinning are attributed by trial-local semantic-key reference count.
+  Keys referenced by multiple cells use a shared row; successfully built keys
+  referenced by one cell use owner-labelled rows. Cache hits add neither calls
+  nor elapsed time. `cell_execution` contains only the remaining
+  cell-exclusive time. Mode-owned runtime is that residual plus the cell's
+  owner-labelled rows; shared rows are not apportioned.
   Runtime rows are one within-experiment breakdown, not isolated-process
   benchmarks. Their disjoint stage sum may not exceed `trial_total`, and the
   sum of trial totals may not exceed `experiment_total`. Validation

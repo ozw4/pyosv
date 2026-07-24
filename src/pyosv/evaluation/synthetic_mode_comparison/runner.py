@@ -37,6 +37,11 @@ from .models import (
     SyntheticModeComparisonPlan,
 )
 from .runtime_contract import runtime_exceeds
+from .runtime_attribution import (
+    CACHEABLE_RUNTIME_STAGES,
+    RuntimeAttributionPlan,
+    build_runtime_attribution_plan,
+)
 from .scalar_algebra import volume_voxel_count
 from .trials import SyntheticTrialSpec
 
@@ -99,53 +104,75 @@ class _TrialRuntimeBuffer(_RuntimeRowSink):
         return tuple(self._rows)
 
 
-class _SharedChildRuntime:
-    """Accumulate successful cache-miss builder time without recording rows early."""
+class _CacheBuildRuntime:
+    """Attribute successful cache-miss builds using the active canonical cell."""
 
-    STAGES = (
-        "seed_selection",
-        "voting_volume",
-        "base_thinning",
-        "primary_skinning",
-        "voting_scalar_evidence",
-        "thinning_scalar_evidence",
-    )
-
-    def __init__(self, clock: Any) -> None:
+    def __init__(self, clock: Any, plan: RuntimeAttributionPlan) -> None:
         self._clock = clock
-        self._elapsed = dict.fromkeys(self.STAGES, 0.0)
-        self._calls = dict.fromkeys(self.STAGES, 0)
+        self._plan = plan
+        self._active_cell: ModeCellSpec | None = None
+        self._shared_elapsed = dict.fromkeys(CACHEABLE_RUNTIME_STAGES, 0.0)
+        self._shared_calls = dict.fromkeys(CACHEABLE_RUNTIME_STAGES, 0)
+        self._owned_elapsed: dict[tuple[str, str], float] = {}
 
-    def time_build(self, stage: str, operation: Callable[[], _T]) -> _T:
-        if stage not in self._elapsed:
+    def activate(self, cell: ModeCellSpec) -> None:
+        if self._active_cell is not None:
+            raise RuntimeError("cache build runtime already has an active cell")
+        self._active_cell = cell
+
+    def deactivate(self, cell: ModeCellSpec) -> None:
+        if self._active_cell != cell:
+            raise RuntimeError("cache build runtime active cell does not match")
+        self._active_cell = None
+
+    def time_build(self, stage: str, semantic_key: Any, operation: Callable[[], _T]) -> _T:
+        if stage not in self._shared_elapsed:
             raise ValueError(f"unsupported downstream evidence runtime stage {stage!r}")
+        if self._active_cell is None:
+            raise RuntimeError(f"cache-miss build {stage!r} has no active cell")
+        attribution = self._plan.attribution_for(self._active_cell.label, stage)
+        if attribution.semantic_key != semantic_key:
+            raise RuntimeError(
+                f"cache-miss semantic key does not match runtime attribution for "
+                f"{self._active_cell.label!r} stage {stage!r}"
+            )
         start = _clock_value(self._clock, stage)
         result = operation()
         end = _clock_value(self._clock, stage)
         elapsed = end - start
         if elapsed < 0.0:
             raise ValueError(f"clock moved backwards while timing {stage!r}")
-        self._elapsed[stage] = fsum((self._elapsed[stage], elapsed))
-        self._calls[stage] += 1
+        if attribution.shared:
+            self._shared_elapsed[stage] = fsum((self._shared_elapsed[stage], elapsed))
+            self._shared_calls[stage] += 1
+        else:
+            owned_key = (self._active_cell.label, stage)
+            if owned_key in self._owned_elapsed:
+                raise RuntimeError(
+                    f"cell-owned cache stage {stage!r} built more than once for "
+                    f"{self._active_cell.label!r}"
+                )
+            self._owned_elapsed[owned_key] = elapsed
         return result
 
     @property
     def total_elapsed(self) -> float:
-        return fsum(self._elapsed.values())
+        return fsum((*self._shared_elapsed.values(), *self._owned_elapsed.values()))
 
-    def snapshot(self) -> tuple[float, ...]:
-        return tuple(self._elapsed[stage] for stage in self.STAGES)
+    def snapshot(self) -> float:
+        return self.total_elapsed
 
-    def elapsed_since(self, snapshot: tuple[float, ...]) -> float:
-        if len(snapshot) != len(self.STAGES):
-            raise ValueError("shared child runtime snapshot has the wrong length")
-        return fsum(self._elapsed[stage] - start for stage, start in zip(self.STAGES, snapshot))
+    def elapsed_since(self, snapshot: float) -> float:
+        return fsum((self.total_elapsed, -snapshot))
 
-    def elapsed(self, stage: str) -> float:
-        return self._elapsed[stage]
+    def shared_elapsed(self, stage: str) -> float:
+        return self._shared_elapsed[stage]
 
-    def call_count(self, stage: str) -> int:
-        return self._calls[stage]
+    def shared_call_count(self, stage: str) -> int:
+        return self._shared_calls[stage]
+
+    def owned_elapsed(self, cell_label: str, stage: str) -> float | None:
+        return self._owned_elapsed.get((cell_label, stage))
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +236,14 @@ def run_synthetic_trial(
         )
     truth_evidence = _build_trial_truth_evidence(case, trial, plan.truth_metric_config)
 
-    child_runtime = _SharedChildRuntime(clock) if runtime_buffer is not None else None
+    attribution_plan = build_runtime_attribution_plan(
+        plan,
+        trial,
+        case_token=id(case),
+    )
+    child_runtime = (
+        _CacheBuildRuntime(clock, attribution_plan) if runtime_buffer is not None else None
+    )
     stage_cache = PipelineStageCache(
         case,
         build_timer=(child_runtime.time_build if child_runtime is not None else None),
@@ -219,7 +253,7 @@ def run_synthetic_trial(
         build_timer=(child_runtime.time_build if child_runtime is not None else None),
     )
     evaluations: dict[str, SyntheticCellEvaluation] = {}
-    cell_runtimes: list[tuple[ModeCellSpec, float]] = []
+    cell_runtimes: dict[str, float] = {}
     try:
         prepared_inputs = prepare_case_inputs(
             case,
@@ -244,19 +278,25 @@ def run_synthetic_trial(
         )
         for cell in _execution_cells(plan):
             start = _clock_value(clock, "cell_execution")
-            child_start = child_runtime.snapshot() if child_runtime is not None else ()
-            evaluation = _evaluate_cell(
-                plan,
-                cell,
-                prepared_inputs=prepared_inputs,
-                stage_cache=stage_cache,
-                scalar_evidence_cache=scalar_evidence_cache,
-                prepared_scanner_scalar_evidence=(
-                    scanner_evidence[cell.scanner_backend]
-                    if cell.scanner_backend is not None
-                    else None
-                ),
-            )
+            child_start = child_runtime.snapshot() if child_runtime is not None else 0.0
+            if child_runtime is not None:
+                child_runtime.activate(cell)
+            try:
+                evaluation = _evaluate_cell(
+                    plan,
+                    cell,
+                    prepared_inputs=prepared_inputs,
+                    stage_cache=stage_cache,
+                    scalar_evidence_cache=scalar_evidence_cache,
+                    prepared_scanner_scalar_evidence=(
+                        scanner_evidence[cell.scanner_backend]
+                        if cell.scanner_backend is not None
+                        else None
+                    ),
+                )
+            finally:
+                if child_runtime is not None:
+                    child_runtime.deactivate(cell)
             end = _clock_value(clock, "cell_execution")
             elapsed = end - start
             child_elapsed = (
@@ -269,23 +309,35 @@ def run_synthetic_trial(
                 child_elapsed,
                 cell_label=cell.label,
             )
-            cell_runtimes.append((cell, exclusive_elapsed))
+            cell_runtimes[cell.label] = exclusive_elapsed
             evaluations[cell.label] = evaluation
 
         if runtime_buffer is not None:
             if child_runtime is None:
-                raise RuntimeError("shared child runtime accumulator is missing")
-            for stage in _SharedChildRuntime.STAGES:
+                raise RuntimeError("cache build runtime accumulator is missing")
+            for stage in CACHEABLE_RUNTIME_STAGES:
                 runtime_buffer.record(
                     stage=stage,
-                    elapsed_seconds=child_runtime.elapsed(stage),
-                    call_count=child_runtime.call_count(stage),
+                    elapsed_seconds=child_runtime.shared_elapsed(stage),
+                    call_count=child_runtime.shared_call_count(stage),
                     shared_stage=True,
                 )
-            for cell, elapsed in cell_runtimes:
+            for entry in attribution_plan.cell_owned_entries():
+                elapsed = child_runtime.owned_elapsed(entry.cell_label, entry.stage)
+                if elapsed is None:
+                    continue
+                runtime_buffer.record(
+                    stage=entry.stage,
+                    elapsed_seconds=elapsed,
+                    cell_label=entry.cell_label,
+                    scanner_backend=entry.scanner_backend,
+                    call_count=1,
+                    shared_stage=False,
+                )
+            for cell in plan.cells:
                 runtime_buffer.record(
                     stage="cell_execution",
-                    elapsed_seconds=elapsed,
+                    elapsed_seconds=cell_runtimes[cell.label],
                     cell_label=cell.label,
                     scanner_backend=cell.scanner_backend,
                     call_count=1,

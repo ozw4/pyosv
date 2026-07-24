@@ -10,16 +10,7 @@ from typing import Any
 
 from ..reporting.models import thaw_report_value
 from ..synthetic_quality import SyntheticSkinningConfig
-from ..synthetic_quality.stage_keys import (
-    PipelineStageKeys,
-    build_final_thinning_stage_key,
-    build_oracle_attribute_stage_key,
-    build_primary_skinning_stage_key,
-    build_scanner_attribute_stage_key,
-    build_seed_stage_key,
-    build_thinning_stage_key,
-    build_voting_stage_key,
-)
+from ..synthetic_quality.stage_keys import build_scanner_attribute_stage_key
 from ..synthetic_quality.variants import effective_skinning_config, get_variant_spec
 from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
@@ -40,7 +31,13 @@ from .metrics import (
 )
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
 from .runtime_contract import runtime_exceeds
+from .runtime_attribution import (
+    CACHEABLE_RUNTIME_STAGES,
+    build_runtime_attribution_plan,
+    resolved_stage_keys_for_cell as _resolved_stage_keys_for_cell,
+)
 from .scalar_algebra import (
+    validate_component_topology_evidence,
     validate_downstream_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
     validate_skin_report_topology_algebra,
@@ -209,6 +206,7 @@ def _validate_cell_reports(
                         skinning_config,
                         plan.shape,
                         context,
+                        report["truth_evidence"],
                     )
                     if "pipelines" in payload:
                         pipeline = payload["pipelines"][cell.input_mode]
@@ -217,6 +215,7 @@ def _validate_cell_reports(
                             skinning_config,
                             plan.shape,
                             f"{context}.pipelines.{cell.input_mode}",
+                            report["truth_evidence"],
                         )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
@@ -227,6 +226,7 @@ def _validate_downstream_topology_algebra(
     skinning_config: SyntheticSkinningConfig,
     shape: Sequence[int],
     context: str,
+    truth_evidence: Mapping[str, Any],
 ) -> None:
     enabled = skinning_config.enabled
     topology = payload["pyosv"]["skins"]
@@ -255,6 +255,12 @@ def _validate_downstream_topology_algebra(
     )
     if _wire_value(topology) != _wire_value(quality_topology):
         raise ValueError(f"{context}.pyosv.skins does not match quality.skin.topology")
+    validate_component_topology_evidence(
+        skin["component_topology"],
+        truth_evidence,
+        skin["buffered_overlap_radius2"],
+        f"{context}.quality.skin.component_topology",
+    )
 
 
 def _validate_cache_stats(
@@ -303,68 +309,6 @@ def _expected_cache_counters(
             counters[f"{stage}_{outcome}"] += 1
             seen[stage].add(key)
     return counters
-
-
-def _resolved_stage_keys_for_cell(
-    plan: SyntheticModeComparisonPlan,
-    cell: ModeCellSpec,
-    trial: SyntheticTrialSpec | None = None,
-) -> PipelineStageKeys:
-    """Derive the cache keys looked up by one canonical cell, without execution."""
-
-    if cell.scope == SCANNER_ONLY_SCOPE:
-        return PipelineStageKeys(None, None, None, None, None)
-
-    trial = plan.trials[0] if trial is None else trial
-    if cell.input_mode == "oracle":
-        attribute_key = build_oracle_attribute_stage_key(
-            case_id=trial.case_id,
-            shape=trial.shape,
-        )
-        target_source = "oracle_ft"
-    elif cell.input_mode == "scanner" and cell.scanner_backend is not None:
-        scanner_config = replace(plan.scanner_template, backend=cell.scanner_backend)
-        attribute_key = build_scanner_attribute_stage_key(
-            case_id=trial.case_id,
-            shape=trial.shape,
-            scanner_config=scanner_config,
-        )
-        target_source = "scanner_fet"
-    else:
-        raise ValueError("downstream cell must have a canonical attribute source")
-
-    settings = _workflow_settings(plan, cell)
-    variant_spec = get_variant_spec(plan.comparison_variant)
-    skinning_config = effective_skinning_config(variant_spec, settings.skinning_config)
-    seed_key = build_seed_stage_key(
-        attribute_key=attribute_key,
-        voting_config=settings.voting_config,
-        variant_spec=variant_spec,
-        target_source=target_source,
-    )
-    voting_key = build_voting_stage_key(
-        seed_key=seed_key,
-        voting_config=settings.voting_config,
-        variant_spec=variant_spec,
-    )
-    thinning_key = build_thinning_stage_key(
-        voting_key=voting_key,
-        voting_config=settings.voting_config,
-        variant_spec=variant_spec,
-    )
-    primary_skinning_key = build_primary_skinning_stage_key(
-        thinning_key=thinning_key,
-        skinning_config=skinning_config,
-        variant_spec=variant_spec,
-        target_source=target_source,
-    )
-    return PipelineStageKeys(
-        attribute=attribute_key,
-        seed=seed_key,
-        voting=voting_key,
-        thinning=thinning_key,
-        primary_skinning=primary_skinning_key,
-    )
 
 
 def _validate_shared_stage_evidence(
@@ -563,59 +507,28 @@ def _validate_runtime_rows(
                 ),
             )
         )
-        cache_counters = _expected_cache_counters(plan, trial)
-        voting_calls, thinning_calls = _expected_downstream_evidence_builds(plan, trial)
+        attribution_plan = build_runtime_attribution_plan(plan, trial)
         expected.extend(
             (
-                (
-                    *trial_metadata,
-                    "seed_selection",
-                    None,
-                    None,
-                    cache_counters["seed_misses"],
-                    True,
-                ),
-                (
-                    *trial_metadata,
-                    "voting_volume",
-                    None,
-                    None,
-                    cache_counters["voting_misses"],
-                    True,
-                ),
-                (
-                    *trial_metadata,
-                    "base_thinning",
-                    None,
-                    None,
-                    cache_counters["thinning_misses"],
-                    True,
-                ),
-                (
-                    *trial_metadata,
-                    "primary_skinning",
-                    None,
-                    None,
-                    cache_counters["primary_skinning_misses"],
-                    True,
-                ),
-                (
-                    *trial_metadata,
-                    "voting_scalar_evidence",
-                    None,
-                    None,
-                    voting_calls,
-                    True,
-                ),
-                (
-                    *trial_metadata,
-                    "thinning_scalar_evidence",
-                    None,
-                    None,
-                    thinning_calls,
-                    True,
-                ),
+                *trial_metadata,
+                stage,
+                None,
+                None,
+                len(attribution_plan.shared_keys(stage)),
+                True,
             )
+            for stage in CACHEABLE_RUNTIME_STAGES
+        )
+        expected.extend(
+            (
+                *trial_metadata,
+                entry.stage,
+                entry.cell_label,
+                entry.scanner_backend,
+                1,
+                False,
+            )
+            for entry in attribution_plan.cell_owned_entries()
         )
         expected.extend(
             (
@@ -645,18 +558,17 @@ def _validate_runtime_elapsed_algebra(
     rows: Sequence[RuntimeRow],
     plan: SyntheticModeComparisonPlan,
 ) -> None:
-    shared_aggregate_stages = {
-        "seed_selection",
-        "voting_volume",
-        "base_thinning",
-        "primary_skinning",
-        "voting_scalar_evidence",
-        "thinning_scalar_evidence",
-    }
-    rows_per_trial = 6 + len(shared_aggregate_stages) + len(plan.cells) + 3
     offset = 0
     trial_totals = []
     for trial in plan.trials:
+        attribution_plan = build_runtime_attribution_plan(plan, trial)
+        rows_per_trial = (
+            6
+            + len(CACHEABLE_RUNTIME_STAGES)
+            + len(attribution_plan.cell_owned_entries())
+            + len(plan.cells)
+            + 3
+        )
         trial_rows = rows[offset : offset + rows_per_trial]
         offset += rows_per_trial
         trial_total = trial_rows[-1].elapsed_seconds
@@ -668,7 +580,8 @@ def _validate_runtime_elapsed_algebra(
             )
         for row in trial_rows:
             if (
-                row.stage in shared_aggregate_stages
+                row.stage in CACHEABLE_RUNTIME_STAGES
+                and row.shared_stage
                 and row.call_count == 0
                 and row.elapsed_seconds != 0.0
             ):
@@ -678,32 +591,6 @@ def _validate_runtime_elapsed_algebra(
     experiment_total = rows[-1].elapsed_seconds
     if runtime_exceeds(fsum(trial_totals), experiment_total):
         raise ValueError("runtime_rows trial_total sum exceeds experiment_total")
-
-
-def _expected_downstream_evidence_builds(
-    plan: SyntheticModeComparisonPlan,
-    trial: SyntheticTrialSpec,
-) -> tuple[int, int]:
-    voting_keys = set()
-    thinning_keys = set()
-    variant_spec = get_variant_spec(plan.comparison_variant)
-    for cell in plan.cells:
-        if cell.scope == SCANNER_ONLY_SCOPE:
-            continue
-        keys = _resolved_stage_keys_for_cell(plan, cell, trial)
-        if keys.voting is None or keys.thinning is None:
-            raise ValueError("downstream cell is missing canonical scalar evidence keys")
-        target_source = "oracle_ft" if cell.input_mode == "oracle" else "scanner_fet"
-        final_thinning_key = build_final_thinning_stage_key(
-            thinning_key=keys.thinning,
-            variant_spec=variant_spec,
-            target_source=target_source,
-        )
-        if final_thinning_key is None:
-            raise ValueError("downstream cell is missing a final thinning evidence key")
-        voting_keys.add(keys.voting)
-        thinning_keys.add(final_thinning_key)
-    return len(voting_keys), len(thinning_keys)
 
 
 def _runtime_identity(row: RuntimeRow) -> tuple[Any, ...]:

@@ -19,6 +19,10 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 )
 from pyosv.evaluation.synthetic_mode_comparison import experiment as comparison_experiment
 from pyosv.evaluation.synthetic_mode_comparison.builder import build_mode_comparison_plan
+from pyosv.evaluation.synthetic_mode_comparison.runtime_attribution import (
+    CACHEABLE_RUNTIME_STAGES,
+    build_runtime_attribution_plan,
+)
 from pyosv.evaluation.synthetic_quality import (
     SyntheticSkinningConfig,
     SyntheticTruthMetricConfig,
@@ -83,6 +87,13 @@ def test_positive_width_dipping_case_returns_finite_metrics_and_contrasts() -> N
 
 def test_runtime_stage_order_and_shared_scanner_costs() -> None:
     result = _small_result()
+    plan = build_mode_comparison_plan(
+        SyntheticModeComparisonConfig(
+            case_ids=("single_vertical_plane",),
+            shape=(9, 9, 9),
+        )
+    )
+    attribution = build_runtime_attribution_plan(plan, plan.trials[0])
     stages = tuple(row.stage for row in result.runtime_rows)
 
     assert stages == (
@@ -98,6 +109,7 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
         "primary_skinning",
         "voting_scalar_evidence",
         "thinning_scalar_evidence",
+        *(entry.stage for entry in attribution.cell_owned_entries()),
         *("cell_execution",) * 8,
         "metric_extraction",
         "contrast_extraction",
@@ -116,23 +128,16 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
     shared_child_rows = {
         row.stage: row
         for row in result.runtime_rows
-        if row.stage
-        in {
-            "seed_selection",
-            "voting_volume",
-            "base_thinning",
-            "primary_skinning",
-            "voting_scalar_evidence",
-            "thinning_scalar_evidence",
-        }
+        if row.shared_stage
+        if row.stage in CACHEABLE_RUNTIME_STAGES
     }
     assert {stage: row.call_count for stage, row in shared_child_rows.items()} == {
-        "seed_selection": result.cache_stats[0]["seed_misses"],
-        "voting_volume": result.cache_stats[0]["voting_misses"],
-        "base_thinning": result.cache_stats[0]["thinning_misses"],
-        "primary_skinning": result.cache_stats[0]["primary_skinning_misses"],
+        "seed_selection": 3,
+        "voting_volume": 3,
+        "base_thinning": 0,
+        "primary_skinning": 0,
         "voting_scalar_evidence": 3,
-        "thinning_scalar_evidence": 6,
+        "thinning_scalar_evidence": 0,
     }
     assert all(
         row.call_count == 1 for row in result.runtime_rows if row not in shared_child_rows.values()

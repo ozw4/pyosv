@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,14 @@ ADDITIVE_BUFFERED_OVERLAP_COUNTS = {
     "candidate_in_truth_buffer_count",
     "truth_in_candidate_buffer_count",
 }
+ADDITIVE_COMPONENT_TOPOLOGY_FIELDS = {
+    "component_topology": {"qualification_min_fraction"},
+    "truth_components": {"qualifying_skin_count", "skin_cell_counts"},
+    "skins": {"qualifying_truth_component_count", "truth_component_cell_counts"},
+}
+COMPONENT_TOPOLOGY_ARRAY_ITEM_PATH = re.compile(
+    r"\.component_topology\.(truth_components|skins)\[\d+\]$"
+)
 
 
 def normalized_json(path: Path) -> Any:
@@ -63,6 +72,8 @@ def _json_differences(expected: Any, actual: Any, path: str = "$") -> list[str]:
                     and key in ADDITIVE_BUFFERED_OVERLAP_COUNTS
                 ):
                     continue
+                if _is_additive_component_topology_field(path, key):
+                    continue
                 differences.append(f"JSON {child_path}: unexpected in actual output")
             else:
                 differences.extend(_json_differences(expected[key], actual[key], child_path))
@@ -81,6 +92,15 @@ def _json_differences(expected: Any, actual: Any, path: str = "$") -> list[str]:
     if expected != actual:
         return [f"JSON {path}: expected {expected!r}, got {actual!r}"]
     return []
+
+
+def _is_additive_component_topology_field(path: str, key: str) -> bool:
+    if path.endswith("component_topology"):
+        return key in ADDITIVE_COMPONENT_TOPOLOGY_FIELDS["component_topology"]
+    match = COMPONENT_TOPOLOGY_ARRAY_ITEM_PATH.search(path)
+    if match is not None:
+        return key in ADDITIVE_COMPONENT_TOPOLOGY_FIELDS[match.group(1)]
+    return False
 
 
 def _csv_differences(expected_bytes: bytes, actual_bytes: bytes) -> list[str]:

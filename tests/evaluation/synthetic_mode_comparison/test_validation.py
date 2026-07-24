@@ -21,6 +21,7 @@ from pyosv.evaluation.synthetic_mode_comparison.validation import (
 )
 from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
     validate_component_topology_algebra,
+    validate_component_topology_evidence,
     validate_overlap_algebra,
     validate_skin_report_topology_algebra,
     validate_skin_topology_algebra,
@@ -56,6 +57,7 @@ def _valid_topology_reports():
         "small_skin_cell_fraction": 0.4,
     }
     component = {
+        "qualification_min_fraction": 0.05,
         "truth_component_count": 2,
         "covered_truth_component_count": 2,
         "uncovered_truth_component_count": 0,
@@ -80,6 +82,8 @@ def _valid_topology_reports():
                 "dominant_skin_index": 0,
                 "dominant_skin_cell_count": 2,
                 "dominant_skin_fraction_of_truth": 1.0,
+                "skin_cell_counts": [{"skin_index": 0, "covered_cell_count": 2}],
+                "qualifying_skin_count": 1,
             },
             {
                 "truth_id": 2,
@@ -90,6 +94,8 @@ def _valid_topology_reports():
                 "dominant_skin_index": 1,
                 "dominant_skin_cell_count": 1,
                 "dominant_skin_fraction_of_truth": 0.5,
+                "skin_cell_counts": [{"skin_index": 1, "covered_cell_count": 1}],
+                "qualifying_skin_count": 1,
             },
         ],
         "skins": [
@@ -102,6 +108,8 @@ def _valid_topology_reports():
                 "dominant_truth_id": 1,
                 "dominant_truth_cell_count": 2,
                 "purity": 2.0 / 3.0,
+                "truth_component_cell_counts": [{"truth_id": 1, "cell_count": 2}],
+                "qualifying_truth_component_count": 1,
             },
             {
                 "skin_index": 1,
@@ -112,6 +120,8 @@ def _valid_topology_reports():
                 "dominant_truth_id": 2,
                 "dominant_truth_cell_count": 1,
                 "purity": 1.0,
+                "truth_component_cell_counts": [{"truth_id": 2, "cell_count": 1}],
+                "qualifying_truth_component_count": 1,
             },
             {
                 "skin_index": 2,
@@ -122,6 +132,8 @@ def _valid_topology_reports():
                 "dominant_truth_id": None,
                 "dominant_truth_cell_count": 0,
                 "purity": 0.0,
+                "truth_component_cell_counts": [],
+                "qualifying_truth_component_count": 0,
             },
         ],
     }
@@ -149,6 +161,7 @@ def _fragmentation_reports(cell_counts, small_skin_size):
         ),
     }
     component = {
+        "qualification_min_fraction": 0.05,
         "truth_component_count": 0,
         "covered_truth_component_count": 0,
         "uncovered_truth_component_count": 0,
@@ -174,6 +187,8 @@ def _fragmentation_reports(cell_counts, small_skin_size):
                 "dominant_truth_id": None,
                 "dominant_truth_cell_count": 0,
                 "purity": 0.0,
+                "truth_component_cell_counts": [],
+                "qualifying_truth_component_count": 0,
             }
             for index, count in enumerate(cell_counts)
         ],
@@ -373,6 +388,48 @@ def test_topology_algebra_accepts_valid_duplicate_and_background_reports() -> No
 
     validate_skin_topology_algebra(topology, "topology", shape=(9, 9, 9))
     validate_component_topology_algebra(component, topology, "component_topology")
+
+
+def test_component_topology_rejects_impossible_unique_truth_background_partition() -> None:
+    topology, component = _valid_topology_reports()
+    topology["unique_cell_count"] = topology["cell_count"]
+    topology["duplicate_cell_count"] = 0
+    truth = component["truth_components"][0]
+    truth["covered_cell_count"] = 1
+    truth["recall"] = 0.5
+    truth["dominant_skin_cell_count"] = 1
+    truth["dominant_skin_fraction_of_truth"] = 0.5
+    truth["skin_cell_counts"][0]["covered_cell_count"] = 1
+    component["mean_truth_component_recall"] = 0.5
+    component["min_truth_component_recall"] = 0.5
+
+    with pytest.raises(ValueError, match="unique background cells"):
+        validate_component_topology_algebra(component, topology, "component_topology")
+
+
+@pytest.mark.parametrize(
+    ("fault_voxel_count", "intersection_count", "message"),
+    (
+        (5, 3, "fault_voxel_count"),
+        (4, 2, "intersection_count"),
+    ),
+)
+def test_component_topology_evidence_binds_trial_truth_and_skin_overlap(
+    fault_voxel_count,
+    intersection_count,
+    message,
+) -> None:
+    _, component = _valid_topology_reports()
+    truth_evidence = {"fault_voxel_count": fault_voxel_count}
+    overlap = {"intersection_count": intersection_count}
+
+    with pytest.raises(ValueError, match=message):
+        validate_component_topology_evidence(
+            component,
+            truth_evidence,
+            overlap,
+            "component_topology",
+        )
 
 
 def test_skin_topology_caps_only_unique_cells_to_volume_capacity() -> None:
@@ -824,6 +881,7 @@ def test_in_memory_validation_requires_empty_skin_topology_when_disabled() -> No
             SyntheticSkinningConfig(enabled=False, small_skin_size=2),
             (9, 9, 9),
             "cell",
+            {"fault_voxel_count": 1},
         )
 
 
@@ -962,6 +1020,51 @@ def test_downstream_runtime_attribution_tampering_is_rejected(result, config, ta
         rows[index] = replace(rows[index], shared_stage=False)
     else:
         rows[index], rows[index + 1] = rows[index + 1], rows[index]
+
+    with pytest.raises(ValueError, match="runtime_rows"):
+        validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    (
+        "owner",
+        "missing",
+        "order",
+        "double_count",
+        "move_to_shared",
+        "shared_seed_zero",
+    ),
+)
+def test_runtime_v4_cell_owned_row_tampering_is_rejected(result, config, tampering) -> None:
+    rows = list(result.runtime_rows)
+    owned_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row.stage == "base_thinning" and row.cell_label == "ORACLE-REF"
+    )
+    if tampering == "owner":
+        rows[owned_index] = replace(rows[owned_index], cell_label="ORACLE-QUAL")
+    elif tampering == "missing":
+        rows.pop(owned_index)
+    elif tampering == "order":
+        rows[owned_index], rows[owned_index + 1] = rows[owned_index + 1], rows[owned_index]
+    elif tampering == "double_count":
+        rows.insert(owned_index + 1, rows[owned_index])
+    elif tampering == "move_to_shared":
+        rows[owned_index] = replace(
+            rows[owned_index],
+            cell_label=None,
+            scanner_backend=None,
+            shared_stage=True,
+        )
+    else:
+        seed_index = next(
+            index
+            for index, row in enumerate(rows)
+            if row.stage == "seed_selection" and row.shared_stage
+        )
+        rows[seed_index] = replace(rows[seed_index], call_count=0)
 
     with pytest.raises(ValueError, match="runtime_rows"):
         validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)

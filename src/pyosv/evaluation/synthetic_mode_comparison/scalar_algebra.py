@@ -7,6 +7,8 @@ from math import fsum, isclose, isfinite, sqrt
 from numbers import Integral, Real
 from typing import Any
 
+from ...synthetic_metrics import COMPONENT_QUALIFICATION_MIN_FRACTION
+
 DERIVED_SCALAR_REL_TOL = 1.0e-12
 DERIVED_SCALAR_ABS_TOL = 1.0e-12
 
@@ -287,6 +289,16 @@ def validate_component_topology_algebra(
 ) -> None:
     """Validate component topology summaries and arrays without rebuilding incidence data."""
 
+    qualification_min_fraction = _number(report, "qualification_min_fraction", context)
+    if not 0.0 <= qualification_min_fraction <= 1.0:
+        raise ValueError(
+            f"{context}.qualification_min_fraction must be in the closed unit interval"
+        )
+    if qualification_min_fraction != COMPONENT_QUALIFICATION_MIN_FRACTION:
+        raise ValueError(
+            f"{context}.qualification_min_fraction does not match the canonical contract"
+        )
+
     truth_component_count = _count(report, "truth_component_count", context)
     covered_count = _count(report, "covered_truth_component_count", context)
     uncovered_count = _count(report, "uncovered_truth_component_count", context)
@@ -320,6 +332,8 @@ def validate_component_topology_algebra(
     truth_ids: list[int] = []
     recalls: list[float] = []
     truth_touching_counts: list[int] = []
+    truth_qualifying_counts: list[int] = []
+    truth_incidence: dict[tuple[int, int], int] = {}
     actually_covered_count = 0
     for index, item in enumerate(truth_components):
         item_context = f"{context}.truth_components[{index}]"
@@ -333,12 +347,56 @@ def validate_component_topology_algebra(
         covered_cell_count = _count(item, "covered_cell_count", item_context)
         if covered_cell_count > truth_cell_count:
             raise ValueError(f"{item_context}.covered_cell_count exceeds truth_cell_count")
+        skin_cell_counts = _mapping_array(item, "skin_cell_counts", item_context)
+        incidence_skin_indices: list[int] = []
+        incidence_counts: list[int] = []
+        for incidence_index, incidence in enumerate(skin_cell_counts):
+            incidence_context = f"{item_context}.skin_cell_counts[{incidence_index}]"
+            skin_index = _count(incidence, "skin_index", incidence_context)
+            if skin_index >= skin_count:
+                raise ValueError(f"{incidence_context}.skin_index is not a valid skin index")
+            incidence_count = _count(incidence, "covered_cell_count", incidence_context)
+            if incidence_count <= 0:
+                raise ValueError(f"{incidence_context}.covered_cell_count must be positive")
+            if incidence_count > covered_cell_count:
+                raise ValueError(
+                    f"{incidence_context}.covered_cell_count exceeds component covered_cell_count"
+                )
+            incidence_skin_indices.append(skin_index)
+            incidence_counts.append(incidence_count)
+            truth_incidence[(truth_id, skin_index)] = incidence_count
+        if incidence_skin_indices != sorted(set(incidence_skin_indices)):
+            raise ValueError(f"{item_context}.skin_cell_counts skin_index values must be sorted")
+        if covered_cell_count > sum(incidence_counts):
+            raise ValueError(
+                f"{item_context}.covered_cell_count exceeds summed per-skin covered counts"
+            )
         skin_count_touching = _count(item, "skin_count_touching", item_context)
-        if skin_count_touching > skin_count:
-            raise ValueError(f"{item_context}.skin_count_touching exceeds skin_count")
+        if skin_count_touching != len(skin_cell_counts):
+            raise ValueError(f"{item_context}.skin_count_touching does not match skin_cell_counts")
         dominant_skin_cell_count = _count(item, "dominant_skin_cell_count", item_context)
-        if dominant_skin_cell_count > covered_cell_count:
-            raise ValueError(f"{item_context}.dominant_skin_cell_count exceeds covered_cell_count")
+        expected_dominant_skin_index, expected_dominant_skin_count = _dominant_incidence(
+            incidence_skin_indices, incidence_counts
+        )
+        dominant_skin_index = item.get("dominant_skin_index")
+        if isinstance(dominant_skin_index, bool) or (
+            dominant_skin_index is not None and not isinstance(dominant_skin_index, Integral)
+        ):
+            raise ValueError(f"{item_context}.dominant_skin_index must be an integer or null")
+        if dominant_skin_index != expected_dominant_skin_index:
+            raise ValueError(f"{item_context}.dominant_skin_index does not match skin_cell_counts")
+        if dominant_skin_cell_count != expected_dominant_skin_count:
+            raise ValueError(
+                f"{item_context}.dominant_skin_cell_count does not match skin_cell_counts"
+            )
+        qualifying_skin_count = _count(item, "qualifying_skin_count", item_context)
+        expected_qualifying_skin_count = sum(
+            count / truth_cell_count >= qualification_min_fraction for count in incidence_counts
+        )
+        if qualifying_skin_count != expected_qualifying_skin_count:
+            raise ValueError(
+                f"{item_context}.qualifying_skin_count does not match skin_cell_counts"
+            )
         recall = covered_cell_count / truth_cell_count
         _require_close(item, "recall", recall, item_context)
         _require_close(
@@ -347,24 +405,14 @@ def validate_component_topology_algebra(
             dominant_skin_cell_count / truth_cell_count,
             item_context,
         )
-        dominant_skin_index = item.get("dominant_skin_index")
         if covered_cell_count == 0:
-            if (
-                skin_count_touching != 0
-                or dominant_skin_index is not None
-                or dominant_skin_cell_count != 0
-            ):
+            if skin_count_touching != 0:
                 raise ValueError(f"{item_context} uncovered truth component is inconsistent")
         else:
             actually_covered_count += 1
-            if skin_count_touching == 0:
-                raise ValueError(f"{item_context}.skin_count_touching must be positive")
-            if dominant_skin_cell_count == 0:
-                raise ValueError(f"{item_context}.dominant_skin_cell_count must be positive")
-            if not _valid_index(dominant_skin_index, skin_count):
-                raise ValueError(f"{item_context}.dominant_skin_index is not a valid skin index")
         recalls.append(recall)
         truth_touching_counts.append(skin_count_touching)
+        truth_qualifying_counts.append(qualifying_skin_count)
 
     if truth_ids != sorted(set(truth_ids)):
         raise ValueError(f"{context}.truth_components truth_id values must be unique and sorted")
@@ -374,7 +422,11 @@ def validate_component_topology_algebra(
     truth_id_set = set(truth_ids)
     purities: list[float] = []
     skin_touching_counts: list[int] = []
+    skin_qualifying_counts: list[int] = []
+    skin_incidence: dict[tuple[int, int], int] = {}
     total_skin_cells = 0
+    total_truth_cells = 0
+    total_background_cells = 0
     actually_with_truth_count = 0
     for index, item in enumerate(skins):
         item_context = f"{context}.skins[{index}]"
@@ -385,57 +437,114 @@ def validate_component_topology_algebra(
         background_cell_count = _count(item, "background_cell_count", item_context)
         if truth_cell_count + background_cell_count != cell_count:
             raise ValueError(f"{item_context} truth and background cell counts are inconsistent")
-        touching_count = _count(item, "truth_component_count_touching", item_context)
-        if touching_count > truth_component_count:
+        truth_component_cell_counts = _mapping_array(
+            item, "truth_component_cell_counts", item_context
+        )
+        incidence_truth_ids: list[int] = []
+        incidence_counts: list[int] = []
+        for incidence_index, incidence in enumerate(truth_component_cell_counts):
+            incidence_context = f"{item_context}.truth_component_cell_counts[{incidence_index}]"
+            truth_id = _count(incidence, "truth_id", incidence_context)
+            if truth_id not in truth_id_set:
+                raise ValueError(f"{incidence_context}.truth_id is not a reported truth component")
+            incidence_count = _count(incidence, "cell_count", incidence_context)
+            if incidence_count <= 0:
+                raise ValueError(f"{incidence_context}.cell_count must be positive")
+            incidence_truth_ids.append(truth_id)
+            incidence_counts.append(incidence_count)
+            skin_incidence[(truth_id, index)] = incidence_count
+        if incidence_truth_ids != sorted(set(incidence_truth_ids)):
             raise ValueError(
-                f"{item_context}.truth_component_count_touching exceeds truth_component_count"
+                f"{item_context}.truth_component_cell_counts truth_id values must be sorted"
+            )
+        if truth_cell_count != sum(incidence_counts):
+            raise ValueError(
+                f"{item_context}.truth_cell_count does not match truth_component_cell_counts"
+            )
+        touching_count = _count(item, "truth_component_count_touching", item_context)
+        if touching_count != len(truth_component_cell_counts):
+            raise ValueError(
+                f"{item_context}.truth_component_count_touching does not match "
+                "truth_component_cell_counts"
             )
         dominant_truth_cell_count = _count(item, "dominant_truth_cell_count", item_context)
-        if dominant_truth_cell_count > truth_cell_count:
-            raise ValueError(f"{item_context}.dominant_truth_cell_count exceeds truth_cell_count")
+        expected_dominant_truth_id, expected_dominant_truth_count = _dominant_incidence(
+            incidence_truth_ids, incidence_counts
+        )
+        dominant_truth_id = item.get("dominant_truth_id")
+        if isinstance(dominant_truth_id, bool) or (
+            dominant_truth_id is not None and not isinstance(dominant_truth_id, Integral)
+        ):
+            raise ValueError(f"{item_context}.dominant_truth_id must be an integer or null")
+        if dominant_truth_id != expected_dominant_truth_id:
+            raise ValueError(
+                f"{item_context}.dominant_truth_id does not match truth_component_cell_counts"
+            )
+        if dominant_truth_cell_count != expected_dominant_truth_count:
+            raise ValueError(
+                f"{item_context}.dominant_truth_cell_count does not match "
+                "truth_component_cell_counts"
+            )
+        qualifying_truth_count = _count(item, "qualifying_truth_component_count", item_context)
+        expected_qualifying_truth_count = (
+            sum(count / cell_count >= qualification_min_fraction for count in incidence_counts)
+            if cell_count
+            else 0
+        )
+        if qualifying_truth_count != expected_qualifying_truth_count:
+            raise ValueError(
+                f"{item_context}.qualifying_truth_component_count does not match "
+                "truth_component_cell_counts"
+            )
         purity = dominant_truth_cell_count / cell_count if cell_count else 0.0
         _require_close(item, "purity", purity, item_context)
-        dominant_truth_id = item.get("dominant_truth_id")
         if truth_cell_count == 0:
-            if (
-                touching_count != 0
-                or dominant_truth_id is not None
-                or dominant_truth_cell_count != 0
-            ):
+            if touching_count != 0:
                 raise ValueError(f"{item_context} background-only skin is inconsistent")
         else:
             actually_with_truth_count += 1
-            if touching_count == 0:
-                raise ValueError(f"{item_context}.truth_component_count_touching must be positive")
-            if dominant_truth_cell_count == 0:
-                raise ValueError(f"{item_context}.dominant_truth_cell_count must be positive")
-            if (
-                isinstance(dominant_truth_id, bool)
-                or not isinstance(dominant_truth_id, Integral)
-                or int(dominant_truth_id) not in truth_id_set
-            ):
-                raise ValueError(
-                    f"{item_context}.dominant_truth_id is not a reported truth component"
-                )
         total_skin_cells += cell_count
+        total_truth_cells += truth_cell_count
+        total_background_cells += background_cell_count
         purities.append(purity)
         skin_touching_counts.append(touching_count)
+        skin_qualifying_counts.append(qualifying_truth_count)
 
     if skin_with_truth_count != actually_with_truth_count:
         raise ValueError(f"{context}.skin_with_truth_count does not match skins")
     if total_skin_cells != _count(topology, "cell_count", f"{context}.topology"):
         raise ValueError(f"{context} per-skin cell count does not match skin topology")
 
-    possible_over_merge_count = sum(count >= 2 for count in skin_touching_counts)
-    if over_merge_count > possible_over_merge_count:
+    covered_truth_cells = sum(
+        _count(item, "covered_cell_count", f"{context}.truth_components[{index}]")
+        for index, item in enumerate(truth_components)
+    )
+    unique_cell_count = _count(topology, "unique_cell_count", f"{context}.topology")
+    unique_background_cells = unique_cell_count - covered_truth_cells
+    if covered_truth_cells > total_truth_cells or unique_background_cells < 0:
         raise ValueError(
-            f"{context}.over_merge_skin_count exceeds skins touching multiple truth components"
+            f"{context} unique covered truth cells are inconsistent with per-skin incidence"
         )
-    possible_over_split_count = sum(count >= 2 for count in truth_touching_counts)
-    if over_split_count > possible_over_split_count:
+    if unique_background_cells > total_background_cells:
         raise ValueError(
-            f"{context}.over_split_truth_component_count exceeds truth components touching "
-            "multiple skins"
+            f"{context} unique background cells are inconsistent with per-skin incidence"
+        )
+
+    if set(skin_incidence) != set(truth_incidence):
+        raise ValueError(f"{context} per-skin and per-truth incidence pair sets do not match")
+    for pair, covered_cell_count in truth_incidence.items():
+        if covered_cell_count > skin_incidence[pair]:
+            raise ValueError(
+                f"{context} per-truth unique incidence count exceeds per-skin cell count"
+            )
+
+    expected_over_merge_count = sum(count >= 2 for count in skin_qualifying_counts)
+    if over_merge_count != expected_over_merge_count:
+        raise ValueError(f"{context}.over_merge_skin_count does not match qualifying incidence")
+    expected_over_split_count = sum(count >= 2 for count in truth_qualifying_counts)
+    if over_split_count != expected_over_split_count:
+        raise ValueError(
+            f"{context}.over_split_truth_component_count does not match qualifying incidence"
         )
 
     expected_summaries = {
@@ -452,6 +561,46 @@ def validate_component_topology_algebra(
                 raise ValueError(f"{context}.{name} does not match component arrays")
         else:
             _require_close(report, name, float(expected), context)
+
+
+def validate_component_topology_evidence(
+    report: Mapping[str, Any],
+    truth_evidence: Mapping[str, Any],
+    overlap: Mapping[str, Any],
+    context: str,
+) -> None:
+    """Bind persisted component topology to trial truth and exact skin overlap evidence."""
+
+    fault_voxel_count = _count(truth_evidence, "fault_voxel_count", f"{context}.truth_evidence")
+    intersection_count = _count(
+        overlap,
+        "intersection_count",
+        f"{context}.buffered_overlap_radius2",
+    )
+    truth_components = _mapping_array(report, "truth_components", context)
+    truth_component_count = _count(report, "truth_component_count", context)
+    if truth_component_count > fault_voxel_count:
+        raise ValueError(
+            f"{context}.truth_component_count exceeds trial truth_evidence.fault_voxel_count"
+        )
+    truth_cell_count = sum(
+        _count(item, "truth_cell_count", f"{context}.truth_components[{index}]")
+        for index, item in enumerate(truth_components)
+    )
+    if truth_cell_count != fault_voxel_count:
+        raise ValueError(
+            f"{context} truth component cell count does not match "
+            "trial truth_evidence.fault_voxel_count"
+        )
+    covered_cell_count = sum(
+        _count(item, "covered_cell_count", f"{context}.truth_components[{index}]")
+        for index, item in enumerate(truth_components)
+    )
+    if covered_cell_count != intersection_count:
+        raise ValueError(
+            f"{context} covered component cell count does not match "
+            "quality.skin.buffered_overlap_radius2.intersection_count"
+        )
 
 
 def validate_overlap_algebra(report: Mapping[str, Any], shape: Sequence[int], context: str) -> None:
@@ -679,8 +828,14 @@ def _mapping_array(
     return tuple(value)
 
 
-def _valid_index(value: Any, length: int) -> bool:
-    return not isinstance(value, bool) and isinstance(value, Integral) and 0 <= int(value) < length
+def _dominant_incidence(ids: Sequence[int], counts: Sequence[int]) -> tuple[int | None, int]:
+    if not ids:
+        return None, 0
+    dominant_id, dominant_count = min(
+        zip(ids, counts, strict=True),
+        key=lambda item: (-item[1], item[0]),
+    )
+    return dominant_id, dominant_count
 
 
 def _number(report: Mapping[str, Any], name: str, context: str) -> float:
@@ -759,6 +914,7 @@ __all__ = [
     "DERIVED_SCALAR_REL_TOL",
     "derived_scalars_close",
     "validate_component_topology_algebra",
+    "validate_component_topology_evidence",
     "validate_edge_false_positive_algebra",
     "validate_downstream_quality_scalar_algebra",
     "validate_orientation_algebra",

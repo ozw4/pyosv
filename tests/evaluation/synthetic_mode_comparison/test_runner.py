@@ -16,6 +16,10 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 from pyosv.evaluation.synthetic_mode_comparison import experiment as comparison_experiment
 from pyosv.evaluation.synthetic_mode_comparison import metrics as comparison_metrics
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
+from pyosv.evaluation.synthetic_mode_comparison.runtime_attribution import (
+    CACHEABLE_RUNTIME_STAGES,
+    build_runtime_attribution_plan,
+)
 from pyosv.evaluation.synthetic_mode_comparison.validation import (
     _resolved_stage_keys_for_cell,
 )
@@ -76,6 +80,27 @@ def test_trial_runs_canonical_cells_with_expected_shared_stage_cache_stats() -> 
     assert result.stage_cache_stats.seed_hits == 3
     assert result.stage_cache_stats.voting_misses == 3
     assert result.stage_cache_stats.voting_hits == 3
+
+
+def test_default_runtime_attribution_plan_uses_reference_counts() -> None:
+    plan = _plan()
+    attribution = build_runtime_attribution_plan(plan, plan.trials[0])
+
+    assert tuple(len(attribution.shared_keys(stage)) for stage in CACHEABLE_RUNTIME_STAGES) == (
+        3,
+        3,
+        0,
+        0,
+        3,
+        0,
+    )
+    assert tuple(
+        (entry.cell_label, entry.stage) for entry in attribution.cell_owned_entries()
+    ) == tuple(
+        (label, stage)
+        for label in ("ORACLE-REF", "ORACLE-QUAL", "RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL")
+        for stage in ("base_thinning", "primary_skinning", "thinning_scalar_evidence")
+    )
 
 
 def test_trial_scalar_evidence_counts_follow_unique_semantic_keys(monkeypatch) -> None:
@@ -193,25 +218,18 @@ def test_shared_child_runtime_is_aggregated_and_cell_exclusive() -> None:
     shared = {
         row["stage"]: row
         for row in rows
-        if row["stage"]
-        in {
-            "seed_selection",
-            "voting_volume",
-            "base_thinning",
-            "primary_skinning",
-            "voting_scalar_evidence",
-            "thinning_scalar_evidence",
-        }
+        if row["shared_stage"]
+        if row["stage"] in CACHEABLE_RUNTIME_STAGES
     }
     assert {
         stage: (row["call_count"], row["elapsed_seconds"]) for stage, row in shared.items()
     } == {
         "seed_selection": (3, 3.0),
         "voting_volume": (3, 3.0),
-        "base_thinning": (6, 6.0),
+        "base_thinning": (0, 0.0),
         "primary_skinning": (0, 0.0),
         "voting_scalar_evidence": (3, 3.0),
-        "thinning_scalar_evidence": (6, 6.0),
+        "thinning_scalar_evidence": (0, 0.0),
     }
     assert shared["voting_scalar_evidence"] == {
         "stage": "voting_scalar_evidence",
@@ -221,14 +239,15 @@ def test_shared_child_runtime_is_aggregated_and_cell_exclusive() -> None:
         "call_count": 3,
         "shared_stage": True,
     }
-    assert shared["thinning_scalar_evidence"] == {
-        "stage": "thinning_scalar_evidence",
-        "elapsed_seconds": 6.0,
-        "cell_label": None,
-        "scanner_backend": None,
-        "call_count": 6,
-        "shared_stage": True,
-    }
+    owned_rows = [
+        row for row in rows if not row["shared_stage"] and row["stage"] in CACHEABLE_RUNTIME_STAGES
+    ]
+    assert tuple((row["cell_label"], row["stage"]) for row in owned_rows) == tuple(
+        (label, stage)
+        for label in ("ORACLE-REF", "ORACLE-QUAL", "RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL")
+        for stage in ("base_thinning", "thinning_scalar_evidence")
+    )
+    assert all(row["elapsed_seconds"] == 1.0 and row["call_count"] == 1 for row in owned_rows)
     cell_rows = [row for row in rows if row["stage"] == "cell_execution"]
     assert tuple(row["cell_label"] for row in cell_rows) == tuple(cell.label for cell in plan.cells)
     assert sum(row["elapsed_seconds"] for row in cell_rows) == 29.0
@@ -739,12 +758,88 @@ def test_scanner_cells_reuse_prepared_arrays_without_pipeline_artifacts() -> Non
 
 def test_execution_order_does_not_change_results_or_return_order(monkeypatch) -> None:
     plan = _plan()
-    baseline = run_synthetic_trial(plan, plan.trials[0])
+    original_clock_value = comparison_runner._clock_value
+
+    class StageClock:
+        def __init__(self) -> None:
+            self._active_cell = False
+            self._cell_child_elapsed = 0.0
+            self._open_stages: set[str] = set()
+
+        def __call__(self, stage: str) -> float:
+            if stage == "cell_execution":
+                if not self._active_cell:
+                    self._active_cell = True
+                    self._cell_child_elapsed = 0.0
+                    return 0.0
+                self._active_cell = False
+                return self._cell_child_elapsed + 10.0
+            if stage not in self._open_stages:
+                self._open_stages.add(stage)
+                return 0.0
+            self._open_stages.remove(stage)
+            if self._active_cell and stage in CACHEABLE_RUNTIME_STAGES:
+                self._cell_child_elapsed += 1.0
+            return 1.0
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.rows = []
+
+        def record_batch(self, batch) -> None:
+            self.rows.extend(batch)
+
+    def run_with_runtime():
+        recorder = Recorder()
+        evaluation = run_synthetic_trial(
+            plan,
+            plan.trials[0],
+            clock=StageClock(),
+            runtime_recorder=recorder,
+        )
+        return evaluation, recorder.rows
+
+    def runtime_attribution(rows):
+        shared = {
+            row["stage"]: (row["call_count"], row["elapsed_seconds"])
+            for row in rows
+            if row["shared_stage"] and row["stage"] in CACHEABLE_RUNTIME_STAGES
+        }
+        owned = tuple(
+            (
+                row["cell_label"],
+                row["stage"],
+                row["scanner_backend"],
+                row["elapsed_seconds"],
+            )
+            for row in rows
+            if not row["shared_stage"] and row["stage"] in CACHEABLE_RUNTIME_STAGES
+        )
+        mode_owned = {
+            cell.label: sum(
+                row["elapsed_seconds"]
+                for row in rows
+                if row["cell_label"] == cell.label and not row["shared_stage"]
+            )
+            for cell in plan.cells
+        }
+        return shared, owned, mode_owned
+
+    monkeypatch.setattr(
+        comparison_runner,
+        "_clock_value",
+        lambda clock, stage: clock(stage),
+    )
+    baseline, baseline_rows = run_with_runtime()
     monkeypatch.setattr(comparison_runner, "_execution_cells", lambda plan: plan.cells[::-1])
 
-    reversed_result = run_synthetic_trial(plan, plan.trials[0])
+    reversed_result, reversed_rows = run_with_runtime()
 
     assert tuple(reversed_result.report_payload) == tuple(cell.label for cell in plan.cells)
+    assert comparison_metrics.extract_trial_metric_rows(
+        reversed_result
+    ) == comparison_metrics.extract_trial_metric_rows(baseline)
+    assert runtime_attribution(reversed_rows) == runtime_attribution(baseline_rows)
     baseline_by_label = {cell.cell.label: cell for cell in baseline.cells}
     for cell in reversed_result.cells:
         expected = baseline_by_label[cell.cell.label]
@@ -756,6 +851,7 @@ def test_execution_order_does_not_change_results_or_return_order(monkeypatch) ->
         else:
             for name, volume in cell.artifacts.items():
                 assert np.array_equal(volume, expected.artifacts[name])
+    monkeypatch.setattr(comparison_runner, "_clock_value", original_clock_value)
 
 
 def test_downstream_cells_match_standalone_case_variant_runs() -> None:
@@ -969,10 +1065,11 @@ def test_trial_shape_mismatch_fails_before_scanner_preparation(monkeypatch) -> N
     assert not prepared
 
 
-def test_scalar_evidence_failure_clears_case_local_caches(monkeypatch) -> None:
+def test_scalar_evidence_failure_clears_case_local_caches_and_active_cell(monkeypatch) -> None:
     plan = _plan()
     stage_caches = []
     scalar_caches = []
+    child_runtimes = []
     runtime_batches = []
 
     class Recorder:
@@ -989,8 +1086,14 @@ def test_scalar_evidence_failure_clears_case_local_caches(monkeypatch) -> None:
             super().__post_init__(case)
             scalar_caches.append(self)
 
+    class TrackingRuntime(comparison_runner._CacheBuildRuntime):
+        def __init__(self, clock, attribution_plan) -> None:
+            super().__init__(clock, attribution_plan)
+            child_runtimes.append(self)
+
     monkeypatch.setattr(comparison_runner, "PipelineStageCache", TrackingStageCache)
     monkeypatch.setattr(comparison_runner, "DownstreamScalarEvidenceCache", TrackingScalarCache)
+    monkeypatch.setattr(comparison_runner, "_CacheBuildRuntime", TrackingRuntime)
     monkeypatch.setattr(
         quality_pipeline,
         "build_thinning_scalar_evidence",
@@ -1005,6 +1108,8 @@ def test_scalar_evidence_failure_clears_case_local_caches(monkeypatch) -> None:
         )
 
     assert runtime_batches == []
+    assert len(child_runtimes) == 1
+    assert child_runtimes[0]._active_cell is None
     assert len(stage_caches) == len(scalar_caches) == 1
     assert stage_caches[0]._case is None
     assert not stage_caches[0]._seeds
