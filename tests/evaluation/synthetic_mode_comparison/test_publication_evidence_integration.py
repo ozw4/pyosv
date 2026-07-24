@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import gc
 import hashlib
 import io
@@ -8,6 +9,7 @@ import weakref
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass, replace
+from math import fsum
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -75,7 +77,7 @@ def default_config() -> SyntheticModeComparisonConfig:
 
 @pytest.fixture(scope="module")
 def default_result(default_config) -> SyntheticModeComparisonResult:
-    return run_mode_comparison(default_config, clock=_fixed_clock)
+    return run_mode_comparison(default_config)
 
 
 @pytest.fixture(scope="module")
@@ -245,7 +247,7 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         counted_thinning_evidence,
     )
 
-    result = run_mode_comparison(config, clock=_fixed_clock)
+    result = run_mode_comparison(config)
 
     trial_counts = Counter(trial.case_id for trial in plan.trials)
     assert trial_counts == Counter({case_id: 1 for case_id in CASE_IDS}) + Counter(
@@ -335,8 +337,10 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     assert result.runtime_rows[-1].trial_id is None
     assert result.runtime_rows[-1].shared_stage is True
     assert len(result.runtime_rows) == len(plan.trials) * len(expected_trial_stages) + 1
+    _assert_runtime_elapsed_algebra(result)
     _assert_publication_scalar_contract(result)
     _assert_trial_truth_targets(result)
+    _assert_volume_capacity(result.as_dict()["cell_reports"])
     _assert_scalar_only(result)
 
     calls_before_validation = {key: Counter(value) for key, value in calls.items()}
@@ -356,6 +360,13 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     assert tuple(sorted(path.name for path in bundle.iterdir())) == tuple(
         sorted(comparison_artifacts.REQUIRED_BUNDLE_FILES)
     )
+    completion = json.loads((bundle / "completion.json").read_text(encoding="utf-8"))
+    assert completion["schema_version"] == comparison_artifacts.COMPLETION_SCHEMA_VERSION == 1
+    assert manifest["metric_schema_version"] == comparison_metrics.METRIC_SCHEMA_VERSION
+    for filename, model in comparison_artifacts._CSV_MODELS.items():
+        with (bundle / filename).open(encoding="utf-8", newline="") as stream:
+            assert next(csv.reader(stream)) == [field.name for field in fields(model)]
+    _assert_volume_capacity(json.loads((bundle / "cell_reports.json").read_text(encoding="utf-8")))
     assert calls == calls_before_validation
 
 
@@ -382,9 +393,22 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
             assert payload["skinning"]["enabled"] is True
             assert payload["quality"]["skin"] is not None
             assert payload["pyosv"]["skins"] == payload["quality"]["skin"]["topology"]
+            assert payload["quality"]["skin"]["topology"]["unique_cell_count"] <= np.prod(SHAPE)
+
+    for cache, trial in zip(topology_result.cache_stats, topology_result.trial_metadata):
+        assert cache["primary_skinning_hits"] == 0
+        assert cache["primary_skinning_misses"] == 6
+        row = next(
+            row
+            for row in topology_result.runtime_rows
+            if row.trial_id == trial["trial_id"] and row.stage == "primary_skinning"
+        )
+        assert row.call_count == 6
+        assert row.shared_stage is True
 
     _assert_publication_scalar_contract(topology_result)
     _assert_trial_truth_targets(topology_result)
+    _assert_volume_capacity(topology_result.as_dict()["cell_reports"])
 
     validate_mode_comparison_result(topology_result, topology_config)
     bundle = write_artifact_bundle(
@@ -393,6 +417,40 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
         config=topology_config,
     )
     assert validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("field", "legacy_version"),
+    (
+        ("artifact_schema_version", 1),
+        ("artifact_schema_version", 2),
+        ("scalar_evidence_contract_version", 1),
+        ("scalar_evidence_contract_version", 2),
+        ("scalar_evidence_contract_version", 3),
+        ("runtime_contract_version", 1),
+        ("runtime_contract_version", 2),
+    ),
+)
+def test_publication_bundle_explicitly_rejects_every_legacy_contract(
+    field: str,
+    legacy_version: int,
+    default_config: SyntheticModeComparisonConfig,
+    default_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    bundle = write_artifact_bundle(
+        default_result,
+        tmp_path / f"{field}-{legacy_version}",
+        config=default_config,
+    )
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = legacy_version
+    _write_json(manifest_path, manifest)
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy"):
+        validate_completed_bundle(bundle)
 
 
 def test_buffer_radius_regimes_round_trip_with_deterministic_numerators(
@@ -510,8 +568,55 @@ def test_truth_target_tampering_is_rejected_everywhere(
 
 
 @pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("truth_and_stages", "volume voxel count"),
+        ("overlap_union", "union_count exceeds volume voxel count"),
+        ("skin_unique", "unique_cell_count exceeds volume voxel count"),
+    ),
+)
+def test_volume_capacity_tampering_is_rejected_everywhere(
+    tamper: str,
+    message: str,
+    default_config: SyntheticModeComparisonConfig,
+    default_result: SyntheticModeComparisonResult,
+    tmp_path: Path,
+) -> None:
+    reports = default_result.as_dict()["cell_reports"]
+    invalid_count = int(np.prod(SHAPE)) + 1
+    if tamper == "truth_and_stages":
+        _tamper_fault_truth_capacity(reports, invalid_count)
+    else:
+        payload = reports[0]["cells"]["Q-QUAL"]
+        for downstream in (payload, payload["pipelines"][payload["active_pipeline"]]):
+            if tamper == "overlap_union":
+                overlap = downstream["quality"]["fv_top_truth_count"]["buffered_overlap_radius2"]
+                overlap["union_count"] = invalid_count
+                overlap["jaccard"] = overlap["intersection_count"] / overlap["union_count"]
+            else:
+                topology = downstream["quality"]["skin"]["topology"]
+                topology["unique_cell_count"] = invalid_count
+                downstream["pyosv"]["skins"]["unique_cell_count"] = invalid_count
+
+    _assert_report_tamper_rejected_in_memory_and_bundle(
+        config=default_config,
+        result=default_result,
+        reports=reports,
+        message=message,
+        bundle_path=tmp_path / tamper,
+    )
+
+
+@pytest.mark.parametrize(
     "tamper",
-    ("missing_shared", "extra_shared", "wrong_call_count", "cell_double_attribution"),
+    (
+        "missing_shared_volume",
+        "extra_shared_volume",
+        "wrong_volume_call_count",
+        "cell_double_attribution",
+        "stage_exceeds_trial",
+        "experiment_below_trials",
+    ),
 )
 def test_runtime_contract_tampering_is_rejected_everywhere(
     tamper: str,
@@ -520,14 +625,14 @@ def test_runtime_contract_tampering_is_rejected_everywhere(
     tmp_path: Path,
 ) -> None:
     rows = list(default_result.runtime_rows)
-    index = next(index for index, row in enumerate(rows) if row.stage == "voting_scalar_evidence")
-    if tamper == "missing_shared":
+    index = next(index for index, row in enumerate(rows) if row.stage == "voting_volume")
+    if tamper == "missing_shared_volume":
         rows.pop(index)
-    elif tamper == "extra_shared":
+    elif tamper == "extra_shared_volume":
         rows.insert(index, rows[index])
-    elif tamper == "wrong_call_count":
+    elif tamper == "wrong_volume_call_count":
         rows[index] = replace(rows[index], call_count=rows[index].call_count + 1)
-    else:
+    elif tamper == "cell_double_attribution":
         cell = build_mode_comparison_plan(default_config).cells[0]
         duplicated_runtime = replace(
             rows[index],
@@ -543,6 +648,16 @@ def test_runtime_contract_tampering_is_rejected_everywhere(
             if row.stage == "cell_execution" and row.cell_label == cell.label
         )
         rows.insert(cell_index, duplicated_runtime)
+    elif tamper == "stage_exceeds_trial":
+        trial_total = next(row.elapsed_seconds for row in rows if row.stage == "trial_total")
+        rows[index] = replace(rows[index], elapsed_seconds=trial_total + 1.0)
+    else:
+        assert tamper == "experiment_below_trials"
+        assert fsum(row.elapsed_seconds for row in rows if row.stage == "trial_total") > 0.0
+        experiment_index = next(
+            row_index for row_index, row in enumerate(rows) if row.stage == "experiment_total"
+        )
+        rows[experiment_index] = replace(rows[experiment_index], elapsed_seconds=0.0)
     tampered_rows = tuple(rows)
 
     with pytest.raises(ValueError, match="runtime_rows"):
@@ -1173,6 +1288,55 @@ def _assert_publication_scalar_contract(result: SyntheticModeComparisonResult) -
             )
 
 
+def _assert_runtime_elapsed_algebra(result: SyntheticModeComparisonResult) -> None:
+    trial_totals = []
+    for trial in result.trial_metadata:
+        rows = tuple(row for row in result.runtime_rows if row.trial_id == trial["trial_id"])
+        trial_total = rows[-1]
+        assert trial_total.stage == "trial_total"
+        assert trial_total.shared_stage is True
+        assert all(row.shared_stage == (row.stage != "cell_execution") for row in rows[:-1])
+        disjoint_elapsed = fsum(row.elapsed_seconds for row in rows[:-1])
+        tolerance = max(1.0e-12, 1.0e-9 * max(disjoint_elapsed, trial_total.elapsed_seconds))
+        assert disjoint_elapsed <= trial_total.elapsed_seconds + tolerance
+        trial_totals.append(trial_total.elapsed_seconds)
+
+    experiment_total = result.runtime_rows[-1]
+    assert experiment_total.stage == "experiment_total"
+    summed_trials = fsum(trial_totals)
+    tolerance = max(1.0e-12, 1.0e-9 * max(summed_trials, experiment_total.elapsed_seconds))
+    assert summed_trials <= experiment_total.elapsed_seconds + tolerance
+
+
+def _assert_volume_capacity(reports: Sequence[Mapping[str, Any]]) -> None:
+    capacity = int(np.prod(SHAPE))
+    bounded_fields = {
+        "fault_voxel_count",
+        "surface_voxel_count",
+        "candidate_count",
+        "truth_count",
+        "intersection_count",
+        "union_count",
+        "candidate_in_truth_buffer_count",
+        "truth_in_candidate_buffer_count",
+        "unique_cell_count",
+    }
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key in bounded_fields:
+                    assert 0 <= item <= capacity
+                visit(item)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for item in value:
+                visit(item)
+
+    visit(reports)
+    for report in reports:
+        assert all(1 <= count <= capacity for count in report["truth_evidence"].values())
+
+
 def _assert_trial_truth_targets(result: SyntheticModeComparisonResult) -> None:
     assert len(result.cell_reports) == len(result.trial_metadata)
     for report in result.cell_reports:
@@ -1327,6 +1491,48 @@ def _increment_overlap_truth_count(overlap: dict[str, Any]) -> None:
     overlap["jaccard"] = overlap["intersection_count"] / overlap["union_count"]
     overlap["buffered_recall"] = overlap["truth_in_candidate_buffer_count"] / overlap["truth_count"]
     overlap["buffered_f1"] = _f1(overlap["buffered_precision"], overlap["buffered_recall"])
+
+
+def _tamper_fault_truth_capacity(reports: list[dict[str, Any]], count: int) -> None:
+    for report in reports:
+        report["truth_evidence"]["fault_voxel_count"] = count
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            if {
+                "candidate_count",
+                "truth_count",
+                "intersection_count",
+                "union_count",
+                "candidate_in_truth_buffer_count",
+                "truth_in_candidate_buffer_count",
+                "precision",
+                "recall",
+                "f1",
+                "jaccard",
+                "buffered_precision",
+                "buffered_recall",
+                "buffered_f1",
+            }.issubset(value):
+                value["truth_count"] = count
+                value["union_count"] = (
+                    value["candidate_count"] + count - value["intersection_count"]
+                )
+                value["recall"] = value["intersection_count"] / count
+                value["f1"] = _f1(value["precision"], value["recall"])
+                value["jaccard"] = value["intersection_count"] / value["union_count"]
+                value["buffered_recall"] = value["truth_in_candidate_buffer_count"] / count
+                value["buffered_f1"] = _f1(
+                    value["buffered_precision"],
+                    value["buffered_recall"],
+                )
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(reports)
 
 
 def _scanner_evidence(payload: Mapping[str, Any]) -> tuple[Any, Any]:

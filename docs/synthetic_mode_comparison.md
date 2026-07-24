@@ -147,6 +147,9 @@ on cache misses; cache hits add neither calls nor elapsed time.
 `cell_execution` records workflow-exclusive elapsed time with all nested
 cacheable shared volume and scalar builds removed. Runtime rows are a
 within-experiment breakdown and are not isolated-process benchmarks.
+Validation requires the sum of disjoint shared and exclusive stage elapsed
+times to be no greater than each `trial_total`, and the sum of all
+`trial_total` rows to be no greater than `experiment_total`.
 Validation uses the recorded trial truth counts and does not rerun the case
 generator or any volume calculation, independently prove that its computation
 was correct, or provide a tamper-prevention signature. Scalar-evidence contract
