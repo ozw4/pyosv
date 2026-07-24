@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.evaluation.f3d_mode_comparison.data import ensure_output_not_in_data_root
 from pyosv.f3d_reference import F3D_ENV_VAR, F3D_SHAPE, read_f3d_file, resolve_f3d_data_root
 from pyosv.metrics import (
     buffered_ridge_overlap,
@@ -824,21 +825,6 @@ def resolve_metrics_path(
     if output_json is not None:
         return Path(output_json)
     return Path(output_dir) / "metrics.json"
-
-
-def ensure_output_not_in_data_root(
-    output_dir: str | PathLike[str],
-    data_root: str | PathLike[str],
-    *,
-    option_name: str = "--output-dir",
-) -> Path:
-    output_path = Path(output_dir).resolve(strict=False)
-    data_root_path = Path(data_root).resolve(strict=False)
-    try:
-        output_path.relative_to(data_root_path)
-    except ValueError:
-        return output_path
-    raise ValueError(f"{option_name} must not be inside the F3 data root: {output_path}")
 
 
 def _overlaps(a: np.ndarray, b: np.ndarray) -> dict[str, dict[str, float]]:

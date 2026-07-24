@@ -8,8 +8,8 @@ from pyosv.f3d_reference import F3D_SHAPE
 
 from ..synthetic_quality import resolve_workflow_settings
 from .config import F3ModeComparisonConfig
+from .data import OFFICIAL_F3_DATASET_SPEC
 from .models import (
-    F3DatasetSpec,
     F3FixedControlEvidence,
     F3ModeComparisonPlan,
     canonical_f3_cells,
@@ -65,10 +65,7 @@ def build_f3d_mode_comparison_plan(
         **workflow_common,
     )
     return F3ModeComparisonPlan(
-        dataset_spec=F3DatasetSpec(
-            shape=config.shape,
-            input_file=config.input_file,
-        ),
+        dataset_spec=OFFICIAL_F3_DATASET_SPEC,
         cells=canonical_f3_cells(),
         reference_like_scanner_config=scanner,
         quality_scanner_config=replace(scanner, backend="quality"),

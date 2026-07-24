@@ -204,6 +204,18 @@ def test_plan_serialization_is_deterministic_and_json_safe() -> None:
     second = build_f3d_mode_comparison_plan(F3ModeComparisonConfig()).as_dict()
 
     assert first == second
+    assert first["dataset_spec"] == {
+        "dataset_id": "f3d-official-v1",
+        "shape": F3D_SHAPE,
+        "storage_dtype": F3D_DTYPE,
+        "files": (
+            ("input", "ep.dat"),
+            ("reference_fault_likelihood", "fl.dat"),
+            ("reference_fault_votes", "fv.dat"),
+            ("reference_thinned_fault_votes", "fvt.dat"),
+        ),
+        "expected_bytes": F3D_EXPECTED_BYTES,
+    }
     assert json.dumps(first, sort_keys=True, allow_nan=False) == json.dumps(
         second,
         sort_keys=True,

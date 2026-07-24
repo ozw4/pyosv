@@ -48,6 +48,37 @@ Only `xs.dat` is the input seismic image. `ep.dat`, `fl.dat`, `fv.dat`, and
 The current OSV validation starts from `ep.dat`; reproducing `xs.dat -> ep.dat`
 is out of scope for this workflow.
 
+### Dataset spec and plan serialization
+
+`F3DatasetSpec` is the public immutable storage contract. Its constructor and
+serialized field names are:
+
+```text
+dataset_id
+shape
+storage_dtype
+files
+expected_bytes
+```
+
+The official `OFFICIAL_F3_DATASET_SPEC` uses dataset ID
+`f3d-official-v1`, shape `(420, 400, 100)`, storage dtype `>f4`, and
+`expected_bytes=67200000`. Its ordered `files` role-to-filename pairs are:
+
+```text
+input                              -> ep.dat
+reference_fault_likelihood         -> fl.dat
+reference_fault_votes              -> fv.dat
+reference_thinned_fault_votes      -> fvt.dat
+```
+
+`F3ModeComparisonPlan.as_dict()` serializes `dataset_spec` with exactly those
+five field names. `F3DatasetSpec.input_file` and `F3DatasetSpec.dtype` are
+read-only convenience properties and are not additional serialized fields.
+Canonical plan builders always use `OFFICIAL_F3_DATASET_SPEC`; custom specs
+exist only for low-level small-fixture tests and must not be treated as
+publication datasets.
+
 ## Publication Comparison Scope: Full Volume Only
 
 Publication-facing F3 mode comparison uses the complete F3 volume only. Its

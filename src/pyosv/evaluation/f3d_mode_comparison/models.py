@@ -5,37 +5,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
 
-from pyosv.f3d_reference import F3D_DTYPE, F3D_EXPECTED_BYTES, F3D_SHAPE
-
 from ..synthetic_quality import (
     ResolvedWorkflowSettings,
     SyntheticSkinningConfig,
     resolve_workflow_settings,
 )
 from .config import F3ScannerConfig, F3VotingControls
+from .data import F3DatasetSpec
 
 F3ScannerBackend = Literal["reference-like", "quality"]
 F3WorkflowMode = Literal["reference", "quality"]
-
-
-@dataclass(frozen=True, slots=True)
-class F3DatasetSpec:
-    """Official input-volume metadata for the comparison."""
-
-    shape: tuple[int, int, int] = F3D_SHAPE
-    input_file: str = "ep.dat"
-    dtype: str = F3D_DTYPE
-    expected_bytes: int = F3D_EXPECTED_BYTES
-
-    def __post_init__(self) -> None:
-        if self.shape != F3D_SHAPE:
-            raise ValueError(f"shape must be the official F3 shape {F3D_SHAPE}")
-        if self.input_file != "ep.dat":
-            raise ValueError("input_file must be 'ep.dat'")
-        if self.dtype != F3D_DTYPE:
-            raise ValueError(f"dtype must be {F3D_DTYPE!r}")
-        if self.expected_bytes != F3D_EXPECTED_BYTES:
-            raise ValueError(f"expected_bytes must be {F3D_EXPECTED_BYTES}")
 
 
 @dataclass(frozen=True, slots=True)
