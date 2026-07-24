@@ -213,6 +213,23 @@ def test_common_voting_override_is_identical_between_workflows() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("strain_max1", 0.0),
+        ("strain_max1", 1.01),
+        ("strain_max2", 0.0),
+        ("strain_max2", 1.01),
+    ),
+)
+def test_voting_controls_reject_unexecutable_strain(
+    field: str,
+    value: float,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        replace(F3VotingControls(), **{field: value})
+
+
 def test_plan_serialization_is_deterministic_and_json_safe() -> None:
     first = build_f3d_mode_comparison_plan(F3ModeComparisonConfig()).as_dict()
     second = build_f3d_mode_comparison_plan(F3ModeComparisonConfig()).as_dict()

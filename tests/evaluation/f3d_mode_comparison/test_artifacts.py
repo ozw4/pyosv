@@ -189,6 +189,35 @@ def test_run_fingerprint_excludes_paths_but_includes_content_and_implementation(
     assert run_fingerprint(plan, first, implementation=changed_source) != baseline
 
 
+@pytest.mark.parametrize(
+    "implementation",
+    (
+        {},
+        {"software_versions": _VERSIONS, "algorithm_modules": {}},
+        {**_IMPLEMENTATION, "source_path": "/checkout/src"},
+        {
+            "software_versions": _VERSIONS,
+            "algorithm_modules": {
+                "scanner.py": {
+                    **_IMPLEMENTATION["algorithm_modules"]["scanner.py"],
+                    "path": "/checkout/src/scanner.py",
+                }
+            },
+        },
+    ),
+)
+def test_run_fingerprint_rejects_incomplete_or_path_bearing_implementation(
+    tmp_path: Path,
+    implementation: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="implementation"):
+        run_fingerprint(
+            _plan(),
+            _identity(tmp_path / "data"),
+            implementation=implementation,
+        )
+
+
 def test_run_fingerprint_rejects_dataset_identity_mismatches(tmp_path: Path) -> None:
     plan = _plan()
     valid = _identity(tmp_path / "data")

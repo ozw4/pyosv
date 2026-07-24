@@ -154,9 +154,11 @@ class F3VotingControls:
         for name in ("ru", "rv", "rw", "seed_distance", "attribute_smoothing"):
             _nonnegative_int(getattr(self, name), name)
         _nonnegative_float(self.seed_threshold, "seed_threshold")
+        for name in ("strain_max1", "strain_max2"):
+            value = _positive_float(getattr(self, name), name)
+            if value > 1.0:
+                raise ValueError(f"{name} must be at most 1")
         for name in (
-            "strain_max1",
-            "strain_max2",
             "surface_smoothing1",
             "surface_smoothing2",
             "surface_orientation_smoothing",

@@ -193,10 +193,12 @@ def implementation_identity(
         _require_regular_nonsymlink(path, f"algorithm source {identifier}")
         metadata = _file_metadata(path)
         modules[identifier] = metadata
-    return {
-        "software_versions": dict(sorted(versions.items())),
-        "algorithm_modules": modules,
-    }
+    return _validate_implementation_identity(
+        {
+            "software_versions": dict(sorted(versions.items())),
+            "algorithm_modules": modules,
+        }
+    )
 
 
 def run_computation_identity(
@@ -212,7 +214,11 @@ def run_computation_identity(
     if not isinstance(dataset_identity, F3DatasetIdentity):
         raise ValueError("dataset_identity must be an F3DatasetIdentity")
     _validate_dataset_identity(dataset_identity, plan)
-    identity = implementation_identity() if implementation is None else dict(implementation)
+    identity = (
+        implementation_identity()
+        if implementation is None
+        else _validate_implementation_identity(implementation)
+    )
     return {
         "artifact_schema_version": F3_ARTIFACT_SCHEMA_VERSION,
         "stage_contract_version": F3_STAGE_CONTRACT_VERSION,
@@ -629,6 +635,70 @@ def _validate_dataset_identity(
             raise ValueError(
                 f"dataset identity checksum does not match the plan contract for role {role!r}"
             ) from error
+
+
+def _validate_implementation_identity(
+    implementation: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(implementation, Mapping):
+        raise ValueError("implementation identity must be an object")
+    if set(implementation) != {"software_versions", "algorithm_modules"}:
+        raise ValueError(
+            "implementation identity must contain exactly software_versions and algorithm_modules"
+        )
+
+    versions = implementation["software_versions"]
+    expected_versions = {"pyosv", "python", "numpy", "scipy"}
+    if not isinstance(versions, Mapping) or set(versions) != expected_versions:
+        raise ValueError(
+            "implementation software_versions must contain exactly pyosv, python, numpy, and scipy"
+        )
+    normalized_versions: dict[str, str] = {}
+    for name, version in sorted(versions.items()):
+        if not isinstance(version, str) or not version:
+            raise ValueError(f"implementation software version {name!r} must be a non-empty string")
+        normalized_versions[name] = version
+
+    modules = implementation["algorithm_modules"]
+    if not isinstance(modules, Mapping) or not modules:
+        raise ValueError("implementation algorithm_modules must be a non-empty object")
+    normalized_modules: dict[str, dict[str, Any]] = {}
+    for identifier, metadata in modules.items():
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or "\\" in identifier
+            or identifier.startswith("/")
+            or any(part in {"", ".", ".."} for part in identifier.split("/"))
+        ):
+            raise ValueError(
+                "implementation algorithm module identifiers must be "
+                "non-empty relative logical paths"
+            )
+        if not isinstance(metadata, Mapping) or set(metadata) != {"sha256", "size"}:
+            raise ValueError(
+                f"implementation algorithm module {identifier!r} must contain "
+                "exactly sha256 and size"
+            )
+        _validate_sha256(
+            metadata["sha256"],
+            f"implementation algorithm module {identifier!r} sha256",
+        )
+        size = metadata["size"]
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError(
+                f"implementation algorithm module {identifier!r} size "
+                "must be a non-negative integer"
+            )
+        normalized_modules[identifier] = {
+            "sha256": metadata["sha256"],
+            "size": size,
+        }
+
+    return {
+        "software_versions": normalized_versions,
+        "algorithm_modules": dict(sorted(normalized_modules.items())),
+    }
 
 
 def _validate_workspace_layout(path: Path) -> None:
