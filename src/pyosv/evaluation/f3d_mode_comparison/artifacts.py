@@ -24,7 +24,7 @@ import scipy
 
 import pyosv
 
-from .data import F3DatasetIdentity
+from .data import F3DatasetIdentity, ensure_output_not_in_data_root
 from .models import F3ModeComparisonPlan
 
 F3_ARTIFACT_SCHEMA_VERSION = 1
@@ -211,6 +211,7 @@ def run_computation_identity(
         raise ValueError("plan must be an F3ModeComparisonPlan")
     if not isinstance(dataset_identity, F3DatasetIdentity):
         raise ValueError("dataset_identity must be an F3DatasetIdentity")
+    _validate_dataset_identity(dataset_identity, plan)
     identity = implementation_identity() if implementation is None else dict(implementation)
     return {
         "artifact_schema_version": F3_ARTIFACT_SCHEMA_VERSION,
@@ -253,7 +254,10 @@ def prepare_run_workspace(
 
     if not isinstance(resume, bool):
         raise ValueError("resume must be a bool")
+    if not isinstance(dataset_identity, F3DatasetIdentity):
+        raise ValueError("dataset_identity must be an F3DatasetIdentity")
     requested_output_path = Path(output_dir).absolute()
+    ensure_output_not_in_data_root(requested_output_path, dataset_identity.data_root)
     output_exists = requested_output_path.exists() or requested_output_path.is_symlink()
     computation = run_computation_identity(
         plan,
@@ -601,6 +605,26 @@ def _validate_run_manifest(
         raise F3WorkspaceMismatchError("run manifest provenance must be an object")
 
 
+def _validate_dataset_identity(
+    dataset_identity: F3DatasetIdentity,
+    plan: F3ModeComparisonPlan,
+) -> None:
+    spec = plan.dataset_spec
+    if dataset_identity.dataset_id != spec.dataset_id:
+        raise ValueError("dataset identity does not match the plan dataset ID")
+    if tuple(item.role for item in dataset_identity.files) != spec.roles:
+        raise ValueError("dataset identity does not contain the plan's required file roles")
+    for item, (role, filename) in zip(dataset_identity.files, spec.files, strict=True):
+        if item.filename != filename:
+            raise ValueError(f"dataset identity filename does not match the plan for role {role!r}")
+        if item.shape != spec.shape:
+            raise ValueError(f"dataset identity shape does not match the plan for role {role!r}")
+        if item.storage_dtype != spec.storage_dtype:
+            raise ValueError(f"dataset identity dtype does not match the plan for role {role!r}")
+        if item.size != spec.expected_bytes:
+            raise ValueError(f"dataset identity size does not match the plan for role {role!r}")
+
+
 def _validate_workspace_layout(path: Path) -> None:
     _require_regular_nonsymlink(path / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
     for directory in ("stages", "cells", "reports"):
@@ -644,6 +668,7 @@ def _algorithm_source_files() -> dict[str, Path]:
         package_root / "skin.py",
         package_root / "skinner.py",
         package_root / "_skinner",
+        package_root / "evaluation" / "workflow3d.py",
         package_root / "evaluation" / "f3d_mode_comparison",
         package_root / "evaluation" / "synthetic_quality",
         package_root / "experimental" / "boundary_seed_selection.py",

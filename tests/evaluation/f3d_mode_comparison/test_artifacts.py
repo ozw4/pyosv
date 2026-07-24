@@ -15,6 +15,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetIdentity,
     F3FileIdentity,
     F3ModeComparisonConfig,
+    OFFICIAL_F3_DATASET_SPEC,
     F3StageArtifact,
     F3StageCorruptionError,
     F3WorkspaceMismatchError,
@@ -49,20 +50,21 @@ def _plan():
 
 
 def _identity(root: Path, content: bytes = b"dataset") -> F3DatasetIdentity:
-    digest = hashlib.sha256(content).hexdigest()
+    spec = OFFICIAL_F3_DATASET_SPEC
     return F3DatasetIdentity(
-        dataset_id="fixture",
+        dataset_id=spec.dataset_id,
         data_root=root,
-        files=(
+        files=tuple(
             F3FileIdentity(
-                role="input",
-                filename="ep.dat",
-                resolved_path=root / "ep.dat",
-                size=len(content),
-                sha256=digest,
-                shape=(2, 3, 4),
-                storage_dtype=">f4",
-            ),
+                role=role,
+                filename=filename,
+                resolved_path=root / filename,
+                size=spec.expected_bytes,
+                sha256=hashlib.sha256(content + role.encode()).hexdigest(),
+                shape=spec.shape,
+                storage_dtype=spec.storage_dtype,
+            )
+            for role, filename in spec.files
         ),
     )
 
@@ -141,6 +143,7 @@ def test_default_implementation_identity_hashes_f3_execution_sources() -> None:
         "evaluation/f3d_mode_comparison/builder.py",
         "evaluation/f3d_mode_comparison/data.py",
         "evaluation/f3d_mode_comparison/models.py",
+        "evaluation/workflow3d.py",
     } <= modules.keys()
 
 
@@ -171,6 +174,48 @@ def test_run_fingerprint_excludes_paths_but_includes_content_and_implementation(
     }
     assert run_fingerprint(plan, first, implementation=changed_versions) != baseline
     assert run_fingerprint(plan, first, implementation=changed_source) != baseline
+
+
+def test_run_fingerprint_rejects_dataset_identity_mismatches(tmp_path: Path) -> None:
+    plan = _plan()
+    valid = _identity(tmp_path / "data")
+    first_file = valid.files[0]
+    mismatches = (
+        replace(valid, dataset_id="other-dataset"),
+        replace(valid, files=valid.files[:-1]),
+        replace(valid, files=(replace(first_file, filename="other.dat"), *valid.files[1:])),
+        replace(valid, files=(replace(first_file, shape=(1, 1, 1)), *valid.files[1:])),
+        replace(valid, files=(replace(first_file, storage_dtype="<f4"), *valid.files[1:])),
+        replace(valid, files=(replace(first_file, size=1), *valid.files[1:])),
+    )
+
+    for identity in mismatches:
+        with pytest.raises(ValueError, match="dataset identity"):
+            run_fingerprint(plan, identity, implementation=_IMPLEMENTATION)
+
+
+def test_reference_content_changes_run_fingerprint(tmp_path: Path) -> None:
+    plan = _plan()
+    baseline_identity = _identity(tmp_path / "data")
+    reference = baseline_identity.files[1]
+    changed_identity = replace(
+        baseline_identity,
+        files=(
+            baseline_identity.files[0],
+            replace(reference, sha256=hashlib.sha256(b"changed-reference").hexdigest()),
+            *baseline_identity.files[2:],
+        ),
+    )
+
+    assert run_fingerprint(
+        plan,
+        changed_identity,
+        implementation=_IMPLEMENTATION,
+    ) != run_fingerprint(
+        plan,
+        baseline_identity,
+        implementation=_IMPLEMENTATION,
+    )
 
 
 def test_workspace_new_resume_and_manifest_mismatch(tmp_path: Path) -> None:
@@ -247,6 +292,22 @@ def test_workspace_rejects_symlink_output_path(
     assert link.is_symlink()
     assert workspace.path == target
     assert (target / "run_manifest.json").read_bytes() == original_manifest
+
+
+def test_workspace_rejects_output_inside_data_root(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    output_path = data_root / "run"
+
+    with pytest.raises(ValueError, match="must not be inside"):
+        prepare_run_workspace(
+            output_path,
+            _plan(),
+            _identity(data_root),
+            resume=False,
+            implementation=_IMPLEMENTATION,
+        )
+
+    assert not output_path.exists()
 
 
 @pytest.mark.parametrize(

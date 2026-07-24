@@ -125,8 +125,9 @@ stages.
 Use `--skip-save-intermediates` when only the report volumes `ft_py.dat`,
 `fv_py.dat`, and `fvt_py.dat` are needed. Because that option does not write the
 complete ten-file set, its output directory cannot subsequently be used with
-`--reuse-existing`. This current runner contract is separate from the stage
-cache and reuse contract deferred for the planned full-volume 2×2 runner. The
+`--reuse-existing`. This current runner contract is separate from the
+content-addressed stage cache and exact-resume library contract for the planned
+full-volume 2×2 runner; the legacy runner does not use that new contract. The
 runner rejects both output directories and metrics paths inside the F3 data
 root.
 
@@ -186,7 +187,9 @@ Apply the fixed scanner reference thinning and edge policy once to produce
 `fet`, `fpt`, and `ftt`, then share those three scanner-thinned volumes between
 the reference and quality workflows for that backend. Workflow comparison must
 not rerun either the raw scanner or scanner thinning. Implementing stage caching
-and reuse is deferred to a later change.
+and reuse in the future runner remains later work, but the library-level
+workspace, fingerprint, atomic stage artifact, validation, and exact-resume
+contract is implemented in `pyosv.evaluation.f3d_mode_comparison`.
 
 The future runner manifest must record the matrix label, scanner backend,
 workflow mode, `scanner_thin_mode`, requested and effective edge policy,
