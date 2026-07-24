@@ -45,6 +45,7 @@ from pyosv.evaluation.synthetic_quality.stage_keys import (
     build_voting_stage_key,
 )
 from pyosv.evaluation.synthetic_quality.variants import get_variant_spec
+from pyosv.evaluation.workflow3d import VolumeVotingControls
 from pyosv.evaluation.reporting.artifacts import write_case_skins_json, write_case_volumes
 from pyosv.evaluation.reporting.csv_v1 import write_summary_csv
 from pyosv.evaluation.reporting.json_v1 import write_metrics_json
@@ -95,6 +96,7 @@ def _scalar_stage_keys(case: Synthetic3DCase, *, target_source: str = "oracle_ft
         seed_key=seed,
         voting_config=voting_config,
         variant_spec=variant_spec,
+        voting_controls=VolumeVotingControls.resolve(voting_config, variant_spec),
     )
     thinning = build_thinning_stage_key(
         voting_key=voting,
@@ -803,6 +805,56 @@ def test_scalar_cache_reuse_is_numerically_identical_to_legacy_execution() -> No
     for evaluation in (first, reused):
         _assert_nested_equal(evaluation.report_payload, legacy.report_payload)
         _assert_nested_equal(evaluation.artifacts.volumes, legacy.artifacts.volumes)
+
+
+def test_external_boundary_seed_target_bypasses_scalar_evidence_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = DownstreamScalarEvidenceCache(case)
+    calls = {"voting": 0, "thinning": 0}
+    original_voting = pipeline.build_voting_scalar_evidence
+    original_thinning = pipeline.build_thinning_scalar_evidence
+
+    def counted_voting(*args, **kwargs):
+        calls["voting"] += 1
+        return original_voting(*args, **kwargs)
+
+    def counted_thinning(*args, **kwargs):
+        calls["thinning"] += 1
+        return original_thinning(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "build_voting_scalar_evidence", counted_voting)
+    monkeypatch.setattr(pipeline, "build_thinning_scalar_evidence", counted_thinning)
+    common = dict(
+        ft=case.ft_oracle,
+        pt=case.pt_oracle,
+        tt=case.tt_oracle,
+        voting_config=SyntheticVotingConfig(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+        variant_spec=get_variant_spec("boundary_seed_retention_v1"),
+        fvt_recenter_target_source="custom_target",
+        scalar_evidence_cache=cache,
+        attribute_stage_key=AttributeStageKey(case.case_id, case.shape, "oracle"),
+    )
+
+    pipeline.run_voting_from_attributes(
+        case,
+        fvt_recenter_target=np.zeros(case.shape, dtype=np.float32),
+        **common,
+    )
+    pipeline.run_voting_from_attributes(
+        case,
+        fvt_recenter_target=np.ones(case.shape, dtype=np.float32),
+        **common,
+    )
+
+    assert calls == {"voting": 2, "thinning": 2}
+    assert cache.stats.voting_builds == cache.stats.voting_reuses == 0
+    assert cache.stats.thinning_builds == cache.stats.thinning_reuses == 0
+    assert not cache._voting
+    assert not cache._thinning
 
 
 def test_unavailable_semantic_key_bypasses_scalar_cache_and_matches_legacy(

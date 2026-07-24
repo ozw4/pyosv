@@ -3,17 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pyosv.evaluation.synthetic_quality import quality_metrics
-from pyosv.voting3d import (
-    _DEFAULT_BSTRAIN1,
-    _DEFAULT_BSTRAIN2,
-    _DEFAULT_FINAL_NORMALIZATION_SMOOTHING,
-    _DEFAULT_SURFACE_ORIENTATION_BACKEND,
-    _DEFAULT_SURFACE_SMOOTHING1,
-    _DEFAULT_SURFACE_SMOOTHING2,
-    _DEFAULT_SURFACE_VOTING_BOUNDARY_POLICY,
-)
 from pyosv.experimental.boundary_thinning import FVT_RECENTER_MAX_SHIFT
 
 from .config import (
@@ -35,9 +27,13 @@ from .stage_cache import (
 )
 from .variants import VariantSpec, effective_thin_mode
 
+if TYPE_CHECKING:
+    from pyosv.evaluation.workflow3d import VolumeVotingControls
+
 THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD = 8.0
 THIN_HYBRID_V2_EDGE_MARGIN = 2
 THIN_PLATEAU_TOLERANCE = 1.0e-6
+DEFAULT_PRIMARY_SKINNER_IDENTITY = "pyosv.experimental.boundary_skinning.find_synthetic_skins"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +95,30 @@ def build_scanner_attribute_stage_key(
     )
 
 
+def build_external_attribute_stage_key(
+    *,
+    dataset_fingerprint: str,
+    stage_fingerprint: str,
+    shape: tuple[int, int, int],
+    backend: str,
+    scanner_thin_mode: str,
+    edge_policy: str | bool,
+) -> AttributeStageKey:
+    """Build an attribute key without inventing synthetic-case configuration."""
+
+    return AttributeStageKey(
+        case_id=dataset_fingerprint,
+        shape=shape,
+        source="external",
+        settings=(
+            ("stage_fingerprint", stage_fingerprint),
+            ("backend", backend),
+            ("scanner_thin_mode", scanner_thin_mode),
+            ("edge_policy", edge_policy),
+        ),
+    )
+
+
 def build_seed_stage_key(
     *,
     attribute_key: AttributeStageKey | None,
@@ -133,48 +153,28 @@ def build_voting_stage_key(
     seed_key: SeedStageKey | None,
     voting_config: SyntheticVotingConfig,
     variant_spec: VariantSpec,
+    voting_controls: VolumeVotingControls,
 ) -> VotingStageKey | None:
     """Build the key for effective surface-voting settings."""
 
     if seed_key is None:
         return None
-    voting_patch = variant_spec.voting
     return VotingStageKey(
         seed=seed_key,
         ru=int(voting_config.ru),
         rv=int(voting_config.rv),
         rw=int(voting_config.rw),
-        bstrain1=_DEFAULT_BSTRAIN1,
-        bstrain2=_DEFAULT_BSTRAIN2,
+        bstrain1=int(voting_controls.bstrain1),
+        bstrain2=int(voting_controls.bstrain2),
         attribute_smoothing=int(voting_config.attribute_smoothing),
-        surface_smoothing1=_DEFAULT_SURFACE_SMOOTHING1,
-        surface_smoothing2=_DEFAULT_SURFACE_SMOOTHING2,
-        boundary_policy=(
-            _DEFAULT_SURFACE_VOTING_BOUNDARY_POLICY
-            if voting_patch.boundary_policy is None
-            else voting_patch.boundary_policy
-        ),
-        support_min_fraction=float(
-            voting_config.surface_support_min_fraction
-            if voting_patch.support_min_fraction is None
-            else voting_patch.support_min_fraction
-        ),
-        support_exponent=float(
-            voting_config.surface_support_exponent
-            if voting_patch.support_exponent is None
-            else voting_patch.support_exponent
-        ),
-        orientation_smoothing=float(
-            max(voting_config.rv, voting_config.rw)
-            if voting_patch.orientation_smoothing is None
-            else voting_patch.orientation_smoothing
-        ),
-        orientation_backend=_DEFAULT_SURFACE_ORIENTATION_BACKEND,
-        final_normalization_smoothing=float(
-            _DEFAULT_FINAL_NORMALIZATION_SMOOTHING
-            if voting_patch.final_normalization_smoothing is None
-            else voting_patch.final_normalization_smoothing
-        ),
+        surface_smoothing1=float(voting_controls.surface_smoothing1),
+        surface_smoothing2=float(voting_controls.surface_smoothing2),
+        boundary_policy=voting_controls.boundary_policy,
+        support_min_fraction=float(voting_controls.support_min_fraction),
+        support_exponent=float(voting_controls.support_exponent),
+        orientation_smoothing=float(voting_controls.orientation_smoothing),
+        orientation_backend=voting_controls.orientation_backend,
+        final_normalization_smoothing=float(voting_controls.final_normalization_smoothing),
     )
 
 
@@ -285,6 +285,7 @@ def build_primary_skinning_stage_key(
     skinning_config: SyntheticSkinningConfig,
     variant_spec: VariantSpec,
     target_source: str | None,
+    skinner_identity: str = DEFAULT_PRIMARY_SKINNER_IDENTITY,
 ) -> PrimarySkinningStageKey | None:
     """Build the key for effective primary skin-growth inputs."""
 
@@ -295,6 +296,7 @@ def build_primary_skinning_stage_key(
         post_thinning_target_source = resolve_stage_target_source(target_source)
     return PrimarySkinningStageKey(
         thinning=thinning_key,
+        skinner_identity=skinner_identity,
         post_thinning_policy=variant_spec.post_thinning_policy,
         post_thinning_target_source=post_thinning_target_source,
         post_thinning_max_shift=(

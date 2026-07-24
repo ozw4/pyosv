@@ -20,6 +20,7 @@ from ..synthetic_quality.stage_keys import (
     build_voting_stage_key,
 )
 from ..synthetic_quality.variants import effective_skinning_config, get_variant_spec
+from ..workflow3d import VolumeVotingControls
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
 from .trials import SyntheticTrialSpec
 
@@ -133,6 +134,10 @@ def resolved_stage_keys_for_cell(
         seed_key=seed_key,
         voting_config=settings.voting_config,
         variant_spec=variant_spec,
+        voting_controls=VolumeVotingControls.resolve(
+            settings.voting_config,
+            variant_spec,
+        ),
     )
     thinning_key = build_thinning_stage_key(
         voting_key=voting_key,

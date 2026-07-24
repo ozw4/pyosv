@@ -251,6 +251,7 @@ class PrimarySkinningStageKey:
     """All effective array stages and settings used by primary skin growth."""
 
     thinning: ThinningStageKey
+    skinner_identity: str
     post_thinning_policy: str
     post_thinning_target_source: str | None
     post_thinning_max_shift: int | None

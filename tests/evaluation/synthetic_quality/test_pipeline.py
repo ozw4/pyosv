@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -54,14 +56,52 @@ def test_pipeline_stage_arrays_and_inputs(variant: str, skinning_enabled: bool) 
         np.testing.assert_array_equal(actual, original)
 
 
-def test_legacy_pipeline_keeps_truth_metric_validation_after_voting_and_thinning(
+def test_skinning_diagnostics_keep_truth_count_selected_fvt_candidate_count() -> None:
+    base_case = make_single_vertical_plane_case((9, 9, 9))
+    truth_distance = np.full(base_case.shape, 10.0, dtype=np.float32)
+    truth_distance[4, 4, 4] = 0.0
+    case = replace(base_case, truth_distance=truth_distance)
+
+    result = run_voting_from_attributes(
+        case,
+        ft=case.ft_oracle,
+        pt=case.pt_oracle,
+        tt=case.tt_oracle,
+        voting_config=SyntheticVotingConfig(),
+        truth_metric_config=SyntheticTruthMetricConfig(),
+        skinning_config=SyntheticSkinningConfig(enabled=True),
+        variant_spec=get_variant_spec("current_default"),
+    )
+
+    fvt = result.artifacts.volumes["fvt_py"]
+    selected_count = result.report_payload["quality"]["fvt_positive_top_truth_count"][
+        "buffered_overlap_radius2"
+    ]["candidate_count"]
+    diagnostics = result.report_payload["skinning"]["diagnostics"]
+    unique_cell_count = diagnostics["skin_primary_unique_cell_count"]
+    largest_size = diagnostics["skin_primary_largest_size"]
+
+    assert np.count_nonzero(fvt > pipeline.NONZERO_EPSILON) > selected_count
+    assert diagnostics["skin_primary_cell_coverage_of_fvt_positive"] == (
+        unique_cell_count / selected_count
+    )
+    assert diagnostics["skin_primary_largest_coverage_of_fvt_positive"] == (
+        largest_size / selected_count
+    )
+    assert diagnostics["skin_primary_degraded_candidate"] is False
+    assert diagnostics["skin_primary_degraded_reasons"] == []
+
+
+def test_pipeline_keeps_truth_metric_validation_after_workflow_core(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     case = make_single_vertical_plane_case((9, 9, 9))
     truth_metric_config = SyntheticTruthMetricConfig(buffer_radius=-0.1)
-    calls = {"voting": 0, "thinning": 0}
+    calls = {"voting": 0, "thinning": 0, "skinning": 0, "fallback": 0}
     original_voting = pipeline.OptimalSurfaceVoter.apply_voting_from_seeds
     original_thinning = pipeline.OptimalSurfaceVoter.thin
+    original_skinning = pipeline.find_synthetic_skins
+    original_fallback = pipeline.apply_boundary_skinner_fallback
 
     def counted_voting(self, *args, **kwargs):
         calls["voting"] += 1
@@ -71,12 +111,22 @@ def test_legacy_pipeline_keeps_truth_metric_validation_after_voting_and_thinning
         calls["thinning"] += 1
         return original_thinning(self, *args, **kwargs)
 
+    def counted_skinning(*args, **kwargs):
+        calls["skinning"] += 1
+        return original_skinning(*args, **kwargs)
+
+    def counted_fallback(*args, **kwargs):
+        calls["fallback"] += 1
+        return original_fallback(*args, **kwargs)
+
     monkeypatch.setattr(
         pipeline.OptimalSurfaceVoter,
         "apply_voting_from_seeds",
         counted_voting,
     )
     monkeypatch.setattr(pipeline.OptimalSurfaceVoter, "thin", counted_thinning)
+    monkeypatch.setattr(pipeline, "find_synthetic_skins", counted_skinning)
+    monkeypatch.setattr(pipeline, "apply_boundary_skinner_fallback", counted_fallback)
 
     assert truth_metric_config.buffer_radius == -0.1
     with pytest.raises(ValueError, match="^buffer_radius must be non-negative$"):
@@ -87,11 +137,11 @@ def test_legacy_pipeline_keeps_truth_metric_validation_after_voting_and_thinning
             tt=case.tt_oracle,
             voting_config=SyntheticVotingConfig(),
             truth_metric_config=truth_metric_config,
-            skinning_config=SyntheticSkinningConfig(enabled=False),
+            skinning_config=SyntheticSkinningConfig(enabled=True),
             variant_spec=get_variant_spec("current_default"),
         )
 
-    assert calls == {"voting": 1, "thinning": 1}
+    assert calls == {"voting": 1, "thinning": 1, "skinning": 1, "fallback": 1}
 
 
 def _run_pipeline_with_trace(

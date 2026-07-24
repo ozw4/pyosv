@@ -18,52 +18,32 @@ from pyosv.evaluation.synthetic_quality.diagnostics import (
     _run_voter_thinning_diagnostic,
 )
 from pyosv.evaluation.synthetic_quality.models import (
-    OrientationField3D,
     PipelineArtifacts,
     PipelineEvaluation,
     PipelineStageTrace3D,
     SkinningResult3D,
-    ThinningResult3D,
-    VotingResult3D,
 )
 from pyosv.evaluation.synthetic_quality.stage_keys import (
-    THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD,
-    THIN_HYBRID_V2_EDGE_MARGIN,
-    THIN_PLATEAU_TOLERANCE,
-    build_final_thinning_stage_key,
-    build_primary_skinning_stage_key,
-    build_seed_stage_key,
     build_thinning_scalar_evidence_key,
-    build_thinning_stage_key,
     build_voting_scalar_evidence_key,
-    build_voting_stage_key,
-    resolve_stage_target_source,
 )
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
     DownstreamScalarEvidence,
     DownstreamScalarEvidenceCache,
     PipelineStageCache,
-    PrimarySkinningStageResult,
     SCALAR_EVIDENCE_CONTRACT_VERSION,
-    SeedStageResult,
-    ThinningStageResult,
-    VotingStageResult,
-    diagnostic_items,
 )
-from pyosv.evaluation.synthetic_quality.variants import VariantSpec, effective_thin_mode
-from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
+from pyosv.evaluation.synthetic_quality.variants import VariantSpec
+from pyosv.evaluation.workflow3d import VolumeVotingControls, execute_workflow3d
 from pyosv.experimental.boundary_skinning import (
     apply_boundary_skinner_fallback,
     find_synthetic_skins,
 )
 from pyosv.experimental.boundary_thinning import (
-    FVT_RECENTER_MAX_SHIFT,
-    apply_boundary_edge_thin_v1,
     fvt_recenter_target_distance_diagnostics,
-    recenter_edge_fvt_to_target,
 )
-from pyosv.experimental.skin_diagnostics import add_primary_skin_diagnostics
+from pyosv.experimental.skin_diagnostics import primary_skin_degraded_reasons
 from pyosv.synthetic3d import Synthetic3DCase
 from pyosv.synthetic_metrics import (
     buffered_surface_overlap,
@@ -76,7 +56,7 @@ from pyosv.synthetic_metrics import (
     top_positive_truth_count_mask,
     top_truth_count_mask,
 )
-from pyosv.voting3d import OptimalSurfaceVoter
+from pyosv.voting3d import OptimalSurfaceVoter  # noqa: F401 - compatibility export
 
 EDGE_FALSE_POSITIVE_MARGIN = quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
 FORMAT_VERSION = 1
@@ -261,6 +241,34 @@ def _normalize_report_skin_metric_keys(metrics: Mapping[str, Any]) -> dict[str, 
     return quality_metrics.normalize_report_skin_metric_keys(metrics)
 
 
+def _apply_truth_selected_primary_skin_diagnostics(
+    diagnostics: dict[str, Any],
+    *,
+    fvt_positive_candidate_count: int,
+) -> None:
+    positive_count = int(fvt_positive_candidate_count)
+    unique_cell_count = int(diagnostics["skin_primary_unique_cell_count"])
+    largest_size = int(diagnostics["skin_primary_largest_size"])
+    cell_coverage = float(unique_cell_count / positive_count) if positive_count else 0.0
+    reasons = primary_skin_degraded_reasons(
+        fvt_positive_candidate_count=positive_count,
+        skin_count=int(diagnostics["skin_primary_count"]),
+        cell_coverage_of_fvt_positive=cell_coverage,
+        largest_fraction=float(diagnostics["skin_primary_largest_fraction"]),
+        small_skin_cell_fraction=float(diagnostics["skin_primary_small_cell_fraction"]),
+    )
+    diagnostics.update(
+        {
+            "skin_primary_cell_coverage_of_fvt_positive": cell_coverage,
+            "skin_primary_largest_coverage_of_fvt_positive": (
+                float(largest_size / positive_count) if positive_count else 0.0
+            ),
+            "skin_primary_degraded_candidate": bool(reasons),
+            "skin_primary_degraded_reasons": reasons,
+        }
+    )
+
+
 def run_voting_from_attributes(
     case: Synthetic3DCase,
     *,
@@ -284,235 +292,67 @@ def run_voting_from_attributes(
     scalar_evidence_cache: DownstreamScalarEvidenceCache | None = None,
     attribute_stage_key: AttributeStageKey | None = None,
 ) -> PipelineEvaluation:
-    OrientationField3D(ft=ft, pt=pt, tt=tt)
     if stage_cache is not None:
         stage_cache.bind_case(case)
     if scalar_evidence_cache is not None:
         scalar_evidence_cache.bind_case(case)
-    voter = OptimalSurfaceVoter(
-        ru=voting_config.ru,
-        rv=voting_config.rv,
-        rw=voting_config.rw,
+
+    workflow_result = execute_workflow3d(
+        ft=ft,
+        pt=pt,
+        tt=tt,
+        attribute_identity=attribute_stage_key,
+        voting_settings=voting_config,
+        voting_controls=VolumeVotingControls.resolve(voting_config, variant_spec),
+        skinning_settings=skinning_config,
+        variant_spec=variant_spec,
+        stage_cache=stage_cache,
+        scanner_target_positive_mask=scanner_target_positive_mask,
+        fvt_recenter_target=fvt_recenter_target,
+        fvt_recenter_target_source=fvt_recenter_target_source,
+        recenter_distance_diagnostic_runner=recenter_distance_diagnostic_runner,
+        primary_skinner=find_synthetic_skins,
+        boundary_fallback_runner=apply_boundary_skinner_fallback,
     )
-    voter.set_attribute_smoothing(voting_config.attribute_smoothing)
-    voting_patch = variant_spec.voting
-    surface_support_min_fraction = (
-        voting_config.surface_support_min_fraction
-        if voting_patch.support_min_fraction is None
-        else voting_patch.support_min_fraction
+    voting_controls = workflow_result.effective_settings.controls
+    voter = workflow_result.voter
+    fv = workflow_result.fv
+    vp = workflow_result.vp
+    vt = workflow_result.vt
+    fvt = workflow_result.fvt
+    skins = list(workflow_result.skins)
+    skin_diagnostics = dict(workflow_result.diagnostics.skinning)
+    surface_voting_diagnostic_summary = dict(workflow_result.diagnostics.voting)
+    thinning_diagnostics = workflow_result.diagnostics.thinning
+    fvt_recenter_diagnostic = thinning_diagnostics["recenter"]
+    boundary_edge_thin_diagnostic = thinning_diagnostics["boundary_edge_thin"]
+    boundary_seed_retention_diagnostic = (
+        None if workflow_result.diagnostics.seed is None else dict(workflow_result.diagnostics.seed)
     )
-    surface_support_exponent = (
-        voting_config.surface_support_exponent
-        if voting_patch.support_exponent is None
-        else voting_patch.support_exponent
-    )
-    voter.set_surface_support_policy(
-        min_fraction=surface_support_min_fraction,
-        exponent=surface_support_exponent,
-    )
-    if voting_patch.boundary_policy is not None:
-        voter.set_surface_voting_boundary_policy(voting_patch.boundary_policy)
-    if voting_patch.orientation_smoothing is not None:
-        voter.set_surface_orientation_smoothing(voting_patch.orientation_smoothing)
-    if voting_patch.final_normalization_smoothing is not None:
-        voter.set_final_normalization_smoothing(voting_patch.final_normalization_smoothing)
     semantic_keys_safe = attribute_stage_key is not None
     if (
         variant_spec.seed_policy == "boundary_seed_retention_v1"
         and fvt_recenter_target is not None
         and fvt_recenter_target is not ft
     ):
-        # A caller-provided target needs its own semantic token. The report
-        # runners use the attribute likelihood itself; unknown combinations
-        # conservatively bypass both dependent stages.
+        # The caller-provided target affects seed selection but has no semantic
+        # fingerprint, so evidence derived from the resulting vote is unsafe to cache.
         semantic_keys_safe = False
-    cache_enabled = stage_cache is not None and semantic_keys_safe
     scalar_cache_enabled = scalar_evidence_cache is not None and semantic_keys_safe
     final_thinning_key_safe = semantic_keys_safe and not (
         variant_spec.post_thinning_policy != "none"
         and fvt_recenter_target is not None
         and fvt_recenter_target is not ft
     )
-    primary_skinning_cache_enabled = cache_enabled and final_thinning_key_safe
-    seed_key = build_seed_stage_key(
-        attribute_key=attribute_stage_key,
-        voting_config=voting_config,
-        variant_spec=variant_spec,
-        target_source=fvt_recenter_target_source,
-    )
-    boundary_target_source = (
-        resolve_stage_target_source(fvt_recenter_target_source)
-        if variant_spec.seed_policy == "boundary_seed_retention_v1"
-        else None
-    )
-
-    def build_seed_result() -> SeedStageResult:
-        if variant_spec.seed_policy == "boundary_seed_retention_v1":
-            boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
-            selected = select_boundary_seed_retention_v1(
-                voting_config=voting_config,
-                ft=ft,
-                pt=pt,
-                tt=tt,
-                target=boundary_target,
-                target_source=boundary_target_source,
-                edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-            )
-            selected_seeds = tuple(selected.selected_seeds)
-            selected_diagnostic = dict(selected.diagnostics)
-        else:
-            selected_seeds = tuple(
-                voter.pick_seeds(
-                    d=voting_config.seed_distance,
-                    fm=voting_config.seed_threshold,
-                    ft=ft,
-                    pt=pt,
-                    tt=tt,
-                )
-            )
-            selected_diagnostic = None
-        return SeedStageResult(
-            seeds=selected_seeds,
-            diagnostic_items=(
-                None if selected_diagnostic is None else diagnostic_items(selected_diagnostic)
-            ),
-        )
-
-    seed_result = (
-        stage_cache.get_or_build_seed(seed_key, build_seed_result)
-        if cache_enabled and stage_cache is not None and seed_key is not None
-        else build_seed_result()
-    )
-    seeds = seed_result.seeds
-    boundary_seed_retention_diagnostic = seed_result.diagnostics()
+    voting_key = workflow_result.stage_keys.voting
+    final_thinning_key = workflow_result.stage_keys.final_thinning
     seed_candidate_mask: np.ndarray | None = None
     seed_selected_mask: np.ndarray | None = None
     if capture_stage_trace:
         seed_candidate_mask = np.asarray(ft) > np.float32(voting_config.seed_threshold)
         seed_selected_mask = np.zeros(seed_candidate_mask.shape, dtype=bool)
-        for seed in seeds:
-            seed_selected_mask[seed.i3, seed.i2, seed.i1] = True
-    voting_key = build_voting_stage_key(
-        seed_key=seed_key,
-        voting_config=voting_config,
-        variant_spec=variant_spec,
-    )
-
-    def build_voting_result() -> VotingStageResult:
-        built_fv, built_vp, built_vt = voter.apply_voting_from_seeds(
-            seeds,
-            ft=ft,
-            pt=pt,
-            tt=tt,
-        )
-        built_diagnostics = voter.surface_voting_diagnostic_summary()
-        return VotingStageResult(
-            fv=built_fv,
-            vp=built_vp,
-            vt=built_vt,
-            diagnostic_items=diagnostic_items(built_diagnostics),
-        )
-
-    if cache_enabled and stage_cache is not None and voting_key is not None:
-        voting_result = stage_cache.get_or_build_voting(voting_key, build_voting_result)
-        fv, vp, vt = voting_result.fv, voting_result.vp, voting_result.vt
-        surface_voting_diagnostic_summary = voting_result.diagnostics()
-    else:
-        fv, vp, vt = voter.apply_voting_from_seeds(
-            seeds,
-            ft=ft,
-            pt=pt,
-            tt=tt,
-        )
-        surface_voting_diagnostic_summary = voter.surface_voting_diagnostic_summary()
-    VotingResult3D(
-        fv=fv,
-        vp=vp,
-        vt=vt,
-        diagnostics=surface_voting_diagnostic_summary,
-    )
-    thin_mode = effective_thin_mode(variant_spec, voting_config)
-    plateau_tie_breaker = ft if thin_mode in {"hybrid_v2", "normal_plateau"} else None
-    thinning_key = build_thinning_stage_key(
-        voting_key=voting_key,
-        voting_config=voting_config,
-        variant_spec=variant_spec,
-    )
-
-    def build_thinning_result() -> ThinningStageResult:
-        built_fvt = voter.thin(
-            fv,
-            vp,
-            vt,
-            mode=thin_mode,
-            reference_sigma=voting_config.reference_thin_sigma,
-            hybrid_orientation_gradient_threshold=(THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD),
-            hybrid_v2_edge_margin=THIN_HYBRID_V2_EDGE_MARGIN,
-            plateau_tie_breaker=plateau_tie_breaker,
-            plateau_tolerance=THIN_PLATEAU_TOLERANCE,
-        )
-        return ThinningStageResult(fvt=built_fvt)
-
-    if cache_enabled and stage_cache is not None and thinning_key is not None:
-        thinning_result = stage_cache.get_or_build_thinning(thinning_key, build_thinning_result)
-        fvt = thinning_result.fvt
-    else:
-        fvt = voter.thin(
-            fv,
-            vp,
-            vt,
-            mode=thin_mode,
-            reference_sigma=voting_config.reference_thin_sigma,
-            hybrid_orientation_gradient_threshold=(THIN_HYBRID_ORIENTATION_GRADIENT_THRESHOLD),
-            hybrid_v2_edge_margin=THIN_HYBRID_V2_EDGE_MARGIN,
-            plateau_tie_breaker=plateau_tie_breaker,
-            plateau_tolerance=THIN_PLATEAU_TOLERANCE,
-        )
-    fvt_recenter_diagnostic: dict[str, Any] | None = None
-    fvt_recenter_before_positive: np.ndarray | None = None
-    boundary_edge_thin_diagnostic: dict[str, Any] | None = None
-    if variant_spec.post_thinning_policy == "recenter_scanner_target":
-        recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        recenter_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        fvt_recenter_before_positive = _positive_candidate_mask(fvt)
-        recenter_result = recenter_edge_fvt_to_target(
-            fvt,
-            vp,
-            vt,
-            target=recenter_target,
-            target_source=recenter_target_source,
-            max_shift=FVT_RECENTER_MAX_SHIFT,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = recenter_result.output
-        fvt_recenter_diagnostic = recenter_result.diagnostics
-    if variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
-        boundary_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        boundary_target_source = (
-            "ft_input" if fvt_recenter_target_source is None else fvt_recenter_target_source
-        )
-        boundary_thin_result = apply_boundary_edge_thin_v1(
-            fvt,
-            fv,
-            vp,
-            vt,
-            voter=voter,
-            target=boundary_target,
-            target_source=boundary_target_source,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = boundary_thin_result.output
-        boundary_edge_thin_diagnostic = boundary_thin_result.diagnostics
-
-    ThinningResult3D(
-        fvt=fvt,
-        diagnostics={
-            "recenter": fvt_recenter_diagnostic,
-            "boundary_edge_thin": boundary_edge_thin_diagnostic,
-        },
-    )
+        for i3, i2, i1 in workflow_result.seed_indices:
+            seed_selected_mask[i3, i2, i1] = True
 
     truth_surface_half_width = _validate_nonnegative_finite_scalar(
         truth_metric_config.truth_surface_half_width,
@@ -560,11 +400,6 @@ def run_voting_from_attributes(
         else build_voting_evidence()
     )
 
-    final_thinning_key = build_final_thinning_stage_key(
-        thinning_key=thinning_key,
-        variant_spec=variant_spec,
-        target_source=fvt_recenter_target_source,
-    )
     thinning_evidence_key = build_thinning_scalar_evidence_key(
         case_id=case.case_id,
         case_token=id(case),
@@ -601,7 +436,15 @@ def run_voting_from_attributes(
         and thinning_evidence_key is not None
         else build_thinning_evidence()
     )
-
+    if skinning_config.enabled:
+        _apply_truth_selected_primary_skin_diagnostics(
+            skin_diagnostics,
+            fvt_positive_candidate_count=int(
+                thinning_evidence.positive_top_truth_count["buffered_overlap_radius2"][
+                    "candidate_count"
+                ]
+            ),
+        )
     edge_false_positive_metrics = {
         "fv_top_truth_count": voting_evidence.edge_top_truth_count,
         "fvt_top_truth_count": thinning_evidence.edge_top_truth_count,
@@ -618,8 +461,8 @@ def run_voting_from_attributes(
             "fvt": thinning_evidence.array_summary,
             "voting": {
                 "surface_voting_boundary_policy": voter.surface_voting_boundary_policy,
-                "surface_support_min_fraction": float(surface_support_min_fraction),
-                "surface_support_exponent": float(surface_support_exponent),
+                "surface_support_min_fraction": float(voting_controls.support_min_fraction),
+                "surface_support_exponent": float(voting_controls.support_exponent),
                 "diagnostic_summary": surface_voting_diagnostic_summary,
             },
         },
@@ -632,13 +475,6 @@ def run_voting_from_attributes(
         },
     }
     if fvt_recenter_diagnostic is not None:
-        fvt_recenter_diagnostic.update(
-            recenter_distance_diagnostic_runner(
-                before=fvt_recenter_before_positive,
-                after=_positive_candidate_mask(fvt),
-                target=_positive_candidate_mask(recenter_target),
-            )
-        )
         report["fvt_recenter"] = fvt_recenter_diagnostic
     if boundary_edge_thin_diagnostic is not None:
         report["boundary_edge_thin"] = boundary_edge_thin_diagnostic
@@ -658,67 +494,8 @@ def run_voting_from_attributes(
         )
         report["thinning_diagnostic"] = thinning_diagnostic
     if skinning_config.enabled:
-        primary_skinning_key = build_primary_skinning_stage_key(
-            thinning_key=thinning_key,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            target_source=fvt_recenter_target_source,
-        )
-
-        def build_primary_skinning_result() -> PrimarySkinningStageResult:
-            primary_diagnostics: dict[str, Any] = {}
-            primary_skins = find_synthetic_skins(
-                fv,
-                fvt,
-                vp,
-                vt,
-                skinning_config=skinning_config,
-                diagnostics=primary_diagnostics,
-            )
-            return PrimarySkinningStageResult.from_skins(primary_skins, primary_diagnostics)
-
-        if (
-            primary_skinning_cache_enabled
-            and stage_cache is not None
-            and primary_skinning_key is not None
-        ):
-            primary_result = stage_cache.get_or_build_primary_skinning(
-                primary_skinning_key, build_primary_skinning_result
-            )
-            skins, skin_diagnostics = primary_result.clone()
-        else:
-            primary_diagnostics = {}
-            primary_skins = find_synthetic_skins(
-                fv,
-                fvt,
-                vp,
-                vt,
-                skinning_config=skinning_config,
-                diagnostics=primary_diagnostics,
-            )
-            skins = primary_skins
-            skin_diagnostics = primary_diagnostics
-        primary_skin_mask = skin_mask_from_skins(skins, case.shape) if capture_stage_trace else None
-        add_primary_skin_diagnostics(
-            skin_diagnostics,
-            skins,
-            shape=case.shape,
-            fvt_positive_candidate_count=int(
-                thinning_evidence.positive_top_truth_count["buffered_overlap_radius2"][
-                    "candidate_count"
-                ]
-            ),
-            small_skin_size=skinning_config.small_skin_size,
-        )
-        apply_boundary_skinner_fallback(
-            skins,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_config,
-            variant_spec=variant_spec,
-            diagnostics=skin_diagnostics,
-            scanner_target_positive_mask=scanner_target_positive_mask,
+        primary_skin_mask = (
+            workflow_result.skin.primary_mask.copy() if capture_stage_trace else None
         )
         report["skinning"]["diagnostics"] = skin_diagnostics
         skin_metrics = skin_truth_metrics(
