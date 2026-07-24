@@ -623,6 +623,12 @@ def _validate_dataset_identity(
             raise ValueError(f"dataset identity dtype does not match the plan for role {role!r}")
         if item.size != spec.expected_bytes:
             raise ValueError(f"dataset identity size does not match the plan for role {role!r}")
+        try:
+            _validate_sha256(item.sha256, f"dataset identity checksum for role {role!r}")
+        except ValueError as error:
+            raise ValueError(
+                f"dataset identity checksum does not match the plan contract for role {role!r}"
+            ) from error
 
 
 def _validate_workspace_layout(path: Path) -> None:
@@ -657,6 +663,7 @@ def _algorithm_source_files() -> dict[str, Path]:
         package_root / "_seed_selection.py",
         package_root / "cells.py",
         package_root / "dp.py",
+        package_root / "_dp",
         package_root / "filters.py",
         package_root / "geometry.py",
         package_root / "interp.py",
@@ -671,9 +678,8 @@ def _algorithm_source_files() -> dict[str, Path]:
         package_root / "evaluation" / "workflow3d.py",
         package_root / "evaluation" / "f3d_mode_comparison",
         package_root / "evaluation" / "synthetic_quality",
-        package_root / "experimental" / "boundary_seed_selection.py",
-        package_root / "experimental" / "boundary_skinning.py",
-        package_root / "experimental" / "boundary_thinning.py",
+        package_root / "experimental",
+        package_root / "synthetic_metrics.py",
     )
     result: dict[str, Path] = {}
     for root in roots:

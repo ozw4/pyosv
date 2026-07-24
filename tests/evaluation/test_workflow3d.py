@@ -93,6 +93,27 @@ def test_external_identity_and_controls_separate_semantic_keys() -> None:
     assert not np.array_equal(first.fv, changed_control.fv)
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (
+        ("strain_max1", 0.0),
+        ("strain_max2", 1.1),
+        ("surface_smoothing1", -1.0),
+        ("surface_smoothing2", float("nan")),
+        ("support_min_fraction", -0.1),
+        ("support_min_fraction", 1.1),
+        ("support_exponent", float("inf")),
+        ("orientation_smoothing", -1.0),
+        ("final_normalization_smoothing", float("nan")),
+        ("boundary_policy", "unknown"),
+        ("orientation_backend", "unknown"),
+    ),
+)
+def test_volume_voting_controls_reject_invalid_values(name: str, value: object) -> None:
+    with pytest.raises(ValueError, match=name):
+        replace(VolumeVotingControls(), **{name: value})
+
+
 def test_cache_hits_return_independent_read_only_volumes() -> None:
     cache = PipelineStageCache()
 

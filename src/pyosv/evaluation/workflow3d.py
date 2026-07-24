@@ -9,6 +9,12 @@ from typing import Any, TypeVar
 import numpy as np
 
 from pyosv._dp.path2d import strain_to_bstrain
+from pyosv._voting3d.orientation import _SURFACE_ORIENTATION_BACKENDS
+from pyosv._voting3d.policies import SURFACE_VOTING_POLICY_REGISTRY
+from pyosv._voting3d.validation import (
+    _validate_fraction_float,
+    _validate_nonnegative_float,
+)
 from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.evaluation.synthetic_quality.config import (
     SyntheticSkinningConfig,
@@ -131,6 +137,30 @@ class VolumeVotingControls:
     orientation_smoothing: float = 0.0
     orientation_backend: str = _DEFAULT_SURFACE_ORIENTATION_BACKEND
     final_normalization_smoothing: float = _DEFAULT_FINAL_NORMALIZATION_SMOOTHING
+
+    def __post_init__(self) -> None:
+        for name in ("strain_max1", "strain_max2"):
+            try:
+                strain_to_bstrain(getattr(self, name))
+            except ValueError as error:
+                raise ValueError(f"{name} must satisfy 0 < {name} <= 1") from error
+        for name in (
+            "surface_smoothing1",
+            "surface_smoothing2",
+            "support_exponent",
+            "orientation_smoothing",
+            "final_normalization_smoothing",
+        ):
+            _validate_nonnegative_float(getattr(self, name), name)
+        _validate_fraction_float(self.support_min_fraction, "support_min_fraction")
+        if self.boundary_policy not in SURFACE_VOTING_POLICY_REGISTRY:
+            allowed = ", ".join(repr(value) for value in SURFACE_VOTING_POLICY_REGISTRY)
+            raise ValueError(f"boundary_policy must be one of: {allowed}")
+        if self.orientation_backend not in _SURFACE_ORIENTATION_BACKENDS:
+            raise ValueError(
+                "orientation_backend must be one of "
+                f"{_SURFACE_ORIENTATION_BACKENDS}, got {self.orientation_backend!r}"
+            )
 
     @property
     def bstrain1(self) -> int:

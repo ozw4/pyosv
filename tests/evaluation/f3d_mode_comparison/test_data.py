@@ -9,6 +9,7 @@ import pytest
 
 from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetSpec,
+    F3FileIdentity,
     F3VolumeSource,
     OFFICIAL_F3_DATASET_SPEC,
     ensure_output_not_in_data_root,
@@ -37,6 +38,32 @@ def _write_fixture(root: Path, spec: F3DatasetSpec) -> np.ndarray:
     values = np.arange(np.prod(spec.shape), dtype=np.float32).reshape(spec.shape)
     write_dat(root / "ep.dat", values, endian="big")
     return values
+
+
+@pytest.mark.parametrize(
+    "sha256",
+    (
+        None,
+        "",
+        "0" * 63,
+        "0" * 65,
+        "G" * 64,
+        "A" * 64,
+    ),
+)
+def test_file_identity_rejects_invalid_checksum(tmp_path: Path, sha256: object) -> None:
+    spec = _fixture_spec()
+
+    with pytest.raises(ValueError, match="sha256"):
+        F3FileIdentity(
+            role="input",
+            filename="ep.dat",
+            resolved_path=tmp_path / "ep.dat",
+            size=spec.expected_bytes,
+            sha256=sha256,  # type: ignore[arg-type]
+            shape=spec.shape,
+            storage_dtype=spec.storage_dtype,
+        )
 
 
 def test_read_only_storage_memmap_and_native_copy(tmp_path: Path) -> None:

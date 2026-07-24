@@ -25,6 +25,7 @@ F3_FILE_ROLES = (
     ("reference_thinned_fault_votes", "fvt.dat"),
 )
 SHA256_BUFFER_SIZE = 1024 * 1024
+_SHA256_LENGTH = 64
 
 
 def _validated_shape(shape: object) -> tuple[int, int, int]:
@@ -60,6 +61,16 @@ def _validated_files(files: object) -> tuple[tuple[str, str], ...]:
         roles.add(role)
         filenames.add(filename)
     return result
+
+
+def _validated_sha256(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != _SHA256_LENGTH
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError("sha256 must be a lowercase SHA-256 hex digest")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +162,9 @@ class F3FileIdentity:
     sha256: str
     shape: tuple[int, int, int]
     storage_dtype: str
+
+    def __post_init__(self) -> None:
+        _validated_sha256(self.sha256)
 
     @property
     def computation_identity(self) -> dict[str, object]:

@@ -139,11 +139,24 @@ def test_default_implementation_identity_hashes_f3_execution_sources() -> None:
     modules = implementation_identity()["algorithm_modules"]
 
     assert {
+        "_dp/path2d.py",
         "evaluation/f3d_mode_comparison/artifacts.py",
         "evaluation/f3d_mode_comparison/builder.py",
         "evaluation/f3d_mode_comparison/data.py",
         "evaluation/f3d_mode_comparison/models.py",
+        "evaluation/synthetic_quality/config.py",
+        "evaluation/synthetic_quality/models.py",
+        "evaluation/synthetic_quality/quality_metrics.py",
+        "evaluation/synthetic_quality/stage_cache.py",
+        "evaluation/synthetic_quality/stage_keys.py",
+        "evaluation/synthetic_quality/variants.py",
         "evaluation/workflow3d.py",
+        "experimental/boundary_seed_selection.py",
+        "experimental/boundary_skinning.py",
+        "experimental/boundary_thinning.py",
+        "experimental/skin_diagnostics.py",
+        "synthetic_metrics.py",
+        "voting3d.py",
     } <= modules.keys()
 
 
@@ -192,6 +205,14 @@ def test_run_fingerprint_rejects_dataset_identity_mismatches(tmp_path: Path) -> 
     for identity in mismatches:
         with pytest.raises(ValueError, match="dataset identity"):
             run_fingerprint(plan, identity, implementation=_IMPLEMENTATION)
+
+
+def test_run_fingerprint_revalidates_dataset_checksum(tmp_path: Path) -> None:
+    identity = _identity(tmp_path / "data")
+    object.__setattr__(identity.files[0], "sha256", None)
+
+    with pytest.raises(ValueError, match="dataset identity checksum"):
+        run_fingerprint(_plan(), identity, implementation=_IMPLEMENTATION)
 
 
 def test_reference_content_changes_run_fingerprint(tmp_path: Path) -> None:
