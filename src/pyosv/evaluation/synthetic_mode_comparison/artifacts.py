@@ -66,7 +66,7 @@ from .scalar_algebra import (
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 3
-RUNTIME_CONTRACT_VERSION = 3
+RUNTIME_CONTRACT_VERSION = 4
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
 METRIC_REGISTRY_DEFINITION_VERSION = 1
@@ -793,6 +793,10 @@ def _load_bundle_objects(
             2: (
                 "unsupported runtime contract version 2: legacy schema-v3 bundle "
                 "does not contain shared volume-stage attribution or elapsed algebra"
+            ),
+            3: (
+                "unsupported runtime contract version 3: legacy schema-v3 bundle "
+                "does not distinguish shared and cell-owned cacheable stage runtime"
             ),
         },
     )

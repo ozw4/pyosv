@@ -1440,17 +1440,19 @@ are validated from resolved semantic stage keys, and shared scanner, voting,
 and conditionally shared thinning scalar evidence is compared across cells.
 Scanner scalar evidence is prepared once per trial and backend, reused by the
 scanner-only and end-to-end cells, and attributed to a shared runtime stage.
-Voting and thinning scalar evidence is built once per unique trial-local
-semantic key and attributed to shared runtime rows; `cell_execution` contains
-only the remaining cell-exclusive time. Seed selection, voting volume, base
-thinning, and primary skinning are also attributed once per successful
-cache-miss build to shared runtime rows; cache hits add neither calls nor
-elapsed time. These rows are a within-experiment breakdown rather than
-isolated-process benchmarks. Their disjoint elapsed sum may not exceed
+Voting and thinning scalar evidence, seed selection, voting volume, base
+thinning, and primary skinning are attributed by trial-local semantic-key
+reference count. Keys referenced by multiple cells use a shared row; a
+successfully built key referenced by one cell uses an owner-labelled row.
+Cache hits add neither calls nor elapsed time. `cell_execution` contains only
+the remaining cell-exclusive time, so mode-owned runtime is that residual plus
+the cell's owner-labelled rows without any implicit share of shared rows.
+These rows are a within-experiment breakdown rather than isolated-process
+benchmarks. Their disjoint elapsed sum may not exceed
 `trial_total`, and the sum of trial totals may not exceed `experiment_total`.
 Its authoritative artifact schema is v3, with independent scalar-evidence and
 runtime contract versions (currently scalar-evidence version 5 and runtime
-version 3). Each trial persists one canonical truth-evidence object; all
+version 4). Each trial persists one canonical truth-evidence object; all
 scanner, voting, thinning, and enabled-skin quality reports bind their
 fault-band and thin-surface truth counts to it. Scanner publication metrics are
 joined totally to complete persisted scanner evidence. V1 bundles lack that

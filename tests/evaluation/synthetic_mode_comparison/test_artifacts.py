@@ -465,7 +465,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 3
     assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 5
-    assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 3
+    assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 4
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
     assert manifest["resolved_plan"]["shape"] == [9, 9, 9]
@@ -1119,6 +1119,72 @@ def test_validator_explicitly_rejects_rehashed_runtime_contract_v2_bundle(
     _rehash(bundle, "manifest.json")
 
     with pytest.raises(ValueError, match="legacy schema-v3 bundle.*volume-stage attribution"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_explicitly_rejects_rehashed_runtime_contract_v3_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-runtime-v3")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_contract_version"] = 3
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy schema-v3 bundle.*cell-owned"):
+        validate_completed_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    (
+        "owner",
+        "missing",
+        "order",
+        "double_count",
+        "move_to_shared",
+        "shared_seed_zero",
+    ),
+)
+def test_validator_rejects_rehashed_runtime_v4_row_tampering(
+    tmp_path: Path, tampering: str
+) -> None:
+    bundle = _write_bundle(tmp_path / f"runtime-v4-{tampering}")
+    runtime_path = bundle / "runtime.csv"
+    fieldnames, rows = _read_csv_dicts(runtime_path)
+    owned_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row["stage"] == "base_thinning" and row["cell_label"] == "ORACLE-REF"
+    )
+    if tampering == "owner":
+        rows[owned_index]["cell_label"] = "ORACLE-QUAL"
+    elif tampering == "missing":
+        rows.pop(owned_index)
+    elif tampering == "order":
+        rows[owned_index], rows[owned_index + 1] = rows[owned_index + 1], rows[owned_index]
+    elif tampering == "double_count":
+        rows.insert(owned_index + 1, dict(rows[owned_index]))
+    elif tampering == "move_to_shared":
+        rows[owned_index]["cell_label"] = ""
+        rows[owned_index]["scanner_backend"] = ""
+        rows[owned_index]["shared_stage"] = "true"
+    else:
+        seed_row = next(
+            row
+            for row in rows
+            if row["stage"] == "seed_selection" and row["shared_stage"] == "true"
+        )
+        seed_row["call_count"] = "0"
+    _write_csv_dicts(runtime_path, fieldnames, rows)
+    _rehash(bundle, "runtime.csv")
+
+    with pytest.raises(ValueError, match="runtime_rows"):
         validate_completed_bundle(bundle)
 
 

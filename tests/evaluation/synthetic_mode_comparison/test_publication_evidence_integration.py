@@ -36,6 +36,9 @@ from pyosv.evaluation.synthetic_mode_comparison import metrics as comparison_met
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
 from pyosv.evaluation.synthetic_mode_comparison import validation as comparison_validation
 from pyosv.evaluation.synthetic_mode_comparison.metrics import scanner_metric_definitions
+from pyosv.evaluation.synthetic_mode_comparison.runtime_attribution import (
+    build_runtime_attribution_plan,
+)
 from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import volume_diagonal
 from pyosv.evaluation.synthetic_mode_comparison.validation import (
     _expected_cache_counters,
@@ -306,6 +309,10 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         "primary_skinning",
         "voting_scalar_evidence",
         "thinning_scalar_evidence",
+        *(
+            entry.stage
+            for entry in build_runtime_attribution_plan(plan, plan.trials[0]).cell_owned_entries()
+        ),
         *("cell_execution" for _ in plan.cells),
         "metric_extraction",
         "contrast_extraction",
@@ -322,18 +329,20 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         assert tuple(row.cell_label for row in rows if row.stage == "cell_execution") == tuple(
             cell.label for cell in plan.cells
         )
-        evidence_calls = {
+        shared_evidence_calls = {
             row.stage: row.call_count
             for row in rows
+            if row.shared_stage
             if row.stage in {"voting_scalar_evidence", "thinning_scalar_evidence"}
         }
-        assert evidence_calls == {
+        assert shared_evidence_calls == {
             "voting_scalar_evidence": 3,
-            "thinning_scalar_evidence": 6,
+            "thinning_scalar_evidence": 0,
         }
         assert all(row.shared_stage for row in rows[:12])
-        assert all(not row.shared_stage for row in rows[12 : 12 + len(plan.cells)])
-        assert all(row.shared_stage for row in rows[12 + len(plan.cells) :])
+        owned_count = len(build_runtime_attribution_plan(plan, trial).cell_owned_entries())
+        assert all(not row.shared_stage for row in rows[12 : 12 + owned_count + len(plan.cells)])
+        assert all(row.shared_stage for row in rows[12 + owned_count + len(plan.cells) :])
     assert result.runtime_rows[-1].stage == "experiment_total"
     assert result.runtime_rows[-1].trial_id is None
     assert result.runtime_rows[-1].shared_stage is True
@@ -356,7 +365,7 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         == 5
     )
     assert (
-        manifest["runtime_contract_version"] == comparison_artifacts.RUNTIME_CONTRACT_VERSION == 3
+        manifest["runtime_contract_version"] == comparison_artifacts.RUNTIME_CONTRACT_VERSION == 4
     )
     assert tuple(sorted(path.name for path in bundle.iterdir())) == tuple(
         sorted(comparison_artifacts.REQUIRED_BUNDLE_FILES)
@@ -408,13 +417,15 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
     for cache, trial in zip(topology_result.cache_stats, topology_result.trial_metadata):
         assert cache["primary_skinning_hits"] == 0
         assert cache["primary_skinning_misses"] == 6
-        row = next(
+        rows = tuple(
             row
             for row in topology_result.runtime_rows
             if row.trial_id == trial["trial_id"] and row.stage == "primary_skinning"
         )
-        assert row.call_count == 6
-        assert row.shared_stage is True
+        assert rows[0].call_count == 0
+        assert rows[0].shared_stage is True
+        assert len(rows[1:]) == 6
+        assert all(row.call_count == 1 and not row.shared_stage for row in rows[1:])
 
     _assert_publication_scalar_contract(topology_result)
     _assert_trial_truth_targets(topology_result)
@@ -761,7 +772,7 @@ def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
                 "primary_skinning_hits": 0,
                 "primary_skinning_misses": 6,
             },
-            (3, 6),
+            (3, 0, 6),
         ),
         (
             shared_config,
@@ -776,21 +787,25 @@ def test_runtime_and_validator_use_resolved_default_and_explicit_cache_keys(
                 "primary_skinning_hits": 3,
                 "primary_skinning_misses": 3,
             },
-            (3, 3),
+            (3, 3, 0),
         ),
     )
     for index, (config, result, expected, evidence_calls) in enumerate(expected_by_config):
         plan = build_mode_comparison_plan(config)
         assert _expected_cache_counters(plan) == expected
         assert {name: result.cache_stats[0][name] for name in expected} == expected
-        assert (
-            tuple(
-                row.call_count
-                for row in result.runtime_rows
-                if row.stage in {"voting_scalar_evidence", "thinning_scalar_evidence"}
-            )
-            == evidence_calls
+        shared_calls = tuple(
+            row.call_count
+            for row in result.runtime_rows
+            if row.shared_stage
+            and row.stage in {"voting_scalar_evidence", "thinning_scalar_evidence"}
         )
+        owned_thinning_calls = sum(
+            row.call_count
+            for row in result.runtime_rows
+            if not row.shared_stage and row.stage == "thinning_scalar_evidence"
+        )
+        assert (*shared_calls, owned_thinning_calls) == evidence_calls
         validate_mode_comparison_result(result, config)
         bundle = write_artifact_bundle(result, tmp_path / f"cache-{index}", config=config)
         assert validate_completed_bundle(bundle)
@@ -1325,7 +1340,7 @@ def _assert_runtime_elapsed_algebra(result: SyntheticModeComparisonResult) -> No
         trial_total = rows[-1]
         assert trial_total.stage == "trial_total"
         assert trial_total.shared_stage is True
-        assert all(row.shared_stage == (row.stage != "cell_execution") for row in rows[:-1])
+        assert all(row.shared_stage == (row.cell_label is None) for row in rows[:-1])
         disjoint_elapsed = fsum(row.elapsed_seconds for row in rows[:-1])
         tolerance = max(1.0e-12, 1.0e-9 * max(disjoint_elapsed, trial_total.elapsed_seconds))
         assert disjoint_elapsed <= trial_total.elapsed_seconds + tolerance

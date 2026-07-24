@@ -1009,6 +1009,51 @@ def test_downstream_runtime_attribution_tampering_is_rejected(result, config, ta
 
 
 @pytest.mark.parametrize(
+    "tampering",
+    (
+        "owner",
+        "missing",
+        "order",
+        "double_count",
+        "move_to_shared",
+        "shared_seed_zero",
+    ),
+)
+def test_runtime_v4_cell_owned_row_tampering_is_rejected(result, config, tampering) -> None:
+    rows = list(result.runtime_rows)
+    owned_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row.stage == "base_thinning" and row.cell_label == "ORACLE-REF"
+    )
+    if tampering == "owner":
+        rows[owned_index] = replace(rows[owned_index], cell_label="ORACLE-QUAL")
+    elif tampering == "missing":
+        rows.pop(owned_index)
+    elif tampering == "order":
+        rows[owned_index], rows[owned_index + 1] = rows[owned_index + 1], rows[owned_index]
+    elif tampering == "double_count":
+        rows.insert(owned_index + 1, rows[owned_index])
+    elif tampering == "move_to_shared":
+        rows[owned_index] = replace(
+            rows[owned_index],
+            cell_label=None,
+            scanner_backend=None,
+            shared_stage=True,
+        )
+    else:
+        seed_index = next(
+            index
+            for index, row in enumerate(rows)
+            if row.stage == "seed_selection" and row.shared_stage
+        )
+        rows[seed_index] = replace(rows[seed_index], call_count=0)
+
+    with pytest.raises(ValueError, match="runtime_rows"):
+        validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
+@pytest.mark.parametrize(
     ("stage", "message"),
     (
         ("case_generation", "disjoint elapsed exceeds trial_total"),
