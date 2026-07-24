@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from numbers import Real
+from numbers import Integral, Real
 from time import perf_counter
 from typing import Any, Protocol, TypeVar
 
@@ -35,6 +35,7 @@ from .models import (
     ModeCellSpec,
     SyntheticModeComparisonPlan,
 )
+from .scalar_algebra import volume_voxel_count
 from .trials import SyntheticTrialSpec
 
 ScannerCellArtifacts = Mapping[str, np.ndarray]
@@ -157,7 +158,9 @@ class SyntheticTrialEvaluation:
         object.__setattr__(
             self,
             "truth_evidence",
-            freeze_report_value(_validate_trial_truth_evidence(self.truth_evidence)),
+            freeze_report_value(
+                _validate_trial_truth_evidence(self.truth_evidence, self.trial.shape)
+            ),
         )
 
 
@@ -478,26 +481,39 @@ def _build_trial_truth_evidence(
     truth_metric_config: SyntheticTruthMetricConfig,
 ) -> Mapping[str, int]:
     evidence = quality_metrics.truth_report(case, truth_metric_config)
-    evidence = _validate_trial_truth_evidence(evidence)
-    if evidence["surface_voxel_count"] == 0:
+    if (
+        isinstance(evidence, Mapping)
+        and not isinstance(evidence.get("surface_voxel_count"), bool)
+        and isinstance(evidence.get("surface_voxel_count"), Integral)
+        and evidence["surface_voxel_count"] == 0
+    ):
         raise ValueError(
             "empty truth-surface support in mode-comparison configuration: "
             f"case_id={case.case_id!r}, trial_id={trial.trial_id!r}, "
             f"shape={case.shape}, "
             f"truth_surface_half_width={truth_metric_config.truth_surface_half_width}"
         )
+    evidence = _validate_trial_truth_evidence(evidence, case.shape)
     return freeze_report_value(evidence)
 
 
-def _validate_trial_truth_evidence(evidence: Any) -> Mapping[str, int]:
+def _validate_trial_truth_evidence(evidence: Any, shape: tuple[int, int, int]) -> Mapping[str, int]:
     expected_fields = ("fault_voxel_count", "surface_voxel_count")
     if not isinstance(evidence, Mapping) or tuple(evidence) != expected_fields:
         raise ValueError("trial truth evidence fields do not match the canonical schema and order")
+    voxel_count = volume_voxel_count(shape)
+    validated: dict[str, int] = {}
     for name in expected_fields:
         value = evidence[name]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"trial truth evidence {name} must be a non-negative integer")
-    return evidence
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(f"trial truth evidence {name} must be an integer")
+        validated[name] = int(value)
+        if not 1 <= validated[name] <= voxel_count:
+            raise ValueError(
+                f"trial truth evidence {name} must be between 1 and volume voxel count "
+                f"{voxel_count}"
+            )
+    return validated
 
 
 def _execution_cells(plan: SyntheticModeComparisonPlan) -> tuple[ModeCellSpec, ...]:

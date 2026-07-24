@@ -268,7 +268,7 @@ def test_real_small_skip_skinning_cli_writes_a_valid_bundle(
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     reports = json.loads((output / "cell_reports.json").read_text(encoding="utf-8"))
     assert manifest["artifact_schema_version"] == ARTIFACT_SCHEMA_VERSION == 3
-    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 3
+    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 4
     assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 2
     assert manifest["input_config"]["skinning_config"]["enabled"] is False
     assert {

@@ -1444,7 +1444,7 @@ Voting and thinning scalar evidence is built once per unique trial-local
 semantic key and attributed to shared runtime rows; `cell_execution` contains
 only the remaining cell-exclusive time.
 Its authoritative artifact schema is v3, with independent scalar-evidence and
-runtime contract versions (currently scalar-evidence version 3 and runtime
+runtime contract versions (currently scalar-evidence version 4 and runtime
 version 2). Each trial persists one canonical truth-evidence object; all
 scanner, voting, thinning, and enabled-skin quality reports bind their
 fault-band and thin-surface truth counts to it. Scanner publication metrics are
@@ -1456,7 +1456,10 @@ orientation, and edge report scalars are checked for their mathematical value,
 count, and derived-summary constraints. Top-count selection cardinality is
 bound to truth-surface support; empty-mask, radius-zero, fractional-radius, and
 full-volume buffered-overlap rules are enforced; and every distance summary is
-capped at the volume diagonal. Largest/small-skin summaries are recomputed from
+capped at the volume diagonal. Truth evidence and mask-derived report counts
+are bounded by the canonical volume capacity; duplicate skin cells may raise
+total cell and skin orientation counts above that capacity, but unique cells
+may not. Largest/small-skin summaries are recomputed from
 per-skin arrays and the effective `small_skin_size`, and component topology is
 checked against its per-truth and per-skin arrays. Success means the recorded scalar evidence is
 internally and cross-cell consistent, not that any volume calculation was

@@ -336,7 +336,7 @@ def test_skin_topology_algebra_rejects_inconsistent_summary(path, replacement) -
     _replace_nested(topology, path, replacement)
 
     with pytest.raises(ValueError):
-        validate_skin_topology_algebra(topology, "topology")
+        validate_skin_topology_algebra(topology, "topology", shape=(9, 9, 9))
 
 
 @pytest.mark.parametrize(
@@ -371,8 +371,17 @@ def test_component_topology_algebra_rejects_inconsistent_report(path, replacemen
 def test_topology_algebra_accepts_valid_duplicate_and_background_reports() -> None:
     topology, component = _valid_topology_reports()
 
-    validate_skin_topology_algebra(topology, "topology")
+    validate_skin_topology_algebra(topology, "topology", shape=(9, 9, 9))
     validate_component_topology_algebra(component, topology, "component_topology")
+
+
+def test_skin_topology_caps_only_unique_cells_to_volume_capacity() -> None:
+    topology, _ = _valid_topology_reports()
+
+    validate_skin_topology_algebra(topology, "topology", shape=(1, 2, 2))
+
+    with pytest.raises(ValueError, match="unique_cell_count exceeds volume voxel count"):
+        validate_skin_topology_algebra(topology, "topology", shape=(1, 1, 3))
 
 
 @pytest.mark.parametrize("cell_counts", ((), (2,), (1, 2, 3)))
@@ -386,6 +395,7 @@ def test_skin_report_topology_algebra_recomputes_fragmentation_from_per_skin_siz
         component,
         "skin",
         small_skin_size=2,
+        shape=(9, 9, 9),
     )
 
 
@@ -398,6 +408,7 @@ def test_skin_report_topology_algebra_requires_effective_small_skin_size() -> No
             component,
             "skin",
             small_skin_size=3,
+            shape=(9, 9, 9),
         )
 
 
@@ -423,6 +434,7 @@ def test_skin_report_topology_algebra_rejects_fragmentation_summary_tampering(
             component,
             "skin",
             small_skin_size=2,
+            shape=(9, 9, 9),
         )
 
 
@@ -449,6 +461,7 @@ def test_skin_report_topology_algebra_rejects_internally_coherent_summary_tamper
             component,
             "skin",
             small_skin_size=2,
+            shape=(9, 9, 9),
         )
 
 
@@ -464,6 +477,7 @@ def test_skin_report_topology_algebra_rejects_per_skin_redistribution() -> None:
             component,
             "skin",
             small_skin_size=2,
+            shape=(9, 9, 9),
         )
 
 
@@ -808,6 +822,7 @@ def test_in_memory_validation_requires_empty_skin_topology_when_disabled() -> No
         _validate_downstream_topology_algebra(
             payload,
             SyntheticSkinningConfig(enabled=False, small_skin_size=2),
+            (9, 9, 9),
             "cell",
         )
 

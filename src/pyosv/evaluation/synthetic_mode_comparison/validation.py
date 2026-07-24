@@ -203,12 +203,18 @@ def _validate_cell_reports(
                     skinning_config = effective_skinning_config(
                         get_variant_spec(plan.comparison_variant), settings.skinning_config
                     )
-                    _validate_downstream_topology_algebra(payload, skinning_config, context)
+                    _validate_downstream_topology_algebra(
+                        payload,
+                        skinning_config,
+                        plan.shape,
+                        context,
+                    )
                     if "pipelines" in payload:
                         pipeline = payload["pipelines"][cell.input_mode]
                         _validate_downstream_topology_algebra(
                             pipeline,
                             skinning_config,
+                            plan.shape,
                             f"{context}.pipelines.{cell.input_mode}",
                         )
         except (KeyError, TypeError, ValueError) as error:
@@ -216,13 +222,17 @@ def _validate_cell_reports(
 
 
 def _validate_downstream_topology_algebra(
-    payload: Mapping[str, Any], skinning_config: SyntheticSkinningConfig, context: str
+    payload: Mapping[str, Any],
+    skinning_config: SyntheticSkinningConfig,
+    shape: Sequence[int],
+    context: str,
 ) -> None:
     enabled = skinning_config.enabled
     topology = payload["pyosv"]["skins"]
     validate_skin_topology_algebra(
         topology,
         f"{context}.pyosv.skins",
+        shape=shape,
         require_empty=not enabled,
     )
 
@@ -240,6 +250,7 @@ def _validate_downstream_topology_algebra(
         skin["component_topology"],
         f"{context}.quality.skin",
         small_skin_size=skinning_config.small_skin_size,
+        shape=shape,
     )
     if _wire_value(topology) != _wire_value(quality_topology):
         raise ValueError(f"{context}.pyosv.skins does not match quality.skin.topology")

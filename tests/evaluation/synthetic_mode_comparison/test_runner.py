@@ -320,6 +320,28 @@ def test_trial_records_one_immutable_truth_report_before_scanner_input(monkeypat
         result.truth_evidence["surface_voxel_count"] = 0  # type: ignore[index]
 
 
+@pytest.mark.parametrize(
+    ("count", "valid"),
+    (
+        (0, False),
+        (729, True),
+        (730, False),
+        (True, False),
+        (1.0, False),
+    ),
+)
+@pytest.mark.parametrize("field", ("fault_voxel_count", "surface_voxel_count"))
+def test_trial_truth_evidence_count_is_bounded_by_volume(field: str, count, valid: bool) -> None:
+    evidence = {"fault_voxel_count": 1, "surface_voxel_count": 1}
+    evidence[field] = count
+
+    if valid:
+        assert comparison_runner._validate_trial_truth_evidence(evidence, (9, 9, 9))[field] == 729
+    else:
+        with pytest.raises(ValueError, match=field):
+            comparison_runner._validate_trial_truth_evidence(evidence, (9, 9, 9))
+
+
 def test_invalid_trial_truth_report_fails_before_scanner_input(monkeypatch) -> None:
     plan = _plan()
     prepared = False

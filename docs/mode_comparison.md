@@ -241,7 +241,7 @@ existing operational validation paths.
   the completed output path. `validate_completed_bundle()` checks cross-file
   scalar semantics in addition to hashes and syntax. The authoritative writer
   emits artifact schema v3 with independently versioned scalar-evidence and
-  runtime contracts (currently scalar-evidence version 3 and runtime version
+  runtime contracts (currently scalar-evidence version 4 and runtime version
   2). Each trial has one canonical truth-evidence object, and scanner, voting,
   thinning, and enabled-skin reports bind their fault-band and thin-surface
   truth counts to it. Schema-v1 bundles lack complete scanner evidence, while
@@ -256,9 +256,10 @@ existing operational validation paths.
   remaining cell-exclusive time. Validation
   binds top-count selections to truth-surface cardinality, enforces empty-mask,
   radius-zero, fractional-radius, and full-volume buffered-overlap rules, caps
-  every distance summary at the volume diagonal, and recomputes
-  largest/small-skin summaries from per-skin arrays and the effective
-  configuration. It also validates orientation, edge,
+  every mask-derived count at the canonical volume capacity (except validated
+  duplicate skin cells), caps every distance summary at the volume diagonal,
+  and recomputes largest/small-skin summaries from per-skin arrays and the
+  effective configuration. It also validates orientation, edge,
   and component-topology algebra and compares shared scanner, voting, and
   conditionally shared thinning evidence across cells. Passing it demonstrates
   consistency of the recorded scalar evidence, not an independent

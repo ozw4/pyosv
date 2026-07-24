@@ -344,7 +344,7 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     assert (
         manifest["scalar_evidence_contract_version"]
         == comparison_artifacts.SCALAR_EVIDENCE_CONTRACT_VERSION
-        == 3
+        == 4
     )
     assert (
         manifest["runtime_contract_version"] == comparison_artifacts.RUNTIME_CONTRACT_VERSION == 2
