@@ -1,5 +1,26 @@
 """Canonical planning contract for the F3 full-volume 2-by-2 comparison."""
 
+from .artifacts import (
+    F3_ARTIFACT_SCHEMA_VERSION,
+    F3_FINGERPRINT_CONTRACT_VERSION,
+    F3_STAGE_CONTRACT_VERSION,
+    F3ArtifactError,
+    F3RunWorkspace,
+    F3StageArtifact,
+    F3StageCorruptionError,
+    F3StageResult,
+    F3WorkspaceMismatchError,
+    canonical_fingerprint,
+    canonical_json_bytes,
+    implementation_identity,
+    prepare_run_workspace,
+    run_computation_identity,
+    run_fingerprint,
+    stage_computation_identity,
+    stage_fingerprint,
+    validate_stage,
+    write_or_reuse_stage,
+)
 from .builder import build_f3d_mode_comparison_plan
 from .config import (
     F3ModeComparisonConfig,
@@ -26,6 +47,7 @@ from .models import (
 )
 
 __all__ = [
+    "F3ArtifactError",
     "F3CellSpec",
     "F3DatasetIdentity",
     "F3DatasetSpec",
@@ -33,15 +55,33 @@ __all__ = [
     "F3FixedControlEvidence",
     "F3ModeComparisonConfig",
     "F3ModeComparisonPlan",
+    "F3RunWorkspace",
     "F3ScannerBackend",
     "F3ScannerConfig",
+    "F3StageArtifact",
+    "F3StageCorruptionError",
+    "F3StageResult",
     "F3VotingControls",
     "F3WorkflowMode",
     "F3VolumeSource",
+    "F3WorkspaceMismatchError",
+    "F3_ARTIFACT_SCHEMA_VERSION",
     "F3_DATASET_ID",
     "F3_FILE_ROLES",
+    "F3_FINGERPRINT_CONTRACT_VERSION",
+    "F3_STAGE_CONTRACT_VERSION",
     "OFFICIAL_F3_DATASET_SPEC",
     "build_f3d_mode_comparison_plan",
+    "canonical_fingerprint",
     "canonical_f3_cells",
+    "canonical_json_bytes",
     "ensure_output_not_in_data_root",
+    "implementation_identity",
+    "prepare_run_workspace",
+    "run_computation_identity",
+    "run_fingerprint",
+    "stage_computation_identity",
+    "stage_fingerprint",
+    "validate_stage",
+    "write_or_reuse_stage",
 ]
