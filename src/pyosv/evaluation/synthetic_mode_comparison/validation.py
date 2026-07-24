@@ -41,6 +41,7 @@ from .metrics import (
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
 from .runtime_contract import runtime_exceeds
 from .scalar_algebra import (
+    validate_component_topology_evidence,
     validate_downstream_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
     validate_skin_report_topology_algebra,
@@ -209,6 +210,7 @@ def _validate_cell_reports(
                         skinning_config,
                         plan.shape,
                         context,
+                        report["truth_evidence"],
                     )
                     if "pipelines" in payload:
                         pipeline = payload["pipelines"][cell.input_mode]
@@ -217,6 +219,7 @@ def _validate_cell_reports(
                             skinning_config,
                             plan.shape,
                             f"{context}.pipelines.{cell.input_mode}",
+                            report["truth_evidence"],
                         )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid scalar evidence in cell_reports: {error}") from error
@@ -227,6 +230,7 @@ def _validate_downstream_topology_algebra(
     skinning_config: SyntheticSkinningConfig,
     shape: Sequence[int],
     context: str,
+    truth_evidence: Mapping[str, Any],
 ) -> None:
     enabled = skinning_config.enabled
     topology = payload["pyosv"]["skins"]
@@ -255,6 +259,12 @@ def _validate_downstream_topology_algebra(
     )
     if _wire_value(topology) != _wire_value(quality_topology):
         raise ValueError(f"{context}.pyosv.skins does not match quality.skin.topology")
+    validate_component_topology_evidence(
+        skin["component_topology"],
+        truth_evidence,
+        skin["buffered_overlap_radius2"],
+        f"{context}.quality.skin.component_topology",
+    )
 
 
 def _validate_cache_stats(

@@ -1449,7 +1449,7 @@ elapsed time. These rows are a within-experiment breakdown rather than
 isolated-process benchmarks. Their disjoint elapsed sum may not exceed
 `trial_total`, and the sum of trial totals may not exceed `experiment_total`.
 Its authoritative artifact schema is v3, with independent scalar-evidence and
-runtime contract versions (currently scalar-evidence version 4 and runtime
+runtime contract versions (currently scalar-evidence version 5 and runtime
 version 3). Each trial persists one canonical truth-evidence object; all
 scanner, voting, thinning, and enabled-skin quality reports bind their
 fault-band and thin-surface truth counts to it. Scanner publication metrics are
@@ -1465,8 +1465,14 @@ capped at the volume diagonal. Truth evidence and mask-derived report counts
 are bounded by the canonical volume capacity; duplicate skin cells may raise
 total cell and skin orientation counts above that capacity, but unique cells
 may not. Largest/small-skin summaries are recomputed from
-per-skin arrays and the effective `small_skin_size`, and component topology is
-checked against its per-truth and per-skin arrays. Success means the recorded scalar evidence is
+per-skin arrays and the effective `small_skin_size`. Component topology stores
+the canonical qualification threshold, duplicate-inclusive truth-component
+counts per skin, and unique covered-cell counts per truth component and skin.
+Dominant incidence, qualifying incidence, over-merge/over-split, purity, and
+recall are recomputed from those tables. Truth-component cell totals must equal
+the trial fault-voxel evidence, and covered-component totals must equal the
+exact skin-overlap intersection. Scalar-evidence v1-v4 bundles do not satisfy
+this complete contract and are rejected without implicit upgrade. Success means the recorded scalar evidence is
 internally and cross-cell consistent, not that any volume calculation was
 independently rerun or proven correct, and it is not a tamper-prevention
 signature.

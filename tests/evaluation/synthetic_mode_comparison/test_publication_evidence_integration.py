@@ -34,6 +34,7 @@ from pyosv.evaluation.synthetic_mode_comparison import (
 from pyosv.evaluation.synthetic_mode_comparison import artifacts as comparison_artifacts
 from pyosv.evaluation.synthetic_mode_comparison import metrics as comparison_metrics
 from pyosv.evaluation.synthetic_mode_comparison import runner as comparison_runner
+from pyosv.evaluation.synthetic_mode_comparison import validation as comparison_validation
 from pyosv.evaluation.synthetic_mode_comparison.metrics import scanner_metric_definitions
 from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import volume_diagonal
 from pyosv.evaluation.synthetic_mode_comparison.validation import (
@@ -352,7 +353,7 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
     assert (
         manifest["scalar_evidence_contract_version"]
         == comparison_artifacts.SCALAR_EVIDENCE_CONTRACT_VERSION
-        == 4
+        == 5
     )
     assert (
         manifest["runtime_contract_version"] == comparison_artifacts.RUNTIME_CONTRACT_VERSION == 3
@@ -394,6 +395,15 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
             assert payload["quality"]["skin"] is not None
             assert payload["pyosv"]["skins"] == payload["quality"]["skin"]["topology"]
             assert payload["quality"]["skin"]["topology"]["unique_cell_count"] <= np.prod(SHAPE)
+            component = payload["quality"]["skin"]["component_topology"]
+            assert (
+                sum(item["truth_cell_count"] for item in component["truth_components"])
+                == report["truth_evidence"]["fault_voxel_count"]
+            )
+            assert (
+                sum(item["covered_cell_count"] for item in component["truth_components"])
+                == payload["quality"]["skin"]["buffered_overlap_radius2"]["intersection_count"]
+            )
 
     for cache, trial in zip(topology_result.cache_stats, topology_result.trial_metadata):
         assert cache["primary_skinning_hits"] == 0
@@ -417,6 +427,26 @@ def test_skinning_cases_round_trip_complete_topology_algebra(
         config=topology_config,
     )
     assert validate_completed_bundle(bundle)
+
+
+def test_in_memory_validation_calls_component_topology_evidence_binding(
+    topology_config: SyntheticModeComparisonConfig,
+    topology_result: SyntheticModeComparisonResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = "in-memory component topology evidence binding"
+
+    def reject_component_topology(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError(message)
+
+    monkeypatch.setattr(
+        comparison_validation,
+        "validate_component_topology_evidence",
+        reject_component_topology,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        validate_mode_comparison_result(topology_result, topology_config)
 
 
 @pytest.mark.parametrize(

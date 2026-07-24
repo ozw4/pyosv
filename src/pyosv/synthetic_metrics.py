@@ -11,7 +11,10 @@ from scipy.ndimage import distance_transform_edt
 if TYPE_CHECKING:
     from pyosv.skin import FaultSkin
 
+COMPONENT_QUALIFICATION_MIN_FRACTION = 0.05
+
 __all__ = [
+    "COMPONENT_QUALIFICATION_MIN_FRACTION",
     "buffered_surface_overlap",
     "component_aware_skin_topology_metrics",
     "edge_false_positive_ratio",
@@ -347,7 +350,7 @@ def component_aware_skin_topology_metrics(
     shape: tuple[int, int, int],
     truth_fault_id: np.ndarray,
     *,
-    min_fraction: float = 0.05,
+    min_fraction: float = COMPONENT_QUALIFICATION_MIN_FRACTION,
 ) -> dict[str, Any]:
     """Return skin topology metrics grouped by integer truth fault component ID."""
 
@@ -364,8 +367,7 @@ def component_aware_skin_topology_metrics(
         truth_id: set() for truth_id in truth_cell_counts
     }
     truth_skin_counts: dict[int, dict[int, int]] = {truth_id: {} for truth_id in truth_cell_counts}
-    skin_summaries: list[dict[str, int | float | None]] = []
-    skin_truth_counts: list[dict[int, int]] = []
+    skin_summaries: list[dict[str, Any]] = []
 
     for skin_index, skin in enumerate(skin_list):
         cell_count = len(skin)
@@ -394,7 +396,10 @@ def component_aware_skin_topology_metrics(
         truth_cell_count = int(sum(truth_counts.values()))
         dominant_truth_id, dominant_truth_cell_count = _dominant_count_item(truth_counts)
         purity = float(dominant_truth_cell_count / cell_count) if cell_count else 0.0
-        skin_truth_counts.append(truth_counts)
+        truth_component_cell_counts = [
+            {"truth_id": truth_id, "cell_count": count}
+            for truth_id, count in sorted(truth_counts.items())
+        ]
         skin_summaries.append(
             {
                 "skin_index": skin_index,
@@ -405,10 +410,16 @@ def component_aware_skin_topology_metrics(
                 "dominant_truth_id": dominant_truth_id,
                 "dominant_truth_cell_count": dominant_truth_cell_count,
                 "purity": purity,
+                "truth_component_cell_counts": truth_component_cell_counts,
+                "qualifying_truth_component_count": _qualifying_component_count(
+                    truth_counts,
+                    cell_count,
+                    threshold,
+                ),
             }
         )
 
-    truth_summaries: list[dict[str, int | float | None]] = []
+    truth_summaries: list[dict[str, Any]] = []
     truth_recalls: list[float] = []
     for truth_id in sorted(truth_cell_counts):
         truth_cell_count = truth_cell_counts[truth_id]
@@ -416,6 +427,10 @@ def component_aware_skin_topology_metrics(
         recall = float(covered_cell_count / truth_cell_count) if truth_cell_count else 0.0
         skin_counts = truth_skin_counts.get(truth_id, {})
         dominant_skin_index, dominant_skin_cell_count = _dominant_count_item(skin_counts)
+        skin_cell_counts = [
+            {"skin_index": skin_index, "covered_cell_count": count}
+            for skin_index, count in sorted(skin_counts.items())
+        ]
         truth_recalls.append(recall)
         truth_summaries.append(
             {
@@ -429,27 +444,25 @@ def component_aware_skin_topology_metrics(
                 "dominant_skin_fraction_of_truth": (
                     float(dominant_skin_cell_count / truth_cell_count) if truth_cell_count else 0.0
                 ),
+                "skin_cell_counts": skin_cell_counts,
+                "qualifying_skin_count": _qualifying_component_count(
+                    skin_counts,
+                    truth_cell_count,
+                    threshold,
+                ),
             }
         )
 
     over_merge_skin_count = sum(
-        1
-        for summary, counts in zip(skin_summaries, skin_truth_counts)
-        if _qualifying_component_count(counts, int(summary["cell_count"]), threshold) >= 2
+        int(summary["qualifying_truth_component_count"]) >= 2 for summary in skin_summaries
     )
     over_split_truth_component_count = sum(
-        1
-        for truth_id, truth_cell_count in truth_cell_counts.items()
-        if _qualifying_component_count(
-            truth_skin_counts.get(truth_id, {}),
-            truth_cell_count,
-            threshold,
-        )
-        >= 2
+        int(summary["qualifying_skin_count"]) >= 2 for summary in truth_summaries
     )
     skin_purities = [float(summary["purity"]) for summary in skin_summaries]
 
     return {
+        "qualification_min_fraction": threshold,
         "truth_component_count": len(truth_cell_counts),
         "covered_truth_component_count": sum(
             1 for summary in truth_summaries if int(summary["covered_cell_count"]) > 0

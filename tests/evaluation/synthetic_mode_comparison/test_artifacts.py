@@ -464,7 +464,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 3
-    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 4
+    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 5
     assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 3
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
@@ -1065,6 +1065,24 @@ def test_validator_explicitly_rejects_rehashed_scalar_contract_v3_bundle(
     _rehash(bundle, "manifest.json")
 
     with pytest.raises(ValueError, match="legacy schema-v3 bundle.*volume capacity"):
+        validate_completed_bundle(bundle)
+
+
+def test_validator_explicitly_rejects_rehashed_scalar_contract_v4_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle = _write_bundle(tmp_path / "legacy-scalar-v4")
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["scalar_evidence_contract_version"] = 4
+    manifest_path.write_text(
+        json.dumps(manifest, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _rehash(bundle, "manifest.json")
+
+    with pytest.raises(ValueError, match="legacy schema-v3 bundle.*component incidence"):
         validate_completed_bundle(bundle)
 
 

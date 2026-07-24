@@ -241,12 +241,19 @@ existing operational validation paths.
   the completed output path. `validate_completed_bundle()` checks cross-file
   scalar semantics in addition to hashes and syntax. The authoritative writer
   emits artifact schema v3 with independently versioned scalar-evidence and
-  runtime contracts (currently scalar-evidence version 4 and runtime version
+  runtime contracts (currently scalar-evidence version 5 and runtime version
   3). Each trial has one canonical truth-evidence object, and scanner, voting,
   thinning, and enabled-skin reports bind their fault-band and thin-surface
   truth counts to it. Schema-v1 bundles lack complete scanner evidence, while
   schema-v2 bundles do not uniquely identify runtime coverage; both must be
-  regenerated. Scanner publication metrics are joined totally to
+  regenerated. Enabled-skin component topology persists both duplicate-inclusive
+  per-skin truth-component counts and per-skin unique coverage counts for each
+  truth component. Its qualification threshold and all dominant, qualifying,
+  over-merge, over-split, purity, and recall summaries are recomputed from
+  those incidence tables. Truth-component totals are bound to trial truth
+  evidence, and covered totals are bound to the exact skin-overlap
+  intersection. Scalar-evidence v1-v4 bundles lack part of this current
+  evidence contract and are rejected without upgrade. Scanner publication metrics are joined totally to
   the persisted registry-ordered evidence. This scanner evidence is prepared
   once per trial and backend, reused by scanner-only and end-to-end cells, and
   attributed to a shared runtime stage. Runtime and validation derive cache
