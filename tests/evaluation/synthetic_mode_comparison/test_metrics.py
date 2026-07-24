@@ -28,6 +28,7 @@ from pyosv.evaluation.synthetic_mode_comparison.scalar_algebra import (
     validate_selection_cardinality,
     validate_surface_distance_algebra,
     volume_diagonal,
+    volume_voxel_count,
 )
 from pyosv.evaluation.synthetic_quality import PipelineArtifacts, SyntheticSkinningConfig
 from pyosv.evaluation.synthetic_quality.quality_metrics import (
@@ -159,8 +160,63 @@ def test_quality_scalar_algebra_accepts_canonical_reports_and_rounding_noise() -
     )
 
 
+@pytest.mark.parametrize(
+    ("block_name", "field"),
+    (
+        ("buffered_overlap_radius2", "candidate_count"),
+        ("buffered_overlap_radius2", "truth_count"),
+        ("buffered_overlap_radius2", "intersection_count"),
+        ("buffered_overlap_radius2", "union_count"),
+        ("buffered_overlap_radius2", "candidate_in_truth_buffer_count"),
+        ("buffered_overlap_radius2", "truth_in_candidate_buffer_count"),
+        ("surface_distance", "candidate_count"),
+        ("surface_distance", "truth_count"),
+        ("edge", "candidate_count"),
+        ("edge", "edge_candidate_count"),
+        ("edge", "edge_false_positive_count"),
+    ),
+)
+def test_quality_scalar_algebra_rejects_counts_above_volume_capacity(
+    block_name: str, field: str
+) -> None:
+    quality, edge = _algebra_reports()
+    block = edge if block_name == "edge" else quality[block_name]
+    block[field] = 61
+
+    with pytest.raises(ValueError, match=rf"{field} exceeds volume voxel count"):
+        validate_quality_scalar_algebra(
+            overlap=quality["buffered_overlap_radius2"],
+            distance=quality["surface_distance"],
+            orientation=quality["orientation_error"],
+            edge=edge,
+            shape=(3, 4, 5),
+            context="quality.fixture",
+        )
+
+
 def test_volume_diagonal_uses_voxel_index_extents() -> None:
     assert volume_diagonal((9, 9, 9)) == pytest.approx(8.0 * np.sqrt(3.0))
+
+
+def test_volume_voxel_count_is_exact() -> None:
+    assert volume_voxel_count((9, 9, 9)) == 729
+    assert volume_voxel_count((2**100, 3, 5)) == 15 * 2**100
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        (9, 9),
+        (9, 9, 9, 9),
+        (0, 9, 9),
+        (-1, 9, 9),
+        (True, 9, 9),
+        (1.0, 9, 9),
+    ),
+)
+def test_volume_voxel_count_rejects_non_positive_3d_integer_shapes(shape) -> None:
+    with pytest.raises(ValueError):
+        volume_voxel_count(shape)
 
 
 @pytest.mark.parametrize(

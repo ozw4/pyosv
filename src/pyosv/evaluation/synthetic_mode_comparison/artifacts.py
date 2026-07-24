@@ -60,11 +60,12 @@ from .scalar_algebra import (
     validate_selection_cardinality,
     validate_skin_report_topology_algebra,
     validate_skin_topology_algebra,
+    volume_voxel_count,
 )
 from .validation import validate_mode_comparison_result
 
 ARTIFACT_SCHEMA_VERSION = 3
-RUNTIME_CONTRACT_VERSION = 2
+RUNTIME_CONTRACT_VERSION = 3
 COMPLETION_SCHEMA_VERSION = 1
 METRIC_REGISTRY_ID = "pyosv.synthetic_mode_comparison.metrics"
 METRIC_REGISTRY_DEFINITION_VERSION = 1
@@ -757,6 +758,10 @@ def _load_bundle_objects(
                 "unsupported scalar evidence contract version 2: legacy schema-v3 bundle "
                 "does not validate buffered overlap radius regimes"
             ),
+            3: (
+                "unsupported scalar evidence contract version 3: legacy schema-v3 bundle "
+                "does not constrain mask-derived counts to the canonical volume capacity"
+            ),
         },
     )
     _manifest_contract_version(
@@ -768,6 +773,10 @@ def _load_bundle_objects(
             1: (
                 "unsupported runtime contract version 1: legacy schema-v3 bundle "
                 "does not contain downstream shared scalar evidence attribution"
+            ),
+            2: (
+                "unsupported runtime contract version 2: legacy schema-v3 bundle "
+                "does not contain shared volume-stage attribution or elapsed algebra"
             ),
         },
     )
@@ -1022,7 +1031,9 @@ def _load_cell_reports(
         if metadata != (trial.case_id, trial.trial_id, trial.seed):
             raise ValueError(f"{context} trial metadata does not match the canonical trial")
         truth_evidence = _load_trial_truth_evidence(
-            report["truth_evidence"], f"{context}.truth_evidence"
+            report["truth_evidence"],
+            plan.shape,
+            f"{context}.truth_evidence",
         )
         cells = _object(report["cells"], set(expected_cells), f"{context}.cells")
         if tuple(cells) != tuple(expected_cells):
@@ -1045,12 +1056,19 @@ def _load_cell_reports(
     return tuple(output)
 
 
-def _load_trial_truth_evidence(value: Any, context: str) -> dict[str, int]:
+def _load_trial_truth_evidence(value: Any, shape: Sequence[int], context: str) -> dict[str, int]:
     fields = ("fault_voxel_count", "surface_voxel_count")
     evidence = _object(value, set(fields), context)
     if tuple(evidence) != fields:
         raise ValueError(f"{context} fields do not match the canonical schema and order")
-    return {name: _nonnegative_integer(evidence[name], f"{context}.{name}") for name in fields}
+    voxel_count = volume_voxel_count(shape)
+    validated = {name: _nonnegative_integer(evidence[name], f"{context}.{name}") for name in fields}
+    for name, count in validated.items():
+        if not 1 <= count <= voxel_count:
+            raise ValueError(
+                f"{context}.{name} must be between 1 and volume voxel count {voxel_count}"
+            )
+    return validated
 
 
 def _validate_trial_truth_targets(
@@ -1274,6 +1292,7 @@ def _load_downstream_sections(
     validate_skin_topology_algebra(
         pyosv_topology,
         f"{pyosv_context}.skins",
+        shape=plan.shape,
         require_empty=not enabled,
     )
 
@@ -1735,6 +1754,7 @@ def _load_downstream_quality_report(
             skin["component_topology"],
             f"{context}.skin",
             small_skin_size=small_skin_size,
+            shape=shape,
         )
     return payload
 

@@ -231,7 +231,8 @@ def run_mode_comparison(
     metric_rows: list[MetricRow] = []
     contrast_rows: list[ContrastRow] = []
     for trial in plan.trials:
-        recorder = _ExperimentRuntimeRecorder(trial, runtime_rows)
+        trial_runtime_rows: list[RuntimeRow] = []
+        recorder = _ExperimentRuntimeRecorder(trial, trial_runtime_rows)
         trial_start = _clock_value(monitored_clock, "trial_total")
         evaluation: SyntheticTrialEvaluation | None = None
         try:
@@ -269,6 +270,7 @@ def run_mode_comparison(
             cache_stats.append(trial_cache)
             metric_rows.extend(trial_metrics)
             contrast_rows.extend(trial_contrasts)
+            runtime_rows.extend(trial_runtime_rows)
         finally:
             evaluation = None
 

@@ -336,7 +336,7 @@ def test_skin_topology_algebra_rejects_inconsistent_summary(path, replacement) -
     _replace_nested(topology, path, replacement)
 
     with pytest.raises(ValueError):
-        validate_skin_topology_algebra(topology, "topology")
+        validate_skin_topology_algebra(topology, "topology", shape=(9, 9, 9))
 
 
 @pytest.mark.parametrize(
@@ -371,8 +371,17 @@ def test_component_topology_algebra_rejects_inconsistent_report(path, replacemen
 def test_topology_algebra_accepts_valid_duplicate_and_background_reports() -> None:
     topology, component = _valid_topology_reports()
 
-    validate_skin_topology_algebra(topology, "topology")
+    validate_skin_topology_algebra(topology, "topology", shape=(9, 9, 9))
     validate_component_topology_algebra(component, topology, "component_topology")
+
+
+def test_skin_topology_caps_only_unique_cells_to_volume_capacity() -> None:
+    topology, _ = _valid_topology_reports()
+
+    validate_skin_topology_algebra(topology, "topology", shape=(1, 2, 2))
+
+    with pytest.raises(ValueError, match="unique_cell_count exceeds volume voxel count"):
+        validate_skin_topology_algebra(topology, "topology", shape=(1, 1, 3))
 
 
 @pytest.mark.parametrize("cell_counts", ((), (2,), (1, 2, 3)))
@@ -386,6 +395,7 @@ def test_skin_report_topology_algebra_recomputes_fragmentation_from_per_skin_siz
         component,
         "skin",
         small_skin_size=2,
+        shape=(9, 9, 9),
     )
 
 
@@ -398,6 +408,7 @@ def test_skin_report_topology_algebra_requires_effective_small_skin_size() -> No
             component,
             "skin",
             small_skin_size=3,
+            shape=(9, 9, 9),
         )
 
 
@@ -423,6 +434,7 @@ def test_skin_report_topology_algebra_rejects_fragmentation_summary_tampering(
             component,
             "skin",
             small_skin_size=2,
+            shape=(9, 9, 9),
         )
 
 
@@ -449,6 +461,7 @@ def test_skin_report_topology_algebra_rejects_internally_coherent_summary_tamper
             component,
             "skin",
             small_skin_size=2,
+            shape=(9, 9, 9),
         )
 
 
@@ -464,6 +477,7 @@ def test_skin_report_topology_algebra_rejects_per_skin_redistribution() -> None:
             component,
             "skin",
             small_skin_size=2,
+            shape=(9, 9, 9),
         )
 
 
@@ -808,6 +822,7 @@ def test_in_memory_validation_requires_empty_skin_topology_when_disabled() -> No
         _validate_downstream_topology_algebra(
             payload,
             SyntheticSkinningConfig(enabled=False, small_skin_size=2),
+            (9, 9, 9),
             "cell",
         )
 
@@ -949,6 +964,55 @@ def test_downstream_runtime_attribution_tampering_is_rejected(result, config, ta
         rows[index], rows[index + 1] = rows[index + 1], rows[index]
 
     with pytest.raises(ValueError, match="runtime_rows"):
+        validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
+@pytest.mark.parametrize(
+    ("stage", "message"),
+    (
+        ("case_generation", "disjoint elapsed exceeds trial_total"),
+        ("trial_total", "disjoint elapsed exceeds trial_total"),
+        ("experiment_total", "trial_total sum exceeds experiment_total"),
+    ),
+)
+def test_runtime_elapsed_upper_bound_tampering_is_rejected(result, config, stage, message) -> None:
+    rows = list(result.runtime_rows)
+    index = next(index for index, row in enumerate(rows) if row.stage == stage)
+    if stage == "case_generation":
+        trial_total = next(row.elapsed_seconds for row in rows if row.stage == "trial_total")
+        rows[index] = replace(rows[index], elapsed_seconds=trial_total + 1.0)
+    else:
+        rows[index] = replace(rows[index], elapsed_seconds=0.0)
+
+    with pytest.raises(ValueError, match=message):
+        validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
+def test_runtime_elapsed_algebra_accepts_canonical_rounding_tolerance(result, config) -> None:
+    rows = list(result.runtime_rows)
+    trial_total_index = next(index for index, row in enumerate(rows) if row.stage == "trial_total")
+    disjoint_total = sum(row.elapsed_seconds for row in rows[:trial_total_index])
+    rows[trial_total_index] = replace(
+        rows[trial_total_index],
+        elapsed_seconds=disjoint_total - 5.0e-13,
+    )
+
+    validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
+def test_zero_call_shared_runtime_requires_zero_elapsed() -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+    )
+    result = run_mode_comparison(config)
+    rows = list(result.runtime_rows)
+    index = next(index for index, row in enumerate(rows) if row.stage == "primary_skinning")
+    assert rows[index].call_count == 0
+    rows[index] = replace(rows[index], elapsed_seconds=1.0e-6)
+
+    with pytest.raises(ValueError, match="zero-call shared stage"):
         validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
 
 

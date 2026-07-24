@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from numbers import Real
+from math import fsum
+from numbers import Integral, Real
 from time import perf_counter
 from typing import Any, Protocol, TypeVar
 
@@ -35,6 +36,8 @@ from .models import (
     ModeCellSpec,
     SyntheticModeComparisonPlan,
 )
+from .runtime_contract import runtime_exceeds
+from .scalar_algebra import volume_voxel_count
 from .trials import SyntheticTrialSpec
 
 ScannerCellArtifacts = Mapping[str, np.ndarray]
@@ -96,10 +99,17 @@ class _TrialRuntimeBuffer(_RuntimeRowSink):
         return tuple(self._rows)
 
 
-class _DownstreamEvidenceRuntime:
+class _SharedChildRuntime:
     """Accumulate successful cache-miss builder time without recording rows early."""
 
-    STAGES = ("voting_scalar_evidence", "thinning_scalar_evidence")
+    STAGES = (
+        "seed_selection",
+        "voting_volume",
+        "base_thinning",
+        "primary_skinning",
+        "voting_scalar_evidence",
+        "thinning_scalar_evidence",
+    )
 
     def __init__(self, clock: Any) -> None:
         self._clock = clock
@@ -115,13 +125,21 @@ class _DownstreamEvidenceRuntime:
         elapsed = end - start
         if elapsed < 0.0:
             raise ValueError(f"clock moved backwards while timing {stage!r}")
-        self._elapsed[stage] += elapsed
+        self._elapsed[stage] = fsum((self._elapsed[stage], elapsed))
         self._calls[stage] += 1
         return result
 
     @property
     def total_elapsed(self) -> float:
-        return sum(self._elapsed.values())
+        return fsum(self._elapsed.values())
+
+    def snapshot(self) -> tuple[float, ...]:
+        return tuple(self._elapsed[stage] for stage in self.STAGES)
+
+    def elapsed_since(self, snapshot: tuple[float, ...]) -> float:
+        if len(snapshot) != len(self.STAGES):
+            raise ValueError("shared child runtime snapshot has the wrong length")
+        return fsum(self._elapsed[stage] - start for stage, start in zip(self.STAGES, snapshot))
 
     def elapsed(self, stage: str) -> float:
         return self._elapsed[stage]
@@ -157,7 +175,9 @@ class SyntheticTrialEvaluation:
         object.__setattr__(
             self,
             "truth_evidence",
-            freeze_report_value(_validate_trial_truth_evidence(self.truth_evidence)),
+            freeze_report_value(
+                _validate_trial_truth_evidence(self.truth_evidence, self.trial.shape)
+            ),
         )
 
 
@@ -189,11 +209,14 @@ def run_synthetic_trial(
         )
     truth_evidence = _build_trial_truth_evidence(case, trial, plan.truth_metric_config)
 
-    stage_cache = PipelineStageCache(case)
-    evidence_runtime = _DownstreamEvidenceRuntime(clock) if runtime_buffer is not None else None
+    child_runtime = _SharedChildRuntime(clock) if runtime_buffer is not None else None
+    stage_cache = PipelineStageCache(
+        case,
+        build_timer=(child_runtime.time_build if child_runtime is not None else None),
+    )
     scalar_evidence_cache = DownstreamScalarEvidenceCache(
         case,
-        build_timer=(evidence_runtime.time_build if evidence_runtime is not None else None),
+        build_timer=(child_runtime.time_build if child_runtime is not None else None),
     )
     evaluations: dict[str, SyntheticCellEvaluation] = {}
     cell_runtimes: list[tuple[ModeCellSpec, float]] = []
@@ -221,7 +244,7 @@ def run_synthetic_trial(
         )
         for cell in _execution_cells(plan):
             start = _clock_value(clock, "cell_execution")
-            child_start = evidence_runtime.total_elapsed if evidence_runtime is not None else 0.0
+            child_start = child_runtime.snapshot() if child_runtime is not None else ()
             evaluation = _evaluate_cell(
                 plan,
                 cell,
@@ -237,28 +260,26 @@ def run_synthetic_trial(
             end = _clock_value(clock, "cell_execution")
             elapsed = end - start
             child_elapsed = (
-                evidence_runtime.total_elapsed - child_start
-                if evidence_runtime is not None
-                else 0.0
+                child_runtime.elapsed_since(child_start) if child_runtime is not None else 0.0
             )
             if elapsed < 0.0:
                 raise ValueError("clock moved backwards while timing 'cell_execution'")
-            if child_elapsed > elapsed:
-                raise ValueError(
-                    "downstream scalar evidence elapsed exceeds parent "
-                    f"cell_execution elapsed for {cell.label!r}"
-                )
-            cell_runtimes.append((cell, elapsed - child_elapsed))
+            exclusive_elapsed = _exclusive_cell_elapsed(
+                elapsed,
+                child_elapsed,
+                cell_label=cell.label,
+            )
+            cell_runtimes.append((cell, exclusive_elapsed))
             evaluations[cell.label] = evaluation
 
         if runtime_buffer is not None:
-            if evidence_runtime is None:
-                raise RuntimeError("downstream evidence runtime accumulator is missing")
-            for stage in _DownstreamEvidenceRuntime.STAGES:
+            if child_runtime is None:
+                raise RuntimeError("shared child runtime accumulator is missing")
+            for stage in _SharedChildRuntime.STAGES:
                 runtime_buffer.record(
                     stage=stage,
-                    elapsed_seconds=evidence_runtime.elapsed(stage),
-                    call_count=evidence_runtime.call_count(stage),
+                    elapsed_seconds=child_runtime.elapsed(stage),
+                    call_count=child_runtime.call_count(stage),
                     shared_stage=True,
                 )
             for cell, elapsed in cell_runtimes:
@@ -291,6 +312,22 @@ def run_synthetic_trial(
     finally:
         stage_cache.clear()
         scalar_evidence_cache.clear()
+
+
+def _exclusive_cell_elapsed(
+    elapsed: float,
+    child_elapsed: float,
+    *,
+    cell_label: str,
+) -> float:
+    if runtime_exceeds(child_elapsed, elapsed):
+        raise ValueError(
+            f"shared child runtime elapsed exceeds parent cell_execution elapsed for {cell_label!r}"
+        )
+    exclusive_elapsed = fsum((elapsed, -child_elapsed))
+    if exclusive_elapsed < 0.0:
+        return 0.0
+    return exclusive_elapsed
 
 
 def _evaluate_cell(
@@ -478,26 +515,39 @@ def _build_trial_truth_evidence(
     truth_metric_config: SyntheticTruthMetricConfig,
 ) -> Mapping[str, int]:
     evidence = quality_metrics.truth_report(case, truth_metric_config)
-    evidence = _validate_trial_truth_evidence(evidence)
-    if evidence["surface_voxel_count"] == 0:
+    if (
+        isinstance(evidence, Mapping)
+        and not isinstance(evidence.get("surface_voxel_count"), bool)
+        and isinstance(evidence.get("surface_voxel_count"), Integral)
+        and evidence["surface_voxel_count"] == 0
+    ):
         raise ValueError(
             "empty truth-surface support in mode-comparison configuration: "
             f"case_id={case.case_id!r}, trial_id={trial.trial_id!r}, "
             f"shape={case.shape}, "
             f"truth_surface_half_width={truth_metric_config.truth_surface_half_width}"
         )
+    evidence = _validate_trial_truth_evidence(evidence, case.shape)
     return freeze_report_value(evidence)
 
 
-def _validate_trial_truth_evidence(evidence: Any) -> Mapping[str, int]:
+def _validate_trial_truth_evidence(evidence: Any, shape: tuple[int, int, int]) -> Mapping[str, int]:
     expected_fields = ("fault_voxel_count", "surface_voxel_count")
     if not isinstance(evidence, Mapping) or tuple(evidence) != expected_fields:
         raise ValueError("trial truth evidence fields do not match the canonical schema and order")
+    voxel_count = volume_voxel_count(shape)
+    validated: dict[str, int] = {}
     for name in expected_fields:
         value = evidence[name]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"trial truth evidence {name} must be a non-negative integer")
-    return evidence
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(f"trial truth evidence {name} must be an integer")
+        validated[name] = int(value)
+        if not 1 <= validated[name] <= voxel_count:
+            raise ValueError(
+                f"trial truth evidence {name} must be between 1 and volume voxel count "
+                f"{voxel_count}"
+            )
+    return validated
 
 
 def _execution_cells(plan: SyntheticModeComparisonPlan) -> tuple[ModeCellSpec, ...]:

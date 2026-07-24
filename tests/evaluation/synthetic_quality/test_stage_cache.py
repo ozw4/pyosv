@@ -31,9 +31,13 @@ from pyosv.evaluation.synthetic_quality.stage_cache import (
     DownstreamScalarEvidenceCache,
     PipelineStageCache,
     PrimarySkinningStageResult,
+    SeedStageResult,
+    ThinningStageResult,
+    VotingStageResult,
 )
 from pyosv.evaluation.synthetic_quality.stage_keys import (
     build_final_thinning_stage_key,
+    build_primary_skinning_stage_key,
     build_seed_stage_key,
     build_thinning_scalar_evidence_key,
     build_thinning_stage_key,
@@ -148,6 +152,139 @@ def test_identical_seed_and_voting_stages_are_called_once(
     assert calls == {"seed": 1, "voting": 1}
     assert cache.stats.seed_hits == 1
     assert cache.stats.voting_hits == 1
+
+
+def test_pipeline_stage_build_timer_wraps_shared_misses_in_stage_order() -> None:
+    stages: list[str] = []
+
+    def record_build(stage, operation):
+        stages.append(stage)
+        return operation()
+
+    case = make_single_vertical_plane_case((9, 9, 9))
+    cache = PipelineStageCache(case, build_timer=record_build)
+    skinning_config = SyntheticSkinningConfig()
+    _run_variant(
+        "current_default",
+        cache=cache,
+        case=case,
+        skinning_config=skinning_config,
+    )
+    _run_variant(
+        "quality_boundary_skinner_fallback",
+        cache=cache,
+        case=case,
+        skinning_config=skinning_config,
+    )
+
+    assert stages == [
+        "seed_selection",
+        "voting_volume",
+        "base_thinning",
+        "primary_skinning",
+    ]
+    assert cache.stats.seed_misses == cache.stats.seed_hits == 1
+    assert cache.stats.voting_misses == cache.stats.voting_hits == 1
+    assert cache.stats.thinning_misses == cache.stats.thinning_hits == 1
+    assert cache.stats.primary_skinning_misses == cache.stats.primary_skinning_hits == 1
+
+
+def test_pipeline_stage_build_timer_skips_primary_when_skinning_is_disabled() -> None:
+    stages: list[str] = []
+
+    def record_build(stage, operation):
+        stages.append(stage)
+        return operation()
+
+    cache = PipelineStageCache(build_timer=record_build)
+    _run_variant("current_default", cache=cache)
+
+    assert stages == ["seed_selection", "voting_volume", "base_thinning"]
+    assert cache.stats.primary_skinning_misses == 0
+
+
+def test_pipeline_stage_build_exceptions_do_not_register_partial_entries() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    voting_key, thinning_key, _ = _scalar_stage_keys(case)
+    primary_key = build_primary_skinning_stage_key(
+        thinning_key=thinning_key,
+        skinning_config=SyntheticSkinningConfig(),
+        variant_spec=get_variant_spec("current_default"),
+        target_source="oracle_ft",
+    )
+    assert primary_key is not None
+    shape = (1, 1, 1)
+    builds = (
+        (
+            "get_or_build_seed",
+            voting_key.seed,
+            SeedStageResult(seeds=()),
+            "_seeds",
+        ),
+        (
+            "get_or_build_voting",
+            voting_key,
+            VotingStageResult(
+                fv=np.zeros(shape, dtype=np.float32),
+                vp=np.zeros(shape, dtype=np.float32),
+                vt=np.zeros(shape, dtype=np.float32),
+                diagnostic_items=(),
+            ),
+            "_voting",
+        ),
+        (
+            "get_or_build_thinning",
+            thinning_key,
+            ThinningStageResult(fvt=np.zeros(shape, dtype=np.float32)),
+            "_thinning",
+        ),
+        (
+            "get_or_build_primary_skinning",
+            primary_key,
+            PrimarySkinningStageResult.from_skins([], {}),
+            "_primary_skinning",
+        ),
+    )
+
+    for method_name, key, completed, entries_name in builds:
+        cache = PipelineStageCache(case)
+        method = getattr(cache, method_name)
+
+        def fail():
+            raise RuntimeError("stage failed")
+
+        with pytest.raises(RuntimeError, match="stage failed"):
+            method(key, fail)
+
+        assert not getattr(cache, entries_name)
+        assert method(key, lambda: completed) is completed
+        assert len(getattr(cache, entries_name)) == 1
+
+
+def test_pipeline_stage_timer_exception_does_not_register_partial_entry() -> None:
+    case = make_single_vertical_plane_case((9, 9, 9))
+    voting_key, _, _ = _scalar_stage_keys(case)
+    operation_called = False
+
+    def fail_timer(stage, operation):
+        assert stage == "seed_selection"
+        raise RuntimeError("timer failed")
+
+    cache = PipelineStageCache(case, build_timer=fail_timer)
+
+    def build_seed():
+        nonlocal operation_called
+        operation_called = True
+        return SeedStageResult(seeds=())
+
+    with pytest.raises(RuntimeError, match="timer failed"):
+        cache.get_or_build_seed(voting_key.seed, build_seed)
+
+    assert not operation_called
+    assert not cache._seeds
+    cache.build_timer = None
+    assert cache.get_or_build_seed(voting_key.seed, build_seed).seeds == ()
+    assert cache.stats.seed_misses == 2
 
 
 def test_scalar_evidence_keys_include_every_invalidation_dimension() -> None:
@@ -298,17 +435,32 @@ def test_replaced_prepared_oracle_bypasses_stage_cache(
         include_thinning_diagnostic=False,
         include_scanner_downstream_diagnostics=False,
     )
-    cache = PipelineStageCache(case)
+    stages: list[str] = []
+
+    def record_build(stage, operation):
+        stages.append(stage)
+        return operation()
+
+    cache = PipelineStageCache(case, build_timer=record_build)
 
     run_case_variant(case, prepared_inputs=prepared, stage_cache=cache, **common)
-    run_case_variant(
+    bypassed = run_case_variant(
         case,
         prepared_inputs=PreparedCaseInputs(case, custom_oracle, None),
         stage_cache=cache,
         **common,
     )
+    legacy = run_case_variant(
+        case,
+        prepared_inputs=PreparedCaseInputs(case, custom_oracle, None),
+        stage_cache=None,
+        **common,
+    )
 
-    assert calls == 2
+    assert calls == 3
+    assert stages == ["seed_selection", "voting_volume", "base_thinning"]
+    _assert_nested_equal(bypassed.report_payload, legacy.report_payload)
+    _assert_nested_equal(bypassed.artifacts.volumes, legacy.artifacts.volumes)
 
 
 def test_replaced_prepared_scanner_bypasses_stage_cache(

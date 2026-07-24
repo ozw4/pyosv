@@ -50,7 +50,11 @@ def validate_quality_scalar_algebra(
     validate_surface_distance_algebra(distance, shape, f"{context}.surface_distance")
     validate_orientation_algebra(orientation, f"{context}.orientation_error")
     if edge is not None:
-        validate_edge_false_positive_algebra(edge, f"{context}.edge_false_positive")
+        validate_edge_false_positive_algebra(
+            edge,
+            shape,
+            f"{context}.edge_false_positive",
+        )
     _validate_selection_counts(
         overlap=overlap,
         distance=distance,
@@ -159,7 +163,11 @@ def validate_downstream_quality_scalar_algebra(
 
 
 def validate_skin_topology_algebra(
-    report: Mapping[str, Any], context: str, *, require_empty: bool = False
+    report: Mapping[str, Any],
+    context: str,
+    *,
+    shape: Sequence[int],
+    require_empty: bool = False,
 ) -> None:
     """Validate a skin topology summary using only its reported scalars."""
 
@@ -170,10 +178,13 @@ def validate_skin_topology_algebra(
     largest_skin_size = _count(report, "largest_skin_size", context)
     small_skin_count = _count(report, "small_skin_count", context)
     small_skin_cell_count = _count(report, "small_skin_cell_count", context)
+    voxel_count = volume_voxel_count(shape)
 
     if require_empty and skin_count != 0:
         raise ValueError(f"{context} must be empty when skinning is disabled")
 
+    if unique_cell_count > voxel_count:
+        raise ValueError(f"{context}.unique_cell_count exceeds volume voxel count")
     if unique_cell_count > cell_count:
         raise ValueError(f"{context}.unique_cell_count exceeds cell_count")
     if duplicate_cell_count != cell_count - unique_cell_count:
@@ -217,12 +228,14 @@ def validate_skin_report_topology_algebra(
     context: str,
     *,
     small_skin_size: int,
+    shape: Sequence[int],
 ) -> None:
     """Validate one enabled skin report against its effective fragmentation threshold."""
 
     validate_skin_topology_algebra(
         topology,
         f"{context}.topology",
+        shape=shape,
     )
     validate_component_topology_algebra(
         component_topology,
@@ -451,8 +464,19 @@ def validate_overlap_algebra(report: Mapping[str, Any], shape: Sequence[int], co
     candidate_buffer_count = _count(report, "candidate_in_truth_buffer_count", context)
     truth_buffer_count = _count(report, "truth_in_candidate_buffer_count", context)
     radius = _number(report, "radius", context)
+    voxel_count = volume_voxel_count(shape)
     maximum_distance = volume_diagonal(shape)
 
+    for name, value in (
+        ("candidate_count", candidate_count),
+        ("truth_count", truth_count),
+        ("intersection_count", intersection_count),
+        ("union_count", union_count),
+        ("candidate_in_truth_buffer_count", candidate_buffer_count),
+        ("truth_in_candidate_buffer_count", truth_buffer_count),
+    ):
+        if value > voxel_count:
+            raise ValueError(f"{context}.{name} exceeds volume voxel count")
     if intersection_count > min(candidate_count, truth_count):
         raise ValueError(f"{context}.intersection_count exceeds a source count")
     if union_count != candidate_count + truth_count - intersection_count:
@@ -519,7 +543,11 @@ def validate_surface_distance_algebra(
 
     candidate_count = _count(report, "candidate_count", context)
     truth_count = _count(report, "truth_count", context)
+    voxel_count = volume_voxel_count(shape)
     maximum_distance = volume_diagonal(shape)
+    for name, value in (("candidate_count", candidate_count), ("truth_count", truth_count)):
+        if value > voxel_count:
+            raise ValueError(f"{context}.{name} exceeds volume voxel count")
     values = {name: _number(report, name, context) for name in _DISTANCE_SUMMARY_NAMES}
     for name, value in values.items():
         if value < 0.0:
@@ -565,12 +593,22 @@ def validate_orientation_algebra(report: Mapping[str, Any], context: str) -> Non
             _require_close(report, name, 0.0, context)
 
 
-def validate_edge_false_positive_algebra(report: Mapping[str, Any], context: str) -> None:
+def validate_edge_false_positive_algebra(
+    report: Mapping[str, Any], shape: Sequence[int], context: str
+) -> None:
     """Validate edge count hierarchy and all derived fractions."""
 
     candidate_count = _count(report, "candidate_count", context)
     edge_candidate_count = _count(report, "edge_candidate_count", context)
     false_positive_count = _count(report, "edge_false_positive_count", context)
+    voxel_count = volume_voxel_count(shape)
+    for name, value in (
+        ("candidate_count", candidate_count),
+        ("edge_candidate_count", edge_candidate_count),
+        ("edge_false_positive_count", false_positive_count),
+    ):
+        if value > voxel_count:
+            raise ValueError(f"{context}.{name} exceeds volume voxel count")
     if edge_candidate_count > candidate_count:
         raise ValueError(f"{context}.edge_candidate_count exceeds candidate_count")
     if false_positive_count > edge_candidate_count:
@@ -684,6 +722,15 @@ def volume_diagonal(shape: Sequence[int]) -> float:
     return sqrt(fsum((value - 1.0) ** 2 for value in dimensions))
 
 
+def volume_voxel_count(shape: Sequence[int]) -> int:
+    """Return the exact voxel capacity of a positive 3D shape."""
+
+    if len(shape) != 3:
+        raise ValueError("shape must contain exactly three positive integers")
+    n3, n2, n1 = (_positive_dimension(value, "volume") for value in shape)
+    return n3 * n2 * n1
+
+
 def _meaningfully_below(actual: float, lower_bound: float) -> bool:
     return actual < lower_bound and not derived_scalars_close(actual, lower_bound)
 
@@ -723,4 +770,5 @@ __all__ = [
     "validate_skin_topology_algebra",
     "validate_surface_distance_algebra",
     "volume_diagonal",
+    "volume_voxel_count",
 ]

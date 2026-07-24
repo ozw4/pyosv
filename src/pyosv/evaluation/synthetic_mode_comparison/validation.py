@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, replace
-from math import isfinite
+from math import fsum, isfinite
 from numbers import Integral, Real
 from typing import Any
 
@@ -39,6 +39,7 @@ from .metrics import (
     validate_metric_value,
 )
 from .models import SCANNER_ONLY_SCOPE, ModeCellSpec, SyntheticModeComparisonPlan
+from .runtime_contract import runtime_exceeds
 from .scalar_algebra import (
     validate_downstream_quality_scalar_algebra,
     validate_scanner_quality_scalar_algebra,
@@ -203,12 +204,18 @@ def _validate_cell_reports(
                     skinning_config = effective_skinning_config(
                         get_variant_spec(plan.comparison_variant), settings.skinning_config
                     )
-                    _validate_downstream_topology_algebra(payload, skinning_config, context)
+                    _validate_downstream_topology_algebra(
+                        payload,
+                        skinning_config,
+                        plan.shape,
+                        context,
+                    )
                     if "pipelines" in payload:
                         pipeline = payload["pipelines"][cell.input_mode]
                         _validate_downstream_topology_algebra(
                             pipeline,
                             skinning_config,
+                            plan.shape,
                             f"{context}.pipelines.{cell.input_mode}",
                         )
         except (KeyError, TypeError, ValueError) as error:
@@ -216,13 +223,17 @@ def _validate_cell_reports(
 
 
 def _validate_downstream_topology_algebra(
-    payload: Mapping[str, Any], skinning_config: SyntheticSkinningConfig, context: str
+    payload: Mapping[str, Any],
+    skinning_config: SyntheticSkinningConfig,
+    shape: Sequence[int],
+    context: str,
 ) -> None:
     enabled = skinning_config.enabled
     topology = payload["pyosv"]["skins"]
     validate_skin_topology_algebra(
         topology,
         f"{context}.pyosv.skins",
+        shape=shape,
         require_empty=not enabled,
     )
 
@@ -240,6 +251,7 @@ def _validate_downstream_topology_algebra(
         skin["component_topology"],
         f"{context}.quality.skin",
         small_skin_size=skinning_config.small_skin_size,
+        shape=shape,
     )
     if _wire_value(topology) != _wire_value(quality_topology):
         raise ValueError(f"{context}.pyosv.skins does not match quality.skin.topology")
@@ -270,7 +282,10 @@ def _validate_cache_stats(
                 raise ValueError("cache stats do not match canonical shared-stage execution")
 
 
-def _expected_cache_counters(plan: SyntheticModeComparisonPlan) -> dict[str, int]:
+def _expected_cache_counters(
+    plan: SyntheticModeComparisonPlan,
+    trial: SyntheticTrialSpec | None = None,
+) -> dict[str, int]:
     counters = {name: 0 for name in _CACHE_COUNTERS}
     seen: dict[str, set[Any]] = {
         "seed": set(),
@@ -279,7 +294,7 @@ def _expected_cache_counters(plan: SyntheticModeComparisonPlan) -> dict[str, int
         "primary_skinning": set(),
     }
     for cell in plan.cells:
-        keys = _resolved_stage_keys_for_cell(plan, cell)
+        keys = _resolved_stage_keys_for_cell(plan, cell, trial)
         for stage in seen:
             key = getattr(keys, stage)
             if key is None:
@@ -548,9 +563,42 @@ def _validate_runtime_rows(
                 ),
             )
         )
+        cache_counters = _expected_cache_counters(plan, trial)
         voting_calls, thinning_calls = _expected_downstream_evidence_builds(plan, trial)
         expected.extend(
             (
+                (
+                    *trial_metadata,
+                    "seed_selection",
+                    None,
+                    None,
+                    cache_counters["seed_misses"],
+                    True,
+                ),
+                (
+                    *trial_metadata,
+                    "voting_volume",
+                    None,
+                    None,
+                    cache_counters["voting_misses"],
+                    True,
+                ),
+                (
+                    *trial_metadata,
+                    "base_thinning",
+                    None,
+                    None,
+                    cache_counters["thinning_misses"],
+                    True,
+                ),
+                (
+                    *trial_metadata,
+                    "primary_skinning",
+                    None,
+                    None,
+                    cache_counters["primary_skinning_misses"],
+                    True,
+                ),
                 (
                     *trial_metadata,
                     "voting_scalar_evidence",
@@ -590,6 +638,46 @@ def _validate_runtime_rows(
     expected.append((None, None, None, "experiment_total", None, None, 1, True))
     if actual != tuple(expected):
         raise ValueError("runtime_rows do not match canonical stage coverage and order")
+    _validate_runtime_elapsed_algebra(rows, plan)
+
+
+def _validate_runtime_elapsed_algebra(
+    rows: Sequence[RuntimeRow],
+    plan: SyntheticModeComparisonPlan,
+) -> None:
+    shared_aggregate_stages = {
+        "seed_selection",
+        "voting_volume",
+        "base_thinning",
+        "primary_skinning",
+        "voting_scalar_evidence",
+        "thinning_scalar_evidence",
+    }
+    rows_per_trial = 6 + len(shared_aggregate_stages) + len(plan.cells) + 3
+    offset = 0
+    trial_totals = []
+    for trial in plan.trials:
+        trial_rows = rows[offset : offset + rows_per_trial]
+        offset += rows_per_trial
+        trial_total = trial_rows[-1].elapsed_seconds
+        trial_totals.append(trial_total)
+        disjoint_total = fsum(row.elapsed_seconds for row in trial_rows[:-1])
+        if runtime_exceeds(disjoint_total, trial_total):
+            raise ValueError(
+                f"runtime_rows disjoint elapsed exceeds trial_total for {trial.trial_id!r}"
+            )
+        for row in trial_rows:
+            if (
+                row.stage in shared_aggregate_stages
+                and row.call_count == 0
+                and row.elapsed_seconds != 0.0
+            ):
+                raise ValueError(
+                    "runtime_rows zero-call shared stage must have zero elapsed_seconds"
+                )
+    experiment_total = rows[-1].elapsed_seconds
+    if runtime_exceeds(fsum(trial_totals), experiment_total):
+        raise ValueError("runtime_rows trial_total sum exceeds experiment_total")
 
 
 def _expected_downstream_evidence_builds(

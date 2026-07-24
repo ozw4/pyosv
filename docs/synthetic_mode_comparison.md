@@ -82,8 +82,8 @@ The successful command writes exactly these eight files atomically:
 - `manifest.json`: artifact schema v3 plus independent scalar-evidence and
   runtime contract versions, requested configuration, resolved canonical plan,
   case and trial order, software versions, cache statistics, and source
-  provenance. The current scalar-evidence contract version is 3 and the
-  runtime contract version is 2.
+  provenance. The current scalar-evidence contract version is 4 and the
+  runtime contract version is 3.
 - `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
   one immutable `truth_evidence` object per trial, containing only the fault-
   voxel and thin truth-surface voxel counts. Every scanner, `fv`, `fvt`, and
@@ -102,8 +102,9 @@ The successful command writes exactly these eight files atomically:
 - `runtime.csv`: stage timing and shared-stage call counts.
 - `completion.json`: the required file list plus size and SHA-256 records.
 
-After each case is generated, the experiment rejects an empty truth-surface
-support mask before constructing scanner input or starting a scanner. The CLI
+After each case is generated, the experiment requires both persisted truth
+counts to be between one and the canonical volume voxel count before
+constructing scanner input or starting a scanner. The CLI
 validates `completion.json`, hashes, schemas, the complete file set, and
 cross-file semantic consistency before printing the output path. This includes
 the canonical plan and trial coverage, scalar cell-report/metric agreement,
@@ -128,31 +129,42 @@ nonempty masks, a buffer radius below one voxel requires both buffered
 numerators to equal the exact intersection, while a radius at least as large as
 the volume diagonal requires them to equal their respective source counts.
 These radius boundaries use exact unit-spacing voxel-grid semantics. Every
-distance summary is bounded by the volume diagonal; empty distance reports use that
-same diagonal convention. Skin largest/small summaries are recomputed from the
-per-skin arrays and the effective `small_skin_size`, while component-topology
-summaries are checked against their per-truth and per-skin arrays. Prepared
-scanner scalar evidence is built once per trial and backend, reused by the
+distance summary is bounded by the volume diagonal; empty distance reports use
+that same diagonal convention.
+All overlap, distance, and edge mask-derived counts are bounded by the
+canonical volume capacity. Skin `unique_cell_count` has the same bound;
+`cell_count` and skin orientation count may exceed it only through the
+validated duplicate-cell contract.
+Skin largest/small summaries are recomputed from the per-skin arrays and the
+effective `small_skin_size`, while component-topology summaries are checked
+against their per-truth and per-skin arrays. Prepared scanner scalar evidence
+is built once per trial and backend, reused by the
 scanner-only and end-to-end cells, and recorded as a shared runtime stage.
-Voting and final-thinning scalar evidence are recorded once per trial as the
-shared `voting_scalar_evidence` and `thinning_scalar_evidence` stages. Their
-call counts are the number of unique semantic keys built on cache misses;
-cache hits add neither calls nor elapsed time. `cell_execution` records only
-workflow-exclusive elapsed time, with nested evidence-build costs removed.
+Seed selection, voting volume, base thinning, primary skinning, voting scalar
+evidence, and final-thinning scalar evidence are recorded once per trial as
+shared stages. Their call counts are the number of unique semantic keys built
+on cache misses; cache hits add neither calls nor elapsed time.
+`cell_execution` records workflow-exclusive elapsed time with all nested
+cacheable shared volume and scalar builds removed. Runtime rows are a
+within-experiment breakdown and are not isolated-process benchmarks.
+Validation requires the sum of disjoint shared and exclusive stage elapsed
+times to be no greater than each `trial_total`, and the sum of all
+`trial_total` rows to be no greater than `experiment_total`.
 Validation uses the recorded trial truth counts and does not rerun the case
 generator or any volume calculation, independently prove that its computation
 was correct, or provide a tamper-prevention signature. Scalar-evidence contract
-version 1 schema-v3 bundles lack trial truth evidence and must be regenerated;
-they are not implicitly upgraded. Schema-v1
+versions 1 through 3 schema-v3 bundles predate part or all of this evidence
+contract and must be regenerated; they are not implicitly upgraded. Schema-v1
 bundles do not contain complete scanner evidence, while schema-v2 bundles do
 not uniquely identify their runtime coverage. Both must be regenerated with
 the current schema-v3 writer; validation does not implicitly upgrade them. The
 scalar-evidence contract version identifies the persisted cell-report evidence
 structure independently of the artifact schema. The runtime contract version
-independently identifies required runtime stage coverage. Version 2 requires
-the shared downstream evidence rows and exclusive cell timing.
-Runtime-contract-version-1 schema-v3 bundles lack that attribution and must be
-regenerated; validation does not implicitly upgrade them.
+independently identifies required runtime stage coverage. Version 3 requires
+shared volume and scalar rows, exclusive cell timing, and elapsed upper-bound
+algebra. Runtime-contract-version-1 and version-2 schema-v3 bundles lack part
+of that attribution and validation and must be regenerated; validation does
+not implicitly upgrade them.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect
