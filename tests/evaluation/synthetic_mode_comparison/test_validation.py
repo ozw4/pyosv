@@ -967,6 +967,55 @@ def test_downstream_runtime_attribution_tampering_is_rejected(result, config, ta
         validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
 
 
+@pytest.mark.parametrize(
+    ("stage", "message"),
+    (
+        ("case_generation", "disjoint elapsed exceeds trial_total"),
+        ("trial_total", "disjoint elapsed exceeds trial_total"),
+        ("experiment_total", "trial_total sum exceeds experiment_total"),
+    ),
+)
+def test_runtime_elapsed_upper_bound_tampering_is_rejected(result, config, stage, message) -> None:
+    rows = list(result.runtime_rows)
+    index = next(index for index, row in enumerate(rows) if row.stage == stage)
+    if stage == "case_generation":
+        trial_total = next(row.elapsed_seconds for row in rows if row.stage == "trial_total")
+        rows[index] = replace(rows[index], elapsed_seconds=trial_total + 1.0)
+    else:
+        rows[index] = replace(rows[index], elapsed_seconds=0.0)
+
+    with pytest.raises(ValueError, match=message):
+        validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
+def test_runtime_elapsed_algebra_accepts_canonical_rounding_tolerance(result, config) -> None:
+    rows = list(result.runtime_rows)
+    trial_total_index = next(index for index, row in enumerate(rows) if row.stage == "trial_total")
+    disjoint_total = sum(row.elapsed_seconds for row in rows[:trial_total_index])
+    rows[trial_total_index] = replace(
+        rows[trial_total_index],
+        elapsed_seconds=disjoint_total - 5.0e-13,
+    )
+
+    validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
+def test_zero_call_shared_runtime_requires_zero_elapsed() -> None:
+    config = SyntheticModeComparisonConfig(
+        case_ids=("single_vertical_plane",),
+        shape=(9, 9, 9),
+        skinning_config=SyntheticSkinningConfig(enabled=False),
+    )
+    result = run_mode_comparison(config)
+    rows = list(result.runtime_rows)
+    index = next(index for index, row in enumerate(rows) if row.stage == "primary_skinning")
+    assert rows[index].call_count == 0
+    rows[index] = replace(rows[index], elapsed_seconds=1.0e-6)
+
+    with pytest.raises(ValueError, match="zero-call shared stage"):
+        validate_mode_comparison_result(replace(result, runtime_rows=tuple(rows)), config)
+
+
 def test_unknown_nested_cell_report_field_is_rejected(result, config) -> None:
     reports = result.as_dict()["cell_reports"]
     reports[0]["cells"]["RL-SCAN"]["scanner"]["unexpected"] = 1

@@ -92,6 +92,10 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
         "scanner_scan_thinning",
         "scanner_scalar_evidence",
         "scanner_scalar_evidence",
+        "seed_selection",
+        "voting_volume",
+        "base_thinning",
+        "primary_skinning",
         "voting_scalar_evidence",
         "thinning_scalar_evidence",
         *("cell_execution",) * 8,
@@ -109,15 +113,29 @@ def test_runtime_stage_order_and_shared_scanner_costs() -> None:
         "quality",
     )
     assert all(row.shared_stage for row in scanner_rows)
-    evidence_rows = {
+    shared_child_rows = {
         row.stage: row
         for row in result.runtime_rows
-        if row.stage in {"voting_scalar_evidence", "thinning_scalar_evidence"}
+        if row.stage
+        in {
+            "seed_selection",
+            "voting_volume",
+            "base_thinning",
+            "primary_skinning",
+            "voting_scalar_evidence",
+            "thinning_scalar_evidence",
+        }
     }
-    assert evidence_rows["voting_scalar_evidence"].call_count == 3
-    assert evidence_rows["thinning_scalar_evidence"].call_count == 6
+    assert {stage: row.call_count for stage, row in shared_child_rows.items()} == {
+        "seed_selection": result.cache_stats[0]["seed_misses"],
+        "voting_volume": result.cache_stats[0]["voting_misses"],
+        "base_thinning": result.cache_stats[0]["thinning_misses"],
+        "primary_skinning": result.cache_stats[0]["primary_skinning_misses"],
+        "voting_scalar_evidence": 3,
+        "thinning_scalar_evidence": 6,
+    }
     assert all(
-        row.call_count == 1 for row in result.runtime_rows if row not in evidence_rows.values()
+        row.call_count == 1 for row in result.runtime_rows if row not in shared_child_rows.values()
     )
     assert all(row.elapsed_seconds >= 0.0 for row in result.runtime_rows)
 

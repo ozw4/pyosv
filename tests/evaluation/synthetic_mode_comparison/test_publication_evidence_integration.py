@@ -297,6 +297,10 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         "scanner_scan_thinning",
         "scanner_scalar_evidence",
         "scanner_scalar_evidence",
+        "seed_selection",
+        "voting_volume",
+        "base_thinning",
+        "primary_skinning",
         "voting_scalar_evidence",
         "thinning_scalar_evidence",
         *("cell_execution" for _ in plan.cells),
@@ -324,9 +328,9 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
             "voting_scalar_evidence": 3,
             "thinning_scalar_evidence": 6,
         }
-        assert all(row.shared_stage for row in rows[:8])
-        assert all(not row.shared_stage for row in rows[8 : 8 + len(plan.cells)])
-        assert all(row.shared_stage for row in rows[8 + len(plan.cells) :])
+        assert all(row.shared_stage for row in rows[:12])
+        assert all(not row.shared_stage for row in rows[12 : 12 + len(plan.cells)])
+        assert all(row.shared_stage for row in rows[12 + len(plan.cells) :])
     assert result.runtime_rows[-1].stage == "experiment_total"
     assert result.runtime_rows[-1].trial_id is None
     assert result.runtime_rows[-1].shared_stage is True
@@ -347,7 +351,7 @@ def test_extended_smoke_fixes_trial_cell_scanner_and_cache_contracts(
         == 4
     )
     assert (
-        manifest["runtime_contract_version"] == comparison_artifacts.RUNTIME_CONTRACT_VERSION == 2
+        manifest["runtime_contract_version"] == comparison_artifacts.RUNTIME_CONTRACT_VERSION == 3
     )
     assert tuple(sorted(path.name for path in bundle.iterdir())) == tuple(
         sorted(comparison_artifacts.REQUIRED_BUNDLE_FILES)

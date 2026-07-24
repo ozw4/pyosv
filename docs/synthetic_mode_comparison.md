@@ -83,7 +83,7 @@ The successful command writes exactly these eight files atomically:
   runtime contract versions, requested configuration, resolved canonical plan,
   case and trial order, software versions, cache statistics, and source
   provenance. The current scalar-evidence contract version is 4 and the
-  runtime contract version is 2.
+  runtime contract version is 3.
 - `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
   one immutable `truth_evidence` object per trial, containing only the fault-
   voxel and thin truth-surface voxel counts. Every scanner, `fv`, `fvt`, and
@@ -140,11 +140,13 @@ effective `small_skin_size`, while component-topology summaries are checked
 against their per-truth and per-skin arrays. Prepared scanner scalar evidence
 is built once per trial and backend, reused by the
 scanner-only and end-to-end cells, and recorded as a shared runtime stage.
-Voting and final-thinning scalar evidence are recorded once per trial as the
-shared `voting_scalar_evidence` and `thinning_scalar_evidence` stages. Their
-call counts are the number of unique semantic keys built on cache misses;
-cache hits add neither calls nor elapsed time. `cell_execution` records only
-workflow-exclusive elapsed time, with nested evidence-build costs removed.
+Seed selection, voting volume, base thinning, primary skinning, voting scalar
+evidence, and final-thinning scalar evidence are recorded once per trial as
+shared stages. Their call counts are the number of unique semantic keys built
+on cache misses; cache hits add neither calls nor elapsed time.
+`cell_execution` records workflow-exclusive elapsed time with all nested
+cacheable shared volume and scalar builds removed. Runtime rows are a
+within-experiment breakdown and are not isolated-process benchmarks.
 Validation uses the recorded trial truth counts and does not rerun the case
 generator or any volume calculation, independently prove that its computation
 was correct, or provide a tamper-prevention signature. Scalar-evidence contract
@@ -155,10 +157,11 @@ not uniquely identify their runtime coverage. Both must be regenerated with
 the current schema-v3 writer; validation does not implicitly upgrade them. The
 scalar-evidence contract version identifies the persisted cell-report evidence
 structure independently of the artifact schema. The runtime contract version
-independently identifies required runtime stage coverage. Version 2 requires
-the shared downstream evidence rows and exclusive cell timing.
-Runtime-contract-version-1 schema-v3 bundles lack that attribution and must be
-regenerated; validation does not implicitly upgrade them.
+independently identifies required runtime stage coverage. Version 3 requires
+shared volume and scalar rows, exclusive cell timing, and elapsed upper-bound
+algebra. Runtime-contract-version-1 and version-2 schema-v3 bundles lack part
+of that attribution and validation and must be regenerated; validation does
+not implicitly upgrade them.
 
 F3 reference agreement, F3 full-volume 2×2 execution, figure generation, and
 mode tuning are outside this command's scope. Use the scalar bundle to inspect

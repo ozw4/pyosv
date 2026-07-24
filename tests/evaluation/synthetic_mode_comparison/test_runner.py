@@ -164,7 +164,7 @@ def test_trial_scalar_evidence_counts_follow_unique_semantic_keys(monkeypatch) -
             )
 
 
-def test_downstream_scalar_evidence_runtime_is_shared_and_cell_exclusive() -> None:
+def test_shared_child_runtime_is_aggregated_and_cell_exclusive() -> None:
     plan = build_mode_comparison_plan(
         SyntheticModeComparisonConfig(
             shape=(9, 9, 9),
@@ -193,7 +193,25 @@ def test_downstream_scalar_evidence_runtime_is_shared_and_cell_exclusive() -> No
     shared = {
         row["stage"]: row
         for row in rows
-        if row["stage"] in {"voting_scalar_evidence", "thinning_scalar_evidence"}
+        if row["stage"]
+        in {
+            "seed_selection",
+            "voting_volume",
+            "base_thinning",
+            "primary_skinning",
+            "voting_scalar_evidence",
+            "thinning_scalar_evidence",
+        }
+    }
+    assert {
+        stage: (row["call_count"], row["elapsed_seconds"]) for stage, row in shared.items()
+    } == {
+        "seed_selection": (3, 3.0),
+        "voting_volume": (3, 3.0),
+        "base_thinning": (6, 6.0),
+        "primary_skinning": (0, 0.0),
+        "voting_scalar_evidence": (3, 3.0),
+        "thinning_scalar_evidence": (6, 6.0),
     }
     assert shared["voting_scalar_evidence"] == {
         "stage": "voting_scalar_evidence",
@@ -213,7 +231,23 @@ def test_downstream_scalar_evidence_runtime_is_shared_and_cell_exclusive() -> No
     }
     cell_rows = [row for row in rows if row["stage"] == "cell_execution"]
     assert tuple(row["cell_label"] for row in cell_rows) == tuple(cell.label for cell in plan.cells)
-    assert sum(row["elapsed_seconds"] for row in cell_rows) == 17.0
+    assert sum(row["elapsed_seconds"] for row in cell_rows) == 29.0
+
+
+def test_cell_exclusive_elapsed_preserves_tolerance_bounded_child_overrun() -> None:
+    exclusive_elapsed = comparison_runner._exclusive_cell_elapsed(
+        1.0,
+        1.0 + 5.0e-13,
+        cell_label="ORACLE-REF",
+    )
+    assert exclusive_elapsed < 0.0
+
+    with pytest.raises(ValueError, match="shared child runtime elapsed exceeds parent"):
+        comparison_runner._exclusive_cell_elapsed(
+            1.0,
+            1.0 + 2.0e-9,
+            cell_label="ORACLE-REF",
+        )
 
 
 def test_matching_workflow_thinning_config_reuses_scalar_evidence(monkeypatch) -> None:
