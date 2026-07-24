@@ -50,21 +50,21 @@ def _local_index_to_world(
     o1, o2, o3 = _validate_origin3(origin)
     x1 = np.float32(
         o1
-        + transform_map.us[0, u_index]
-        + transform_map.vs[0, v_index]
-        + transform_map.ws[0, w_index],
+        + float(transform_map.us[0, u_index])
+        + float(transform_map.vs[0, v_index])
+        + float(transform_map.ws[0, w_index]),
     )
     x2 = np.float32(
         o2
-        + transform_map.us[1, u_index]
-        + transform_map.vs[1, v_index]
-        + transform_map.ws[1, w_index],
+        + float(transform_map.us[1, u_index])
+        + float(transform_map.vs[1, v_index])
+        + float(transform_map.ws[1, w_index]),
     )
     x3 = np.float32(
         o3
-        + transform_map.us[2, u_index]
-        + transform_map.vs[2, v_index]
-        + transform_map.ws[2, w_index],
+        + float(transform_map.us[2, u_index])
+        + float(transform_map.vs[2, v_index])
+        + float(transform_map.ws[2, w_index]),
     )
     return x1, x2, x3
 

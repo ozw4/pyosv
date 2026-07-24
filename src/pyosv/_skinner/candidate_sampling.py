@@ -66,9 +66,9 @@ def _sample_candidate_slice(
         iw = w_center + step_sign * row if axis_code == 1 else w_center
         for col in range(samples.shape[1]):
             iu = u_start + col
-            x1 = np.float32(o1 + us[0, iu] + vs[0, iv] + ws[0, iw])
-            x2 = np.float32(o2 + us[1, iu] + vs[1, iv] + ws[1, iw])
-            x3 = np.float32(o3 + us[2, iu] + vs[2, iv] + ws[2, iw])
+            x1 = np.float32(o1 + float(us[0, iu]) + float(vs[0, iv]) + float(ws[0, iw]))
+            x2 = np.float32(o2 + float(us[1, iu]) + float(vs[1, iv]) + float(ws[1, iw]))
+            x3 = np.float32(o3 + float(us[2, iu]) + float(vs[2, iv]) + float(ws[2, iw]))
             i1 = math.floor(float(x1) + 0.5)
             i2 = math.floor(float(x2) + 0.5)
             i3 = math.floor(float(x3) + 0.5)
@@ -102,9 +102,9 @@ def _candidate_slice_numba(
         iw = w_center + step_sign * row if axis_code == 1 else w_center
         for col in range(samples.shape[1]):
             iu = u_start + col
-            x1 = np.float32(o1 + us[0, iu] + vs[0, iv] + ws[0, iw])
-            x2 = np.float32(o2 + us[1, iu] + vs[1, iv] + ws[1, iw])
-            x3 = np.float32(o3 + us[2, iu] + vs[2, iv] + ws[2, iw])
+            x1 = np.float32(o1 + float(us[0, iu]) + float(vs[0, iv]) + float(ws[0, iw]))
+            x2 = np.float32(o2 + float(us[1, iu]) + float(vs[1, iv]) + float(ws[1, iw]))
+            x3 = np.float32(o3 + float(us[2, iu]) + float(vs[2, iv]) + float(ws[2, iw]))
             i1 = math.floor(float(x1) + 0.5)
             i2 = math.floor(float(x2) + 0.5)
             i3 = math.floor(float(x3) + 0.5)

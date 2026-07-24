@@ -220,6 +220,10 @@ def run_report(output_dir: Path) -> None:
     ]
     environment = os.environ.copy()
     environment["PYTHONHASHSEED"] = "0"
+    environment["OMP_NUM_THREADS"] = "1"
+    environment["OPENBLAS_NUM_THREADS"] = "1"
+    environment["MKL_NUM_THREADS"] = "1"
+    environment["NUMEXPR_NUM_THREADS"] = "1"
     environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
     subprocess.run(command, cwd=REPOSITORY_ROOT, env=environment, check=True)
 

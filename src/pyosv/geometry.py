@@ -13,10 +13,12 @@ def _as_scalar_or_array(phi):
 def range360(phi):
     """Wrap angles to the half-open range [0, 360)."""
     values, is_scalar = _as_scalar_or_array(phi)
-    wrapped = np.mod(values, 360.0)
     if is_scalar:
-        return float(wrapped)
-    return wrapped
+        # NumPy 1.x promoted a float32 scalar here because the modulus is a
+        # Python float, while NumPy 2.x keeps it in float32. Preserve the
+        # historical scalar precision explicitly.
+        return float(np.mod(np.float64(values), 360.0))
+    return np.mod(values, 360.0)
 
 
 def range180(phi):
@@ -148,7 +150,12 @@ def strike_and_dip_from_local_surface_derivatives(
     if global_normal[0] > 0.0:
         global_normal = -global_normal
 
-    dip_angle = float(np.rad2deg(np.arccos(np.clip(-global_normal[0], -1.0, 1.0))))
+    # NumPy 1.x promoted this scalar clip to float64 because its bounds are
+    # Python floats, while NumPy 2.x keeps the float32 input dtype. Make the
+    # historical precision explicit so dip angles do not depend on NumPy's
+    # scalar-promotion rules.
+    clipped_normal1 = np.clip(np.float64(-global_normal[0]), -1.0, 1.0)
+    dip_angle = float(np.rad2deg(np.arccos(clipped_normal1)))
     strike_angle = range360(np.rad2deg(np.arctan2(-global_normal[2], global_normal[1])))
     return strike_angle, dip_angle
 

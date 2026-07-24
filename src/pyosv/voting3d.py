@@ -249,6 +249,11 @@ class OptimalSurfaceVoter:
 
         diagnostics = self._last_surface_voting_diagnostics
         support_fractions = [diagnostic.support_fraction for diagnostic in diagnostics]
+        support_fraction_sum = 0.0
+        for support_fraction in support_fractions:
+            # Python 3.12 changed sum() for floats. Preserve the established
+            # left-to-right report contract explicitly across Python versions.
+            support_fraction_sum += support_fraction
         return {
             "policy": self._last_surface_voting_policy,
             "seed_count": len(diagnostics),
@@ -262,7 +267,7 @@ class OptimalSurfaceVoter:
             "skipped_seed_count": sum(diagnostic.skipped for diagnostic in diagnostics),
             "support_fraction_min": min(support_fractions, default=1.0),
             "support_fraction_mean": (
-                float(sum(support_fractions) / len(support_fractions)) if support_fractions else 1.0
+                float(support_fraction_sum / len(support_fractions)) if support_fractions else 1.0
             ),
             "surface_projection_count": sum(
                 diagnostic.surface_projection_count for diagnostic in diagnostics

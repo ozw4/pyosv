@@ -58,7 +58,7 @@ def _pick_candidate_local_u_path_python(
                     best_previous = ju
                     best_jump = jump
 
-            accumulated[irow, iu] = candidate_slice[irow, iu] + best_score
+            accumulated[irow, iu] = float(candidate_slice[irow, iu]) + best_score
             predecessor[irow, iu] = best_previous
 
     path = np.empty(nrow, dtype=np.int32)
@@ -135,7 +135,7 @@ def _pick_candidate_local_u_path_numba(
                     best_previous = ju
                     best_jump = jump
 
-            accumulated[irow, iu] = candidate_slice[irow, iu] + best_score
+            accumulated[irow, iu] = float(candidate_slice[irow, iu]) + best_score
             predecessor[irow, iu] = best_previous
 
     path = np.empty(nrow, dtype=np.int32)

@@ -874,6 +874,14 @@ def _artifact_hashes(output_dir: Path) -> dict[str, str]:
     }
 
 
+def _output_bytes(output_dir: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(output_dir).as_posix(): path.read_bytes()
+        for path in sorted(output_dir.rglob("*"))
+        if path.is_file()
+    }
+
+
 def test_report_outputs_are_identical_with_and_without_cache(tmp_path: Path) -> None:
     kwargs = dict(
         case_set="minimal",
@@ -899,34 +907,53 @@ def test_report_outputs_are_identical_with_and_without_cache(tmp_path: Path) -> 
     assert _artifact_hashes(cached_dir) == _artifact_hashes(uncached_dir)
 
 
-def test_variant_order_does_not_change_each_variant_result() -> None:
-    variants = (
-        "current_default",
-        "quality_boundary_skinner_fallback",
-        "quality_boundary_skinner_fallback_v2",
-    )
-    common = dict(
+def test_fresh_scanner_report_runs_are_byte_identical(tmp_path: Path) -> None:
+    kwargs = dict(
         case_set="minimal",
         shape=(9, 9, 9),
-        skinning_config=SyntheticSkinningConfig(),
+        variants=("current_default", "boundary_aware_voter_v1"),
+        scanner_config=SyntheticScannerConfig(backend="quality", refinement_factor=2),
+        input_mode="both",
+        workflow_mode="quality",
+        include_scanner_downstream_diagnostics=True,
+    )
+    first = application._build_report_outputs(**kwargs)
+    second = application._build_report_outputs(**kwargs)
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    _write_report_outputs(first_dir, first)
+    _write_report_outputs(second_dir, second)
+
+    assert _output_bytes(first_dir) == _output_bytes(second_dir)
+
+
+def test_case_and_variant_order_do_not_change_stage_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case_definitions = application.validate_case_set("extended")[:2]
+    case_orders = iter((case_definitions, tuple(reversed(case_definitions))))
+    monkeypatch.setattr(application, "validate_case_set", lambda _case_set: next(case_orders))
+    variants = ("current_default", "boundary_aware_voter_v1")
+    common = dict(
+        case_set="extended",
+        shape=(9, 9, 9),
+        scanner_config=SyntheticScannerConfig(backend="quality", refinement_factor=2),
+        input_mode="both",
+        workflow_mode="quality",
+        include_scanner_downstream_diagnostics=True,
     )
     forward = application._build_report_outputs(**common, variants=variants)
     reverse = application._build_report_outputs(**common, variants=tuple(reversed(variants)))
-    forward_case = forward[0]["cases"][0]
-    reverse_case = reverse[0]["cases"][0]
-    for variant in variants:
-        _assert_nested_equal(
-            forward_case["variants"][variant],
-            reverse_case["variants"][variant],
-        )
-        _assert_nested_equal(
-            forward[1]["single_vertical_plane"][variant],
-            reverse[1]["single_vertical_plane"][variant],
-        )
-        _assert_nested_equal(
-            forward[2]["single_vertical_plane"][variant],
-            reverse[2]["single_vertical_plane"][variant],
-        )
+    forward_cases = {case["case_id"]: case for case in forward[0]["cases"]}
+    reverse_cases = {case["case_id"]: case for case in reverse[0]["cases"]}
+    for case_id in forward_cases:
+        for variant in variants:
+            _assert_nested_equal(
+                forward_cases[case_id]["variants"][variant],
+                reverse_cases[case_id]["variants"][variant],
+            )
+            _assert_nested_equal(forward[1][case_id][variant], reverse[1][case_id][variant])
+            _assert_nested_equal(forward[2][case_id][variant], reverse[2][case_id][variant])
 
 
 def test_skinning_outputs_are_identical_with_and_without_cache(tmp_path: Path) -> None:

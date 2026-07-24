@@ -11,6 +11,13 @@ Run the contract from the repository root:
 python scripts/check_synthetic_quality_refactor_contract.py
 ```
 
+The committed fixture was established with the repository's supported NumPy 1.x dependency
+(`numpy<2`). NumPy 2 changes scalar-promotion rules and x86 transcendental kernels, so it cannot
+reproduce the historical byte-level artifact contract. Recreate the project environment after a
+dependency upgrade before interpreting a mismatch. The checker fixes `PYTHONHASHSEED` and the
+OpenMP, OpenBLAS, MKL, and NumExpr thread counts to deterministic single-threaded values for its
+report subprocess.
+
 By default, the checker creates a temporary report and compares it with the committed fixtures.
 Use `--existing-output PATH` to compare a report that has already been generated. The comparison
 requires semantic equality for `metrics.json`, byte equality for `summary.csv`, and exact relative

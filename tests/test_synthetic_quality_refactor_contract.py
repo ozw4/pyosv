@@ -151,3 +151,24 @@ def test_update_requires_flag_and_environment_variable(tmp_path: Path, monkeypat
     monkeypatch.delenv(contract.UPDATE_ENVIRONMENT_VARIABLE, raising=False)
 
     assert contract.main(["--existing-output", str(output_dir), "--update-fixtures"]) == 2
+
+
+def test_run_report_fixes_reproducibility_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_environment = {}
+
+    def capture_run(command, *, cwd, env, check) -> None:
+        del command, cwd, check
+        captured_environment.update(env)
+
+    monkeypatch.setattr(contract.subprocess, "run", capture_run)
+
+    contract.run_report(tmp_path / "output")
+
+    assert captured_environment["PYTHONHASHSEED"] == "0"
+    assert captured_environment["OMP_NUM_THREADS"] == "1"
+    assert captured_environment["OPENBLAS_NUM_THREADS"] == "1"
+    assert captured_environment["MKL_NUM_THREADS"] == "1"
+    assert captured_environment["NUMEXPR_NUM_THREADS"] == "1"
