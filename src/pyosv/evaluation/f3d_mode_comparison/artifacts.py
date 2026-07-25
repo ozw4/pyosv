@@ -57,14 +57,28 @@ class F3StageCorruptionError(F3ArtifactError):
 
 @dataclass(frozen=True, slots=True)
 class F3StageArtifact:
-    """Expected shape and dtype for one stage-local NumPy artifact."""
+    """Storage contract for one stage-local artifact."""
 
     filename: str
-    shape: tuple[int, ...]
-    dtype: str = "float32"
+    shape: tuple[int, ...] | None = None
+    dtype: str | None = None
+    format: str | None = None
 
     def __post_init__(self) -> None:
         _validate_artifact_filename(self.filename)
+        inferred_format = Path(self.filename).suffix.removeprefix(".").lower()
+        artifact_format = inferred_format if self.format is None else self.format
+        if artifact_format not in {"npy", "dat", "json"}:
+            raise ValueError("artifact format must be 'npy', 'dat', or 'json'")
+        if inferred_format != artifact_format:
+            raise ValueError("artifact format must match the filename suffix")
+        object.__setattr__(self, "format", artifact_format)
+
+        if artifact_format == "json":
+            if self.shape is not None or self.dtype is not None:
+                raise ValueError("JSON artifacts must not specify shape or dtype")
+            return
+
         if (
             not isinstance(self.shape, tuple)
             or not self.shape
@@ -73,24 +87,30 @@ class F3StageArtifact:
                 for size in self.shape
             )
         ):
-            raise ValueError("artifact shape must contain positive integers")
+            raise ValueError("array artifact shape must contain positive integers")
+        default_dtype = ">f4" if artifact_format == "dat" else "float32"
         try:
-            dtype = np.dtype(self.dtype)
+            dtype = np.dtype(default_dtype if self.dtype is None else self.dtype)
         except TypeError as error:
             raise ValueError(f"invalid artifact dtype: {self.dtype!r}") from error
         if dtype.hasobject:
             raise ValueError("artifact dtype must not contain Python objects")
+        if artifact_format == "dat" and dtype.str != ">f4":
+            raise ValueError("DAT artifacts must use big-endian float32")
         object.__setattr__(self, "dtype", dtype.str)
 
     def as_dict(self) -> dict[str, object]:
         """Return the manifest representation."""
 
-        return {
+        result: dict[str, object] = {
             "filename": self.filename,
-            "format": "npy",
-            "shape": list(self.shape),
-            "dtype": self.dtype,
+            "format": self.format,
         }
+        if self.shape is not None:
+            result["shape"] = list(self.shape)
+        if self.dtype is not None:
+            result["dtype"] = self.dtype
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,9 +454,17 @@ def write_or_reuse_stage(
         artifact_files: dict[str, dict[str, Any]] = {}
         for artifact in artifacts:
             path = temporary_path / artifact.filename
-            _validate_numpy_artifact(path, artifact)
+            _validate_stage_artifact(path, artifact)
             _fsync_file(path)
-            artifact_files[artifact.filename] = _file_metadata(path)
+            metadata = _file_metadata(path)
+            if artifact.format == "dat":
+                metadata.update(
+                    {
+                        "shape": list(artifact.shape or ()),
+                        "dtype": artifact.dtype,
+                    }
+                )
+            artifact_files[artifact.filename] = metadata
 
         stage_manifest = {
             **computation,
@@ -533,20 +561,27 @@ def validate_stage(
             artifact_path = path / filename
             _require_regular_nonsymlink(artifact_path, f"stage file {filename}")
             metadata = completion_files[filename]
-            if not _valid_file_metadata(metadata):
+            descriptor = schema.get(filename)
+            if not _valid_stage_file_metadata(metadata, descriptor):
                 raise F3StageCorruptionError(f"invalid file metadata: {filename}")
-            if _file_metadata(artifact_path) != metadata:
+            actual_metadata = _file_metadata(artifact_path)
+            if (
+                actual_metadata["sha256"] != metadata["sha256"]
+                or actual_metadata["size"] != metadata["size"]
+            ):
                 raise F3StageCorruptionError(f"stage file hash or size mismatch: {filename}")
         if manifest.get("files") != {name: completion_files[name] for name in sorted(schema)}:
             raise F3StageCorruptionError("stage manifest artifact file list mismatch")
 
         for filename, descriptor in schema.items():
+            shape_value = descriptor.get("shape")
             artifact = F3StageArtifact(
                 filename=filename,
-                shape=tuple(descriptor["shape"]),
-                dtype=descriptor["dtype"],
+                shape=(tuple(shape_value) if shape_value is not None else None),
+                dtype=descriptor.get("dtype"),
+                format=descriptor["format"],
             )
-            _validate_numpy_artifact(path / filename, artifact)
+            _validate_stage_artifact(path / filename, artifact)
     except F3StageCorruptionError:
         raise
     except (OSError, TypeError, ValueError) as error:
@@ -565,6 +600,17 @@ def _artifact_schema(artifacts: Sequence[F3StageArtifact]) -> dict[str, dict[str
     if not result:
         raise ValueError("stage must contain at least one artifact")
     return dict(sorted(result.items()))
+
+
+def _validate_stage_artifact(path: Path, artifact: F3StageArtifact) -> None:
+    if artifact.format == "npy":
+        _validate_numpy_artifact(path, artifact)
+    elif artifact.format == "dat":
+        _validate_dat_artifact(path, artifact)
+    elif artifact.format == "json":
+        _read_json_object(path)
+    else:  # pragma: no cover - F3StageArtifact validation makes this unreachable.
+        raise F3StageCorruptionError(f"unknown artifact format: {artifact.format}")
 
 
 def _validate_numpy_artifact(path: Path, artifact: F3StageArtifact) -> None:
@@ -595,6 +641,22 @@ def _validate_numpy_artifact(path: Path, artifact: F3StageArtifact) -> None:
             mapping = getattr(array, "_mmap", None)
             if mapping is not None and not mapping.closed:
                 mapping.close()
+
+
+def _validate_dat_artifact(path: Path, artifact: F3StageArtifact) -> None:
+    _require_regular_nonsymlink(path, f"stage artifact {artifact.filename}")
+    assert artifact.shape is not None
+    assert artifact.dtype is not None
+    expected_size = int(np.prod(artifact.shape)) * np.dtype(artifact.dtype).itemsize
+    try:
+        actual_size = path.stat().st_size
+    except OSError as error:
+        raise F3StageCorruptionError(f"invalid DAT stage artifact {artifact.filename}") from error
+    if actual_size != expected_size:
+        raise F3StageCorruptionError(
+            f"stage artifact size mismatch for {artifact.filename}: "
+            f"expected {expected_size}, got {actual_size}"
+        )
 
 
 def _validate_run_manifest(
@@ -971,7 +1033,9 @@ def _exact_json_value(actual: Any, expected: Any) -> bool:
 
 
 def _common_schema_value(artifacts: Sequence[F3StageArtifact], field: str) -> Any:
-    values = [getattr(artifact, field) for artifact in artifacts]
+    values = [value for artifact in artifacts if (value := getattr(artifact, field)) is not None]
+    if not values:
+        return None
     normalized = [list(value) if isinstance(value, tuple) else value for value in values]
     return normalized[0] if all(value == normalized[0] for value in normalized) else None
 
@@ -979,7 +1043,9 @@ def _common_schema_value(artifacts: Sequence[F3StageArtifact], field: str) -> An
 def _common_schema_mapping_value(schema: Any, field: str) -> Any:
     if not isinstance(schema, Mapping) or not schema:
         raise F3StageCorruptionError("invalid expected artifact schema")
-    values = [item[field] for item in schema.values()]
+    values = [item[field] for item in schema.values() if item.get(field) is not None]
+    if not values:
+        return None
     return values[0] if all(value == values[0] for value in values) else None
 
 
@@ -994,6 +1060,25 @@ def _valid_file_metadata(value: Any) -> bool:
         isinstance(value["size"], int)
         and not isinstance(value["size"], bool)
         and value["size"] >= 0
+    )
+
+
+def _valid_stage_file_metadata(value: Any, descriptor: Any) -> bool:
+    if descriptor is None:
+        return _valid_file_metadata(value)
+    if not isinstance(descriptor, Mapping):
+        return False
+    expected_extra: dict[str, Any] = {}
+    if descriptor.get("format") == "dat":
+        expected_extra = {
+            "shape": descriptor.get("shape"),
+            "dtype": descriptor.get("dtype"),
+        }
+    if not isinstance(value, dict) or set(value) != {"sha256", "size", *expected_extra}:
+        return False
+    basic = {"sha256": value.get("sha256"), "size": value.get("size")}
+    return _valid_file_metadata(basic) and all(
+        _exact_json_value(value.get(name), expected) for name, expected in expected_extra.items()
     )
 
 
