@@ -294,6 +294,29 @@ def test_contrast_pairing_rejects_incomplete_or_mismatched_identity() -> None:
         compute_contrast_rows(rows)
 
 
+def test_contrasts_skip_nullable_distance_group_with_mixed_empty_ridges() -> None:
+    rows = tuple(
+        MetricRow(
+            1,
+            "fixture",
+            cell,
+            *_AXES[cell],
+            "fvt",
+            "full",
+            "positive_p99_distance",
+            "fvt.dat",
+            "candidate_to_reference_mean",
+            None if cell == "RL-REF" else value,
+            "voxel",
+            "lower",
+            cell != "RL-REF",
+        )
+        for cell, value in zip(_AXES, (0.0, 2.0, 3.0, 4.0), strict=True)
+    )
+
+    assert compute_contrast_rows(rows) == ()
+
+
 def test_voxelwise_contrast_summary_matches_direct_numpy() -> None:
     base = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     volumes = {

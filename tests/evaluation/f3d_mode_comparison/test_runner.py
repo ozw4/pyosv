@@ -13,15 +13,23 @@ import pytest
 
 import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
 from pyosv.evaluation.f3d_mode_comparison import (
+    F3DatasetIdentity,
+    F3DatasetSpec,
+    F3FileIdentity,
     F3ModeComparisonConfig,
     F3RunWorkspace,
     F3ScannerStageResult,
     F3StageCorruptionError,
+    F3VolumeSource,
     F3VotingControls,
+    F3WorkspaceMismatchError,
     PeakRSSRecorder,
     build_f3d_cell_stage_fingerprints,
     build_f3d_mode_comparison_plan,
+    canonical_fingerprint,
     canonical_json_bytes,
+    extract_f3d_diagnostics,
+    extract_f3d_metric_rows,
     extract_stage_resources,
     load_f3d_mode_comparison_cells,
     run_f3d_mode_comparison_cells,
@@ -70,7 +78,56 @@ def _workspace(path: Path) -> F3RunWorkspace:
         (path / "stages" / kind).mkdir(parents=True)
     (path / "cells").mkdir()
     (path / "reports").mkdir()
-    return F3RunWorkspace(path, "0" * 64, {}, resumed=False)
+    source = _fixture_volume_source(path.parent / "data")
+    computation = {
+        "artifact_schema_version": 1,
+        "stage_contract_version": 1,
+        "fingerprint_contract_version": 1,
+        "plan": {"name": "runner-fixture"},
+        "dataset_identity": source.identity.computation_identity,
+        "implementation_identity": {"name": "test"},
+    }
+    fingerprint = canonical_fingerprint(computation)
+    manifest = {
+        **computation,
+        "run_fingerprint": fingerprint,
+        "provenance": {},
+    }
+    (path / "run_manifest.json").write_bytes(canonical_json_bytes(manifest) + b"\n")
+    return F3RunWorkspace(path, fingerprint, manifest, resumed=False)
+
+
+def _fixture_volume_source(
+    data_root: Path,
+    *,
+    input_fingerprint: str = "3" * 64,
+) -> F3VolumeSource:
+    shape = (3, 4, 5)
+    spec = F3DatasetSpec(
+        dataset_id="runner-fixture",
+        shape=shape,
+        files={"input": "ep.dat"},
+        expected_bytes=int(np.prod(shape)) * np.dtype(">f4").itemsize,
+    )
+    identity = F3DatasetIdentity(
+        dataset_id=spec.dataset_id,
+        data_root=data_root.absolute(),
+        files=(
+            F3FileIdentity(
+                role="input",
+                filename="ep.dat",
+                resolved_path=(data_root / "ep.dat").absolute(),
+                size=spec.expected_bytes,
+                sha256=input_fingerprint,
+                shape=shape,
+                storage_dtype=spec.storage_dtype,
+            ),
+        ),
+    )
+    source = object.__new__(F3VolumeSource)
+    source._spec = spec
+    source._identity = identity
+    return source
 
 
 def _scanner_stages(
@@ -184,6 +241,7 @@ def test_canonical_cells_share_voting_and_release_scanner_handles(tmp_path: Path
     assert result.cell_for("Q-REF").stages.voting == result.cell_for("Q-QUAL").stages.voting
     assert result.cell_for("RL-REF").stages.thinning != result.cell_for("RL-QUAL").stages.thinning
     assert not any((workspace.path / "stages" / "skinning").iterdir())
+    assert {event.kind for event in result.stage_runtime} == {"voting", "thinning"}
     assert {path.name for path in (workspace.path / "cells").iterdir()} == {
         "RL-REF.json",
         "RL-QUAL.json",
@@ -544,6 +602,50 @@ def test_corrupt_stage_and_unknown_cell_fingerprint_are_rejected(
     cell_path.write_text(json.dumps(cell))
     with pytest.raises(F3StageCorruptionError, match="unknown stage fingerprint"):
         load_f3d_mode_comparison_cells(workspace, plan, scanners)
+
+
+@pytest.mark.parametrize("extractor", ("metrics", "diagnostics"))
+def test_extractors_validate_stage_completion_hashes(
+    tmp_path: Path,
+    extractor: str,
+) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
+    result = run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        scanner_loader=lambda stage: _LoadedScanner(stage, []),  # type: ignore[arg-type]
+    )
+    artifact = scanners["reference-like"].path / "ft.dat"
+    with artifact.open("r+b") as stream:
+        stream.write(np.asarray(0.25, dtype=">f4").tobytes())
+
+    source = _fixture_volume_source(tmp_path / "data")
+    with pytest.raises(F3StageCorruptionError, match="hash or size"):
+        if extractor == "metrics":
+            extract_f3d_metric_rows(source, result.cells, slab_depth=1)
+        else:
+            extract_f3d_diagnostics(source, result.cells, boundary_margin=0)
+
+
+def test_extractor_rejects_same_shape_source_from_another_dataset(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
+    result = run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        scanner_loader=lambda stage: _LoadedScanner(stage, []),  # type: ignore[arg-type]
+    )
+
+    other = _fixture_volume_source(tmp_path / "other-data", input_fingerprint="4" * 64)
+    with pytest.raises(F3WorkspaceMismatchError, match="dataset identity"):
+        extract_f3d_metric_rows(other, result.cells, slab_depth=1)
 
 
 def test_resume_and_load_reject_corrupt_scanner_stage(tmp_path: Path) -> None:

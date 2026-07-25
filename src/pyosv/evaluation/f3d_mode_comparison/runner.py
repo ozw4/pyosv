@@ -902,8 +902,6 @@ def _persist_or_reuse_cell_stages(
                 _stage_output_bytes(workspace.stage_path("skinning", execution.stages.skinning)),
             )
 
-    if not execution.skinning_settings["enabled"]:
-        states["skinning"] = ("reused" if result is None else "computed", 0, 0)
     return states
 
 

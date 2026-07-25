@@ -27,6 +27,7 @@ from .metrics import (
     F3_PERCENTILES,
     F3_REFERENCE_STAGE_FILES,
     F3_REFERENCE_STAGE_ROLES,
+    _validated_extraction_workspace,
 )
 from .models import F3ModeComparisonPlan
 from .runner import F3CellReference
@@ -539,12 +540,11 @@ def extract_f3d_diagnostics(
     if boundary_margin is None:
         raise ValueError("plan or boundary_margin is required")
     cell_rows = tuple(cells)
+    if any(not isinstance(cell, F3CellReference) for cell in cell_rows):
+        raise TypeError("cells must contain only F3CellReference values")
     if tuple(cell.label for cell in cell_rows) != tuple(_CELL_AXES):
         raise ValueError("cells must follow canonical F3 cell order")
-    workspace_paths = {cell.path.parent.parent for cell in cell_rows}
-    if len(workspace_paths) != 1:
-        raise ValueError("cell references must belong to one workspace")
-    workspace = next(iter(workspace_paths))
+    workspace = _validated_extraction_workspace(volume_source, cell_rows)
     shape = volume_source.spec.shape
     dataset_id = volume_source.identity.dataset_id
 

@@ -109,7 +109,7 @@ This runner calls `FaultOrientScanner3.scan()`, so its current scanner path is
 the reference-like scanner backend. It provides independent
 `scanner_thin_mode` and `voter_thin_mode` comparison options, each accepting
 `reference` or `normal`. It does **not** implement a `workflow_mode` profile,
-the quality scanner backend, the quality skinner, or the planned 2×2
+the quality scanner backend, the quality skinner, or the library 2×2
 publication matrix. The command above remains the current single-path
 full-volume baseline/report command; this document does not imply any planned
 command or output schema.
@@ -126,20 +126,20 @@ Use `--skip-save-intermediates` when only the report volumes `ft_py.dat`,
 `fv_py.dat`, and `fvt_py.dat` are needed. Because that option does not write the
 complete ten-file set, its output directory cannot subsequently be used with
 `--reuse-existing`. This current runner contract is separate from the
-content-addressed stage cache and exact-resume library contract for the planned
-full-volume 2×2 runner; the legacy runner does not use that new contract. The
+content-addressed stage cache and exact-resume contract used by the library
+full-volume 2×2 runner; the legacy runner does not use that contract. The
 runner rejects both output directories and metrics paths inside the F3 data
 root.
 
-## Planned Full-Volume 2×2 Comparison Contract
+## Full-Volume 2×2 Comparison Contract
 
-> **Planned, not current:** This is the contract for a future full-volume
-> publication comparison. `examples/run_3d_f3d_full.py` does not currently
-> implement this matrix, its shared-stage execution, a quality workflow, or a
-> quality scanner backend. Runner, cache, metrics, figures, and output-schema work
-> belongs to later changes.
+The `pyosv.evaluation.f3d_mode_comparison` library APIs implement this
+full-volume matrix, including shared scanner and workflow stages, exact stage
+validation and resume, reference metrics, and diagnostics. The legacy
+`examples/run_3d_f3d_full.py` command above remains a separate single-path
+runner and does not expose the matrix.
 
-The planned publication matrix is:
+The canonical publication matrix is:
 
 | Label | Scanner backend | Workflow mode |
 | --- | --- | --- |
@@ -188,12 +188,11 @@ For each scanner backend, compute raw full-volume `ft`, `pt`, and `tt` once.
 Apply the fixed scanner reference thinning and edge policy once to produce
 `fet`, `fpt`, and `ftt`, then share those three scanner-thinned volumes between
 the reference and quality workflows for that backend. Workflow comparison must
-not rerun either the raw scanner or scanner thinning. Implementing stage caching
-and reuse in the future runner remains later work, but the library-level
-workspace, fingerprint, atomic stage artifact, validation, and exact-resume
-contract is implemented in `pyosv.evaluation.f3d_mode_comparison`.
+not rerun either the raw scanner or scanner thinning. The library runner
+persists these shared outputs in content-addressed stages and validates
+completion hashes before reuse.
 
-The future runner manifest must record the matrix label, scanner backend,
+The run manifest and cell/stage reports record the matrix label, scanner backend,
 workflow mode, `scanner_thin_mode`, requested and effective edge policy,
 refinement factor, all fixed scanner and voting controls as resolved values,
 all workflow-owned resolved values and explicit overrides, and the input

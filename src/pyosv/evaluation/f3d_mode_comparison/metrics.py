@@ -20,6 +20,12 @@ from pyosv.metrics import (
     top_percentile_overlap,
 )
 
+from .artifacts import (
+    F3StageCorruptionError,
+    F3WorkspaceMismatchError,
+    canonical_fingerprint,
+    validate_stage,
+)
 from .data import F3VolumeSource
 from .runner import F3CellReference
 
@@ -65,6 +71,24 @@ _CELL_AXES = {
 _CELL_ORDER = tuple(_CELL_AXES)
 _SHA256_LENGTH = 64
 _DAT_DTYPE = np.dtype(">f4")
+_RUN_COMPUTATION_FIELDS = (
+    "artifact_schema_version",
+    "stage_contract_version",
+    "fingerprint_contract_version",
+    "plan",
+    "dataset_identity",
+    "implementation_identity",
+)
+_STAGE_COMPUTATION_FIELDS = (
+    "artifact_schema_version",
+    "stage_contract_version",
+    "kind",
+    "run_fingerprint",
+    "parent_fingerprints",
+    "input_fingerprints",
+    "resolved_settings",
+    "artifact_schema",
+)
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -881,10 +905,12 @@ def compute_contrast_rows(
         _validate_evidence(metric_rows, evidence_rows)
         validate_shared_stage_metrics(metric_rows, evidence_rows)
 
+    all_groups: dict[
+        tuple[str, str, str, str, str, str],
+        dict[str, MetricRow],
+    ] = defaultdict(dict)
     groups: dict[tuple[str, str, str, str, str, str], dict[str, MetricRow]] = defaultdict(dict)
     for row in metric_rows:
-        if not row.contrast_eligible:
-            continue
         key = (
             row.dataset_id,
             row.stage,
@@ -893,7 +919,9 @@ def compute_contrast_rows(
             row.reference_file or "",
             row.metric,
         )
-        groups[key][row.cell_label] = row
+        all_groups[key][row.cell_label] = row
+        if row.contrast_eligible:
+            groups[key][row.cell_label] = row
 
     output = []
     ordered_keys = sorted(
@@ -905,9 +933,18 @@ def compute_contrast_rows(
             key[4],
         ),
     )
+    complete_keys = []
     for key in ordered_keys:
         by_cell = groups[key]
         if set(by_cell) != set(_CELL_AXES):
+            definition = _DEFINITION_BY_IDENTITY[(key[1], key[3], key[5])]
+            all_by_cell = all_groups[key]
+            if (
+                definition.nullable
+                and set(all_by_cell) == set(_CELL_AXES)
+                and any(row.value is None for row in all_by_cell.values())
+            ):
+                continue
             missing = set(_CELL_AXES) - set(by_cell)
             raise ValueError(
                 "metric contrast is missing required cell(s): " + ",".join(sorted(missing))
@@ -917,8 +954,9 @@ def compute_contrast_rows(
             raise ValueError("metric contrast has mixed units")
         if len({row.direction for row in components}) != 1:
             raise ValueError("metric contrast has mixed directions")
+        complete_keys.append(key)
     for definition in CONTRAST_DEFINITIONS:
-        for key in ordered_keys:
+        for key in complete_keys:
             by_cell = groups[key]
             raw = math.fsum(
                 coefficient * by_cell[cell].value
@@ -1072,16 +1110,13 @@ def extract_f3d_metric_rows(
     if not isinstance(volume_source, F3VolumeSource):
         raise TypeError("volume_source must be an F3VolumeSource")
     cell_rows = tuple(cells)
-    if tuple(cell.label for cell in cell_rows) != _CELL_ORDER:
-        raise ValueError("cells must follow canonical F3 cell order")
     if any(not isinstance(cell, F3CellReference) for cell in cell_rows):
         raise TypeError("cells must contain only F3CellReference values")
+    if tuple(cell.label for cell in cell_rows) != _CELL_ORDER:
+        raise ValueError("cells must follow canonical F3 cell order")
     dataset_id = volume_source.identity.dataset_id
     shape = volume_source.spec.shape
-    workspace_paths = {cell.path.parent.parent for cell in cell_rows}
-    if len(workspace_paths) != 1:
-        raise ValueError("cell references must belong to one workspace")
-    workspace_path = next(iter(workspace_paths))
+    workspace_path = _validated_extraction_workspace(volume_source, cell_rows)
 
     rows: list[MetricRow] = []
     evidence: list[MetricEvidence] = []
@@ -1649,6 +1684,110 @@ def _candidate_path(
         "fvt": ("thinning", cell.stages.thinning, "fvt.dat"),
     }[stage]
     return workspace_path / "stages" / kind / fingerprint / filename
+
+
+def _validated_extraction_workspace(
+    volume_source: F3VolumeSource,
+    cells: Sequence[F3CellReference],
+) -> Path:
+    """Validate one complete cell chain and bind it to the supplied dataset."""
+
+    workspace_paths = {cell.path.parent.parent for cell in cells}
+    if len(workspace_paths) != 1:
+        raise ValueError("cell references must belong to one workspace")
+    workspace_path = next(iter(workspace_paths))
+    run_manifest = _read_json(workspace_path / "run_manifest.json")
+    if set(run_manifest) != {
+        *_RUN_COMPUTATION_FIELDS,
+        "run_fingerprint",
+        "provenance",
+    }:
+        raise F3WorkspaceMismatchError("run manifest field set mismatch")
+    computation = {name: run_manifest[name] for name in _RUN_COMPUTATION_FIELDS}
+    run_fingerprint = _sha256(
+        run_manifest["run_fingerprint"],
+        "run manifest fingerprint",
+    )
+    if canonical_fingerprint(computation) != run_fingerprint:
+        raise F3WorkspaceMismatchError("run manifest fingerprint mismatch")
+    if run_manifest["dataset_identity"] != volume_source.identity.computation_identity:
+        raise F3WorkspaceMismatchError(
+            "volume_source dataset identity does not match the run workspace"
+        )
+
+    input_fingerprint = volume_source.identity.file_for("input").sha256
+    validated: set[tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]]] = set()
+    for cell in cells:
+        expected_cell_path = workspace_path / "cells" / f"{cell.label}.json"
+        if cell.path.absolute() != expected_cell_path.absolute():
+            raise F3StageCorruptionError(
+                f"cell reference is not in the current workspace: {cell.label}"
+            )
+        if _read_json(expected_cell_path) != cell.as_dict():
+            raise F3StageCorruptionError(f"cell reference mismatch: {cell.label}")
+
+        chain = (
+            ("scanner", cell.stages.scanner, (), {"ep.dat": input_fingerprint}),
+            ("voting", cell.stages.voting, (cell.stages.scanner,), {}),
+            ("thinning", cell.stages.thinning, (cell.stages.voting,), {}),
+        )
+        if cell.skinning_enabled:
+            chain = (
+                *chain,
+                ("skinning", cell.stages.skinning, (cell.stages.thinning,), {}),
+            )
+        for kind, fingerprint, parents, inputs in chain:
+            key = (kind, fingerprint, parents, tuple(sorted(inputs.items())))
+            if key in validated:
+                continue
+            _validate_stored_stage(
+                workspace_path,
+                kind=kind,
+                fingerprint=fingerprint,
+                run_fingerprint=run_fingerprint,
+                parent_fingerprints=parents,
+                input_fingerprints=inputs,
+            )
+            validated.add(key)
+
+        for stage in F3_REFERENCE_STAGE_FILES:
+            _validate_candidate_report(
+                _candidate_path(workspace_path, cell, stage).parent,
+                cell,
+                stage,
+                volume_source.spec.shape,
+            )
+    return workspace_path
+
+
+def _validate_stored_stage(
+    workspace_path: Path,
+    *,
+    kind: str,
+    fingerprint: str,
+    run_fingerprint: str,
+    parent_fingerprints: tuple[str, ...],
+    input_fingerprints: Mapping[str, str],
+) -> None:
+    stage_path = workspace_path / "stages" / kind / fingerprint
+    manifest = _read_json(stage_path / "stage_manifest.json")
+    try:
+        computation = {name: manifest[name] for name in _STAGE_COMPUTATION_FIELDS}
+    except KeyError as error:
+        raise F3StageCorruptionError(
+            f"{kind} stage manifest is missing computation identity"
+        ) from error
+    expected = {
+        "kind": kind,
+        "run_fingerprint": run_fingerprint,
+        "parent_fingerprints": list(parent_fingerprints),
+        "input_fingerprints": dict(input_fingerprints),
+    }
+    if any(computation[name] != value for name, value in expected.items()):
+        raise F3StageCorruptionError(f"{kind} stage computation identity mismatch")
+    if canonical_fingerprint(computation) != fingerprint:
+        raise F3StageCorruptionError(f"{kind} stage fingerprint mismatch")
+    validate_stage(stage_path, computation, fingerprint)
 
 
 def _stage_fingerprint_for(cell: F3CellReference, stage: str) -> str:
