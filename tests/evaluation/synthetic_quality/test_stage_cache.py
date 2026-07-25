@@ -1086,4 +1086,5 @@ def test_clear_releases_cached_stage_arrays() -> None:
     assert not cache._seeds
     assert not cache._voting
     assert not cache._thinning
+    assert not cache._final_thinning
     assert not cache._primary_skinning

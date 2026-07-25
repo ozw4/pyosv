@@ -180,7 +180,9 @@ The permitted workflow-owned differences are:
 Scanner backend is the scanner axis. Neither scanner backend nor
 `scanner_thin_mode` is owned by workflow mode. Any setting not listed in the
 workflow-owned table is held constant; an explicit override may suppress a
-workflow default only if it is applied identically to every cell.
+workflow default only if it is applied identically to every cell. The canonical
+F3 config exposes this for voter thinning as
+`voter_thin_mode_override`.
 
 For each scanner backend, compute raw full-volume `ft`, `pt`, and `tt` once.
 Apply the fixed scanner reference thinning and edge policy once to produce

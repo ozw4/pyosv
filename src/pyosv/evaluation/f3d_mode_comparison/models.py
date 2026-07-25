@@ -73,6 +73,7 @@ class F3ModeComparisonPlan:
     voting_controls: F3VotingControls
     skinning_template: SyntheticSkinningConfig
     skinning_enabled: bool
+    voter_thin_mode_override: str | None
     boundary_diagnostic_margin: int
     skinner_method_explicit: bool
     skinner_min_likelihood_explicit: bool
@@ -108,6 +109,11 @@ class F3ModeComparisonPlan:
             raise ValueError("skinning_template must be a SyntheticSkinningConfig")
         if not isinstance(self.skinning_enabled, bool):
             raise ValueError("skinning_enabled must be a bool")
+        if self.voter_thin_mode_override is not None and (
+            not isinstance(self.voter_thin_mode_override, str)
+            or self.voter_thin_mode_override not in {"reference", "hybrid_v2"}
+        ):
+            raise ValueError("voter_thin_mode_override must be None, 'reference', or 'hybrid_v2'")
         if (
             isinstance(self.boundary_diagnostic_margin, bool)
             or not isinstance(self.boundary_diagnostic_margin, int)
@@ -197,12 +203,16 @@ def _expected_workflows(
     }
     reference = resolve_workflow_settings(
         workflow_mode="reference",
-        voting_config=plan.voting_controls.to_voting_config(voter_thin_mode="reference"),
+        voting_config=plan.voting_controls.to_voting_config(
+            voter_thin_mode=plan.voter_thin_mode_override or "reference"
+        ),
         **common,
     )
     quality = resolve_workflow_settings(
         workflow_mode="quality",
-        voting_config=plan.voting_controls.to_voting_config(voter_thin_mode="hybrid_v2"),
+        voting_config=plan.voting_controls.to_voting_config(
+            voter_thin_mode=plan.voter_thin_mode_override or "hybrid_v2"
+        ),
         **common,
     )
     return reference, quality

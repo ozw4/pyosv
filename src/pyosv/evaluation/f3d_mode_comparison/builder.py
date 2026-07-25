@@ -54,14 +54,16 @@ def build_f3d_mode_comparison_plan(
         ),
         "skinner_boundary_fallback_explicit": (config.skinner_boundary_fallback_explicit),
     }
+    reference_thin_mode = config.voter_thin_mode_override or "reference"
+    quality_thin_mode = config.voter_thin_mode_override or "hybrid_v2"
     reference_settings = resolve_workflow_settings(
         workflow_mode="reference",
-        voting_config=config.voting_controls.to_voting_config(voter_thin_mode="reference"),
+        voting_config=config.voting_controls.to_voting_config(voter_thin_mode=reference_thin_mode),
         **workflow_common,
     )
     quality_settings = resolve_workflow_settings(
         workflow_mode="quality",
-        voting_config=config.voting_controls.to_voting_config(voter_thin_mode="hybrid_v2"),
+        voting_config=config.voting_controls.to_voting_config(voter_thin_mode=quality_thin_mode),
         **workflow_common,
     )
     return F3ModeComparisonPlan(
@@ -72,6 +74,7 @@ def build_f3d_mode_comparison_plan(
         voting_controls=config.voting_controls,
         skinning_template=config.skinning_template,
         skinning_enabled=config.skinning_enabled,
+        voter_thin_mode_override=config.voter_thin_mode_override,
         boundary_diagnostic_margin=config.boundary_diagnostic_margin,
         skinner_method_explicit=config.skinner_method_explicit,
         skinner_min_likelihood_explicit=(config.skinner_min_likelihood_explicit),

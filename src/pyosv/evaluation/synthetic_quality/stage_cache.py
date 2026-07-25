@@ -305,6 +305,20 @@ class ThinningStageResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FinalThinningStageResult:
+    """Final ``fvt`` and diagnostics after variant post-processing."""
+
+    fvt: np.ndarray
+    diagnostic_items: DiagnosticItems
+
+    def __post_init__(self) -> None:
+        self.fvt.flags.writeable = False
+
+    def diagnostics(self) -> dict[str, Any]:
+        return dict(self.diagnostic_items)
+
+
+@dataclass(frozen=True, slots=True)
 class _FaultCellSnapshot:
     x1: float
     x2: float
@@ -436,6 +450,9 @@ class PipelineStageCache:
     _seeds: dict[SeedStageKey, SeedStageResult] = field(default_factory=dict, init=False)
     _voting: dict[VotingStageKey, VotingStageResult] = field(default_factory=dict, init=False)
     _thinning: dict[ThinningStageKey, ThinningStageResult] = field(default_factory=dict, init=False)
+    _final_thinning: dict[FinalThinningStageKey, FinalThinningStageResult] = field(
+        default_factory=dict, init=False
+    )
     _primary_skinning: dict[PrimarySkinningStageKey, PrimarySkinningStageResult] = field(
         default_factory=dict, init=False
     )
@@ -543,6 +560,16 @@ class PipelineStageCache:
     def put_thinning(self, key: ThinningStageKey, result: ThinningStageResult) -> None:
         self._thinning[key] = result
 
+    def get_final_thinning(self, key: FinalThinningStageKey) -> FinalThinningStageResult | None:
+        return self._final_thinning.get(key)
+
+    def put_final_thinning(
+        self,
+        key: FinalThinningStageKey,
+        result: FinalThinningStageResult,
+    ) -> None:
+        self._final_thinning[key] = result
+
     def get_or_build_thinning(
         self,
         key: ThinningStageKey,
@@ -600,6 +627,7 @@ class PipelineStageCache:
         self._seeds.clear()
         self._voting.clear()
         self._thinning.clear()
+        self._final_thinning.clear()
         self._primary_skinning.clear()
         self._case = None
 

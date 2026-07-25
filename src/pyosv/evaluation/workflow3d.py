@@ -506,6 +506,16 @@ def execute_workflow3d(
         voting_config=voting_settings,
         variant_spec=variant_spec,
     )
+    final_thinning_key = build_final_thinning_stage_key(
+        thinning_key=thinning_key if final_thinning_key_safe else None,
+        variant_spec=variant_spec,
+        target_source=fvt_recenter_target_source,
+    )
+    final_thinning_result = (
+        None
+        if stage_cache is None or final_thinning_key is None
+        else stage_cache.get_final_thinning(final_thinning_key)
+    )
 
     def build_thinning_result() -> ThinningStageResult:
         return ThinningStageResult(
@@ -522,67 +532,67 @@ def execute_workflow3d(
             )
         )
 
-    if cache_enabled and stage_cache is not None and thinning_key is not None:
-        thinning_result = stage_cache.get_thinning(thinning_key)
-        if thinning_result is None:
+    if final_thinning_result is not None:
+        fvt = _clone_array(final_thinning_result.fvt)
+        final_diagnostics = final_thinning_result.diagnostics()
+        recenter_diagnostic = final_diagnostics.get("recenter")
+        boundary_thin_diagnostic = final_diagnostics.get("boundary_edge_thin")
+    else:
+        if cache_enabled and stage_cache is not None and thinning_key is not None:
+            thinning_result = stage_cache.get_thinning(thinning_key)
+            if thinning_result is None:
+                thinning_result = _time_build(
+                    stage="base_thinning",
+                    semantic_key=thinning_key,
+                    builder=build_thinning_result,
+                    timer=timer,
+                )
+                stage_cache.put_thinning(thinning_key, thinning_result)
+        else:
             thinning_result = _time_build(
                 stage="base_thinning",
                 semantic_key=thinning_key,
                 builder=build_thinning_result,
-                timer=timer,
+                timer=stage_timer,
             )
-            stage_cache.put_thinning(thinning_key, thinning_result)
-    else:
-        thinning_result = _time_build(
-            stage="base_thinning",
-            semantic_key=thinning_key,
-            builder=build_thinning_result,
-            timer=stage_timer,
-        )
-    fvt = _clone_array(thinning_result.fvt)
+        fvt = _clone_array(thinning_result.fvt)
 
-    recenter_diagnostic: dict[str, Any] | None = None
-    boundary_thin_diagnostic: dict[str, Any] | None = None
-    if variant_spec.post_thinning_policy == "recenter_scanner_target":
-        recenter_before = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
-        recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
-        recenter_result = recenter_edge_fvt_to_target(
-            fvt,
-            vp,
-            vt,
-            target=recenter_target,
-            target_source=resolve_stage_target_source(fvt_recenter_target_source),
-            max_shift=FVT_RECENTER_MAX_SHIFT,
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = recenter_result.output
-        recenter_diagnostic = recenter_result.diagnostics
-        recenter_diagnostic.update(
-            recenter_distance_diagnostic_runner(
-                before=recenter_before,
-                after=np.asarray(fvt) > np.float32(NONZERO_EPSILON),
-                target=np.asarray(recenter_target) > np.float32(NONZERO_EPSILON),
+        recenter_diagnostic = None
+        boundary_thin_diagnostic = None
+        if variant_spec.post_thinning_policy == "recenter_scanner_target":
+            recenter_before = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
+            recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
+            recenter_result = recenter_edge_fvt_to_target(
+                fvt,
+                vp,
+                vt,
+                target=recenter_target,
+                target_source=resolve_stage_target_source(fvt_recenter_target_source),
+                max_shift=FVT_RECENTER_MAX_SHIFT,
+                edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
             )
-        )
-    elif variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
-        boundary_result = apply_boundary_edge_thin_v1(
-            fvt,
-            fv,
-            vp,
-            vt,
-            voter=voter,
-            target=ft if fvt_recenter_target is None else fvt_recenter_target,
-            target_source=resolve_stage_target_source(fvt_recenter_target_source),
-            edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
-        )
-        fvt = boundary_result.output
-        boundary_thin_diagnostic = boundary_result.diagnostics
-
-    final_thinning_key = build_final_thinning_stage_key(
-        thinning_key=thinning_key if final_thinning_key_safe else None,
-        variant_spec=variant_spec,
-        target_source=fvt_recenter_target_source,
-    )
+            fvt = recenter_result.output
+            recenter_diagnostic = recenter_result.diagnostics
+            recenter_diagnostic.update(
+                recenter_distance_diagnostic_runner(
+                    before=recenter_before,
+                    after=np.asarray(fvt) > np.float32(NONZERO_EPSILON),
+                    target=np.asarray(recenter_target) > np.float32(NONZERO_EPSILON),
+                )
+            )
+        elif variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
+            boundary_result = apply_boundary_edge_thin_v1(
+                fvt,
+                fv,
+                vp,
+                vt,
+                voter=voter,
+                target=ft if fvt_recenter_target is None else fvt_recenter_target,
+                target_source=resolve_stage_target_source(fvt_recenter_target_source),
+                edge_margin=EDGE_FALSE_POSITIVE_MARGIN,
+            )
+            fvt = boundary_result.output
+            boundary_thin_diagnostic = boundary_result.diagnostics
     resolved_primary_skinner_identity = _resolve_primary_skinner_identity(
         primary_skinner,
         primary_skinner_identity,

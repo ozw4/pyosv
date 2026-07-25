@@ -242,6 +242,7 @@ class F3ModeComparisonConfig:
     voting_controls: F3VotingControls = F3VotingControls()
     skinning_template: SyntheticSkinningConfig = SyntheticSkinningConfig()
     skinning_enabled: bool = True
+    voter_thin_mode_override: str | None = None
     boundary_diagnostic_margin: int = 16
     skinner_method_explicit: bool = False
     skinner_min_likelihood_explicit: bool = False
@@ -260,6 +261,11 @@ class F3ModeComparisonConfig:
         if not isinstance(self.skinning_template, SyntheticSkinningConfig):
             raise ValueError("skinning_template must be a SyntheticSkinningConfig")
         _bool(self.skinning_enabled, "skinning_enabled")
+        if self.voter_thin_mode_override is not None and (
+            not isinstance(self.voter_thin_mode_override, str)
+            or self.voter_thin_mode_override not in {"reference", "hybrid_v2"}
+        ):
+            raise ValueError("voter_thin_mode_override must be None, 'reference', or 'hybrid_v2'")
         margin = _nonnegative_int(
             self.boundary_diagnostic_margin,
             "boundary_diagnostic_margin",

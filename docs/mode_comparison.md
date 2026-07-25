@@ -163,7 +163,9 @@ The scanner backend is the scanner axis, and scanner thinning is a held
 constant preprocessing stage; neither is a workflow-owned difference. Settings
 not named in the workflow-owned table are held constant, including all resolved
 voting settings named above. An explicit override can suppress a workflow
-default only when that same override is applied to every cell.
+default only when that same override is applied to every cell. The canonical
+F3 config exposes this for voter thinning as
+`voter_thin_mode_override`.
 
 For each scanner backend, compute raw `ft`, `pt`, and `tt` exactly once. Apply
 the fixed scanner reference thinning, including the fixed edge policy, exactly

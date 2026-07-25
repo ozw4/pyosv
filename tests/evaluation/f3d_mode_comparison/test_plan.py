@@ -215,6 +215,24 @@ def test_common_voting_override_is_identical_between_workflows() -> None:
     )
 
 
+def test_common_voter_thin_override_is_identical_between_workflows() -> None:
+    plan = build_f3d_mode_comparison_plan(
+        F3ModeComparisonConfig(voter_thin_mode_override="reference")
+    )
+
+    assert plan.voter_thin_mode_override == "reference"
+    assert (
+        plan.reference_workflow_settings.voting_config.voter_thin_mode
+        == plan.quality_workflow_settings.voting_config.voter_thin_mode
+        == "reference"
+    )
+
+
+def test_common_voter_thin_override_rejects_unknown_mode() -> None:
+    with pytest.raises(ValueError, match="voter_thin_mode_override"):
+        F3ModeComparisonConfig(voter_thin_mode_override="normal")
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (
