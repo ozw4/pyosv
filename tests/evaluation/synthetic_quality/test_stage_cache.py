@@ -188,7 +188,9 @@ def test_pipeline_stage_build_timer_wraps_shared_misses_in_stage_order() -> None
     ]
     assert cache.stats.seed_misses == cache.stats.seed_hits == 1
     assert cache.stats.voting_misses == cache.stats.voting_hits == 1
-    assert cache.stats.thinning_misses == cache.stats.thinning_hits == 1
+    assert cache.stats.thinning_misses == 1
+    assert cache.stats.thinning_hits == 0
+    assert len(cache._final_thinning) == 1
     assert cache.stats.primary_skinning_misses == cache.stats.primary_skinning_hits == 1
 
 
@@ -553,7 +555,8 @@ def test_identical_base_thinning_is_called_once(monkeypatch: pytest.MonkeyPatch)
 
     assert calls == 1
     assert cache.stats.thinning_misses == 1
-    assert cache.stats.thinning_hits == 1
+    assert cache.stats.thinning_hits == 0
+    assert len(cache._final_thinning) == 1
 
 
 def test_thinning_key_distinguishes_mode_and_sigma_but_not_post_policy() -> None:

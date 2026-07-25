@@ -24,6 +24,7 @@ from pyosv.evaluation.synthetic_quality.models import OrientationField3D
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     AttributeStageKey,
     FinalThinningStageKey,
+    FinalThinningStageResult,
     PipelineStageBuildTimer,
     PipelineStageCache,
     PrimarySkinningStageKey,
@@ -406,6 +407,12 @@ def execute_workflow3d(
         variant_spec=variant_spec,
         target_source=fvt_recenter_target_source,
     )
+    voting_key = build_voting_stage_key(
+        seed_key=seed_key,
+        voting_config=voting_settings,
+        variant_spec=variant_spec,
+        voting_controls=voting_controls,
+    )
     boundary_target_source = (
         resolve_stage_target_source(fvt_recenter_target_source)
         if variant_spec.seed_policy == "boundary_seed_retention_v1"
@@ -439,48 +446,50 @@ def execute_workflow3d(
             )
         )
 
-    if cache_enabled and stage_cache is not None and seed_key is not None:
-        seed_result = stage_cache.get_seed(seed_key)
-        if seed_result is None:
+    voting_result = (
+        stage_cache.get_voting(voting_key)
+        if cache_enabled
+        and stage_cache is not None
+        and seed_key is not None
+        and voting_key is not None
+        else None
+    )
+    seed_result: SeedStageResult | None = None
+    if voting_result is None:
+        if cache_enabled and stage_cache is not None and seed_key is not None:
+            seed_result = stage_cache.get_seed(seed_key)
+            if seed_result is None:
+                seed_result = _time_build(
+                    stage="seed_selection",
+                    semantic_key=seed_key,
+                    builder=build_seed_result,
+                    timer=timer,
+                )
+                stage_cache.put_seed(seed_key, seed_result)
+        else:
             seed_result = _time_build(
                 stage="seed_selection",
                 semantic_key=seed_key,
                 builder=build_seed_result,
-                timer=timer,
+                timer=stage_timer,
             )
-            stage_cache.put_seed(seed_key, seed_result)
-    else:
-        seed_result = _time_build(
-            stage="seed_selection",
-            semantic_key=seed_key,
-            builder=build_seed_result,
-            timer=stage_timer,
-        )
+        assert seed_result is not None
 
-    voting_key = build_voting_stage_key(
-        seed_key=seed_key,
-        voting_config=voting_settings,
-        variant_spec=variant_spec,
-        voting_controls=voting_controls,
-    )
+        def build_voting_result() -> VotingStageResult:
+            built_fv, built_vp, built_vt = voter.apply_voting_from_seeds(
+                seed_result.seeds,
+                ft=ft,
+                pt=pt,
+                tt=tt,
+            )
+            return VotingStageResult(
+                fv=built_fv,
+                vp=built_vp,
+                vt=built_vt,
+                diagnostic_items=diagnostic_items(voter.surface_voting_diagnostic_summary()),
+            )
 
-    def build_voting_result() -> VotingStageResult:
-        built_fv, built_vp, built_vt = voter.apply_voting_from_seeds(
-            seed_result.seeds,
-            ft=ft,
-            pt=pt,
-            tt=tt,
-        )
-        return VotingStageResult(
-            fv=built_fv,
-            vp=built_vp,
-            vt=built_vt,
-            diagnostic_items=diagnostic_items(voter.surface_voting_diagnostic_summary()),
-        )
-
-    if cache_enabled and stage_cache is not None and voting_key is not None:
-        voting_result = stage_cache.get_voting(voting_key)
-        if voting_result is None:
+        if cache_enabled and stage_cache is not None and voting_key is not None:
             voting_result = _time_build(
                 stage="voting_volume",
                 semantic_key=voting_key,
@@ -488,13 +497,18 @@ def execute_workflow3d(
                 timer=timer,
             )
             stage_cache.put_voting(voting_key, voting_result)
-    else:
-        voting_result = _time_build(
-            stage="voting_volume",
-            semantic_key=voting_key,
-            builder=build_voting_result,
-            timer=stage_timer,
-        )
+        else:
+            voting_result = _time_build(
+                stage="voting_volume",
+                semantic_key=voting_key,
+                builder=build_voting_result,
+                timer=stage_timer,
+            )
+    elif stage_cache is not None and seed_key is not None:
+        # A persisted voting artifact does not contain seed coordinates. Reuse
+        # an in-memory seed result when present, but never rebuild it solely for
+        # downstream stages.
+        seed_result = stage_cache.get_seed(seed_key)
     fv = voting_result.fv
     vp = voting_result.vp
     vt = voting_result.vt
@@ -593,6 +607,18 @@ def execute_workflow3d(
             )
             fvt = boundary_result.output
             boundary_thin_diagnostic = boundary_result.diagnostics
+        final_thinning_diagnostics = {
+            "recenter": recenter_diagnostic,
+            "boundary_edge_thin": boundary_thin_diagnostic,
+        }
+        if cache_enabled and stage_cache is not None and final_thinning_key is not None:
+            stage_cache.put_final_thinning(
+                final_thinning_key,
+                FinalThinningStageResult(
+                    fvt=_clone_array(fvt),
+                    diagnostic_items=diagnostic_items(final_thinning_diagnostics),
+                ),
+            )
     resolved_primary_skinner_identity = _resolve_primary_skinner_identity(
         primary_skinner,
         primary_skinner_identity,
@@ -670,11 +696,9 @@ def execute_workflow3d(
         skin_diagnostics = {}
         primary_mask = np.zeros(field.ft.shape, dtype=bool)
 
-    frozen_seed = (
-        None
-        if seed_result.diagnostics() is None
-        else freeze_scalar_evidence(seed_result.diagnostics(), "seed")
-    )
+    frozen_seed = None
+    if seed_result is not None and seed_result.diagnostics() is not None:
+        frozen_seed = freeze_scalar_evidence(seed_result.diagnostics(), "seed")
     frozen_voting = freeze_scalar_evidence(voting_diagnostics, "voting")
     frozen_thinning = freeze_scalar_evidence(
         {
@@ -716,8 +740,10 @@ def execute_workflow3d(
             final_thinning=final_thinning_key,
             primary_skinning=primary_key,
         ),
-        seed_indices=tuple(
-            (int(seed.i3), int(seed.i2), int(seed.i1)) for seed in seed_result.seeds
+        seed_indices=(
+            ()
+            if seed_result is None
+            else tuple((int(seed.i3), int(seed.i2), int(seed.i1)) for seed in seed_result.seeds)
         ),
         voter=voter,
     )

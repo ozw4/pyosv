@@ -293,7 +293,8 @@ def test_fake_clock_fixes_computed_reused_bytes_and_throughput(
     assert computed.state == "computed"
     assert reused.state == "reused"
     assert computed.fingerprint == reused.fingerprint
-    assert computed.elapsed_seconds == reused.elapsed_seconds == tick
+    assert computed.elapsed_seconds == 2 * tick
+    assert reused.elapsed_seconds == tick
     assert computed.source_bytes == reused.source_bytes == expected_input_bytes
     assert computed.output_bytes == reused.output_bytes == expected_output_bytes
 
@@ -307,7 +308,7 @@ def test_fake_clock_fixes_computed_reused_bytes_and_throughput(
     reused_row = rows["RL-QUAL", "voting"]
     assert computed_row.elapsed_semantics == "compute"
     assert reused_row.elapsed_semantics == "load_validation"
-    assert computed_row.voxel_throughput_per_second == voxel_count / tick
+    assert computed_row.voxel_throughput_per_second == voxel_count / (2 * tick)
     assert reused_row.voxel_throughput_per_second == voxel_count / tick
 
 
@@ -431,7 +432,10 @@ def test_resume_uses_all_stages_without_loading_scanner(tmp_path: Path) -> None:
     assert len(load_f3d_mode_comparison_cells(workspace, plan, scanners)) == 4
 
 
-def test_resume_computes_only_a_missing_stage_chain(tmp_path: Path) -> None:
+def test_resume_computes_only_a_missing_stage_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workspace = _workspace(tmp_path / "run")
     scanners = _scanner_stages(workspace)
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
@@ -446,6 +450,13 @@ def test_resume_computes_only_a_missing_stage_chain(tmp_path: Path) -> None:
     shutil.rmtree(workspace.stage_path("thinning", missing))
     loaded: list[str] = []
 
+    def fail_seed_selection(*args: object, **kwargs: object) -> object:
+        raise AssertionError("reused voting must not recompute seed selection")
+
+    monkeypatch.setattr(
+        "pyosv.evaluation.workflow3d.OptimalSurfaceVoter.pick_seeds",
+        fail_seed_selection,
+    )
     resumed = run_f3d_mode_comparison_cells(
         workspace,
         plan,

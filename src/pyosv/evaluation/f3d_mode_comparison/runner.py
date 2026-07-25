@@ -1165,6 +1165,7 @@ def _validate_scanner_stage(
 
 def _runtime_kind(stage: str) -> str:
     return {
+        "seed_selection": "voting",
         "voting_volume": "voting",
         "base_thinning": "thinning",
         "primary_skinning": "skinning",

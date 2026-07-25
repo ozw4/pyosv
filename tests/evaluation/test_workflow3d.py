@@ -124,7 +124,8 @@ def test_cache_hits_return_independent_read_only_volumes() -> None:
 
     assert cache.stats.seed_hits == 1
     assert cache.stats.voting_hits == 1
-    assert cache.stats.thinning_hits == 1
+    assert cache.stats.thinning_hits == 0
+    assert first.stage_keys.final_thinning in cache._final_thinning
     assert np.array_equal(first.fv, second.fv)
     assert first.fv is not second.fv
     assert not first.fv.flags.writeable
