@@ -20,6 +20,7 @@ from .artifacts import (
     F3StageArtifact,
     F3StageResult,
     F3WorkspaceMismatchError,
+    _callable_implementation_identity,
     _workspace_dataset_file_identity,
     canonical_json_bytes,
     stage_fingerprint,
@@ -249,6 +250,10 @@ def run_scanner_stages(
 
     input_identity = volume_source.identity.file_for("input")
     _validate_workspace_and_input(workspace, input_identity)
+    resolved_implementation_identity = _scanner_implementation_identity(
+        scanner_factory,
+        implementation_identity,
+    )
     shared_input: np.ndarray | None = None
     results: dict[F3ScannerBackend, F3ScannerStageResult] = {}
 
@@ -266,14 +271,14 @@ def run_scanner_stages(
             settings = scanner_stage_resolved_settings(
                 config,
                 input_identity.shape,
-                implementation_identity=implementation_identity,
+                implementation_identity=resolved_implementation_identity,
             )
             artifacts = scanner_stage_artifacts(input_identity.shape, backend)
             fingerprint = scanner_stage_fingerprint(
                 workspace,
                 input_identity,
                 config,
-                implementation_identity=implementation_identity,
+                implementation_identity=resolved_implementation_identity,
             )
 
             def writer(
@@ -674,6 +679,19 @@ def _normalized_implementation_identity(
     return {
         "name": F3_SCANNER_STAGE_IMPLEMENTATION,
         "algorithm_modules": modules,
+    }
+
+
+def _scanner_implementation_identity(
+    scanner_factory: ScannerFactory,
+    declared_identity: Mapping[str, Any] | str | None,
+) -> Mapping[str, Any] | str:
+    if declared_identity is not None or scanner_factory is FaultOrientScanner3:
+        return _normalized_implementation_identity(declared_identity)
+    return {
+        "name": F3_SCANNER_STAGE_IMPLEMENTATION,
+        "algorithm": _normalized_implementation_identity(None),
+        "scanner_factory": _callable_implementation_identity(scanner_factory),
     }
 
 

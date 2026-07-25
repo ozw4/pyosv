@@ -425,6 +425,32 @@ def test_stage_is_completed_last_validated_and_reused_without_writer(tmp_path: P
     assert not result.path.exists()
 
 
+def test_forced_stage_recompute_failure_preserves_valid_stage(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path / "run")
+    result = _stage(workspace)
+    original = {item.name: item.read_bytes() for item in result.path.iterdir() if item.is_file()}
+
+    def fail_writer(path: Path) -> None:
+        _write_array(path, np.ones((2, 3, 4), dtype=np.float32))
+        raise RuntimeError("forced writer failed")
+
+    with pytest.raises(RuntimeError, match="forced writer failed"):
+        workspace.write_or_reuse_stage(
+            "voting",
+            parent_fingerprints=("0" * 64,),
+            input_fingerprints={"scanner": "1" * 64},
+            resolved_settings={"radius": 10, "weight": 0.5},
+            artifacts=(F3StageArtifact("fv.npy", (2, 3, 4)),),
+            writer=fail_writer,
+            fingerprint=result.fingerprint,
+            force_recompute=True,
+        )
+
+    assert {
+        item.name: item.read_bytes() for item in result.path.iterdir() if item.is_file()
+    } == original
+
+
 @pytest.mark.parametrize("corruption", ("missing", "extra", "hash", "symlink", "shape", "dtype"))
 def test_corrupt_stage_is_rejected_without_compute(
     tmp_path: Path,

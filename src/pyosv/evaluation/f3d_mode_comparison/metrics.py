@@ -116,6 +116,12 @@ def _positive_int(value: Any, name: str) -> int:
     return int(value)
 
 
+def _nonnegative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or int(value) < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return int(value)
+
+
 def _finite_number(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(f"{name} must be a finite number")
@@ -761,6 +767,20 @@ def compute_reference_metric_rows(
         selection = "positive_p99_distance"
         for definition in _definitions_for(stage, selection):
             values[(selection, definition.metric)] = distance[definition.metric]
+        distance_accumulators: dict[str, float] = {}
+        for prefix, count_name in (
+            ("candidate_to_reference", "candidate_count"),
+            ("reference_to_candidate", "reference_count"),
+        ):
+            count = int(distance[count_name])
+            mean = distance[f"{prefix}_mean"]
+            if mean is None:
+                continue
+            distance_accumulators[f"{prefix}_distance_sum"] = float(mean) * count
+            for summary in ("median", "p90", "p95"):
+                distance_accumulators[f"{prefix}_{summary}"] = float(
+                    distance[f"{prefix}_{summary}"]
+                )
         evidence.append(
             _evidence(
                 dataset_id,
@@ -778,6 +798,7 @@ def compute_reference_metric_rows(
                     "reference_count": int(distance["reference_count"]),
                     "candidate_count": int(distance["candidate_count"]),
                 },
+                accumulators=distance_accumulators,
             )
         )
         del distance
@@ -845,6 +866,39 @@ def compute_skin_metric_rows(
         "fallback_skin_count": diagnostics.get("fallback_skin_count"),
         "fallback_cell_count": diagnostics.get("fallback_cell_count"),
     }
+    topology_counts = {
+        "skin_count": topology.get("skin_count"),
+        "cell_count": topology.get("cell_count"),
+        "unique_cell_count": topology.get("unique_cell_count"),
+        "duplicate_cell_count": topology.get("duplicate_cell_count"),
+        "largest_skin_size": topology.get("largest_skin_size"),
+        "small_skin_cell_count": topology.get("small_skin_cell_count"),
+        "accepted_skin_count": diagnostics.get("accepted_skin_count"),
+        "fallback_enabled": int(bool(diagnostics.get("fallback_enabled"))),
+        "fallback_used": int(bool(diagnostics.get("fallback_used"))),
+        "fallback_skin_count": diagnostics.get("fallback_skin_count"),
+        "fallback_cell_count": diagnostics.get("fallback_cell_count"),
+    }
+    validated_counts = {
+        name: _nonnegative_int(value, name) for name, value in topology_counts.items()
+    }
+    cell_count = validated_counts["cell_count"]
+    expected_largest_fraction = (
+        validated_counts["largest_skin_size"] / cell_count if cell_count else 0.0
+    )
+    expected_small_fraction = (
+        validated_counts["small_skin_cell_count"] / cell_count if cell_count else 0.0
+    )
+    if (
+        _finite_number(source_values["largest_skin_fraction"], "largest_skin_fraction")
+        != expected_largest_fraction
+    ):
+        raise ValueError("largest_skin_fraction is inconsistent with its numerator")
+    if (
+        _finite_number(source_values["small_skin_cell_fraction"], "small_skin_cell_fraction")
+        != expected_small_fraction
+    ):
+        raise ValueError("small_skin_cell_fraction is inconsistent with its numerator")
     rows = []
     for definition in _definitions_for("skin", "descriptive"):
         value = _finite_number(source_values[definition.metric], definition.metric)
@@ -879,11 +933,7 @@ def compute_skin_metric_rows(
         source_stage_fingerprint,
         None,
         volume_shape,
-        counts=tuple(
-            (name, int(value))
-            for name, value in source_values.items()
-            if name.endswith("count") and value is not None
-        ),
+        counts=tuple(validated_counts.items()),
     )
     return tuple(rows), (evidence,)
 
@@ -1351,6 +1401,15 @@ def _all_voxel_metrics(
             "cross_product_sum": paired_moments.cross_product_sum,
             "absolute_difference_sum": absolute_sum,
             "squared_difference_sum": squared_difference_sum,
+            "candidate_min": candidate_min,
+            "candidate_max": candidate_max,
+            "reference_min": reference_min,
+            "reference_max": reference_max,
+            "absolute_difference_median": quantiles[50.0],
+            "absolute_difference_p90": quantiles[90.0],
+            "absolute_difference_p95": quantiles[95.0],
+            "absolute_difference_p99": quantiles[99.0],
+            "absolute_difference_max": float(np.max(absolute)),
         }
         return metrics, counts, accumulators
     finally:

@@ -298,7 +298,7 @@ def test_fake_clock_fixes_computed_reused_bytes_and_throughput(
     assert computed.state == "computed"
     assert reused.state == "reused"
     assert computed.fingerprint == reused.fingerprint
-    assert computed.elapsed_seconds == 2 * tick
+    assert computed.elapsed_seconds == 3 * tick
     assert reused.elapsed_seconds == tick
     assert computed.source_bytes == reused.source_bytes == expected_input_bytes
     assert computed.output_bytes == reused.output_bytes == expected_output_bytes
@@ -313,7 +313,7 @@ def test_fake_clock_fixes_computed_reused_bytes_and_throughput(
     reused_row = rows["RL-QUAL", "voting"]
     assert computed_row.elapsed_semantics == "compute"
     assert reused_row.elapsed_semantics == "load_validation"
-    assert computed_row.voxel_throughput_per_second == voxel_count / (2 * tick)
+    assert computed_row.voxel_throughput_per_second == voxel_count / (3 * tick)
     assert reused_row.voxel_throughput_per_second == voxel_count / tick
 
 
@@ -410,6 +410,28 @@ def test_dependent_fingerprints_change_only_from_their_semantic_inputs(
         assert skinning_changed[label].skinning != base[label].skinning
 
 
+def test_injected_workflow_runner_has_distinct_stage_identity(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
+    canonical = build_f3d_cell_stage_fingerprints(workspace, plan, scanners)
+
+    def injected_runner(**kwargs: Any) -> Any:
+        return runner_module.execute_workflow3d(**kwargs)
+
+    result = run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        workflow_runner=injected_runner,
+        scanner_loader=lambda stage: _LoadedScanner(stage, []),  # type: ignore[arg-type]
+    )
+
+    for cell in result.cells:
+        assert cell.stages.voting != canonical[cell.label].voting
+        assert cell.stages.thinning != canonical[cell.label].thinning
+
+
 def test_resume_uses_all_stages_without_loading_scanner(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path / "run")
     scanners = _scanner_stages(workspace)
@@ -480,6 +502,47 @@ def test_resume_computes_only_a_missing_stage_chain(
     )
 
 
+def test_resume_missing_parent_recomputes_each_dependent_stage(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
+    first = run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        scanner_loader=lambda stage: _LoadedScanner(stage, []),  # type: ignore[arg-type]
+    )
+    reference = first.cell_for("RL-REF")
+    quality = first.cell_for("RL-QUAL")
+    thinning_paths = tuple(
+        workspace.stage_path("thinning", cell.stages.thinning) for cell in (reference, quality)
+    )
+    original_inodes = tuple(path.stat().st_ino for path in thinning_paths)
+    shutil.rmtree(workspace.stage_path("voting", reference.stages.voting))
+
+    resumed = run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        scanner_loader=lambda stage: _LoadedScanner(stage, []),  # type: ignore[arg-type]
+    )
+
+    states = {(event.cell, event.kind): event.state for event in resumed.stage_runtime}
+    assert states["RL-REF", "voting"] == "computed"
+    assert states["RL-QUAL", "voting"] == "reused"
+    assert states["RL-REF", "thinning"] == "computed"
+    assert states["RL-QUAL", "thinning"] == "computed"
+    assert all(
+        path.stat().st_ino != original_inode
+        for path, original_inode in zip(thinning_paths, original_inodes)
+    )
+    assert all(
+        states[label, kind] == "reused"
+        for label in ("Q-REF", "Q-QUAL")
+        for kind in ("voting", "thinning")
+    )
+
+
 def test_resume_missing_skinning_hydrates_final_thinning_identity(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path / "run")
     scanners = _scanner_stages(workspace)
@@ -511,6 +574,10 @@ def test_resume_missing_skinning_hydrates_final_thinning_identity(tmp_path: Path
         plan,
         scanners,
         workflow_runner=workflow_runner,
+        workflow_implementation_identity=runner_module._workflow_implementation_identity(
+            runner_module.execute_workflow3d,
+            None,
+        ),
         scanner_loader=lambda stage: _LoadedScanner(stage, []),  # type: ignore[arg-type]
     )
 
@@ -551,6 +618,38 @@ def test_reverse_execution_keeps_cell_mapping_and_volume_bytes(
             assert (forward_workspace.stage_path(kind, fingerprint) / filename).read_bytes() == (
                 reverse_workspace.stage_path(kind, fingerprint) / filename
             ).read_bytes()
+
+
+def test_interleaved_execution_releases_scanner_before_backend_switch(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
+    loaded: list[_LoadedScanner] = []
+    closed: list[str] = []
+
+    def loader(stage: F3ScannerStageResult) -> _LoadedScanner:
+        assert all(item.closed for item in loaded)
+        scanner = _LoadedScanner(stage, closed)
+        loaded.append(scanner)
+        return scanner
+
+    run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        cell_order=("RL-REF", "Q-REF", "RL-QUAL", "Q-QUAL"),
+        scanner_loader=loader,  # type: ignore[arg-type]
+    )
+
+    assert [item.backend for item in loaded] == [
+        "reference-like",
+        "quality",
+        "reference-like",
+        "quality",
+    ]
+    assert all(item.closed for item in loaded)
 
 
 def test_enabled_skinning_writes_only_the_fixed_stage_artifacts(
@@ -826,6 +925,10 @@ def test_resume_exception_closes_hydrated_memmaps_and_releases_cache(
             plan,
             scanners,
             workflow_runner=failing_workflow_runner,
+            workflow_implementation_identity=runner_module._workflow_implementation_identity(
+                runner_module.execute_workflow3d,
+                None,
+            ),
             scanner_loader=lambda stage: _LoadedScanner(stage, closed),  # type: ignore[arg-type]
         )
 

@@ -41,6 +41,7 @@ from .artifacts import (
     F3RunWorkspace,
     F3StageArtifact,
     F3StageCorruptionError,
+    _callable_implementation_identity,
     _workspace_dataset_file_identity,
     canonical_fingerprint,
     canonical_json_bytes,
@@ -228,6 +229,7 @@ def build_f3d_cell_stage_fingerprints(
         None,
         _DEFAULT_VARIANT,
     )
+    workflow_implementation = _workflow_implementation_identity(execute_workflow3d, None)
     return MappingProxyType(
         {
             cell.label: _cell_execution(
@@ -235,6 +237,7 @@ def build_f3d_cell_stage_fingerprints(
                 plan,
                 scanner_stages[cell.scanner_backend],
                 cell,
+                workflow_implementation=workflow_implementation,
             ).stages
             for cell in plan.cells
         }
@@ -250,6 +253,7 @@ def run_f3d_mode_comparison_cells(
     workflow_runner: WorkflowRunner = execute_workflow3d,
     scanner_loader: Callable[[F3ScannerStageResult], F3LoadedScannerStage] = (load_scanner_stage),
     runtime_hook: RuntimeHook | None = None,
+    workflow_implementation_identity: Mapping[str, Any] | str | None = None,
     variant_spec: VariantSpec = _DEFAULT_VARIANT,
     rss_recorder: _StageRSSRecorder | None = None,
 ) -> F3CellRunResult:
@@ -270,24 +274,38 @@ def run_f3d_mode_comparison_cells(
         variant_spec,
     )
     order = _resolve_cell_order(plan, cell_order)
+    workflow_implementation = _workflow_implementation_identity(
+        workflow_runner,
+        workflow_implementation_identity,
+    )
     executions = {
-        cell.label: _cell_execution(workspace, plan, scanner_stages[cell.scanner_backend], cell)
+        cell.label: _cell_execution(
+            workspace,
+            plan,
+            scanner_stages[cell.scanner_backend],
+            cell,
+            workflow_implementation=workflow_implementation,
+        )
         for cell in plan.cells
     }
     expected_consumers = _stage_consumers(plan, executions)
-    loaded_by_backend: dict[str, F3LoadedScannerStage] = {}
-    workflow_attributes_by_backend: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    remaining_by_backend = {
-        backend: sum(cell.scanner_backend == backend for cell in order)
-        for backend in scanner_stages
-    }
+    loaded_backend: str | None = None
+    loaded_scanner: F3LoadedScannerStage | None = None
+    workflow_attributes: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     runtime: list[F3StageRuntime] = []
     references: dict[str, F3CellReference] = {}
+    recomputed_stages: set[tuple[str, str]] = set()
     active_cache: PipelineStageCache | None = None
     active_hydrated: tuple[np.memmap, ...] = ()
 
     try:
-        for cell in order:
+        for cell_index, cell in enumerate(order):
+            if loaded_backend is not None and loaded_backend != cell.scanner_backend:
+                workflow_attributes = None
+                assert loaded_scanner is not None
+                loaded_scanner.close()
+                loaded_scanner = None
+                loaded_backend = None
             execution = executions[cell.label]
             scanner = scanner_stages[cell.scanner_backend]
             validation_elapsed_by_kind: dict[str, float] = {}
@@ -350,31 +368,43 @@ def run_f3d_mode_comparison_cells(
                     skinning_stage_artifacts(scanner.shape, enabled=True),
                     execution.stages.skinning,
                 )
-            complete_chain = (
-                voting_exists and thinning_exists and (skinning_exists or not plan.skinning_enabled)
+            compute_voting = not voting_exists
+            compute_thinning = (
+                not thinning_exists
+                or (compute_voting or ("voting", execution.stages.voting) in recomputed_stages)
+                and ("thinning", execution.stages.thinning) not in recomputed_stages
             )
+            compute_skinning = bool(
+                plan.skinning_enabled
+                and (
+                    not skinning_exists
+                    or (
+                        compute_thinning
+                        or ("thinning", execution.stages.thinning) in recomputed_stages
+                    )
+                    and ("skinning", execution.stages.skinning) not in recomputed_stages
+                )
+            )
+            complete_chain = not (compute_voting or compute_thinning or compute_skinning)
             result: Workflow3DResult | None = None
             elapsed_by_kind: dict[str, float] = {}
 
             if not complete_chain:
-                loaded = loaded_by_backend.get(cell.scanner_backend)
-                if loaded is None:
-                    loaded = scanner_loader(scanner)
-                    loaded_by_backend[cell.scanner_backend] = loaded
-                    workflow_attributes_by_backend[cell.scanner_backend] = (
-                        _native_workflow_attributes(loaded)
-                    )
-                workflow_ft, workflow_pt, workflow_tt = workflow_attributes_by_backend[
-                    cell.scanner_backend
-                ]
+                if loaded_scanner is None:
+                    loaded_scanner = scanner_loader(scanner)
+                    loaded_backend = cell.scanner_backend
+                    workflow_attributes = _native_workflow_attributes(loaded_scanner)
+                assert workflow_attributes is not None
+                loaded = loaded_scanner
+                workflow_ft, workflow_pt, workflow_tt = workflow_attributes
                 active_cache = PipelineStageCache()
                 active_hydrated = _hydrate_cache(
                     active_cache,
                     execution,
                     workspace,
                     scanner.shape,
-                    voting=voting_exists,
-                    thinning=voting_exists and thinning_exists,
+                    voting=not compute_voting,
+                    thinning=not compute_thinning,
                 )
 
                 def stage_timer(
@@ -441,7 +471,7 @@ def run_f3d_mode_comparison_cells(
                     scanner_mask = None
                 _validate_workflow_result(result, execution, scanner.shape)
 
-            stage_states = _persist_or_reuse_cell_stages(
+            stage_states, persistence_elapsed = _persist_or_reuse_cell_stages(
                 workspace,
                 execution,
                 scanner,
@@ -449,7 +479,13 @@ def run_f3d_mode_comparison_cells(
                 voting_exists=voting_exists,
                 thinning_exists=thinning_exists,
                 skinning_exists=skinning_exists,
+                compute_voting=compute_voting,
+                compute_thinning=compute_thinning,
+                compute_skinning=compute_skinning,
+                rss_recorder=rss_recorder,
             )
+            for kind, elapsed in persistence_elapsed.items():
+                elapsed_by_kind[kind] = elapsed_by_kind.get(kind, 0.0) + elapsed
             for kind, (state, source_bytes, output_bytes) in stage_states.items():
                 elapsed = (
                     elapsed_by_kind.get(kind, 0.0)
@@ -468,6 +504,8 @@ def run_f3d_mode_comparison_cells(
                     cell=cell.label,
                 )
                 runtime.append(event)
+                if state == "computed":
+                    recomputed_stages.add((kind, event.fingerprint))
                 if runtime_hook is not None:
                     runtime_hook(event)
 
@@ -483,20 +521,24 @@ def run_f3d_mode_comparison_cells(
                 active_cache = None
             _close_memmaps(active_hydrated)
             active_hydrated = ()
+            if not complete_chain:
+                del loaded, workflow_ft, workflow_pt, workflow_tt
 
-            remaining_by_backend[cell.scanner_backend] -= 1
-            if remaining_by_backend[cell.scanner_backend] == 0:
-                workflow_attributes_by_backend.pop(cell.scanner_backend, None)
-                loaded = loaded_by_backend.pop(cell.scanner_backend, None)
-                if loaded is not None:
-                    loaded.close()
+            next_backend = (
+                order[cell_index + 1].scanner_backend if cell_index + 1 < len(order) else None
+            )
+            if loaded_scanner is not None and next_backend != loaded_backend:
+                workflow_attributes = None
+                loaded_scanner.close()
+                loaded_scanner = None
+                loaded_backend = None
     finally:
         if active_cache is not None:
             active_cache.clear()
         _close_memmaps(active_hydrated)
-        for loaded in loaded_by_backend.values():
-            loaded.close()
-        workflow_attributes_by_backend.clear()
+        workflow_attributes = None
+        if loaded_scanner is not None:
+            loaded_scanner.close()
 
     return F3CellRunResult(
         cells=tuple(references[cell.label] for cell in plan.cells),
@@ -522,7 +564,13 @@ def load_f3d_mode_comparison_cells(
         _DEFAULT_VARIANT,
     )
     executions = {
-        cell.label: _cell_execution(workspace, plan, scanner_stages[cell.scanner_backend], cell)
+        cell.label: _cell_execution(
+            workspace,
+            plan,
+            scanner_stages[cell.scanner_backend],
+            cell,
+            workflow_implementation=_workflow_implementation_identity(execute_workflow3d, None),
+        )
         for cell in plan.cells
     }
     references: list[F3CellReference] = []
@@ -562,6 +610,8 @@ def _cell_execution(
     plan: F3ModeComparisonPlan,
     scanner: F3ScannerStageResult,
     cell: F3CellSpec,
+    *,
+    workflow_implementation: Mapping[str, Any] | str,
 ) -> _CellExecution:
     workflow = plan.workflow_settings_for(cell.workflow_mode)
     controls = _volume_voting_controls(plan)
@@ -611,17 +661,20 @@ def _cell_execution(
     voting_settings = {
         "cell_runner_contract_version": F3_CELL_RUNNER_CONTRACT_VERSION,
         "implementation_contract": F3_VOTING_STAGE_IMPLEMENTATION,
+        "workflow_runner_identity": workflow_implementation,
         "attribute_identity": asdict(attribute),
         "semantic_key": asdict(voting_key),
     }
     thinning_settings = {
         "cell_runner_contract_version": F3_CELL_RUNNER_CONTRACT_VERSION,
         "implementation_contract": F3_THINNING_STAGE_IMPLEMENTATION,
+        "workflow_runner_identity": workflow_implementation,
         "semantic_key": asdict(final_thinning_key),
     }
     skinning_settings = {
         "cell_runner_contract_version": F3_CELL_RUNNER_CONTRACT_VERSION,
         "implementation_contract": F3_SKINNING_STAGE_IMPLEMENTATION,
+        "workflow_runner_identity": workflow_implementation,
         "enabled": workflow.skinning_config.enabled,
         "resolved_skinner_config": asdict(workflow.skinning_config),
         "growth_source": workflow.skinning_config.growth_source,
@@ -796,10 +849,30 @@ def _persist_or_reuse_cell_stages(
     voting_exists: bool,
     thinning_exists: bool,
     skinning_exists: bool,
-) -> dict[str, tuple[StageState, int, int]]:
+    compute_voting: bool,
+    compute_thinning: bool,
+    compute_skinning: bool,
+    rss_recorder: _StageRSSRecorder | None,
+) -> tuple[dict[str, tuple[StageState, int, int]], dict[str, float]]:
     shape = scanner.shape
     source_volume_bytes = int(np.prod(shape)) * np.dtype(">f4").itemsize
     states: dict[str, tuple[StageState, int, int]] = {}
+    elapsed_by_kind: dict[str, float] = {}
+
+    def persist_timed(
+        kind: str,
+        fingerprint: str,
+        operation: Callable[[], Any],
+    ) -> Any:
+        if rss_recorder is not None:
+            rss_recorder.stage_before(kind, fingerprint, phase="artifact_write_validation")
+        started = time.perf_counter()
+        try:
+            return operation()
+        finally:
+            elapsed_by_kind[kind] = elapsed_by_kind.get(kind, 0.0) + time.perf_counter() - started
+            if rss_recorder is not None:
+                rss_recorder.stage_after(kind, fingerprint, phase="artifact_write_validation")
 
     if result is not None:
         voting_report = {
@@ -817,18 +890,32 @@ def _persist_or_reuse_cell_stages(
             _write_dat(path / "vt.dat", result.vt)
             _write_json(path / "report.json", voting_report)
 
-        voting_stage = workspace.write_or_reuse_stage(
-            "voting",
-            parent_fingerprints=(scanner.fingerprint,),
-            resolved_settings=execution.voting_settings,
-            artifacts=voting_stage_artifacts(shape),
-            writer=write_voting,
-            fingerprint=execution.stages.voting,
+        voting_stage = (
+            persist_timed(
+                "voting",
+                execution.stages.voting,
+                lambda: workspace.write_or_reuse_stage(
+                    "voting",
+                    parent_fingerprints=(scanner.fingerprint,),
+                    resolved_settings=execution.voting_settings,
+                    artifacts=voting_stage_artifacts(shape),
+                    writer=write_voting,
+                    fingerprint=execution.stages.voting,
+                    force_recompute=voting_exists,
+                ),
+            )
+            if compute_voting
+            else None
+        )
+        voting_path = (
+            voting_stage.path
+            if voting_stage is not None
+            else workspace.stage_path("voting", execution.stages.voting)
         )
         states["voting"] = (
-            "reused" if voting_exists else "computed",
+            "computed" if compute_voting else "reused",
             3 * source_volume_bytes,
-            _stage_output_bytes(voting_stage.path),
+            _stage_output_bytes(voting_path),
         )
 
         thinning_report = {
@@ -843,18 +930,32 @@ def _persist_or_reuse_cell_stages(
             _write_dat(path / "fvt.dat", result.fvt)
             _write_json(path / "report.json", thinning_report)
 
-        thinning_stage = workspace.write_or_reuse_stage(
-            "thinning",
-            parent_fingerprints=(execution.stages.voting,),
-            resolved_settings=execution.thinning_settings,
-            artifacts=thinning_stage_artifacts(shape),
-            writer=write_thinning,
-            fingerprint=execution.stages.thinning,
+        thinning_stage = (
+            persist_timed(
+                "thinning",
+                execution.stages.thinning,
+                lambda: workspace.write_or_reuse_stage(
+                    "thinning",
+                    parent_fingerprints=(execution.stages.voting,),
+                    resolved_settings=execution.thinning_settings,
+                    artifacts=thinning_stage_artifacts(shape),
+                    writer=write_thinning,
+                    fingerprint=execution.stages.thinning,
+                    force_recompute=thinning_exists,
+                ),
+            )
+            if compute_thinning
+            else None
+        )
+        thinning_path = (
+            thinning_stage.path
+            if thinning_stage is not None
+            else workspace.stage_path("thinning", execution.stages.thinning)
         )
         states["thinning"] = (
-            "reused" if thinning_exists and voting_exists else "computed",
+            "computed" if compute_thinning else "reused",
             3 * source_volume_bytes,
-            _stage_output_bytes(thinning_stage.path),
+            _stage_output_bytes(thinning_path),
         )
 
         if execution.skinning_settings["enabled"]:
@@ -879,18 +980,32 @@ def _persist_or_reuse_cell_stages(
                 _write_json(path / "skins.json", _skins_payload(skins))
                 _write_json(path / "report.json", skin_report)
 
-            skinning_stage = workspace.write_or_reuse_stage(
-                "skinning",
-                parent_fingerprints=(execution.stages.thinning,),
-                resolved_settings=execution.skinning_settings,
-                artifacts=skinning_stage_artifacts(shape, enabled=True),
-                writer=write_skinning,
-                fingerprint=execution.stages.skinning,
+            skinning_stage = (
+                persist_timed(
+                    "skinning",
+                    execution.stages.skinning,
+                    lambda: workspace.write_or_reuse_stage(
+                        "skinning",
+                        parent_fingerprints=(execution.stages.thinning,),
+                        resolved_settings=execution.skinning_settings,
+                        artifacts=skinning_stage_artifacts(shape, enabled=True),
+                        writer=write_skinning,
+                        fingerprint=execution.stages.skinning,
+                        force_recompute=skinning_exists,
+                    ),
+                )
+                if compute_skinning
+                else None
+            )
+            skinning_path = (
+                skinning_stage.path
+                if skinning_stage is not None
+                else workspace.stage_path("skinning", execution.stages.skinning)
             )
             states["skinning"] = (
-                ("reused" if skinning_exists and thinning_exists and voting_exists else "computed"),
+                "computed" if compute_skinning else "reused",
                 4 * source_volume_bytes,
-                _stage_output_bytes(skinning_stage.path),
+                _stage_output_bytes(skinning_path),
             )
     else:
         voting_path = workspace.stage_path("voting", execution.stages.voting)
@@ -912,7 +1027,7 @@ def _persist_or_reuse_cell_stages(
                 _stage_output_bytes(workspace.stage_path("skinning", execution.stages.skinning)),
             )
 
-    return states
+    return states, elapsed_by_kind
 
 
 def _validate_workflow_result(
@@ -1078,6 +1193,28 @@ def _resolve_cell_order(
     if len(labels) != len(plan.cells) or set(labels) != set(by_label):
         raise ValueError("cell_order must contain every canonical cell exactly once")
     return tuple(by_label[label] for label in labels)
+
+
+def _workflow_implementation_identity(
+    workflow_runner: WorkflowRunner,
+    declared_identity: Mapping[str, Any] | str | None,
+) -> Mapping[str, Any] | str:
+    if declared_identity is not None:
+        if isinstance(declared_identity, str):
+            if not declared_identity:
+                raise ValueError("workflow_implementation_identity must not be empty")
+            return declared_identity
+        if isinstance(declared_identity, Mapping):
+            return dict(declared_identity)
+        raise TypeError("workflow_implementation_identity must be a mapping, string, or None")
+    return {
+        "name": (
+            "pyosv.evaluation.workflow3d.execute_workflow3d"
+            if workflow_runner is execute_workflow3d
+            else "injected-workflow-runner"
+        ),
+        "callable": _callable_implementation_identity(workflow_runner),
+    }
 
 
 def _validate_runner_inputs(

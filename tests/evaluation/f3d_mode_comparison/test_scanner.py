@@ -452,6 +452,28 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
     )
 
 
+def test_injected_scanner_factory_has_distinct_stage_identity(tmp_path: Path) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    stages = run_scanner_stages(
+        workspace,
+        source,  # type: ignore[arg-type]
+        plan,
+        scanner_factory=_factory(_calls()),  # type: ignore[arg-type]
+    )
+
+    stage = stages["reference-like"]
+    identity = stage.report["resolved_stage_settings"]["scanner_stage_implementation_identity"]
+    assert "scanner_factory" in identity
+    assert stage.fingerprint != scanner_stage_fingerprint(
+        workspace,
+        source.identity.file_for("input"),
+        plan.scanner_config_for("reference-like"),
+    )
+
+
 def test_default_fingerprint_tracks_scanner_algorithm_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

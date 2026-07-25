@@ -5,7 +5,9 @@ from __future__ import annotations
 import ctypes
 import errno
 import hashlib
+import inspect
 import json
+import marshal
 import os
 import platform
 import shutil
@@ -148,6 +150,7 @@ class F3RunWorkspace:
         artifacts: Sequence[F3StageArtifact],
         writer: Callable[[Path], None],
         fingerprint: str | None = None,
+        force_recompute: bool = False,
     ) -> F3StageResult:
         """Validate an existing exact stage or atomically materialize a new one."""
 
@@ -160,6 +163,7 @@ class F3RunWorkspace:
             artifacts=artifacts,
             writer=writer,
             fingerprint=fingerprint,
+            force_recompute=force_recompute,
         )
 
 
@@ -202,6 +206,60 @@ def canonical_fingerprint(value: Any) -> str:
     """Return the SHA-256 of :func:`canonical_json_bytes`."""
 
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _callable_implementation_identity(value: Callable[..., Any]) -> dict[str, str]:
+    """Return a stable code identity for an injected stage implementation."""
+
+    if not callable(value):
+        raise TypeError("implementation must be callable")
+    module = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    code = getattr(value, "__code__", None)
+    if not isinstance(module, str) or not module or not isinstance(qualname, str) or not qualname:
+        raise ValueError(
+            "custom implementation requires an explicit identity when its callable "
+            "has no stable module and qualified name"
+        )
+    identity = {
+        "module": module,
+        "qualname": qualname,
+    }
+    if code is not None:
+        identity["code_sha256"] = hashlib.sha256(marshal.dumps(code)).hexdigest()
+        immutable_closure = {}
+        closure = getattr(value, "__closure__", None) or ()
+        for name, cell in zip(code.co_freevars, closure):
+            try:
+                normalized = _immutable_callable_value(cell.cell_contents)
+            except ValueError:
+                continue
+            immutable_closure[name] = normalized
+        if immutable_closure:
+            identity["immutable_closure_sha256"] = canonical_fingerprint(immutable_closure)
+    try:
+        source = inspect.getsource(value).encode("utf-8")
+    except (OSError, TypeError):
+        source = None
+    if source is not None:
+        identity["source_sha256"] = hashlib.sha256(source).hexdigest()
+    if code is None and source is None:
+        raise ValueError(
+            "custom implementation requires an explicit identity when its code cannot be inspected"
+        )
+    return identity
+
+
+def _immutable_callable_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            raise ValueError("non-finite closure value")
+        return value
+    if isinstance(value, tuple):
+        return [_immutable_callable_value(item) for item in value]
+    raise ValueError("mutable or unsupported closure value")
 
 
 def implementation_identity(
@@ -436,6 +494,7 @@ def write_or_reuse_stage(
     artifacts: Sequence[F3StageArtifact],
     writer: Callable[[Path], None],
     fingerprint: str | None = None,
+    force_recompute: bool = False,
 ) -> F3StageResult:
     """Reuse an exact complete stage or publish a newly written stage atomically."""
 
@@ -443,6 +502,8 @@ def write_or_reuse_stage(
         raise ValueError("workspace must be an F3RunWorkspace")
     if not callable(writer):
         raise ValueError("writer must be callable")
+    if not isinstance(force_recompute, bool):
+        raise ValueError("force_recompute must be a bool")
     computation = stage_computation_identity(
         kind,
         run_fingerprint_value=workspace.fingerprint,
@@ -457,14 +518,18 @@ def write_or_reuse_stage(
         if fingerprint != expected_fingerprint:
             raise ValueError("provided stage fingerprint does not match stage computation")
     final_path = workspace.stage_path(kind, expected_fingerprint)
+    existing_identity: tuple[int, int] | None = None
     if final_path.exists() or final_path.is_symlink():
         validate_stage(final_path, computation, expected_fingerprint)
-        return F3StageResult(final_path, expected_fingerprint, reused=True)
+        if not force_recompute:
+            return F3StageResult(final_path, expected_fingerprint, reused=True)
+        existing_identity = _path_identity(final_path)
 
     parent = final_path.parent
     _require_directory_nonsymlink(parent, f"{kind} stage parent")
     temporary_path = Path(tempfile.mkdtemp(prefix=_STAGE_TEMP_PREFIX, dir=parent))
     temporary_identity = _path_identity(temporary_path)
+    replacement_backup: Path | None = None
     try:
         writer(temporary_path)
         expected_names = set(computation["artifact_schema"])
@@ -516,12 +581,38 @@ def write_or_reuse_stage(
             canonical_json_bytes(completion) + b"\n",
         )
         _fsync_directory(temporary_path)
-        _rename_noreplace(temporary_path, final_path)
+        if existing_identity is None:
+            _rename_noreplace(temporary_path, final_path)
+        else:
+            if _path_identity(final_path) != existing_identity:
+                raise F3ArtifactError("existing stage changed during forced recomputation")
+            replacement_backup = temporary_path.with_name(f"{temporary_path.name}-previous")
+            os.rename(final_path, replacement_backup)
+            try:
+                os.rename(temporary_path, final_path)
+            except BaseException:
+                os.rename(replacement_backup, final_path)
+                replacement_backup = None
+                raise
         _fsync_directory(parent)
         validate_stage(final_path, computation, expected_fingerprint)
+        if replacement_backup is not None:
+            _cleanup_path(
+                replacement_backup,
+                RuntimeError("validated stage replacement left a backup directory"),
+            )
+            replacement_backup = None
     except BaseException as error:
         _cleanup_path(temporary_path, error)
         _cleanup_path_if_identity(final_path, temporary_identity, error)
+        if replacement_backup is not None:
+            try:
+                os.rename(replacement_backup, final_path)
+                _fsync_directory(parent)
+            except BaseException as restore_error:
+                add_note = getattr(error, "add_note", None)
+                if add_note is not None:
+                    add_note(f"stage restore also failed: {restore_error!r}")
         raise
 
     return F3StageResult(final_path, expected_fingerprint, reused=False)

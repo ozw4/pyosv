@@ -134,6 +134,12 @@ def test_all_voxel_accumulator_matches_direct_numpy() -> None:
     assert dict(all_evidence.accumulators)["absolute_difference_sum"] == pytest.approx(
         np.sum(absolute)
     )
+    assert dict(all_evidence.accumulators)["absolute_difference_p95"] == pytest.approx(
+        np.percentile(absolute, 95)
+    )
+    assert dict(all_evidence.accumulators)["absolute_difference_max"] == pytest.approx(
+        np.max(absolute)
+    )
 
 
 def test_ridge_metrics_match_existing_helpers() -> None:
@@ -141,7 +147,7 @@ def test_ridge_metrics_match_existing_helpers() -> None:
     candidate = np.zeros_like(reference)
     reference[1, 1, 1:4] = (1.0, 2.0, 3.0)
     candidate[1, 1, 2:5] = (1.0, 2.0, 3.0)
-    rows, _ = _reference_rows(candidate, reference)
+    rows, evidence = _reference_rows(candidate, reference)
 
     top = top_percentile_overlap(reference, candidate, 99, positive_only=True)
     assert _value(rows, "reference_count", selection="positive_p99") == top["a_count"]
@@ -178,6 +184,14 @@ def test_ridge_metrics_match_existing_helpers() -> None:
         assert _value(rows, metric, selection="positive_p99_distance") == pytest.approx(
             distance[metric]
         )
+    distance_evidence = next(item for item in evidence if item.selection == "positive_p99_distance")
+    distance_accumulators = dict(distance_evidence.accumulators)
+    assert distance_accumulators["candidate_to_reference_distance_sum"] == pytest.approx(
+        distance["candidate_to_reference_mean"] * distance["candidate_count"]
+    )
+    assert distance_accumulators["reference_to_candidate_p95"] == pytest.approx(
+        distance["reference_to_candidate_p95"]
+    )
 
 
 def test_empty_and_constant_contracts() -> None:
@@ -362,7 +376,9 @@ def test_skin_rows_are_descriptive_and_have_no_reference_file() -> None:
             "cell_count": 7,
             "unique_cell_count": 6,
             "duplicate_cell_count": 1,
+            "largest_skin_size": 5,
             "largest_skin_fraction": 5 / 7,
+            "small_skin_cell_count": 2,
             "small_skin_cell_fraction": 2 / 7,
         },
         "diagnostics": {
@@ -386,6 +402,8 @@ def test_skin_rows_are_descriptive_and_have_no_reference_file() -> None:
     assert all(row.reference_file is None for row in rows)
     assert evidence[0].reference_file is None
     assert evidence[0].reference_sha256 is None
+    assert dict(evidence[0].counts)["largest_skin_size"] == 5
+    assert dict(evidence[0].counts)["small_skin_cell_count"] == 2
     assert not any("accuracy" in row.metric or "truth" in row.metric for row in rows)
     assert _value(rows, "duplicate_cell_count", selection="descriptive") == 1.0
 
