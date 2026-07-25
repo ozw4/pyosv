@@ -392,7 +392,7 @@ def extract_f3d_resources(
     if not any(snapshot.scope == "stage_snapshot" for snapshot in rss_recorder.snapshots):
         raise ValueError("rss_recorder has no stage-boundary snapshots")
     if not any(snapshot.scope == "process_peak" for snapshot in rss_recorder.snapshots):
-        rss_recorder.process_peak()
+        raise ValueError("rss_recorder has no explicit process-peak snapshot")
     return ResourceExtraction(
         (
             *scanner_stage_resource_rows(scanner_stages),

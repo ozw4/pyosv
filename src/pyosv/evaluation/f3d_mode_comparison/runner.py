@@ -276,6 +276,7 @@ def run_f3d_mode_comparison_cells(
     }
     expected_consumers = _stage_consumers(plan, executions)
     loaded_by_backend: dict[str, F3LoadedScannerStage] = {}
+    workflow_attributes_by_backend: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     remaining_by_backend = {
         backend: sum(cell.scanner_backend == backend for cell in order)
         for backend in scanner_stages
@@ -360,6 +361,12 @@ def run_f3d_mode_comparison_cells(
                 if loaded is None:
                     loaded = scanner_loader(scanner)
                     loaded_by_backend[cell.scanner_backend] = loaded
+                    workflow_attributes_by_backend[cell.scanner_backend] = (
+                        _native_workflow_attributes(loaded)
+                    )
+                workflow_ft, workflow_pt, workflow_tt = workflow_attributes_by_backend[
+                    cell.scanner_backend
+                ]
                 active_cache = PipelineStageCache()
                 active_hydrated = _hydrate_cache(
                     active_cache,
@@ -411,9 +418,9 @@ def run_f3d_mode_comparison_cells(
 
                 try:
                     result = workflow_runner(
-                        ft=loaded.fet,
-                        pt=loaded.fpt,
-                        tt=loaded.ftt,
+                        ft=workflow_ft,
+                        pt=workflow_pt,
+                        tt=workflow_tt,
                         attribute_identity=execution.attribute,
                         voting_settings=plan.workflow_settings_for(
                             cell.workflow_mode
@@ -426,7 +433,7 @@ def run_f3d_mode_comparison_cells(
                         stage_cache=active_cache,
                         stage_timer=stage_timer,
                         scanner_target_positive_mask=scanner_mask,
-                        fvt_recenter_target=loaded.fet,
+                        fvt_recenter_target=workflow_ft,
                         fvt_recenter_target_source="scanner_fet",
                         boundary_fallback_runner=timed_boundary_fallback,
                     )
@@ -479,6 +486,7 @@ def run_f3d_mode_comparison_cells(
 
             remaining_by_backend[cell.scanner_backend] -= 1
             if remaining_by_backend[cell.scanner_backend] == 0:
+                workflow_attributes_by_backend.pop(cell.scanner_backend, None)
                 loaded = loaded_by_backend.pop(cell.scanner_backend, None)
                 if loaded is not None:
                     loaded.close()
@@ -488,6 +496,7 @@ def run_f3d_mode_comparison_cells(
         _close_memmaps(active_hydrated)
         for loaded in loaded_by_backend.values():
             loaded.close()
+        workflow_attributes_by_backend.clear()
 
     return F3CellRunResult(
         cells=tuple(references[cell.label] for cell in plan.cells),
@@ -1201,6 +1210,35 @@ def _open_dat(path: Path, shape: tuple[int, int, int]) -> np.memmap:
     array = np.memmap(path, dtype=_DAT_DTYPE, mode="r", shape=shape, order="C")
     array.flags.writeable = False
     return array
+
+
+def _native_workflow_attributes(
+    scanner: F3LoadedScannerStage,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Prepare scanner-thinned attributes for the native-float32 workflow API."""
+
+    return tuple(
+        _native_readonly_volume(name, values, scanner.shape)
+        for name, values in (
+            ("fet", scanner.fet),
+            ("fpt", scanner.fpt),
+            ("ftt", scanner.ftt),
+        )
+    )
+
+
+def _native_readonly_volume(
+    name: str,
+    values: np.ndarray,
+    shape: tuple[int, int, int],
+) -> np.ndarray:
+    array = np.asarray(values)
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
+    native = np.asarray(array, dtype=np.float32, order="C")
+    readonly = native.view()
+    readonly.flags.writeable = False
+    return readonly
 
 
 def _close_memmaps(arrays: Sequence[np.memmap]) -> None:

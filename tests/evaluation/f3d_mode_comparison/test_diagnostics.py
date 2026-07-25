@@ -8,6 +8,7 @@ import pytest
 
 import pyosv.evaluation.f3d_mode_comparison.diagnostics as diagnostics_module
 from pyosv.evaluation.f3d_mode_comparison.diagnostics import (
+    DiagnosticExtraction,
     F3_ORIENTATION_PAIRS,
     F3_REGION_SEMANTICS,
     build_region_partition,
@@ -56,6 +57,10 @@ def test_regional_basic_metrics_match_manual_mask_selection() -> None:
     for row in rows:
         mask = partition.mask_for(row.region)
         difference = candidate[mask].astype(np.float64) - reference[mask]
+        assert row.volume_shape == candidate.shape
+        assert row.boundary_margin == 1
+        assert row.as_dict()["volume_shape"] == list(candidate.shape)
+        assert row.as_dict()["boundary_margin"] == 1
         assert row.metrics["voxel_count"] == np.count_nonzero(mask)
         assert row.metrics["mean_absolute_difference"] == pytest.approx(np.mean(np.abs(difference)))
         assert row.metrics["root_mean_square_difference"] == pytest.approx(
@@ -64,6 +69,18 @@ def test_regional_basic_metrics_match_manual_mask_selection() -> None:
         assert "sample_index" not in row.as_dict()
         assert "trial_index" not in row.as_dict()
         assert "replicate_index" not in row.as_dict()
+
+    extraction = DiagnosticExtraction(
+        "fixture",
+        1,
+        candidate.shape,
+        1,
+        F3_REGION_SEMANTICS,
+        rows,
+        (),
+    )
+    assert extraction.as_dict()["volume_shape"] == list(candidate.shape)
+    assert extraction.as_dict()["boundary_margin"] == 1
 
 
 def test_regional_basic_metrics_process_mask_selection_in_bounded_chunks(

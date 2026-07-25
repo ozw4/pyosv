@@ -64,7 +64,7 @@ def test_peak_rss_probe_and_exception_policy_are_stable() -> None:
     assert unavailable.value_bytes is None
 
 
-def test_resource_extraction_requires_execution_snapshots_and_adds_process_peak(
+def test_resource_extraction_requires_explicit_execution_and_process_peak_snapshots(
     tmp_path: Path,
 ) -> None:
     recorder = PeakRSSRecorder(lambda: 4096)
@@ -78,6 +78,15 @@ def test_resource_extraction_requires_execution_snapshots_and_adds_process_peak(
 
     recorder.stage_before("voting", "a" * 64, phase="compute")
     recorder.stage_after("voting", "a" * 64, phase="compute")
+    with pytest.raises(ValueError, match="no explicit process-peak snapshot"):
+        extract_f3d_resources(
+            (_runtime(state="computed", elapsed=2.0),),
+            shape=(2, 3, 4),
+            workspace=tmp_path,
+            rss_recorder=recorder,
+        )
+
+    recorder.process_peak()
     extraction = extract_f3d_resources(
         (_runtime(state="computed", elapsed=2.0),),
         shape=(2, 3, 4),

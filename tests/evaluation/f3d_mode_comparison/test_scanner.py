@@ -23,6 +23,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     PeakRSSRecorder,
     build_f3d_mode_comparison_plan,
     load_scanner_stage,
+    run_f3d_mode_comparison_cells,
     run_scanner_stages,
     scanner_stage_artifacts,
     scanner_stage_fingerprint,
@@ -531,14 +532,28 @@ def test_actual_scanners_smoke_on_small_volume(tmp_path: Path) -> None:
         files={"input": "ep.dat"},
         expected_bytes=values.size * np.dtype(">f4").itemsize,
     )
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
     with F3VolumeSource(data_root, spec=spec) as source:
         workspace = _workspace(tmp_path / "run", source)
         stages = run_scanner_stages(
             workspace,
             source,
-            build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
+            plan,
             implementation_identity=_IMPLEMENTATION,
         )
 
     assert set(stages) == {"reference-like", "quality"}
     assert all(not stage.reused for stage in stages.values())
+    for name in ("voting", "thinning", "skinning"):
+        (workspace.path / "stages" / name).mkdir(parents=True, exist_ok=True)
+    (workspace.path / "cells").mkdir()
+    (workspace.path / "reports").mkdir()
+
+    result = run_f3d_mode_comparison_cells(workspace, plan, stages)
+
+    assert tuple(cell.label for cell in result.cells) == (
+        "RL-REF",
+        "RL-QUAL",
+        "Q-REF",
+        "Q-QUAL",
+    )

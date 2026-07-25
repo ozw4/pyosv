@@ -207,11 +207,14 @@ that axis and its resolved edge policy and must not be represented only by a
 Primary metrics must be calculated over all voxels of each fully reconstructed
 volume.
 Interior regions and the boundary shell are regional diagnostics within that
-same full-volume evaluation unit, not separate samples. If future execution
-uses internal chunking or tiling, every output must be completely reconstructed
-in global F3 coordinates before metrics or figures are produced. The
-reconstruction must be checked for chunk seams, duplicated voxels, and missing
-voxels.
+same full-volume evaluation unit, not separate samples. Every regional result
+records the full-volume shape and resolved boundary margin so that its
+partition is self-identifying. If future execution uses internal chunking or
+tiling, every output must be completely reconstructed in global F3 coordinates
+before metrics or figures are produced. The reconstruction must be checked for
+chunk seams, duplicated voxels, and missing voxels. Process-peak RSS must be
+snapshotted explicitly at the end of stage execution; resource extraction does
+not create a later snapshot and label it as the run end.
 
 The public reference-to-stage mapping is:
 

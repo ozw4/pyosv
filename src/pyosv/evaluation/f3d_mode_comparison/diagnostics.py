@@ -105,6 +105,8 @@ class RegionalDiagnosticRow:
     scanner_backend: str
     workflow_mode: str
     stage: str
+    volume_shape: tuple[int, int, int]
+    boundary_margin: int
     region: str
     region_semantics: str
     metrics: Mapping[str, float | int | None]
@@ -119,6 +121,15 @@ class RegionalDiagnosticRow:
             raise ValueError("cell label and axes are inconsistent")
         if self.stage not in F3_REFERENCE_STAGE_FILES:
             raise ValueError(f"unknown reference stage: {self.stage!r}")
+        shape = _shape3(self.volume_shape)
+        if (
+            isinstance(self.boundary_margin, bool)
+            or not isinstance(self.boundary_margin, int)
+            or self.boundary_margin < 0
+        ):
+            raise ValueError("boundary_margin must be a non-negative integer")
+        interior_slices(shape, margin=self.boundary_margin)
+        object.__setattr__(self, "volume_shape", shape)
         if self.region not in F3_DIAGNOSTIC_REGIONS:
             raise ValueError(f"unknown diagnostic region: {self.region!r}")
         if self.region_semantics != F3_REGION_SEMANTICS:
@@ -133,6 +144,8 @@ class RegionalDiagnosticRow:
             "scanner_backend": self.scanner_backend,
             "workflow_mode": self.workflow_mode,
             "stage": self.stage,
+            "volume_shape": list(self.volume_shape),
+            "boundary_margin": self.boundary_margin,
             "region": self.region,
             "region_semantics": self.region_semantics,
             "metrics": dict(self.metrics),
@@ -199,6 +212,8 @@ class DiagnosticExtraction:
 
     dataset_id: str
     evaluation_unit_count: int
+    volume_shape: tuple[int, int, int]
+    boundary_margin: int
     region_semantics: str
     regional_rows: tuple[RegionalDiagnosticRow, ...]
     orientation_rows: tuple[OrientationDiagnosticRow, ...]
@@ -206,14 +221,33 @@ class DiagnosticExtraction:
     def __post_init__(self) -> None:
         if self.evaluation_unit_count != 1:
             raise ValueError("F3 diagnostics must describe one evaluation unit")
+        shape = _shape3(self.volume_shape)
+        if (
+            isinstance(self.boundary_margin, bool)
+            or not isinstance(self.boundary_margin, int)
+            or self.boundary_margin < 0
+        ):
+            raise ValueError("boundary_margin must be a non-negative integer")
+        interior_slices(shape, margin=self.boundary_margin)
+        object.__setattr__(self, "volume_shape", shape)
         if self.region_semantics != F3_REGION_SEMANTICS:
             raise ValueError(f"region_semantics must be {F3_REGION_SEMANTICS!r}")
+        if any(
+            row.dataset_id != self.dataset_id
+            or row.volume_shape != shape
+            or row.boundary_margin != self.boundary_margin
+            or row.region_semantics != self.region_semantics
+            for row in self.regional_rows
+        ):
+            raise ValueError("regional rows must match the extraction identity")
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "diagnostic_schema_version": F3_DIAGNOSTIC_SCHEMA_VERSION,
             "dataset_id": self.dataset_id,
             "evaluation_unit_count": 1,
+            "volume_shape": list(self.volume_shape),
+            "boundary_margin": self.boundary_margin,
             "region_semantics": self.region_semantics,
             "regions_are_samples": False,
             "regions_are_trials": False,
@@ -374,6 +408,8 @@ def compute_regional_reference_diagnostics(
                     scanner_backend,
                     workflow_mode,
                     stage,
+                    partition.shape,
+                    partition.margin,
                     region,
                     F3_REGION_SEMANTICS,
                     metrics_by_region[region],
@@ -609,6 +645,8 @@ def extract_f3d_diagnostics(
     return DiagnosticExtraction(
         dataset_id,
         1,
+        shape,
+        boundary_margin,
         F3_REGION_SEMANTICS,
         tuple(regional_rows),
         tuple(orientation_rows),
