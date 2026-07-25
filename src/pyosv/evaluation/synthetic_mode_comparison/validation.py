@@ -10,7 +10,10 @@ from typing import Any
 
 from ..reporting.models import thaw_report_value
 from ..synthetic_quality import SyntheticSkinningConfig
-from ..synthetic_quality.stage_keys import build_scanner_attribute_stage_key
+from ..synthetic_quality.stage_keys import (
+    build_final_thinning_stage_key,
+    build_scanner_attribute_stage_key,
+)
 from ..synthetic_quality.variants import effective_skinning_config, get_variant_spec
 from .builder import build_mode_comparison_plan
 from .config import SyntheticModeComparisonConfig
@@ -299,15 +302,35 @@ def _expected_cache_counters(
         "thinning": set(),
         "primary_skinning": set(),
     }
+    seen_final_thinning: set[Any] = set()
+    variant_spec = get_variant_spec(plan.comparison_variant)
     for cell in plan.cells:
         keys = _resolved_stage_keys_for_cell(plan, cell, trial)
-        for stage in seen:
+        for stage in ("seed", "voting"):
             key = getattr(keys, stage)
             if key is None:
                 continue
             outcome = "hits" if key in seen[stage] else "misses"
             counters[f"{stage}_{outcome}"] += 1
             seen[stage].add(key)
+
+        target_source = "oracle_ft" if cell.input_mode == "oracle" else "scanner_fet"
+        final_thinning_key = build_final_thinning_stage_key(
+            thinning_key=keys.thinning,
+            variant_spec=variant_spec,
+            target_source=target_source,
+        )
+        if final_thinning_key is not None and final_thinning_key not in seen_final_thinning:
+            thinning_outcome = "hits" if keys.thinning in seen["thinning"] else "misses"
+            counters[f"thinning_{thinning_outcome}"] += 1
+            seen["thinning"].add(keys.thinning)
+            seen_final_thinning.add(final_thinning_key)
+
+        key = keys.primary_skinning
+        if key is not None:
+            outcome = "hits" if key in seen["primary_skinning"] else "misses"
+            counters[f"primary_skinning_{outcome}"] += 1
+            seen["primary_skinning"].add(key)
     return counters
 
 

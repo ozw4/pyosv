@@ -580,7 +580,7 @@ def test_complete_result_passes_without_mutation(result, config) -> None:
                 "seed_misses": 3,
                 "voting_hits": 3,
                 "voting_misses": 3,
-                "thinning_hits": 3,
+                "thinning_hits": 0,
                 "thinning_misses": 3,
                 "primary_skinning_hits": 0,
                 "primary_skinning_misses": 6,
@@ -597,7 +597,7 @@ def test_complete_result_passes_without_mutation(result, config) -> None:
                 "seed_misses": 2,
                 "voting_hits": 2,
                 "voting_misses": 2,
-                "thinning_hits": 2,
+                "thinning_hits": 0,
                 "thinning_misses": 2,
                 "primary_skinning_hits": 2,
                 "primary_skinning_misses": 2,
@@ -643,7 +643,7 @@ def test_shared_explicit_stage_keys_pass_runtime_semantic_validation() -> None:
     assert (
         explicit_result.cache_stats[0]["thinning_misses"],
         explicit_result.cache_stats[0]["thinning_hits"],
-    ) == (3, 3)
+    ) == (3, 0)
     assert (
         explicit_result.cache_stats[0]["primary_skinning_misses"],
         explicit_result.cache_stats[0]["primary_skinning_hits"],
