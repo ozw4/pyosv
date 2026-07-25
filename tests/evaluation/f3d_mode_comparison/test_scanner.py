@@ -19,10 +19,12 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3RunWorkspace,
     F3ScannerConfig,
     F3VolumeSource,
+    F3WorkspaceMismatchError,
     PeakRSSRecorder,
     build_f3d_mode_comparison_plan,
     load_scanner_stage,
     run_scanner_stages,
+    scanner_stage_artifacts,
     scanner_stage_fingerprint,
 )
 from pyosv.io import write_dat
@@ -116,9 +118,14 @@ class _Scanner:
         )
 
 
-def _workspace(path: Path) -> F3RunWorkspace:
+def _workspace(path: Path, source: _Source | F3VolumeSource) -> F3RunWorkspace:
     (path / "stages" / "scanner").mkdir(parents=True)
-    return F3RunWorkspace(path, "0" * 64, {}, resumed=False)
+    return F3RunWorkspace(
+        path,
+        "0" * 64,
+        {"dataset_identity": source.identity.computation_identity},
+        resumed=False,
+    )
 
 
 def _factory(calls: dict[str, object]):
@@ -143,7 +150,7 @@ def _calls() -> dict[str, object]:
 def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     source = _Source(tmp_path / "data", values)
-    workspace = _workspace(tmp_path / "run")
+    workspace = _workspace(tmp_path / "run", source)
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
     calls = _calls()
     recorder = PeakRSSRecorder(lambda: 4096)
@@ -167,6 +174,12 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
     }
     assert "confidence.dat" not in {item.name for item in first["reference-like"].path.iterdir()}
     assert (first["quality"].path / "confidence.dat").is_file()
+    for backend, stage in first.items():
+        expected_output_bytes = sum(
+            (stage.path / artifact.filename).stat().st_size
+            for artifact in scanner_stage_artifacts(values.shape, backend)
+        )
+        assert stage.output_bytes == expected_output_bytes
     assert [snapshot.point.rsplit(":", 1)[-1] for snapshot in recorder.snapshots] == [
         "before",
         "after",
@@ -192,11 +205,32 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
     assert len(reuse_recorder.snapshots) == 4
 
 
+def test_runner_rejects_input_not_bound_to_workspace_before_compute(tmp_path: Path) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    changed_source = _Source(tmp_path / "changed-data", values + np.float32(1.0))
+    calls = _calls()
+
+    with pytest.raises(F3WorkspaceMismatchError, match="run manifest dataset identity"):
+        run_scanner_stages(
+            workspace,
+            changed_source,  # type: ignore[arg-type]
+            build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
+            scanner_factory=_factory(calls),  # type: ignore[arg-type]
+            implementation_identity=_IMPLEMENTATION,
+        )
+
+    assert changed_source.read_count == 0
+    assert calls == _calls()
+    assert not any((workspace.path / "stages" / "scanner").iterdir())
+
+
 def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
-    workspace = _workspace(tmp_path / "run")
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
     source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
     calls = _calls()
     first = run_scanner_stages(
         workspace,
@@ -207,9 +241,10 @@ def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
         implementation_identity=_IMPLEMENTATION,
     )
 
+    forward_source = _Source(tmp_path / "forward-data", values)
     forward = run_scanner_stages(
-        _workspace(tmp_path / "forward-run"),
-        _Source(tmp_path / "forward-data", values),  # type: ignore[arg-type]
+        _workspace(tmp_path / "forward-run", forward_source),
+        forward_source,  # type: ignore[arg-type]
         plan,
         scanner_factory=_factory(_calls()),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
@@ -278,10 +313,11 @@ def test_invalid_scanner_outputs_are_rejected_before_publication(
         return InvalidScanner(calls)
 
     run_root = tmp_path / "run"
+    source = _Source(tmp_path / "data", values)
     with pytest.raises(ValueError, match=match):
         run_scanner_stages(
-            _workspace(run_root),
-            _Source(tmp_path / "data", values),  # type: ignore[arg-type]
+            _workspace(run_root, source),
+            source,  # type: ignore[arg-type]
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=factory,  # type: ignore[arg-type]
             implementation_identity=_IMPLEMENTATION,
@@ -303,10 +339,11 @@ def test_scan_exception_does_not_publish_partial_stage(tmp_path: Path) -> None:
         return FailingScanner(calls)
 
     run_root = tmp_path / "run"
+    source = _Source(tmp_path / "data", values)
     with pytest.raises(RuntimeError, match="injected scan failure"):
         run_scanner_stages(
-            _workspace(run_root),
-            _Source(tmp_path / "data", values),  # type: ignore[arg-type]
+            _workspace(run_root, source),
+            source,  # type: ignore[arg-type]
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=factory,  # type: ignore[arg-type]
             implementation_identity=_IMPLEMENTATION,
@@ -328,10 +365,11 @@ def test_write_exception_does_not_publish_partial_stage(
 
     monkeypatch.setattr(scanner_module, "_write_big_endian_dat", fail_after_write)
     run_root = tmp_path / "run"
+    source = _Source(tmp_path / "data", values)
     with pytest.raises(OSError, match="injected write failure"):
         run_scanner_stages(
-            _workspace(run_root),
-            _Source(tmp_path / "data", values),  # type: ignore[arg-type]
+            _workspace(run_root, source),
+            source,  # type: ignore[arg-type]
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=_factory(_calls()),  # type: ignore[arg-type]
             implementation_identity=_IMPLEMENTATION,
@@ -367,9 +405,10 @@ def test_backend_arrays_are_released_before_next_backend(tmp_path: Path) -> None
         calls["construction"] = int(calls["construction"]) + 1
         return LifecycleScanner(calls)
 
+    source = _Source(tmp_path / "data", values)
     run_scanner_stages(
-        _workspace(tmp_path / "run"),
-        _Source(tmp_path / "data", values),  # type: ignore[arg-type]
+        _workspace(tmp_path / "run", source),
+        source,  # type: ignore[arg-type]
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
         scanner_factory=factory,  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
@@ -383,7 +422,7 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     source = _Source(tmp_path / "data", values)
     changed_source = _Source(tmp_path / "changed", values + np.float32(1.0))
-    workspace = _workspace(tmp_path / "run")
+    workspace = _workspace(tmp_path / "run", source)
     config = F3ScannerConfig()
 
     baseline = scanner_stage_fingerprint(
@@ -403,7 +442,7 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
     )
     assert (
         scanner_stage_fingerprint(
-            workspace,
+            _workspace(tmp_path / "changed-run", changed_source),
             changed_source.identity.file_for("input"),
             config,
             implementation_identity=_IMPLEMENTATION,
@@ -418,7 +457,7 @@ def test_default_fingerprint_tracks_scanner_algorithm_sources(
 ) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     source = _Source(tmp_path / "data", values)
-    workspace = _workspace(tmp_path / "run")
+    workspace = _workspace(tmp_path / "run", source)
     config = F3ScannerConfig()
 
     settings = scanner_module.scanner_stage_resolved_settings(config, values.shape)
@@ -456,7 +495,7 @@ def test_default_fingerprint_tracks_scanner_algorithm_sources(
 def test_loader_opens_big_endian_volumes_and_closes_maps(tmp_path: Path) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     source = _Source(tmp_path / "data", values)
-    workspace = _workspace(tmp_path / "run")
+    workspace = _workspace(tmp_path / "run", source)
     calls = _calls()
     stages = run_scanner_stages(
         workspace,
@@ -492,8 +531,8 @@ def test_actual_scanners_smoke_on_small_volume(tmp_path: Path) -> None:
         files={"input": "ep.dat"},
         expected_bytes=values.size * np.dtype(">f4").itemsize,
     )
-    workspace = _workspace(tmp_path / "run")
     with F3VolumeSource(data_root, spec=spec) as source:
+        workspace = _workspace(tmp_path / "run", source)
         stages = run_scanner_stages(
             workspace,
             source,

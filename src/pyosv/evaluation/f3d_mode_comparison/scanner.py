@@ -19,6 +19,8 @@ from .artifacts import (
     F3RunWorkspace,
     F3StageArtifact,
     F3StageResult,
+    F3WorkspaceMismatchError,
+    _workspace_dataset_file_identity,
     canonical_json_bytes,
     stage_fingerprint,
     validate_stage,
@@ -613,7 +615,11 @@ def _result_from_stage(
         report=MappingProxyType(report),
         elapsed_seconds=0.0,
         input_bytes=int(input_bytes),
-        output_bytes=sum(path.stat().st_size for path in stage.path.iterdir() if path.is_file()),
+        output_bytes=sum(
+            path.stat().st_size
+            for path in stage.path.iterdir()
+            if path.is_file() and path.name not in {"stage_manifest.json", "complete.json"}
+        ),
     )
     _validate_report_identity(report, result)
     if report.get("resolved_config") != asdict(config):
@@ -694,6 +700,11 @@ def _validate_workspace_and_input(
         raise TypeError("input_identity must be an F3FileIdentity")
     if input_identity.role != "input" or input_identity.filename != "ep.dat":
         raise ValueError("input_identity must identify ep.dat with role 'input'")
+    manifest_identity = _workspace_dataset_file_identity(workspace, "input")
+    if manifest_identity != input_identity.computation_identity:
+        raise F3WorkspaceMismatchError(
+            "scanner input identity does not match the run manifest dataset identity"
+        )
 
 
 def _validated_shape(value: object) -> tuple[int, int, int]:

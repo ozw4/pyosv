@@ -146,10 +146,15 @@ def _scanner_stage(
     *,
     shape: tuple[int, int, int] = (3, 4, 5),
     input_fingerprint: str = "3" * 64,
+    implementation_identity: str | None = None,
 ) -> F3ScannerStageResult:
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
     config = plan.scanner_config_for(backend)  # type: ignore[arg-type]
-    settings = scanner_stage_resolved_settings(config, shape)
+    settings = scanner_stage_resolved_settings(
+        config,
+        shape,
+        implementation_identity=implementation_identity,
+    )
     artifacts = scanner_stage_artifacts(shape, backend)  # type: ignore[arg-type]
     fingerprint = stage_fingerprint(
         "scanner",
@@ -364,21 +369,21 @@ def test_dependent_fingerprints_change_only_from_their_semantic_inputs(
         "reference-like": _scanner_stage(
             workspace,
             "reference-like",
-            input_fingerprint="4" * 64,
+            implementation_identity="changed-scanner-implementation",
         ),
     }
-    source_changed = build_f3d_cell_stage_fingerprints(
+    scanner_changed = build_f3d_cell_stage_fingerprints(
         workspace,
         base_plan,
         changed_scanners,
     )
     for label in ("RL-REF", "RL-QUAL"):
-        assert source_changed[label].scanner != base[label].scanner
-        assert source_changed[label].voting != base[label].voting
-        assert source_changed[label].thinning != base[label].thinning
-        assert source_changed[label].skinning != base[label].skinning
+        assert scanner_changed[label].scanner != base[label].scanner
+        assert scanner_changed[label].voting != base[label].voting
+        assert scanner_changed[label].thinning != base[label].thinning
+        assert scanner_changed[label].skinning != base[label].skinning
     for label in ("Q-REF", "Q-QUAL"):
-        assert source_changed[label] == base[label]
+        assert scanner_changed[label] == base[label]
 
     voting_plan = build_f3d_mode_comparison_plan(
         F3ModeComparisonConfig(
@@ -694,6 +699,20 @@ def test_scanner_stage_must_belong_to_current_workspace(tmp_path: Path) -> None:
 
     with pytest.raises(F3StageCorruptionError, match="current workspace"):
         build_f3d_cell_stage_fingerprints(second_workspace, plan, second_scanners)
+
+
+def test_scanner_stage_input_must_match_workspace_dataset_identity(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    scanners["reference-like"] = _scanner_stage(
+        workspace,
+        "reference-like",
+        input_fingerprint="4" * 64,
+    )
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+
+    with pytest.raises(F3StageCorruptionError, match="run manifest dataset identity"):
+        build_f3d_cell_stage_fingerprints(workspace, plan, scanners)
 
 
 def test_wrong_parent_fingerprint_is_rejected(tmp_path: Path) -> None:

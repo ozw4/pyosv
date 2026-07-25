@@ -163,6 +163,28 @@ class F3RunWorkspace:
         )
 
 
+def _workspace_dataset_file_identity(
+    workspace: F3RunWorkspace,
+    role: str,
+) -> Mapping[str, Any]:
+    """Return one file identity recorded in a validated run manifest."""
+
+    if not isinstance(workspace, F3RunWorkspace):
+        raise TypeError("workspace must be an F3RunWorkspace")
+    dataset_identity = workspace.manifest.get("dataset_identity")
+    if not isinstance(dataset_identity, Mapping):
+        raise F3WorkspaceMismatchError("run manifest has invalid dataset identity")
+    files = dataset_identity.get("files")
+    if not isinstance(files, list):
+        raise F3WorkspaceMismatchError("run manifest has invalid dataset file identities")
+    matches = [item for item in files if isinstance(item, Mapping) and item.get("role") == role]
+    if len(matches) != 1:
+        raise F3WorkspaceMismatchError(
+            f"run manifest must contain exactly one dataset file for role {role!r}"
+        )
+    return matches[0]
+
+
 def canonical_json_bytes(value: Any) -> bytes:
     """Serialize a finite JSON value deterministically as UTF-8."""
 

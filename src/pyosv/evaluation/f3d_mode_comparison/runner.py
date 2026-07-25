@@ -41,6 +41,7 @@ from .artifacts import (
     F3RunWorkspace,
     F3StageArtifact,
     F3StageCorruptionError,
+    _workspace_dataset_file_identity,
     canonical_fingerprint,
     canonical_json_bytes,
     stage_computation_identity,
@@ -1115,6 +1116,13 @@ def _validate_scanner_stage(
     expected_path = workspace.stage_path("scanner", stage.fingerprint)
     if stage.path.absolute() != expected_path.absolute():
         raise F3StageCorruptionError("scanner stage is not in the current workspace")
+    workspace_input = _workspace_dataset_file_identity(workspace, "input")
+    if workspace_input.get("sha256") != stage.input_fingerprint or workspace_input.get(
+        "shape"
+    ) != list(stage.shape):
+        raise F3StageCorruptionError(
+            "scanner stage input does not match the run manifest dataset identity"
+        )
 
     manifest = _read_json(stage.path / "stage_manifest.json")
     settings = manifest.get("resolved_settings")

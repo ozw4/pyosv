@@ -122,8 +122,9 @@ Public figures and tables use this canonical 2×2 matrix:
 The short labels are figure/table conveniences only. They do not rename fields
 or values in the report schema. Synthetic reports can currently specify the
 scanner backend and workflow mode independently, so those dimensions can be
-evaluated as separate configuration axes. The corresponding F3 full-volume
-2×2 runner is planned work, as described in section 7.
+evaluated as separate configuration axes. The library F3 full-volume runner
+implements the corresponding 2×2 stage and result contracts, as described in
+section 7.
 
 When presenting results, expand the two axes in a caption or table header; do
 not infer either axis from a bare `reference` or `quality` value.
@@ -173,7 +174,7 @@ once to obtain `fet`, `fpt`, and `ftt`. The reference and quality workflows for
 that backend must share those same `fet`, `fpt`, and `ftt` volumes. A workflow
 comparison must not rerun either scanning or scanner thinning.
 
-A future runner manifest must record more than the matrix label. It must record
+The runner manifest records more than the matrix label. It records
 the scanner backend, workflow mode, `scanner_thin_mode`, requested and effective
 edge policy, refinement factor, the resolved value of every fixed scanner and
 voting control above, every workflow-owned resolved value and explicit
@@ -206,7 +207,7 @@ chunks must not become evaluation samples. See
 [F3 3D Reference Data Validation](f3d_validation.md) for data layout and the
 existing operational validation paths.
 
-## 7. Current implementation versus planned work
+## 7. Current implementation and remaining work
 
 ### Current implementation
 
@@ -281,19 +282,26 @@ existing operational validation paths.
   consistency of the recorded scalar evidence, not an independent
   recomputation, proof of any volume stage, or tamper-prevention signature.
   This is separate from F3 full-volume execution.
+- `pyosv.evaluation.f3d_mode_comparison` implements the canonical F3
+  full-volume plan, checksum-bound run workspace, shared reference-like and
+  quality scanner stages, all four workflow cells, exact stage validation and
+  resume, public-reference agreement metrics, 2×2 contrasts, regional and
+  orientation diagnostics, and runtime/resource rows. Cell references point
+  to shared content-addressed stages instead of duplicating full-volume
+  artifacts.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
-  full-volume scan/vote runner. It calls `FaultOrientScanner3.scan()`, then
-  performs separately configurable scanner and voter thinning.
-- The current F3 full-volume runner does not implement `workflow_mode`, the
-  quality skinner, skinning comparisons, or the canonical 2×2 matrix.
+  legacy full-volume scan/vote command. It calls `FaultOrientScanner3.scan()`,
+  then performs separately configurable scanner and voter thinning. This
+  command does not implement `workflow_mode`, the quality skinner, skinning
+  comparisons, or the canonical 2×2 matrix; those capabilities are provided
+  by the library APIs above.
 
-### Planned work
+### Remaining work
 
-F3 full-volume execution of all four matrix cells, shared raw-scan and
-scanner-thinning execution, and new F3 comparison metrics and figures belong
-to later work. The synthetic CLI does not implement that F3 runner. Any future
-runner must state how raw and scanner-thinned volumes are shared without
-conflating scanner backend outputs or downstream workflow results.
+Publication figure generation and a command-line orchestration layer for the
+library 2×2 run remain separate work. The synthetic CLI does not execute the
+F3 runner, and the legacy F3 command does not adopt the library workspace or
+stage cache.
 
 ## 8. Source map
 
@@ -303,7 +311,8 @@ conflating scanner backend outputs or downstream workflow results.
 | Synthetic scanner selection | [`src/pyosv/evaluation/synthetic_quality/scanner.py`](../src/pyosv/evaluation/synthetic_quality/scanner.py) | Maps report scanner-backend values to scanner API calls |
 | Synthetic configuration | [`config.py`](../src/pyosv/evaluation/synthetic_quality/config.py), [`profiles.py`](../src/pyosv/evaluation/synthetic_quality/profiles.py), [`application.py`](../src/pyosv/evaluation/synthetic_quality/application.py) | Configuration fields, effective workflow defaults, overrides, and diagnostics |
 | Synthetic comparison planning | [`src/pyosv/evaluation/synthetic_mode_comparison/`](../src/pyosv/evaluation/synthetic_mode_comparison/) | Canonical cells, validated execution-free plans, and deterministic/seeded trial expansion |
+| F3 full-volume comparison | [`src/pyosv/evaluation/f3d_mode_comparison/`](../src/pyosv/evaluation/f3d_mode_comparison/) | Canonical 2×2 plan and stages, exact resume, reference-agreement metrics, contrasts, diagnostics, and resources |
 | Voter thinning | [`src/pyosv/voting3d.py`](../src/pyosv/voting3d.py) | Stage-specific voter thinning, including `reference` and `hybrid_v2` |
 | Skinning | [`src/pyosv/_skinner/reference.py`](../src/pyosv/_skinner/reference.py), [`seeds.py`](../src/pyosv/_skinner/seeds.py) | Reference and quality skinner behavior, adaptive threshold, seed gates, and effective occupancy |
-| Current F3 full runner | [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) | Current single full-volume scan/vote pipeline and F3 output comparison |
+| Legacy F3 full runner | [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) | Separate single-path full-volume scan/vote pipeline and F3 output comparison |
 | Supporting documentation | [3D Orientation Scanning](orient3d.md), [Quality Workflow Mode](quality_mode.md), [Controlled Synthetic Quality](synthetic_quality.md), [Synthetic Mode Comparison](synthetic_mode_comparison.md), [F3 Validation](f3d_validation.md) | Detailed algorithm, benchmark, and operational context without redefining these canonical terms |
