@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import shutil
 from dataclasses import asdict, replace
@@ -17,9 +18,11 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3ScannerStageResult,
     F3StageCorruptionError,
     F3VotingControls,
+    PeakRSSRecorder,
     build_f3d_cell_stage_fingerprints,
     build_f3d_mode_comparison_plan,
     canonical_json_bytes,
+    extract_stage_resources,
     load_f3d_mode_comparison_cells,
     run_f3d_mode_comparison_cells,
     scanner_stage_artifacts,
@@ -27,6 +30,12 @@ from pyosv.evaluation.f3d_mode_comparison import (
     stage_fingerprint,
 )
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
+
+
+def test_run_cells_appends_rss_recorder_after_existing_parameters() -> None:
+    parameters = list(inspect.signature(run_f3d_mode_comparison_cells).parameters)
+
+    assert parameters[-2:] == ["variant_spec", "rss_recorder"]
 
 
 class _LoadedScanner:
@@ -135,6 +144,7 @@ def test_canonical_cells_share_voting_and_release_scanner_handles(tmp_path: Path
     loaded: list[str] = []
     closed: list[str] = []
     caches = []
+    recorder = PeakRSSRecorder(lambda: 4096)
 
     def loader(stage: F3ScannerStageResult) -> _LoadedScanner:
         loaded.append(stage.backend)
@@ -158,6 +168,7 @@ def test_canonical_cells_share_voting_and_release_scanner_handles(tmp_path: Path
         scanners,
         workflow_runner=workflow_runner,
         scanner_loader=loader,  # type: ignore[arg-type]
+        rss_recorder=recorder,
     )
 
     assert [cell.label for cell in result.cells] == [
@@ -179,6 +190,67 @@ def test_canonical_cells_share_voting_and_release_scanner_handles(tmp_path: Path
         "Q-REF.json",
         "Q-QUAL.json",
     }
+    points = [snapshot.point for snapshot in recorder.snapshots]
+    assert sum(point.endswith(":before") for point in points) == sum(
+        point.endswith(":after") for point in points
+    )
+    assert any(":compute:" in point for point in points)
+    assert any(":load_validation:" in point for point in points)
+
+
+def test_fake_clock_fixes_computed_reused_bytes_and_throughput(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
+    tick = 0.25
+    clock_value = 0.0
+
+    def fake_clock() -> float:
+        nonlocal clock_value
+        clock_value += tick
+        return clock_value
+
+    monkeypatch.setattr(runner_module.time, "perf_counter", fake_clock)
+    result = run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        scanner_loader=lambda stage: _LoadedScanner(stage, []),  # type: ignore[arg-type]
+    )
+
+    events = {(event.cell, event.kind): event for event in result.stage_runtime}
+    computed = events["RL-REF", "voting"]
+    reused = events["RL-QUAL", "voting"]
+    voxel_count = int(np.prod(scanners["reference-like"].shape))
+    expected_input_bytes = 3 * voxel_count * np.dtype(">f4").itemsize
+    stage_path = workspace.stage_path("voting", computed.fingerprint)
+    expected_output_bytes = sum(
+        (stage_path / filename).stat().st_size
+        for filename in ("fv.dat", "vp.dat", "vt.dat", "report.json")
+    )
+
+    assert computed.state == "computed"
+    assert reused.state == "reused"
+    assert computed.fingerprint == reused.fingerprint
+    assert computed.elapsed_seconds == reused.elapsed_seconds == tick
+    assert computed.source_bytes == reused.source_bytes == expected_input_bytes
+    assert computed.output_bytes == reused.output_bytes == expected_output_bytes
+
+    rows = {
+        (row.cell, row.stage_kind): row
+        for row in extract_stage_resources(
+            result.stage_runtime, shape=scanners["reference-like"].shape
+        )
+    }
+    computed_row = rows["RL-REF", "voting"]
+    reused_row = rows["RL-QUAL", "voting"]
+    assert computed_row.elapsed_semantics == "compute"
+    assert reused_row.elapsed_semantics == "load_validation"
+    assert computed_row.voxel_throughput_per_second == voxel_count / tick
+    assert reused_row.voxel_throughput_per_second == voxel_count / tick
 
 
 def test_resolved_common_thin_override_shares_thinning_per_backend(

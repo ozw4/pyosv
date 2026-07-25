@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import numpy as np
 
@@ -69,6 +69,24 @@ _DEFAULT_VARIANT = VariantSpec("f3-canonical", experimental=False)
 WorkflowRunner = Callable[..., Workflow3DResult]
 RuntimeHook = Callable[["F3StageRuntime"], None]
 StageState = Literal["computed", "reused"]
+
+
+class _StageRSSRecorder(Protocol):
+    def stage_before(
+        self,
+        stage_kind: str,
+        fingerprint: str,
+        *,
+        phase: str | None = None,
+    ) -> object: ...
+
+    def stage_after(
+        self,
+        stage_kind: str,
+        fingerprint: str,
+        *,
+        phase: str | None = None,
+    ) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +224,7 @@ def build_f3d_cell_stage_fingerprints(
         execute_workflow3d,
         load_scanner_stage,
         None,
+        None,
         _DEFAULT_VARIANT,
     )
     return MappingProxyType(
@@ -231,6 +250,7 @@ def run_f3d_mode_comparison_cells(
     scanner_loader: Callable[[F3ScannerStageResult], F3LoadedScannerStage] = (load_scanner_stage),
     runtime_hook: RuntimeHook | None = None,
     variant_spec: VariantSpec = _DEFAULT_VARIANT,
+    rss_recorder: _StageRSSRecorder | None = None,
 ) -> F3CellRunResult:
     """Run or resume all four cells while sharing semantic array stages.
 
@@ -245,6 +265,7 @@ def run_f3d_mode_comparison_cells(
         workflow_runner,
         scanner_loader,
         runtime_hook,
+        rss_recorder,
         variant_spec,
     )
     order = _resolve_cell_order(plan, cell_order)
@@ -267,34 +288,66 @@ def run_f3d_mode_comparison_cells(
         for cell in order:
             execution = executions[cell.label]
             scanner = scanner_stages[cell.scanner_backend]
-            voting_exists = _validate_existing_stage(
-                workspace,
+            validation_elapsed_by_kind: dict[str, float] = {}
+
+            def validate_timed(
+                kind: str,
+                parent: str,
+                settings: Mapping[str, Any],
+                artifacts: Sequence[F3StageArtifact],
+                fingerprint: str,
+            ) -> bool:
+                stage_exists = _stage_path_exists(workspace, kind, fingerprint)
+                if rss_recorder is not None and stage_exists:
+                    rss_recorder.stage_before(
+                        kind,
+                        fingerprint,
+                        phase="load_validation",
+                    )
+                started = time.perf_counter()
+                try:
+                    return _validate_existing_stage(
+                        workspace,
+                        kind,
+                        parent,
+                        settings,
+                        artifacts,
+                        fingerprint,
+                    )
+                finally:
+                    validation_elapsed_by_kind[kind] = (
+                        validation_elapsed_by_kind.get(kind, 0.0) + time.perf_counter() - started
+                    )
+                    if rss_recorder is not None and stage_exists:
+                        rss_recorder.stage_after(
+                            kind,
+                            fingerprint,
+                            phase="load_validation",
+                        )
+
+            voting_exists = validate_timed(
                 "voting",
                 scanner.fingerprint,
                 execution.voting_settings,
                 voting_stage_artifacts(scanner.shape),
                 execution.stages.voting,
             )
-            thinning_exists = _validate_existing_stage(
-                workspace,
+            thinning_exists = validate_timed(
                 "thinning",
                 execution.stages.voting,
                 execution.thinning_settings,
                 thinning_stage_artifacts(scanner.shape),
                 execution.stages.thinning,
             )
-            skinning_exists = (
-                False
-                if not plan.skinning_enabled
-                else _validate_existing_stage(
-                    workspace,
+            skinning_exists = False
+            if plan.skinning_enabled:
+                skinning_exists = validate_timed(
                     "skinning",
                     execution.stages.thinning,
                     execution.skinning_settings,
                     skinning_stage_artifacts(scanner.shape, enabled=True),
                     execution.stages.skinning,
                 )
-            )
             complete_chain = (
                 voting_exists and thinning_exists and (skinning_exists or not plan.skinning_enabled)
             )
@@ -322,15 +375,23 @@ def run_f3d_mode_comparison_cells(
                     operation: Callable[[], Any],
                 ) -> Any:
                     del semantic_key
+                    kind = _runtime_kind(stage)
+                    fingerprint = (
+                        getattr(execution.stages, kind)
+                        if kind in {"voting", "thinning", "skinning"}
+                        else None
+                    )
+                    if rss_recorder is not None and fingerprint is not None:
+                        rss_recorder.stage_before(kind, fingerprint, phase="compute")
                     started = time.perf_counter()
                     try:
                         return operation()
                     finally:
-                        elapsed_by_kind[_runtime_kind(stage)] = (
-                            elapsed_by_kind.get(_runtime_kind(stage), 0.0)
-                            + time.perf_counter()
-                            - started
+                        elapsed_by_kind[kind] = (
+                            elapsed_by_kind.get(kind, 0.0) + time.perf_counter() - started
                         )
+                        if rss_recorder is not None and fingerprint is not None:
+                            rss_recorder.stage_after(kind, fingerprint, phase="compute")
 
                 scanner_mask = (
                     np.asarray(loaded.ft) > np.float32(0.0)
@@ -382,11 +443,16 @@ def run_f3d_mode_comparison_cells(
                 skinning_exists=skinning_exists,
             )
             for kind, (state, source_bytes, output_bytes) in stage_states.items():
+                elapsed = (
+                    elapsed_by_kind.get(kind, 0.0)
+                    if state == "computed"
+                    else validation_elapsed_by_kind.get(kind, 0.0)
+                )
                 event = F3StageRuntime(
                     kind=kind,
                     fingerprint=getattr(execution.stages, kind),
                     state=state,
-                    elapsed_seconds=float(elapsed_by_kind.get(kind, 0.0)),
+                    elapsed_seconds=float(elapsed),
                     source_bytes=source_bytes,
                     output_bytes=output_bytes,
                     cell_owner=expected_consumers[(kind, getattr(execution.stages, kind))][0],
@@ -441,6 +507,7 @@ def load_f3d_mode_comparison_cells(
         scanner_stages,
         execute_workflow3d,
         load_scanner_stage,
+        None,
         None,
         _DEFAULT_VARIANT,
     )
@@ -1012,6 +1079,7 @@ def _validate_runner_inputs(
     workflow_runner: WorkflowRunner,
     scanner_loader: Callable[..., Any],
     runtime_hook: RuntimeHook | None,
+    rss_recorder: _StageRSSRecorder | None,
     variant_spec: VariantSpec,
 ) -> None:
     if not isinstance(workspace, F3RunWorkspace):
@@ -1032,6 +1100,11 @@ def _validate_runner_inputs(
         raise TypeError("workflow_runner and scanner_loader must be callable")
     if runtime_hook is not None and not callable(runtime_hook):
         raise TypeError("runtime_hook must be callable or None")
+    if rss_recorder is not None and (
+        not callable(getattr(rss_recorder, "stage_before", None))
+        or not callable(getattr(rss_recorder, "stage_after", None))
+    ):
+        raise TypeError("rss_recorder must provide stage_before and stage_after")
     if variant_spec != _DEFAULT_VARIANT:
         raise ValueError("canonical F3 execution requires the fixed default variant")
 
@@ -1098,6 +1171,15 @@ def _runtime_kind(stage: str) -> str:
         "base_thinning": "thinning",
         "primary_skinning": "skinning",
     }.get(stage, stage)
+
+
+def _stage_path_exists(
+    workspace: F3RunWorkspace,
+    kind: str,
+    fingerprint: str,
+) -> bool:
+    path = workspace.stage_path(kind, fingerprint)
+    return path.exists() or path.is_symlink()
 
 
 def _stage_output_bytes(path: Path) -> int:

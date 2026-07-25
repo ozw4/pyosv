@@ -19,6 +19,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3RunWorkspace,
     F3ScannerConfig,
     F3VolumeSource,
+    PeakRSSRecorder,
     build_f3d_mode_comparison_plan,
     load_scanner_stage,
     run_scanner_stages,
@@ -145,6 +146,7 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
     workspace = _workspace(tmp_path / "run")
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
     calls = _calls()
+    recorder = PeakRSSRecorder(lambda: 4096)
 
     first = run_scanner_stages(
         workspace,
@@ -152,6 +154,7 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
         plan,
         scanner_factory=_factory(calls),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        rss_recorder=recorder,
     )
 
     assert source.read_count == 1
@@ -164,19 +167,29 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
     }
     assert "confidence.dat" not in {item.name for item in first["reference-like"].path.iterdir()}
     assert (first["quality"].path / "confidence.dat").is_file()
+    assert [snapshot.point.rsplit(":", 1)[-1] for snapshot in recorder.snapshots] == [
+        "before",
+        "after",
+        "before",
+        "after",
+    ]
+    assert all(":compute_or_load_validation:" in row.point for row in recorder.snapshots)
 
     reuse_source = _Source(tmp_path / "other-data", values)
     reuse_calls = _calls()
+    reuse_recorder = PeakRSSRecorder(lambda: 8192)
     reused = run_scanner_stages(
         workspace,
         reuse_source,  # type: ignore[arg-type]
         plan,
         scanner_factory=_factory(reuse_calls),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        rss_recorder=reuse_recorder,
     )
     assert all(stage.reused for stage in reused.values())
     assert reuse_source.read_count == 0
     assert reuse_calls == _calls()
+    assert len(reuse_recorder.snapshots) == 4
 
 
 def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:

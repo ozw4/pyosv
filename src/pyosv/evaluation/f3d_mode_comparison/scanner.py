@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -40,6 +41,24 @@ _WRITE_SLAB_COUNT = 1
 ScannerFactory = Callable[[float, float], FaultOrientScanner3]
 
 
+class _StageRSSRecorder(Protocol):
+    def stage_before(
+        self,
+        stage_kind: str,
+        fingerprint: str,
+        *,
+        phase: str | None = None,
+    ) -> object: ...
+
+    def stage_after(
+        self,
+        stage_kind: str,
+        fingerprint: str,
+        *,
+        phase: str | None = None,
+    ) -> object: ...
+
+
 @dataclass(frozen=True, slots=True)
 class F3ScannerStageResult:
     """Scalar-only reference to one validated scanner stage."""
@@ -51,6 +70,9 @@ class F3ScannerStageResult:
     shape: tuple[int, int, int]
     input_fingerprint: str
     report: Mapping[str, Any]
+    elapsed_seconds: float = 0.0
+    input_bytes: int = 0
+    output_bytes: int = 0
 
 
 @dataclass(slots=True)
@@ -196,6 +218,7 @@ def run_scanner_stages(
     scanner_factory: ScannerFactory = FaultOrientScanner3,
     backend_order: Sequence[F3ScannerBackend] = F3_SCANNER_BACKEND_ORDER,
     implementation_identity: Mapping[str, Any] | str | None = None,
+    rss_recorder: _StageRSSRecorder | None = None,
 ) -> dict[F3ScannerBackend, F3ScannerStageResult]:
     """Materialize or reuse both scanner backends with one shared input read.
 
@@ -213,6 +236,11 @@ def run_scanner_stages(
         raise TypeError("plan must be an F3ModeComparisonPlan")
     if not callable(scanner_factory):
         raise TypeError("scanner_factory must be callable")
+    if rss_recorder is not None and (
+        not callable(getattr(rss_recorder, "stage_before", None))
+        or not callable(getattr(rss_recorder, "stage_after", None))
+    ):
+        raise TypeError("rss_recorder must provide stage_before and stage_after")
     order = tuple(backend_order)
     if len(order) != 2 or set(order) != set(F3_SCANNER_BACKEND_ORDER):
         raise ValueError("backend_order must contain reference-like and quality exactly once")
@@ -265,21 +293,42 @@ def run_scanner_stages(
                     scanner_factory=scanner_factory,
                 )
 
-            stage = workspace.write_or_reuse_stage(
-                "scanner",
-                input_fingerprints={"ep.dat": input_identity.sha256},
-                resolved_settings=settings,
-                artifacts=artifacts,
-                writer=writer,
-                fingerprint=fingerprint,
-            )
-            results[backend] = _result_from_stage(
-                stage,
-                backend=backend,
-                shape=input_identity.shape,
-                input_fingerprint=input_identity.sha256,
-                config=config,
-                settings=settings,
+            if rss_recorder is not None:
+                rss_recorder.stage_before(
+                    "scanner",
+                    fingerprint,
+                    phase="compute_or_load_validation",
+                )
+            started = time.perf_counter()
+            try:
+                stage = workspace.write_or_reuse_stage(
+                    "scanner",
+                    input_fingerprints={"ep.dat": input_identity.sha256},
+                    resolved_settings=settings,
+                    artifacts=artifacts,
+                    writer=writer,
+                    fingerprint=fingerprint,
+                )
+                result = _result_from_stage(
+                    stage,
+                    backend=backend,
+                    shape=input_identity.shape,
+                    input_fingerprint=input_identity.sha256,
+                    config=config,
+                    settings=settings,
+                    input_bytes=input_identity.size,
+                )
+            finally:
+                elapsed_seconds = time.perf_counter() - started
+                if rss_recorder is not None:
+                    rss_recorder.stage_after(
+                        "scanner",
+                        fingerprint,
+                        phase="compute_or_load_validation",
+                    )
+            results[backend] = replace(
+                result,
+                elapsed_seconds=elapsed_seconds,
             )
     finally:
         shared_input = None
@@ -551,6 +600,7 @@ def _result_from_stage(
     input_fingerprint: str,
     config: F3ScannerConfig,
     settings: Mapping[str, Any],
+    input_bytes: int = 0,
 ) -> F3ScannerStageResult:
     report = _read_json(stage.path / "report.json")
     result = F3ScannerStageResult(
@@ -561,6 +611,9 @@ def _result_from_stage(
         shape=shape,
         input_fingerprint=input_fingerprint,
         report=MappingProxyType(report),
+        elapsed_seconds=0.0,
+        input_bytes=int(input_bytes),
+        output_bytes=sum(path.stat().st_size for path in stage.path.iterdir() if path.is_file()),
     )
     _validate_report_identity(report, result)
     if report.get("resolved_config") != asdict(config):
