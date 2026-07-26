@@ -322,7 +322,7 @@ def run_f3d_mode_comparison_cells(
                     rss_recorder.stage_before(
                         kind,
                         fingerprint,
-                        phase="load_validation",
+                        phase=f"load_validation:{cell.label}",
                     )
                 started = time.perf_counter()
                 try:
@@ -342,7 +342,7 @@ def run_f3d_mode_comparison_cells(
                         rss_recorder.stage_after(
                             kind,
                             fingerprint,
-                            phase="load_validation",
+                            phase=f"load_validation:{cell.label}",
                         )
 
             voting_exists = validate_timed(
@@ -420,7 +420,11 @@ def run_f3d_mode_comparison_cells(
                         else None
                     )
                     if rss_recorder is not None and fingerprint is not None:
-                        rss_recorder.stage_before(kind, fingerprint, phase="compute")
+                        rss_recorder.stage_before(
+                            kind,
+                            fingerprint,
+                            phase=f"compute:{cell.label}",
+                        )
                     started = time.perf_counter()
                     try:
                         return operation()
@@ -429,7 +433,11 @@ def run_f3d_mode_comparison_cells(
                             elapsed_by_kind.get(kind, 0.0) + time.perf_counter() - started
                         )
                         if rss_recorder is not None and fingerprint is not None:
-                            rss_recorder.stage_after(kind, fingerprint, phase="compute")
+                            rss_recorder.stage_after(
+                                kind,
+                                fingerprint,
+                                phase=f"compute:{cell.label}",
+                            )
 
                 scanner_mask = (
                     np.asarray(loaded.ft) > np.float32(0.0)
@@ -484,6 +492,15 @@ def run_f3d_mode_comparison_cells(
                 compute_skinning=compute_skinning,
                 rss_recorder=rss_recorder,
             )
+            result = None
+            if active_cache is not None:
+                active_cache.clear()
+                active_cache = None
+            _close_memmaps(active_hydrated)
+            active_hydrated = ()
+            if not complete_chain:
+                del loaded, workflow_ft, workflow_pt, workflow_tt
+
             for kind, elapsed in persistence_elapsed.items():
                 elapsed_by_kind[kind] = elapsed_by_kind.get(kind, 0.0) + elapsed
             for kind, (state, source_bytes, output_bytes) in stage_states.items():
@@ -515,14 +532,6 @@ def run_f3d_mode_comparison_cells(
                 skinning_enabled=plan.skinning_enabled,
             )
             references[cell.label] = reference
-            result = None
-            if active_cache is not None:
-                active_cache.clear()
-                active_cache = None
-            _close_memmaps(active_hydrated)
-            active_hydrated = ()
-            if not complete_chain:
-                del loaded, workflow_ft, workflow_pt, workflow_tt
 
             next_backend = (
                 order[cell_index + 1].scanner_backend if cell_index + 1 < len(order) else None

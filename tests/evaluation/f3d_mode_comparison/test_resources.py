@@ -49,11 +49,15 @@ def test_stage_resources_distinguish_compute_and_reuse_elapsed() -> None:
 def test_peak_rss_probe_and_exception_policy_are_stable() -> None:
     recorder = PeakRSSRecorder(lambda: 4096)
     before = recorder.stage_before("voting", "a" * 64)
+    repeated = recorder.stage_before("voting", "a" * 64)
+    colliding_name = recorder.snapshot(repeated.point)
     peak = recorder.process_peak()
 
     assert before.scope == "stage_snapshot"
     assert before.status == "available"
     assert before.value_bytes == 4096
+    assert repeated.point == f"{before.point}:occurrence=2"
+    assert len({before.point, repeated.point, colliding_name.point}) == 3
     assert peak.scope == "process_peak"
 
     def fail() -> int:
@@ -87,6 +91,12 @@ def test_resource_extraction_requires_explicit_execution_and_process_peak_snapsh
         )
 
     recorder.process_peak()
+    active_stage = tmp_path / "stages" / "voting" / ("a" * 64)
+    stale_stage = tmp_path / "stages" / "voting" / ("b" * 64)
+    active_stage.mkdir(parents=True)
+    stale_stage.mkdir()
+    (active_stage / "complete.json").write_text("{}\n", encoding="utf-8")
+    (stale_stage / "complete.json").write_text("{}\n", encoding="utf-8")
     extraction = extract_f3d_resources(
         (_runtime(state="computed", elapsed=2.0),),
         shape=(2, 3, 4),
@@ -98,6 +108,10 @@ def test_resource_extraction_requires_explicit_execution_and_process_peak_snapsh
         "stage_snapshot",
         "stage_snapshot",
         "process_peak",
+    ]
+    assert [(row.scope, row.stage_kind, row.fingerprint) for row in extraction.storage_rows] == [
+        ("stage", "voting", "a" * 64),
+        ("workspace", None, None),
     ]
 
 

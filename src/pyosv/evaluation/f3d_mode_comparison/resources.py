@@ -186,6 +186,8 @@ class PeakRSSRecorder:
             self._source = source or "injected_probe"
             self._semantics = semantics or "injected_peak_rss_bytes"
         self._snapshots: list[RSSSnapshot] = []
+        self._point_counts: dict[tuple[str, str], int] = {}
+        self._recorded_points: set[tuple[str, str]] = set()
 
     @property
     def snapshots(self) -> tuple[RSSSnapshot, ...]:
@@ -196,6 +198,14 @@ class PeakRSSRecorder:
 
         if not isinstance(point, str) or not point:
             raise ValueError("point must be a non-empty string")
+        key = (scope, point)
+        occurrence = self._point_counts.get(key, 0) + 1
+        recorded_point = point if occurrence == 1 else f"{point}:occurrence={occurrence}"
+        while (scope, recorded_point) in self._recorded_points:
+            occurrence += 1
+            recorded_point = f"{point}:occurrence={occurrence}"
+        self._point_counts[key] = occurrence
+        self._recorded_points.add((scope, recorded_point))
         try:
             value = self._probe()
             if value is None:
@@ -206,7 +216,7 @@ class PeakRSSRecorder:
             row = RSSSnapshot(
                 F3_RESOURCE_SCHEMA_VERSION,
                 scope,
-                point,
+                recorded_point,
                 None,
                 "unavailable",
                 self._source,
@@ -216,7 +226,7 @@ class PeakRSSRecorder:
             row = RSSSnapshot(
                 F3_RESOURCE_SCHEMA_VERSION,
                 scope,
-                point,
+                recorded_point,
                 value,
                 "available",
                 self._source,
@@ -393,13 +403,20 @@ def extract_f3d_resources(
         raise ValueError("rss_recorder has no stage-boundary snapshots")
     if not any(snapshot.scope == "process_peak" for snapshot in rss_recorder.snapshots):
         raise ValueError("rss_recorder has no explicit process-peak snapshot")
+    stage_rows = (
+        *scanner_stage_resource_rows(scanner_stages),
+        *extract_stage_resources(runtime_events, shape=shape),
+    )
+    referenced_stages = {(row.stage_kind, row.fingerprint) for row in stage_rows}
+    storage_rows = tuple(
+        row
+        for row in storage_report(workspace)
+        if row.scope == "workspace" or (row.stage_kind, row.fingerprint) in referenced_stages
+    )
     return ResourceExtraction(
-        (
-            *scanner_stage_resource_rows(scanner_stages),
-            *extract_stage_resources(runtime_events, shape=shape),
-        ),
+        stage_rows,
         rss_recorder.snapshots,
-        storage_report(workspace),
+        storage_rows,
     )
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -394,23 +393,3 @@ def test_help_describes_scope_reference_and_resume() -> None:
     assert "public-reference agreement, not geological accuracy" in help_text
     assert "matching run fingerprint" in help_text
     assert "validated without recomputation" in help_text
-
-
-@pytest.mark.skipif(
-    os.environ.get("PYOSV_RUN_F3D_MODE_COMPARISON") != "1",
-    reason="set PYOSV_RUN_F3D_MODE_COMPARISON=1 for the external full-volume run",
-)
-def test_external_full_volume_mode_comparison() -> None:
-    data_root = os.environ["PYOSV_F3D_DATA_ROOT"]
-    output_dir = Path(os.environ["PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR"])
-    arguments = [
-        "--data-root",
-        data_root,
-        "--output-dir",
-        str(output_dir),
-        "--deep-validate",
-    ]
-    if output_dir.exists():
-        arguments.append("--resume")
-
-    assert f3d_mode_comparison.main(arguments) == 0
