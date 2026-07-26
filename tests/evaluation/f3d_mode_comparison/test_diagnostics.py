@@ -20,6 +20,9 @@ from pyosv.evaluation.f3d_mode_comparison.diagnostics import (
     strike_circular_absolute_difference,
 )
 
+_LEFT_FINGERPRINT = "a" * 64
+_RIGHT_FINGERPRINT = "b" * 64
+
 
 def _regional(candidate: np.ndarray, reference: np.ndarray, margin: int = 1):
     return compute_regional_reference_diagnostics(
@@ -28,6 +31,7 @@ def _regional(candidate: np.ndarray, reference: np.ndarray, margin: int = 1):
         scanner_backend="reference-like",
         workflow_mode="reference",
         stage="ft",
+        source_stage_fingerprint=_LEFT_FINGERPRINT,
         candidate=candidate,
         reference=reference,
         margin=margin,
@@ -196,6 +200,8 @@ def test_orientation_rows_use_common_support_and_keep_empty_pairs() -> None:
         stage="scanner",
         left_cell="RL-REF",
         right_cell="RL-QUAL",
+        left_source_stage_fingerprint=_LEFT_FINGERPRINT,
+        right_source_stage_fingerprint=_RIGHT_FINGERPRINT,
         left_likelihood=likelihood,
         left_strike=likelihood,
         left_dip=likelihood,
@@ -217,6 +223,12 @@ def test_orientation_rows_use_common_support_and_keep_empty_pairs() -> None:
     rows = compute_orientation_diagnostics(
         dataset_id="fixture",
         stage="voting",
+        source_stage_fingerprints={
+            "RL-REF": "a" * 64,
+            "RL-QUAL": "b" * 64,
+            "Q-REF": "c" * 64,
+            "Q-QUAL": "d" * 64,
+        },
         likelihoods=fields,
         strikes=fields,
         dips=fields,

@@ -216,6 +216,17 @@ chunk seams, duplicated voxels, and missing voxels. Process-peak RSS must be
 snapshotted explicitly at the end of stage execution; resource extraction does
 not create a later snapshot and label it as the run end.
 
+Diagnostic schema version 2 also binds every diagnostic row to its
+content-addressed source stage. `RegionalDiagnosticRow` and
+`compute_regional_reference_diagnostics()` require one lowercase SHA-256
+`source_stage_fingerprint`. `OrientationDiagnosticRow` and
+`compute_orientation_pair_diagnostic()` require the corresponding
+`left_source_stage_fingerprint` and `right_source_stage_fingerprint`;
+`compute_orientation_diagnostics()` requires a
+`source_stage_fingerprints` mapping covering exactly the four canonical cell
+labels. These values identify the scanner or voting stage whose arrays were
+used and are required fields, not optional provenance metadata.
+
 The public reference-to-stage mapping is:
 
 | Public file | pyosv stage |

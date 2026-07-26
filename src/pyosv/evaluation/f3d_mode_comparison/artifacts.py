@@ -36,6 +36,7 @@ F3_FINGERPRINT_CONTRACT_VERSION = 1
 RUN_MANIFEST_FILE = "run_manifest.json"
 STAGE_MANIFEST_FILE = "stage_manifest.json"
 STAGE_COMPLETION_FILE = "complete.json"
+RUN_COMPLETION_FILE = "completion.json"
 STAGE_KINDS = ("scanner", "voting", "thinning", "skinning")
 CELL_LABELS = ("RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL")
 
@@ -206,6 +207,47 @@ def canonical_fingerprint(value: Any) -> str:
     """Return the SHA-256 of :func:`canonical_json_bytes`."""
 
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def artifact_file_metadata(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Return the canonical SHA-256 and byte-size record for a regular file."""
+
+    artifact_path = Path(path)
+    _require_regular_nonsymlink(artifact_path, "artifact file")
+    return _file_metadata(artifact_path)
+
+
+def atomic_write_artifact(
+    path: str | os.PathLike[str],
+    payload: bytes,
+    *,
+    temporary_prefix: str = ".pyosv-report-tmp-",
+) -> Path:
+    """Durably replace one artifact using a temporary sibling file."""
+
+    destination = Path(path)
+    if not isinstance(payload, bytes):
+        raise TypeError("payload must be bytes")
+    _require_directory_nonsymlink(destination.parent, "artifact parent")
+    descriptor, name = tempfile.mkstemp(prefix=temporary_prefix, dir=destination.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            written = stream.write(payload)
+            if written != len(payload):
+                raise OSError(f"short artifact write for {destination.name}")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+        _fsync_directory(destination.parent)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
+    return destination
 
 
 def _callable_implementation_identity(value: Callable[..., Any]) -> dict[str, str]:

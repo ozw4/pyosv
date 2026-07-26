@@ -32,7 +32,7 @@ from .metrics import (
 from .models import F3ModeComparisonPlan
 from .runner import F3CellReference
 
-F3_DIAGNOSTIC_SCHEMA_VERSION = 1
+F3_DIAGNOSTIC_SCHEMA_VERSION = 2
 F3_REGION_SEMANTICS = "mask_within_full_volume_evaluation_unit"
 F3_ORIENTATION_SUPPORT_PERCENTILE = 99.0
 F3_DIAGNOSTIC_REGIONS = ("interior", "boundary_shell")
@@ -56,6 +56,7 @@ _STAGE_FILES = {
 }
 _DAT_DTYPE = np.dtype(">f4")
 _REGIONAL_BASIC_CHUNK_VOXELS = 1_048_576
+_SHA256_LENGTH = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,7 @@ class RegionalDiagnosticRow:
     scanner_backend: str
     workflow_mode: str
     stage: str
+    source_stage_fingerprint: str
     volume_shape: tuple[int, int, int]
     boundary_margin: int
     region: str
@@ -121,6 +123,7 @@ class RegionalDiagnosticRow:
             raise ValueError("cell label and axes are inconsistent")
         if self.stage not in F3_REFERENCE_STAGE_FILES:
             raise ValueError(f"unknown reference stage: {self.stage!r}")
+        _sha256(self.source_stage_fingerprint, "source_stage_fingerprint")
         shape = _shape3(self.volume_shape)
         if (
             isinstance(self.boundary_margin, bool)
@@ -144,6 +147,7 @@ class RegionalDiagnosticRow:
             "scanner_backend": self.scanner_backend,
             "workflow_mode": self.workflow_mode,
             "stage": self.stage,
+            "source_stage_fingerprint": self.source_stage_fingerprint,
             "volume_shape": list(self.volume_shape),
             "boundary_margin": self.boundary_margin,
             "region": self.region,
@@ -161,6 +165,8 @@ class OrientationDiagnosticRow:
     stage: str
     left_cell: str
     right_cell: str
+    left_source_stage_fingerprint: str
+    right_source_stage_fingerprint: str
     support_contract: str
     support_count: int
     strike_circular_absolute_difference: Mapping[str, float | int | None]
@@ -174,6 +180,14 @@ class OrientationDiagnosticRow:
             raise ValueError("orientation pair is not in the canonical pair contract")
         if self.stage not in _STAGE_FILES:
             raise ValueError("orientation stage must be 'scanner' or 'voting'")
+        _sha256(
+            self.left_source_stage_fingerprint,
+            "left_source_stage_fingerprint",
+        )
+        _sha256(
+            self.right_source_stage_fingerprint,
+            "right_source_stage_fingerprint",
+        )
         if isinstance(self.support_count, bool) or self.support_count < 0:
             raise ValueError("support_count must be a non-negative integer")
         expected_contract = _orientation_support_contract(self.stage)
@@ -198,6 +212,8 @@ class OrientationDiagnosticRow:
             "stage": self.stage,
             "left_cell": self.left_cell,
             "right_cell": self.right_cell,
+            "left_source_stage_fingerprint": self.left_source_stage_fingerprint,
+            "right_source_stage_fingerprint": self.right_source_stage_fingerprint,
             "support_contract": self.support_contract,
             "support_count": self.support_count,
             "strike_circular_absolute_difference": dict(self.strike_circular_absolute_difference),
@@ -283,6 +299,7 @@ def compute_regional_reference_diagnostics(
     scanner_backend: str,
     workflow_mode: str,
     stage: str,
+    source_stage_fingerprint: str,
     candidate: np.ndarray,
     reference: np.ndarray,
     margin: int,
@@ -408,6 +425,7 @@ def compute_regional_reference_diagnostics(
                     scanner_backend,
                     workflow_mode,
                     stage,
+                    source_stage_fingerprint,
                     partition.shape,
                     partition.margin,
                     region,
@@ -469,6 +487,8 @@ def compute_orientation_pair_diagnostic(
     stage: str,
     left_cell: str,
     right_cell: str,
+    left_source_stage_fingerprint: str,
+    right_source_stage_fingerprint: str,
     left_likelihood: np.ndarray,
     left_strike: np.ndarray,
     left_dip: np.ndarray,
@@ -511,6 +531,8 @@ def compute_orientation_pair_diagnostic(
         stage,
         left_cell,
         right_cell,
+        left_source_stage_fingerprint,
+        right_source_stage_fingerprint,
         _orientation_support_contract(stage),
         count,
         _summary(strike),
@@ -523,6 +545,7 @@ def compute_orientation_diagnostics(
     *,
     dataset_id: str,
     stage: str,
+    source_stage_fingerprints: Mapping[str, str],
     likelihoods: Mapping[str, np.ndarray],
     strikes: Mapping[str, np.ndarray],
     dips: Mapping[str, np.ndarray],
@@ -531,6 +554,7 @@ def compute_orientation_diagnostics(
 
     required = set(_CELL_AXES)
     for name, values in (
+        ("source_stage_fingerprints", source_stage_fingerprints),
         ("likelihoods", likelihoods),
         ("strikes", strikes),
         ("dips", dips),
@@ -543,6 +567,8 @@ def compute_orientation_diagnostics(
             stage=stage,
             left_cell=left,
             right_cell=right,
+            left_source_stage_fingerprint=source_stage_fingerprints[left],
+            right_source_stage_fingerprint=source_stage_fingerprints[right],
             left_likelihood=likelihoods[left],
             left_strike=strikes[left],
             left_dip=dips[left],
@@ -598,6 +624,7 @@ def extract_f3d_diagnostics(
                             scanner_backend=cell.backend,
                             workflow_mode=cell.workflow,
                             stage=stage,
+                            source_stage_fingerprint=_cell_stage_fingerprint(cell, stage),
                             candidate=candidate,
                             reference=reference,
                             margin=boundary_margin,
@@ -629,6 +656,14 @@ def extract_f3d_diagnostics(
                         stage=stage,
                         left_cell=left_label,
                         right_cell=right_label,
+                        left_source_stage_fingerprint=_cell_stage_fingerprint(
+                            cells_by_label[left_label],
+                            stage,
+                        ),
+                        right_source_stage_fingerprint=_cell_stage_fingerprint(
+                            cells_by_label[right_label],
+                            stage,
+                        ),
                         left_likelihood=fields[0][0],
                         left_strike=fields[0][1],
                         left_dip=fields[0][2],
@@ -909,6 +944,26 @@ def _percentile_token(value: float) -> str:
 
 def _number_token(value: float) -> str:
     return str(float(value)).replace(".", "_").removesuffix("_0")
+
+
+def _sha256(value: Any, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != _SHA256_LENGTH
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _cell_stage_fingerprint(cell: F3CellReference, stage: str) -> str:
+    return {
+        "ft": cell.stages.scanner,
+        "fv": cell.stages.voting,
+        "fvt": cell.stages.thinning,
+        "scanner": cell.stages.scanner,
+        "voting": cell.stages.voting,
+    }[stage]
 
 
 def _candidate_path(workspace: Path, cell: F3CellReference, stage: str) -> Path:
