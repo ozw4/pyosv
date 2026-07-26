@@ -71,7 +71,12 @@ def _complete_small_bundle(tmp_path: Path, *, skinning_enabled: bool = False) ->
         (root / "stages" / kind).mkdir(parents=True)
     (root / "cells").mkdir()
     (root / "reports").mkdir()
-    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=skinning_enabled))
+    plan = build_f3d_mode_comparison_plan(
+        F3ModeComparisonConfig(
+            skinning_enabled=skinning_enabled,
+            boundary_diagnostic_margin=0,
+        )
+    )
     plan_payload = plan.as_dict()
     plan_payload["dataset_spec"] = asdict(spec)
     computation = {
@@ -449,10 +454,36 @@ def test_nonofficial_shape_cannot_be_validated_as_canonical(
         validate_completed_f3d_bundle(root)
 
 
-@pytest.mark.parametrize("field", ["crop_shape", "tile_shape", "center"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "crop_shape",
+        "crop_center",
+        "tile_shape",
+        "tile_sample",
+        "center",
+        "replicate_index",
+    ],
+)
 def test_crop_tile_and_center_semantics_are_rejected(field: str) -> None:
     with pytest.raises(F3ResultValidationError, match="crop/tile/center"):
         result_module._reject_crop_semantics({"plan": {field: [1, 2, 3]}})
+
+
+@pytest.mark.parametrize("value", ["crop", "tiled-volume", "center_dimension"])
+def test_crop_tile_and_center_semantics_in_values_are_rejected(value: str) -> None:
+    with pytest.raises(F3ResultValidationError, match="crop/tile/center"):
+        result_module._reject_crop_semantics({"plan": {"sample_mode": value}})
+
+
+def test_semantic_tokens_do_not_reject_valid_percentile_or_recenter_fields() -> None:
+    result_module._reject_crop_semantics(
+        {
+            "percentile": 99.0,
+            "fvt_recenter_target": "scanner_fet",
+            "regions_are_replicates": False,
+        }
+    )
 
 
 def test_deep_validation_recomputes_orientation_diagnostics(tmp_path: Path) -> None:
@@ -587,6 +618,36 @@ def test_rehashed_regional_count_tamper_is_rejected(tmp_path: Path) -> None:
     _rehash_report(root, "regional_metrics.csv")
 
     with pytest.raises(F3ResultValidationError, match="regional counts"):
+        validate_completed_f3d_bundle(root)
+
+
+def test_rehashed_regional_margin_tamper_is_rejected(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / "regional_metrics.csv"
+    fieldnames, rows = _csv_rows(report)
+    for row in rows:
+        row["boundary_margin"] = "1"
+    _write_csv_rows(report, fieldnames, rows)
+    _rehash_report(root, "regional_metrics.csv")
+
+    with pytest.raises(F3ResultValidationError, match="run manifest"):
+        validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_rehashed_regional_union_tamper_is_rejected(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / "regional_metrics.csv"
+    fieldnames, rows = _csv_rows(report)
+    metrics = json.loads(rows[0]["metrics"])
+    union_name = next(name for name in metrics if name.endswith("_union_count"))
+    prefix = union_name.removesuffix("_union_count")
+    metrics[union_name] += 1
+    metrics[f"{prefix}_jaccard"] = metrics[f"{prefix}_intersection_count"] / metrics[union_name]
+    rows[0]["metrics"] = json.dumps(metrics, separators=(",", ":"), sort_keys=True)
+    _write_csv_rows(report, fieldnames, rows)
+    _rehash_report(root, "regional_metrics.csv")
+
+    with pytest.raises(F3ResultValidationError, match="regional overlap counts"):
         validate_completed_f3d_bundle(root)
 
 

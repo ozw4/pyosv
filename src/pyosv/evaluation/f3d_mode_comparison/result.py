@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
@@ -433,7 +434,7 @@ def validate_f3d_mode_comparison_result(
     _validate_cells_and_stages(root, result, dataset, manifest["plan"])
     _validate_metrics(result, dataset)
     _validate_voxelwise_contrasts(result)
-    _validate_regional_rows(result)
+    _validate_regional_rows(result, manifest["plan"])
     _validate_orientation_rows(result)
     _validate_resource_rows(result)
     if deep:
@@ -1448,7 +1449,15 @@ def _validate_voxelwise_contrasts(result: F3ModeComparisonResult) -> None:
                 raise F3ResultValidationError("shared-stage voxel contrast must be exactly zero")
 
 
-def _validate_regional_rows(result: F3ModeComparisonResult) -> None:
+def _validate_regional_rows(result: F3ModeComparisonResult, plan_value: Any) -> None:
+    plan = _object(plan_value, "run plan")
+    boundary_margin = plan.get("boundary_diagnostic_margin")
+    if (
+        isinstance(boundary_margin, bool)
+        or not isinstance(boundary_margin, int)
+        or boundary_margin < 0
+    ):
+        raise F3ResultValidationError("run plan boundary diagnostic margin is invalid")
     by_cell = {cell.label: cell for cell in result.cells}
     expected = {
         (cell, stage, region)
@@ -1493,6 +1502,8 @@ def _validate_regional_rows(result: F3ModeComparisonResult) -> None:
     margins = {row.boundary_margin for row in result.regional_rows}
     if len(margins) != 1:
         raise F3ResultValidationError("regional rows have mixed boundary margins")
+    if margins != {boundary_margin}:
+        raise F3ResultValidationError("regional boundary margin does not match the run manifest")
     full_counts = {
         (item.cell_label, item.stage): _count_value(dict(item.counts), "voxel_count")
         for item in result.metric_evidence
@@ -1541,7 +1552,10 @@ def _validate_regional_metric_algebra(metrics: Mapping[str, Any]) -> None:
         candidate = _count_value(metrics, f"{prefix}_candidate_count")
         intersection = _count_value(metrics, f"{prefix}_intersection_count")
         union = _count_value(metrics, f"{prefix}_union_count")
-        if intersection > min(reference, candidate) or union < max(reference, candidate):
+        if (
+            intersection > min(reference, candidate)
+            or union != reference + candidate - intersection
+        ):
             raise F3ResultValidationError("regional overlap counts are inconsistent")
         _require_close(
             metrics[f"{prefix}_precision"], intersection / candidate if candidate else 0.0
@@ -2548,23 +2562,29 @@ def _finite_json_value(value: Any, context: str, *, allow_none: bool = False) ->
 
 
 def _reject_crop_semantics(value: Any) -> None:
-    forbidden = {
-        "crop",
-        "crop_shape",
-        "tile",
-        "tile_shape",
-        "center",
-        "center_dimension",
-        "center_dimensions",
-    }
     if isinstance(value, Mapping):
-        if forbidden & set(value):
-            raise F3ResultValidationError("crop/tile/center dimensions are forbidden")
-        for item in value.values():
+        for key, item in value.items():
+            if _has_forbidden_volume_semantics(key):
+                raise F3ResultValidationError("crop/tile/center dimensions are forbidden")
             _reject_crop_semantics(item)
     elif isinstance(value, (tuple, list)):
         for item in value:
             _reject_crop_semantics(item)
+    elif isinstance(value, str) and not value.startswith(("/", "./", "../")):
+        if _has_forbidden_volume_semantics(value, key=False):
+            raise F3ResultValidationError("crop/tile/center dimensions are forbidden")
+
+
+def _has_forbidden_volume_semantics(value: Any, *, key: bool = True) -> bool:
+    if not isinstance(value, str):
+        return False
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    tokens = {token for token in re.split(r"[^a-z0-9]+", camel_split.lower()) if token}
+    if tokens & {"crop", "cropped", "cropping", "tile", "tiled", "tiling"}:
+        return True
+    if "center" in tokens and (len(tokens) == 1 or bool(tokens & {"dimension", "dimensions"})):
+        return True
+    return key and "replicate" in tokens and "index" in tokens
 
 
 def _reject_volume_bearing_values(result: F3ModeComparisonResult) -> None:
