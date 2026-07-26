@@ -153,11 +153,21 @@ for the canonical scanner/workflow matrix and terminology. Existing crop and
 multi-crop commands are optional legacy/internal diagnostics and historical
 validation paths; crops are not publication samples or statistical replicates.
 
-The current [`examples/run_3d_f3d_full.py`](examples/run_3d_f3d_full.py) command
-is a reference-like baseline full-volume scan/vote runner. It does not implement
-the quality scanner backend, workflow profiles, or the planned full-volume 2×2
-scanner-backend/workflow matrix. That matrix and its comparison runner remain
-future work.
+Run the canonical full-volume four-cell comparison with an external F3 data
+root and an ignored output path:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_001
+```
+
+The thin
+[`examples/run_3d_f3d_mode_comparison.py`](examples/run_3d_f3d_mode_comparison.py)
+entry point invokes the same package CLI. The existing
+[`examples/run_3d_f3d_full.py`](examples/run_3d_f3d_full.py) remains the legacy
+reference-like single-path baseline; it does not run the canonical 2×2 matrix
+or use its fingerprinted workspace and exact-resume contract.
 
 Controlled synthetic 3D truth checks are documented in
 `docs/synthetic_quality.md`, including the default `minimal` case set and the

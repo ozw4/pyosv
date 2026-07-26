@@ -289,6 +289,14 @@ existing operational validation paths.
   orientation diagnostics, and runtime/resource rows. Cell references point
   to shared content-addressed stages instead of duplicating full-volume
   artifacts.
+- `python -m pyosv.cli.f3d_mode_comparison` runs, resumes, or validates that
+  canonical matrix. It always targets all four cells. A run without `--resume`
+  requires a new output path; exact resume reuses only matching validated
+  stages, and a valid complete bundle is validated without recomputation.
+  Root completion is published only after the fixed reports and referenced
+  stages pass semantic validation. `--deep-validate` recomputes full-volume
+  metric evidence. Runtime rows are within-run attribution, not isolated
+  benchmarks.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   legacy full-volume scan/vote command. It calls `FaultOrientScanner3.scan()`,
   then performs separately configurable scanner and voter thinning. This
@@ -298,10 +306,10 @@ existing operational validation paths.
 
 ### Remaining work
 
-Publication figure generation and a command-line orchestration layer for the
-library 2×2 run remain separate work. The synthetic CLI does not execute the
-F3 runner, and the legacy F3 command does not adopt the library workspace or
-stage cache.
+Publication figure generation remains planned separately. The F3 comparison
+CLI deliberately does not import visualization dependencies or generate the
+PR4 publication figure set. The synthetic CLI remains separate, and the legacy
+F3 command does not adopt the canonical workspace or stage cache.
 
 ## 8. Source map
 
@@ -312,6 +320,7 @@ stage cache.
 | Synthetic configuration | [`config.py`](../src/pyosv/evaluation/synthetic_quality/config.py), [`profiles.py`](../src/pyosv/evaluation/synthetic_quality/profiles.py), [`application.py`](../src/pyosv/evaluation/synthetic_quality/application.py) | Configuration fields, effective workflow defaults, overrides, and diagnostics |
 | Synthetic comparison planning | [`src/pyosv/evaluation/synthetic_mode_comparison/`](../src/pyosv/evaluation/synthetic_mode_comparison/) | Canonical cells, validated execution-free plans, and deterministic/seeded trial expansion |
 | F3 full-volume comparison | [`src/pyosv/evaluation/f3d_mode_comparison/`](../src/pyosv/evaluation/f3d_mode_comparison/) | Canonical 2×2 plan and stages, exact resume, reference-agreement metrics, contrasts, diagnostics, and resources |
+| F3 comparison CLI | [`src/pyosv/cli/f3d_mode_comparison.py`](../src/pyosv/cli/f3d_mode_comparison.py), [`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py) | Full-volume four-cell run, exact resume, strict/deep validation, and thin example entry point |
 | Voter thinning | [`src/pyosv/voting3d.py`](../src/pyosv/voting3d.py) | Stage-specific voter thinning, including `reference` and `hybrid_v2` |
 | Skinning | [`src/pyosv/_skinner/reference.py`](../src/pyosv/_skinner/reference.py), [`seeds.py`](../src/pyosv/_skinner/seeds.py) | Reference and quality skinner behavior, adaptive threshold, seed gates, and effective occupancy |
 | Legacy F3 full runner | [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) | Separate single-path full-volume scan/vote pipeline and F3 output comparison |

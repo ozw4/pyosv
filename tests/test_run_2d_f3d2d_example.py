@@ -12,7 +12,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
 EXAMPLE_SCRIPTS = tuple(sorted(EXAMPLES_DIR.glob("*.py")))
-PACKAGE_CLI_EXAMPLES = ("report_3d_synthetic_mode_comparison.py",)
+PACKAGE_CLI_EXAMPLES = (
+    "report_3d_synthetic_mode_comparison.py",
+    "run_3d_f3d_mode_comparison.py",
+)
 EXAMPLE_MODULES = tuple(
     script.stem
     for script in EXAMPLE_SCRIPTS

@@ -95,48 +95,78 @@ difference measurements, but not geological-accuracy claims.
 
 ## Full F3 Pipeline
 
-The current full-volume command is a manual, potentially slow, single-path
-baseline/report runner. It scans and votes over the entire
-`(420, 400, 100)` volume:
+The package CLI runs the canonical, potentially slow, full-volume four-cell
+comparison with the official controls documented below:
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/run_3d_f3d_full.py \
-  --output-dir outputs/3d/f3d/full_001
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_001
 ```
 
-This runner calls `FaultOrientScanner3.scan()`, so its current scanner path is
-the reference-like scanner backend. It provides independent
-`scanner_thin_mode` and `voter_thin_mode` comparison options, each accepting
-`reference` or `normal`. It does **not** implement a `workflow_mode` profile,
-the quality scanner backend, the quality skinner, or the library 2×2
-publication matrix. The command above remains the current single-path
-full-volume baseline/report command; this document does not imply any planned
-command or output schema.
+The command always covers `RL-REF`, `RL-QUAL`, `Q-REF`, and `Q-QUAL`; it has no
+scanner-axis or workflow-axis selector. `--no-skinning` changes one global
+setting in all four cells, and `--boundary-margin N` changes only the regional
+diagnostic partition. Primary metrics remain full-volume metrics.
 
-The script writes `run_config.json`, `metrics.json`, and generated Python
-volumes under `--output-dir`. Its `--reuse-existing` contract is all-or-nothing:
-all ten files in the runner's `OUTPUT_NAMES` set must already exist in that
-directory. If any file is missing, the runner reports the missing names and
-fails before reading F3 volume data or starting scanner or voter computation.
-This is reuse of a complete prior run, not resume from a completed subset of
-stages.
+Without `--resume`, the output path must not exist. An interrupted run has no
+root `completion.json`; resume accepts it only when the immutable manifest,
+dataset identity, implementation identity, resolved plan, and resulting run
+fingerprint match exactly. Valid content-addressed stages are reused and
+missing stages are computed. A complete bundle is accepted by `--resume` only
+after strict validation and is not recomputed:
 
-Use `--skip-save-intermediates` when only the report volumes `ft_py.dat`,
-`fv_py.dat`, and `fvt_py.dat` are needed. Because that option does not write the
-complete ten-file set, its output directory cannot subsequently be used with
-`--reuse-existing`. This current runner contract is separate from the
-content-addressed stage cache and exact-resume contract used by the library
-full-volume 2×2 runner; the legacy runner does not use that contract. The
-runner rejects both output directories and metrics paths inside the F3 data
-root.
+```bash
+python -m pyosv.cli.f3d_mode_comparison \
+  --data-root /path/to/external/reference_osv \
+  --output-dir outputs/3d/f3d/mode_comparison_001 \
+  --resume
+```
+
+Validate an existing completed bundle without rebuilding dataset identity or
+running experiment stages with:
+
+```bash
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_001 \
+  --validate-only --deep-validate
+```
+
+Deep validation rereads full-volume reference and stage artifacts from the
+recorded provenance and recomputes metric evidence. Only a valid root
+`completion.json`, written after reports and referenced stages pass semantic
+validation, marks the workspace complete. Output paths are rejected when they
+are equal to or nested under the F3 data root.
+
+The external full-run pytest gate is opt-in and separate from normal tests:
+
+```bash
+PYOSV_RUN_F3D_MODE_COMPARISON=1 \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
+PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_001 \
+python -m pytest -q tests/cli/test_f3d_mode_comparison_cli.py -s
+```
+
+Normal CLI unit tests stub orchestration and do not require F3 files or
+full-volume computation.
+
+The thin
+[`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)
+entry point calls this package CLI without duplicating experiment logic.
+
+The existing [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py)
+is the legacy manual single-path baseline. It calls the reference-like scanner,
+offers independent scanner/voter thinning controls, writes its separate
+`run_config.json`/`metrics.json`/DAT layout, and uses all-or-nothing
+`--reuse-existing`. It does not provide the quality scanner/workflow matrix,
+the canonical artifact bundle, or partial-stage resume.
 
 ## Full-Volume 2×2 Comparison Contract
 
-The `pyosv.evaluation.f3d_mode_comparison` library APIs implement this
-full-volume matrix, including shared scanner and workflow stages, exact stage
-validation and resume, reference metrics, and diagnostics. The legacy
-`examples/run_3d_f3d_full.py` command above remains a separate single-path
+The `pyosv.evaluation.f3d_mode_comparison` library APIs and the package CLI
+implement this full-volume matrix, including shared scanner and workflow
+stages, exact stage validation and resume, reference metrics, and diagnostics.
+The legacy `examples/run_3d_f3d_full.py` command remains a separate single-path
 runner and does not expose the matrix.
 
 The canonical publication matrix is:

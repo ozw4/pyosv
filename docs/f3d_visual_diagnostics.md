@@ -13,15 +13,26 @@ truth, and it does not replace the known-truth synthetic evaluation.
 
 ## Current Tools
 
-The current tools are the crop and multi-crop commands documented in
+The package CLI now runs, resumes, and validates the canonical full-volume 2×2
+scanner-backend/workflow matrix:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_001
+```
+
+It produces the artifact and scalar diagnostic bundle but intentionally does
+not import visualization dependencies or generate the publication figure set
+below. PR4 figure generation remains planned.
+
+Current visual tools are the crop and multi-crop commands documented in
 [Legacy/Internal Crop Diagnostics](#legacyinternal-crop-diagnostics), plus the
-static helpers in [`pyosv.viz`](visualization.md). Those helpers currently write
+static helpers in [`pyosv.viz`](visualization.md). Those helpers write
 deterministic center-slice comparisons, pairwise MIP and histogram diagnostics,
 ridge overlays, and targeted crop outlier/context figures. The existing
-`examples/run_3d_f3d_full.py` command produces full-volume data and metrics but
-does not generate the publication figure set below or execute the canonical
-2×2 scanner-backend/workflow matrix. Only the commands in the legacy section
-are available for the crop visual reports described here.
+`examples/run_3d_f3d_full.py` command remains a legacy single-path baseline and
+does not execute the canonical matrix.
 
 ### Data Layout
 
@@ -65,9 +76,9 @@ used.
 
 ## Planned Full-Volume Publication Figures
 
-> **Planned, not current:** This section defines the required figure contract
-> for a later full-volume comparison implementation. It does not define a
-> current command, generated filename, output directory, or report schema.
+> **Planned figure scope:** The canonical full-volume comparison runner is
+> current, but this section defines the still-planned PR4 figure contract. It
+> does not define a current figure-generation command or generated image set.
 
 All figure families operate on fully reconstructed F3 volumes in global
 coordinates. The public reference mapping and resulting panel column order are
