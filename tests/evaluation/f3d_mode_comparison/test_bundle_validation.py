@@ -56,7 +56,12 @@ def _small_official_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(result_module, "OFFICIAL_F3_DATASET_SPEC", spec)
 
 
-def _complete_small_bundle(tmp_path: Path, *, skinning_enabled: bool = False) -> Path:
+def _complete_small_bundle(
+    tmp_path: Path,
+    *,
+    skinning_enabled: bool = False,
+    pretty: bool = False,
+) -> Path:
     shape = (3, 4, 5)
     roles = (
         ("input", "ep.dat"),
@@ -182,7 +187,7 @@ def _complete_small_bundle(tmp_path: Path, *, skinning_enabled: bool = False) ->
         tuple(rss_snapshots),
         storage_report(workspace),
     )
-    finalize_f3d_bundle(workspace, result)
+    finalize_f3d_bundle(workspace, result, pretty=pretty)
     source.close()
     return root
 
@@ -220,6 +225,18 @@ def test_complete_bundle_strict_load_deep_validation_and_resume(tmp_path: Path) 
     loaded = load_f3d_mode_comparison_result(root)
     resumed = finalize_f3d_bundle(root, resume=True)
     assert resumed == loaded
+
+
+def test_pretty_only_formats_root_completion(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path, pretty=True)
+
+    assert (
+        (root / "completion.json")
+        .read_text(encoding="utf-8")
+        .startswith('{\n  "artifact_schema_version"')
+    )
+    assert b"\n  " not in (root / "reports" / "cells.json").read_bytes()
+    assert validate_completed_f3d_bundle(root)
 
 
 def test_deep_validation_rejects_same_size_reference_file_replacement(
@@ -368,6 +385,40 @@ def test_rehashed_cell_resolved_config_tamper_is_rejected(tmp_path: Path) -> Non
     _rehash_report(root, "cells.json")
 
     with pytest.raises(F3ResultValidationError, match="resolved_config"):
+        validate_completed_f3d_bundle(root)
+
+
+def test_rehashed_stage_report_crop_semantics_are_rejected(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    fingerprint = loaded.cells[0].stages.thinning
+    stage = root / "stages" / "thinning" / fingerprint
+
+    report_path = stage / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["crop_shape"] = list(loaded.volume_shape)
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    report_metadata = artifact_file_metadata(report_path)
+
+    manifest_path = stage / "stage_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["report.json"] = report_metadata
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+
+    stage_completion_path = stage / "complete.json"
+    stage_completion = json.loads(stage_completion_path.read_text(encoding="utf-8"))
+    stage_completion["files"]["report.json"] = report_metadata
+    stage_completion["files"]["stage_manifest.json"] = artifact_file_metadata(manifest_path)
+    stage_completion_path.write_bytes(canonical_json_bytes(stage_completion) + b"\n")
+
+    root_completion_path = root / "completion.json"
+    root_completion = json.loads(root_completion_path.read_text(encoding="utf-8"))
+    root_completion["stage_completions"][f"thinning/{fingerprint}"] = artifact_file_metadata(
+        stage_completion_path
+    )
+    root_completion_path.write_bytes(canonical_json_bytes(root_completion) + b"\n")
+
+    with pytest.raises(F3ResultValidationError, match="crop/tile/center"):
         validate_completed_f3d_bundle(root)
 
 
@@ -733,6 +784,35 @@ def test_rehashed_regional_count_tamper_is_rejected(tmp_path: Path) -> None:
     metrics = json.loads(rows[0]["metrics"])
     metrics["voxel_count"] += 1
     rows[0]["metrics"] = json.dumps(metrics, separators=(",", ":"), sort_keys=True)
+    _write_csv_rows(report, fieldnames, rows)
+    _rehash_report(root, "regional_metrics.csv")
+
+    with pytest.raises(F3ResultValidationError, match="regional counts"):
+        validate_completed_f3d_bundle(root)
+
+
+def test_coordinated_regional_partition_count_tamper_is_rejected(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / "regional_metrics.csv"
+    fieldnames, rows = _csv_rows(report)
+    interior_row, boundary_row = rows[:2]
+    assert interior_row["region"] == "interior"
+    assert boundary_row["region"] == "boundary_shell"
+
+    interior_metrics = json.loads(interior_row["metrics"])
+    boundary_metrics = dict(interior_metrics)
+    interior_metrics["voxel_count"] -= 1
+    boundary_metrics["voxel_count"] = 1
+    interior_row["metrics"] = json.dumps(
+        interior_metrics,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    boundary_row["metrics"] = json.dumps(
+        boundary_metrics,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     _write_csv_rows(report, fieldnames, rows)
     _rehash_report(root, "regional_metrics.csv")
 

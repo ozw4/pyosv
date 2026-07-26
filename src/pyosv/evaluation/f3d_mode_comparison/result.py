@@ -283,12 +283,13 @@ def finalize_f3d_bundle(
     *,
     resume: bool = False,
     deep: bool = False,
+    pretty: bool = False,
     _dataset_spec: F3DatasetSpec | None = None,
 ) -> F3ModeComparisonResult:
     """Write all reports and publish root completion as the final operation."""
 
-    if not isinstance(resume, bool) or not isinstance(deep, bool):
-        raise TypeError("resume and deep must be bool")
+    if not isinstance(resume, bool) or not isinstance(deep, bool) or not isinstance(pretty, bool):
+        raise TypeError("resume, deep, and pretty must be bool")
     root = _workspace_path(workspace)
     completion_path = root / RUN_COMPLETION_FILE
     if completion_path.exists() or completion_path.is_symlink():
@@ -345,7 +346,7 @@ def finalize_f3d_bundle(
         }
         atomic_write_artifact(
             completion_path,
-            canonical_json_bytes(completion) + b"\n",
+            _completion_json_bytes(completion, pretty=pretty),
             temporary_prefix=".completion.json.tmp-",
         )
         validate_completed_f3d_bundle(
@@ -484,6 +485,21 @@ def validate_f3d_mode_comparison_result(
 finalize_f3d_mode_comparison_result = finalize_f3d_bundle
 load_f3d_result_bundle = load_f3d_mode_comparison_result
 validate_f3d_result = validate_f3d_mode_comparison_result
+
+
+def _completion_json_bytes(value: Mapping[str, Any], *, pretty: bool) -> bytes:
+    if not pretty:
+        return canonical_json_bytes(value) + b"\n"
+    return (
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def _serialize_reports(result: F3ModeComparisonResult) -> dict[str, bytes]:
@@ -900,6 +916,7 @@ def _validate_cell_stage_reports(
             root / "stages" / kind / fingerprint / "report.json",
             f"{kind} report",
         )
+        _reject_crop_semantics(report)
         if tuple(report.get("shape", ())) != shape:
             raise F3ResultValidationError(f"{kind} report shape mismatch")
         if any(report.get(name) != value for name, value in expected.items()):
@@ -1581,7 +1598,9 @@ def _validate_regional_rows(result: F3ModeComparisonResult, plan_value: Any) -> 
             raise F3ResultValidationError("regional source stage fingerprint mismatch")
         groups.setdefault((row.cell_label, row.stage), {})[row.region] = row
         _validate_regional_metric_algebra(row.metrics)
-    voxel_count = int(np.prod(result.volume_shape))
+    voxel_count = math.prod(result.volume_shape)
+    interior_voxel_count = math.prod(size - 2 * boundary_margin for size in result.volume_shape)
+    boundary_voxel_count = voxel_count - interior_voxel_count
     margins = {row.boundary_margin for row in result.regional_rows}
     if len(margins) != 1:
         raise F3ResultValidationError("regional rows have mixed boundary margins")
@@ -1598,7 +1617,11 @@ def _validate_regional_rows(result: F3ModeComparisonResult, plan_value: Any) -> 
         full_count = full_counts[identity]
         interior_count = int(rows["interior"].metrics["voxel_count"])
         boundary_count = int(rows["boundary_shell"].metrics["voxel_count"])
-        if full_count != interior_count + boundary_count or full_count != voxel_count:
+        if (
+            full_count != voxel_count
+            or interior_count != interior_voxel_count
+            or boundary_count != boundary_voxel_count
+        ):
             raise F3ResultValidationError("regional counts do not partition the full volume")
 
 

@@ -315,7 +315,7 @@ def test_complete_resume_validates_without_compute(
     assert seen == [(output, True)]
 
 
-def test_failed_post_run_validation_removes_only_new_root_completion(
+def test_requested_deep_validation_is_part_of_atomic_finalization(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -390,28 +390,25 @@ def test_failed_post_run_validation_removes_only_new_root_completion(
     )
 
     def fake_finalize(*args: object, **kwargs: object) -> None:
-        assert kwargs["deep"] is False
-        (output / "completion.json").write_text("{}\n", encoding="utf-8")
+        assert kwargs["deep"] is True
+        assert kwargs["pretty"] is True
+        raise ValueError("deep validation failed before completion")
 
     monkeypatch.setattr(f3d_mode_comparison, "finalize_f3d_bundle", fake_finalize)
-
-    def fail_validation(path: Path, deep: bool = False) -> bool:
-        assert deep is True
-        raise ValueError("deep validation failed")
-
     monkeypatch.setattr(
         f3d_mode_comparison,
         "validate_completed_f3d_bundle",
-        fail_validation,
+        lambda *args, **kwargs: pytest.fail("new runs validate inside finalization"),
     )
 
-    with pytest.raises(ValueError, match="deep validation failed"):
+    with pytest.raises(ValueError, match="deep validation failed before completion"):
         f3d_mode_comparison.run_experiment(
             config=F3ModeComparisonConfig(),
             data_root=data,
             output_dir=output,
             resume=True,
             deep=True,
+            pretty=True,
         )
 
     assert not (output / "completion.json").exists()

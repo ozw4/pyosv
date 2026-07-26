@@ -97,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pretty",
         action="store_true",
-        help="Request human-readable JSON formatting where the bundle contract permits it.",
+        help="Pretty-print root completion JSON; fixed report files remain canonical.",
     )
     parser.add_argument(
         "--no-skinning",
@@ -125,9 +125,6 @@ def run_experiment(
 ) -> Path:
     """Run or resume one canonical comparison and return its bundle path."""
 
-    # JSON bytes are canonical parts of the F3 result contract. ``pretty`` is
-    # accepted by the public CLI uniformly but cannot alter those bytes.
-    del pretty
     plan = build_f3d_mode_comparison_plan(config)
     root = Path(output_dir)
     completion: Path | None = None
@@ -181,8 +178,13 @@ def run_experiment(
                 diagnostics=diagnostics,
                 resources=resources,
             )
-            finalize_f3d_bundle(workspace, result, resume=resume, deep=False)
-            validate_completed_f3d_bundle(workspace.path, deep=deep)
+            finalize_f3d_bundle(
+                workspace,
+                result,
+                resume=resume,
+                deep=deep,
+                pretty=pretty,
+            )
             return workspace.path
     except Exception:
         if completion is not None and not completion_preexisted and os.path.lexists(completion):
