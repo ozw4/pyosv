@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -111,7 +112,14 @@ def test_validate_only_uses_existing_bundle_without_experiment(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    data = tmp_path / "data"
     output = tmp_path / "bundle"
+    data.mkdir()
+    output.mkdir()
+    (output / "run_manifest.json").write_text(
+        json.dumps({"provenance": {"data_root": str(data)}}),
+        encoding="utf-8",
+    )
     seen: list[tuple[Path, bool]] = []
     monkeypatch.delenv("PYOSV_F3D_DATA_ROOT", raising=False)
 
@@ -137,6 +145,31 @@ def test_validate_only_uses_existing_bundle_without_experiment(
     assert code == 0
     assert seen == [(output, True)]
     assert capsys.readouterr().out == f"{output}\n"
+
+
+def test_validate_only_uses_manifest_data_root_for_nesting_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = tmp_path / "data"
+    output = data / "bundle"
+    output.mkdir(parents=True)
+    (output / "run_manifest.json").write_text(
+        json.dumps({"provenance": {"data_root": str(data)}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PYOSV_F3D_DATA_ROOT", raising=False)
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_completed_f3d_bundle",
+        lambda *args, **kwargs: pytest.fail("nested bundle must fail preflight"),
+    )
+
+    code = f3d_mode_comparison.main(["--output-dir", str(output), "--validate-only"])
+
+    assert code == 1
+    assert "inside the F3 data root" in capsys.readouterr().err
 
 
 def test_main_rejects_existing_new_output_and_data_nested_output(

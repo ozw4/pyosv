@@ -31,9 +31,7 @@ from .artifacts import (
     canonical_json_bytes,
     validate_stage,
 )
-from pyosv.f3d_reference import F3D_DTYPE, F3D_SHAPE
-
-from .data import F3_DATASET_ID, F3_FILE_ROLES
+from .data import F3DatasetSpec, OFFICIAL_F3_DATASET_SPEC
 from .diagnostics import (
     F3_DIAGNOSTIC_REGIONS,
     F3_ORIENTATION_PAIRS,
@@ -65,6 +63,7 @@ from .resources import (
     RSSSnapshot,
     StageResourceRow,
     StorageRow,
+    storage_report,
 )
 from .runner import (
     F3_CELL_RUNNER_CONTRACT_VERSION,
@@ -73,8 +72,11 @@ from .runner import (
     F3_VOTING_STAGE_IMPLEMENTATION,
     F3CellReference,
     F3CellStageFingerprints,
+    skinning_stage_artifacts,
+    thinning_stage_artifacts,
+    voting_stage_artifacts,
 )
-from .scanner import scanner_stage_resolved_settings
+from .scanner import scanner_stage_artifacts, scanner_stage_resolved_settings
 from ..synthetic_quality.config import SyntheticVotingConfig
 from ..synthetic_quality.stage_keys import (
     build_final_thinning_stage_key,
@@ -228,10 +230,11 @@ class F3ModeComparisonResult:
         metrics: Any,
         diagnostics: Any,
         resources: Any,
+        _dataset_spec: F3DatasetSpec | None = None,
     ) -> F3ModeComparisonResult:
         """Build the result from the stable extraction objects."""
 
-        dataset = _dataset_contract(workspace.manifest)
+        dataset = _dataset_contract(workspace.manifest, _dataset_spec)
         return cls(
             run_fingerprint=workspace.fingerprint,
             dataset_id=dataset["dataset_id"],
@@ -280,6 +283,7 @@ def finalize_f3d_bundle(
     *,
     resume: bool = False,
     deep: bool = False,
+    _dataset_spec: F3DatasetSpec | None = None,
 ) -> F3ModeComparisonResult:
     """Write all reports and publish root completion as the final operation."""
 
@@ -290,11 +294,20 @@ def finalize_f3d_bundle(
     if completion_path.exists() or completion_path.is_symlink():
         if not resume:
             raise FileExistsError(f"completed F3 bundle already exists: {root}")
-        return load_f3d_mode_comparison_result(root, deep=deep)
+        return load_f3d_mode_comparison_result(
+            root,
+            deep=deep,
+            _dataset_spec=_dataset_spec,
+        )
     if result is None:
         raise F3ResultValidationError("incomplete workspace has no result to finalize")
 
-    validate_f3d_mode_comparison_result(root, result, deep=False)
+    validate_f3d_mode_comparison_result(
+        root,
+        result,
+        deep=False,
+        _dataset_spec=_dataset_spec,
+    )
     report_payloads = _serialize_reports(result)
     reports = root / "reports"
     _require_directory(reports, "reports directory")
@@ -310,7 +323,12 @@ def finalize_f3d_bundle(
                 temporary_prefix=f".{filename}.tmp-",
             )
         loaded = _load_reports(root)
-        validate_f3d_mode_comparison_result(root, loaded, deep=deep)
+        validate_f3d_mode_comparison_result(
+            root,
+            loaded,
+            deep=deep,
+            _dataset_spec=_dataset_spec,
+        )
         report_metadata = {
             filename: artifact_file_metadata(reports / filename) for filename in F3_REPORT_FILES
         }
@@ -330,7 +348,11 @@ def finalize_f3d_bundle(
             canonical_json_bytes(completion) + b"\n",
             temporary_prefix=".completion.json.tmp-",
         )
-        validate_completed_f3d_bundle(root, deep=deep)
+        validate_completed_f3d_bundle(
+            root,
+            deep=deep,
+            _dataset_spec=_dataset_spec,
+        )
     except BaseException:
         completion_path.unlink(missing_ok=True)
         _cleanup_report_temporaries(reports)
@@ -342,16 +364,19 @@ def load_f3d_mode_comparison_result(
     path: str | os.PathLike[str],
     *,
     deep: bool = False,
+    _dataset_spec: F3DatasetSpec | None = None,
 ) -> F3ModeComparisonResult:
     """Strictly load a completed bundle after all hashes and semantics pass."""
 
-    validate_completed_f3d_bundle(path, deep=deep)
+    validate_completed_f3d_bundle(path, deep=deep, _dataset_spec=_dataset_spec)
     return _load_reports(Path(path))
 
 
 def validate_completed_f3d_bundle(
     path: str | os.PathLike[str],
     deep: bool = False,
+    *,
+    _dataset_spec: F3DatasetSpec | None = None,
 ) -> bool:
     """Validate completion, reports, stages, and cross-file semantic relations."""
 
@@ -401,7 +426,12 @@ def validate_completed_f3d_bundle(
     result = _load_reports(root)
     if result.run_fingerprint != completion["run_fingerprint"]:
         raise F3ResultValidationError("result run fingerprint mismatch")
-    validate_f3d_mode_comparison_result(root, result, deep=deep)
+    validate_f3d_mode_comparison_result(
+        root,
+        result,
+        deep=deep,
+        _dataset_spec=_dataset_spec,
+    )
     actual_stages = _referenced_stage_completion_metadata(root, result.cells)
     if completion["stage_completions"] != actual_stages:
         raise F3ResultValidationError("referenced stage completion digest mismatch")
@@ -413,6 +443,7 @@ def validate_f3d_mode_comparison_result(
     result: F3ModeComparisonResult,
     *,
     deep: bool = False,
+    _dataset_spec: F3DatasetSpec | None = None,
 ) -> bool:
     """Validate one in-memory result against its immutable run workspace."""
 
@@ -420,9 +451,14 @@ def validate_f3d_mode_comparison_result(
         raise TypeError("result must be an F3ModeComparisonResult")
     if not isinstance(deep, bool):
         raise TypeError("deep must be bool")
+    if _dataset_spec is not None and not isinstance(_dataset_spec, F3DatasetSpec):
+        raise TypeError("_dataset_spec must be an F3DatasetSpec or None")
     root = _workspace_path(workspace)
     manifest = _validated_run_manifest(root)
-    dataset = _dataset_contract(manifest)
+    dataset = _dataset_contract(
+        manifest,
+        OFFICIAL_F3_DATASET_SPEC if _dataset_spec is None else _dataset_spec,
+    )
     if (
         result.run_fingerprint != manifest["run_fingerprint"]
         or result.dataset_id != dataset["dataset_id"]
@@ -436,7 +472,7 @@ def validate_f3d_mode_comparison_result(
     _validate_voxelwise_contrasts(result)
     _validate_regional_rows(result, manifest["plan"])
     _validate_orientation_rows(result)
-    _validate_resource_rows(result)
+    _validate_resource_rows(root, result)
     if deep:
         _deep_validate_reference_metrics(root, result, dataset)
         _deep_validate_voxelwise_contrasts(root, result)
@@ -604,7 +640,14 @@ def _validated_run_manifest(root: Path) -> dict[str, Any]:
     return manifest
 
 
-def _dataset_contract(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _dataset_contract(
+    manifest: Mapping[str, Any],
+    expected_spec: F3DatasetSpec | None = None,
+) -> dict[str, Any]:
+    if expected_spec is None:
+        expected_spec = OFFICIAL_F3_DATASET_SPEC
+    if not isinstance(expected_spec, F3DatasetSpec):
+        raise TypeError("expected_spec must be an F3DatasetSpec")
     identity = manifest.get("dataset_identity")
     if not isinstance(identity, Mapping) or set(identity) != {"dataset_id", "files"}:
         raise F3ResultValidationError("run manifest dataset identity is invalid")
@@ -663,14 +706,35 @@ def _dataset_contract(manifest: Mapping[str, Any]) -> dict[str, Any]:
             or np.dtype(spec.get("storage_dtype", "")).str != layout[1]
         ):
             raise F3ResultValidationError("plan and dataset identity layout mismatch")
-    if dataset_id != F3_DATASET_ID:
-        raise F3ResultValidationError("dataset ID must be the official F3 dataset ID")
-    if layout[0] != F3D_SHAPE:
-        raise F3ResultValidationError(f"dataset shape must be the official F3 shape {F3D_SHAPE}")
-    if layout[1] != F3D_DTYPE:
-        raise F3ResultValidationError(f"dataset dtype must be the official F3 dtype {F3D_DTYPE}")
-    if tuple(roles) != tuple(role for role, _ in F3_FILE_ROLES):
-        raise F3ResultValidationError("official dataset role coverage mismatch")
+    official = expected_spec == OFFICIAL_F3_DATASET_SPEC
+    if dataset_id != expected_spec.dataset_id:
+        message = (
+            "dataset ID must be the official F3 dataset ID"
+            if official
+            else "dataset ID does not match the injected dataset spec"
+        )
+        raise F3ResultValidationError(message)
+    if layout[0] != expected_spec.shape:
+        message = (
+            f"dataset shape must be the official F3 shape {expected_spec.shape}"
+            if official
+            else "dataset shape does not match the injected dataset spec"
+        )
+        raise F3ResultValidationError(message)
+    if layout[1] != expected_spec.storage_dtype:
+        message = (
+            f"dataset dtype must be the official F3 dtype {expected_spec.storage_dtype}"
+            if official
+            else "dataset dtype does not match the injected dataset spec"
+        )
+        raise F3ResultValidationError(message)
+    if tuple(roles) != expected_spec.roles:
+        message = (
+            "official dataset role coverage mismatch"
+            if official
+            else "dataset role coverage does not match the injected dataset spec"
+        )
+        raise F3ResultValidationError(message)
     return {
         "dataset_id": dataset_id,
         "shape": layout[0],
@@ -873,6 +937,28 @@ def _validate_referenced_stage(
     schema = computation.get("artifact_schema")
     if not isinstance(schema, Mapping) or not schema:
         raise F3ResultValidationError(f"{kind} artifact schema is invalid")
+    settings = computation["resolved_settings"]
+    if not isinstance(settings, Mapping):
+        raise F3ResultValidationError(f"{kind} stage resolved_settings is invalid")
+    try:
+        if kind == "scanner":
+            backend = settings.get("backend")
+            if backend not in {"reference-like", "quality"}:
+                raise ValueError("scanner backend is invalid")
+            canonical_artifacts = scanner_stage_artifacts(shape, backend)
+        elif kind == "voting":
+            canonical_artifacts = voting_stage_artifacts(shape)
+        elif kind == "thinning":
+            canonical_artifacts = thinning_stage_artifacts(shape)
+        elif kind == "skinning":
+            canonical_artifacts = skinning_stage_artifacts(shape, enabled=True)
+        else:
+            raise ValueError("stage kind is invalid")
+    except (TypeError, ValueError) as error:
+        raise F3ResultValidationError(f"{kind} canonical artifact schema is invalid") from error
+    canonical_schema = {artifact.filename: artifact.as_dict() for artifact in canonical_artifacts}
+    if schema != canonical_schema:
+        raise F3ResultValidationError(f"{kind} canonical artifact schema mismatch")
     for descriptor in schema.values():
         if not isinstance(descriptor, Mapping):
             raise F3ResultValidationError(f"{kind} artifact descriptor is invalid")
@@ -882,9 +968,6 @@ def _validate_referenced_stage(
         if descriptor.get("format") == "dat" and descriptor.get("dtype") != ">f4":
             raise F3ResultValidationError(f"{kind} stage dtype mismatch")
     validate_stage(stage_path, computation, fingerprint)
-    settings = computation["resolved_settings"]
-    if not isinstance(settings, Mapping):
-        raise F3ResultValidationError(f"{kind} stage resolved_settings is invalid")
     return settings
 
 
@@ -1643,7 +1726,7 @@ def _validate_summary(summary: Mapping[str, Any], support_count: int) -> None:
         raise F3ResultValidationError("orientation percentile order mismatch")
 
 
-def _validate_resource_rows(result: F3ModeComparisonResult) -> None:
+def _validate_resource_rows(root: Path, result: F3ModeComparisonResult) -> None:
     referenced = _referenced_stage_keys(result.cells)
     actual = {(row.stage_kind, row.fingerprint) for row in result.runtime_rows}
     if actual != referenced:
@@ -1698,6 +1781,16 @@ def _validate_resource_rows(result: F3ModeComparisonResult) -> None:
             raise F3ResultValidationError("runtime consumer mapping mismatch")
         if row.voxel_count != int(np.prod(result.volume_shape)):
             raise F3ResultValidationError("runtime voxel count mismatch")
+    for key in referenced:
+        rows = [row for row in result.runtime_rows if (row.stage_kind, row.fingerprint) == key]
+        states = tuple(row.state for row in rows)
+        if states not in {
+            ("reused",) * len(rows),
+            ("computed", *(("reused",) * (len(rows) - 1))),
+        }:
+            raise F3ResultValidationError(
+                "runtime computed/reused stage multiplicity is infeasible"
+            )
     stage_storage = {
         (row.stage_kind, row.fingerprint) for row in result.storage_rows if row.scope == "stage"
     }
@@ -1710,6 +1803,23 @@ def _validate_resource_rows(result: F3ModeComparisonResult) -> None:
         raise F3ResultValidationError("resource storage stage coverage mismatch")
     if sum(row.scope == "workspace" for row in result.storage_rows) != 1:
         raise F3ResultValidationError("resource storage requires one workspace row")
+    current_storage = storage_report(root)
+    actual_stage_storage = {
+        (row.stage_kind, row.fingerprint): row
+        for row in current_storage
+        if row.scope == "stage" and (row.stage_kind, row.fingerprint) in referenced
+    }
+    reported_stage_storage = {
+        (row.stage_kind, row.fingerprint): row
+        for row in result.storage_rows
+        if row.scope == "stage"
+    }
+    if reported_stage_storage != actual_stage_storage:
+        raise F3ResultValidationError("resource stage storage values mismatch")
+    workspace_row = next(row for row in result.storage_rows if row.scope == "workspace")
+    actual_workspace_row = next(row for row in current_storage if row.scope == "workspace")
+    if workspace_row != actual_workspace_row:
+        raise F3ResultValidationError("resource workspace storage values mismatch")
     rss_points = [(row.scope, row.point) for row in result.rss_snapshots]
     if len(rss_points) != len(set(rss_points)):
         raise F3ResultValidationError("duplicate RSS snapshot")

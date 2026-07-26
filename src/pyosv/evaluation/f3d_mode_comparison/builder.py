@@ -8,7 +8,7 @@ from pyosv.f3d_reference import F3D_SHAPE
 
 from ..synthetic_quality import resolve_workflow_settings
 from .config import F3ModeComparisonConfig
-from .data import OFFICIAL_F3_DATASET_SPEC
+from .data import F3DatasetSpec, OFFICIAL_F3_DATASET_SPEC
 from .models import (
     F3FixedControlEvidence,
     F3ModeComparisonPlan,
@@ -27,6 +27,33 @@ def build_f3d_mode_comparison_plan(
         raise ValueError(f"shape must be the official F3 shape {F3D_SHAPE}")
     if config.input_file != "ep.dat":
         raise ValueError("input_file must be 'ep.dat'")
+    return _build_plan(config, OFFICIAL_F3_DATASET_SPEC, allow_custom_dataset=False)
+
+
+def _build_f3d_mode_comparison_plan(
+    config: F3ModeComparisonConfig,
+    dataset_spec: F3DatasetSpec,
+) -> F3ModeComparisonPlan:
+    """Build a non-public fixture plan with an explicitly injected dataset spec."""
+
+    if not isinstance(config, F3ModeComparisonConfig):
+        raise ValueError("config must be an F3ModeComparisonConfig")
+    if not isinstance(dataset_spec, F3DatasetSpec):
+        raise ValueError("dataset_spec must be an F3DatasetSpec")
+    if config.shape != dataset_spec.shape:
+        raise ValueError("config shape must match the injected dataset spec")
+    if config.input_file != dataset_spec.input_file:
+        raise ValueError("config input_file must match the injected dataset spec")
+    return _build_plan(config, dataset_spec, allow_custom_dataset=True)
+
+
+def _build_plan(
+    config: F3ModeComparisonConfig,
+    dataset_spec: F3DatasetSpec,
+    *,
+    allow_custom_dataset: bool,
+) -> F3ModeComparisonPlan:
+    """Resolve controls shared by the public and internal plan builders."""
 
     scanner = config.scanner_template
     if scanner.backend != "reference-like":
@@ -67,7 +94,7 @@ def build_f3d_mode_comparison_plan(
         **workflow_common,
     )
     return F3ModeComparisonPlan(
-        dataset_spec=OFFICIAL_F3_DATASET_SPEC,
+        dataset_spec=dataset_spec,
         cells=canonical_f3_cells(),
         reference_like_scanner_config=scanner,
         quality_scanner_config=replace(scanner, backend="quality"),
@@ -92,4 +119,5 @@ def build_f3d_mode_comparison_plan(
             refinement_factor=scanner.refinement_factor,
             voting_controls=config.voting_controls,
         ),
+        _allow_custom_dataset_spec=allow_custom_dataset,
     )

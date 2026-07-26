@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import InitVar, asdict, dataclass, replace
 from typing import Any, Literal
 
 from ..synthetic_quality import (
@@ -83,9 +83,12 @@ class F3ModeComparisonPlan:
     reference_workflow_settings: ResolvedWorkflowSettings
     quality_workflow_settings: ResolvedWorkflowSettings
     fixed_control_evidence: F3FixedControlEvidence
+    _allow_custom_dataset_spec: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
-        if self.dataset_spec != OFFICIAL_F3_DATASET_SPEC:
+    def __post_init__(self, _allow_custom_dataset_spec: bool) -> None:
+        if not isinstance(_allow_custom_dataset_spec, bool):
+            raise ValueError("_allow_custom_dataset_spec must be a bool")
+        if self.dataset_spec != OFFICIAL_F3_DATASET_SPEC and not _allow_custom_dataset_spec:
             raise ValueError("dataset_spec must be the official F3 dataset spec")
         if self.cells != canonical_f3_cells():
             raise ValueError("cells must match the canonical F3 cells and order")

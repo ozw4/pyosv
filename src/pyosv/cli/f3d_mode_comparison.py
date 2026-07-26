@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from pyosv.evaluation.f3d_mode_comparison.artifacts import RUN_MANIFEST_FILE
 from pyosv.evaluation.f3d_mode_comparison import (
     RUN_COMPLETION_FILE,
     F3ModeComparisonConfig,
@@ -188,6 +190,23 @@ def run_experiment(
         raise
 
 
+def _recorded_data_root(bundle: Path) -> Path:
+    manifest_path = bundle / RUN_MANIFEST_FILE
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read bundle data-root provenance: {manifest_path}") from error
+    if not isinstance(payload, Mapping):
+        raise ValueError("bundle run manifest must contain an object")
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise ValueError("bundle run manifest has no data-root provenance")
+    data_root = provenance.get("data_root")
+    if not isinstance(data_root, str) or not data_root:
+        raise ValueError("bundle run manifest has invalid data-root provenance")
+    return Path(data_root)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Execute, resume, or validate a canonical F3 comparison."""
 
@@ -198,13 +217,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             configured_data_root = (
                 args.data_root if args.data_root is not None else os.environ.get(F3D_ENV_VAR)
             )
-            if configured_data_root is None:
-                bundle = args.output_dir.resolve(strict=False)
-            else:
-                bundle = ensure_output_not_in_data_root(
-                    args.output_dir,
-                    configured_data_root,
-                )
+            requested_bundle = args.output_dir.resolve(strict=False)
+            data_root = (
+                _recorded_data_root(requested_bundle)
+                if configured_data_root is None
+                else Path(configured_data_root)
+            )
+            bundle = ensure_output_not_in_data_root(requested_bundle, data_root)
             validate_completed_f3d_bundle(bundle, deep=args.deep_validate)
         else:
             data_root = resolve_f3d_data_root(args.data_root).resolve(strict=False)

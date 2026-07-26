@@ -344,7 +344,7 @@ def scanner_stage_resource_rows(
 
 
 def storage_report(workspace: F3RunWorkspace | str | os.PathLike[str]) -> tuple[StorageRow, ...]:
-    """Count each physical workspace file and each stage artifact exactly once."""
+    """Count each stage and the stable, pre-publication workspace exactly once."""
 
     root = workspace.path if isinstance(workspace, F3RunWorkspace) else Path(workspace)
     if not root.is_dir() or root.is_symlink():
@@ -371,7 +371,11 @@ def storage_report(workspace: F3RunWorkspace | str | os.PathLike[str]) -> tuple[
                         count,
                     )
                 )
-    logical, actual, allocated, count = _directory_storage(root)
+    logical, actual, allocated, count = _directory_storage(
+        root,
+        excluded_roots=(root / "reports",),
+        excluded_files=(root / "completion.json",),
+    )
     rows.append(
         StorageRow(
             F3_RESOURCE_SCHEMA_VERSION,
@@ -458,7 +462,12 @@ def _stage_snapshot_point(
     return ":".join(parts)
 
 
-def _directory_storage(path: Path) -> tuple[int, int, int | None, int]:
+def _directory_storage(
+    path: Path,
+    *,
+    excluded_roots: tuple[Path, ...] = (),
+    excluded_files: tuple[Path, ...] = (),
+) -> tuple[int, int, int | None, int]:
     logical = 0
     actual = 0
     allocated = 0
@@ -466,6 +475,10 @@ def _directory_storage(path: Path) -> tuple[int, int, int | None, int]:
     count = 0
     seen_inodes: set[tuple[int, int]] = set()
     for candidate in sorted(path.rglob("*")):
+        if candidate in excluded_files or any(
+            candidate.is_relative_to(root) for root in excluded_roots
+        ):
+            continue
         if candidate.is_symlink() or not candidate.is_file():
             continue
         stat_result = candidate.stat(follow_symlinks=False)

@@ -41,8 +41,19 @@ from .test_runner import _LoadedScanner, _scanner_stage
 def _small_official_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise the canonical-only validator without allocating the full F3 volume."""
 
-    monkeypatch.setattr(result_module, "F3_DATASET_ID", "result-fixture")
-    monkeypatch.setattr(result_module, "F3D_SHAPE", (3, 4, 5))
+    shape = (3, 4, 5)
+    spec = F3DatasetSpec(
+        dataset_id="result-fixture",
+        shape=shape,
+        files=(
+            ("input", "ep.dat"),
+            ("reference_fault_likelihood", "fl.dat"),
+            ("reference_fault_votes", "fv.dat"),
+            ("reference_thinned_fault_votes", "fvt.dat"),
+        ),
+        expected_bytes=int(np.prod(shape)) * np.dtype(">f4").itemsize,
+    )
+    monkeypatch.setattr(result_module, "OFFICIAL_F3_DATASET_SPEC", spec)
 
 
 def _complete_small_bundle(tmp_path: Path, *, skinning_enabled: bool = False) -> Path:
@@ -253,6 +264,54 @@ def test_rehashed_runtime_coverage_tamper_is_rejected(tmp_path: Path) -> None:
         validate_completed_f3d_bundle(root)
 
 
+def test_rehashed_shared_stage_cannot_be_reported_computed_twice(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / "runtime.csv"
+    fieldnames, rows = _csv_rows(report)
+    voting_fingerprints = [row["fingerprint"] for row in rows if row["stage_kind"] == "voting"]
+    shared = next(
+        fingerprint
+        for fingerprint in voting_fingerprints
+        if voting_fingerprints.count(fingerprint) == 2
+    )
+    shared_rows = [
+        row for row in rows if row["stage_kind"] == "voting" and row["fingerprint"] == shared
+    ]
+    for row in shared_rows:
+        row["computed"] = "true"
+        row["state"] = "computed"
+        row["elapsed_semantics"] = "compute"
+    _write_csv_rows(report, fieldnames, rows)
+    _rehash_report(root, "runtime.csv")
+
+    with pytest.raises(F3ResultValidationError, match="multiplicity is infeasible"):
+        validate_completed_f3d_bundle(root)
+
+
+@pytest.mark.parametrize(
+    ("scope", "message"),
+    [
+        ("stage", "resource stage storage values mismatch"),
+        ("workspace", "resource workspace storage values mismatch"),
+    ],
+)
+def test_rehashed_storage_counts_must_match_workspace(
+    tmp_path: Path,
+    scope: str,
+    message: str,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / "resources.json"
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    row = next(item for item in payload["storage"] if item["scope"] == scope)
+    row["file_count"] += 1
+    report.write_bytes(canonical_json_bytes(payload) + b"\n")
+    _rehash_report(root, "resources.json")
+
+    with pytest.raises(F3ResultValidationError, match=message):
+        validate_completed_f3d_bundle(root)
+
+
 @pytest.mark.parametrize("scope", ["process_peak", "stage_snapshot"])
 def test_rehashed_rss_coverage_tamper_is_rejected(
     tmp_path: Path,
@@ -363,6 +422,51 @@ def test_coherent_stage_settings_tamper_is_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_coherent_stage_refingerprint_cannot_omit_canonical_artifact(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    cell = loaded.cells[0]
+    old_stage = root / "stages" / "thinning" / cell.stages.thinning
+    manifest_path = old_stage / "stage_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_schema"].pop("fvt.dat")
+    manifest["files"].pop("fvt.dat")
+    (old_stage / "fvt.dat").unlink()
+    computation = {name: manifest[name] for name in result_module._STAGE_COMPUTATION_FIELDS}
+    new_fingerprint = canonical_fingerprint(computation)
+    manifest["fingerprint"] = new_fingerprint
+
+    report_path = old_stage / "report.json"
+    stage_report = json.loads(report_path.read_text(encoding="utf-8"))
+    stage_report["fingerprint"] = new_fingerprint
+    report_path.write_bytes(canonical_json_bytes(stage_report) + b"\n")
+    manifest["files"]["report.json"] = artifact_file_metadata(report_path)
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+
+    completion_path = old_stage / "complete.json"
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    completion["fingerprint"] = new_fingerprint
+    completion["files"].pop("fvt.dat")
+    completion["files"]["report.json"] = artifact_file_metadata(report_path)
+    completion["files"]["stage_manifest.json"] = artifact_file_metadata(manifest_path)
+    completion_path.write_bytes(canonical_json_bytes(completion) + b"\n")
+    new_stage = old_stage.with_name(new_fingerprint)
+    old_stage.rename(new_stage)
+
+    with pytest.raises(F3ResultValidationError, match="canonical artifact schema mismatch"):
+        result_module._validate_referenced_stage(
+            root,
+            "thinning",
+            new_fingerprint,
+            loaded.run_fingerprint,
+            (cell.stages.voting,),
+            {},
+            loaded.volume_shape,
+        )
+
+
 def test_deep_validation_recomputes_voxel_contrast_scalars(tmp_path: Path) -> None:
     root = _complete_small_bundle(tmp_path)
     report = root / "reports" / "voxel_contrast_summaries.csv"
@@ -436,8 +540,14 @@ def test_nonofficial_dataset_cannot_be_validated_as_canonical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _complete_small_bundle(tmp_path)
-    monkeypatch.setattr(result_module, "F3_DATASET_ID", "f3d-official-v1")
-    monkeypatch.setattr(result_module, "F3D_SHAPE", (420, 400, 100))
+    monkeypatch.setattr(
+        result_module,
+        "OFFICIAL_F3_DATASET_SPEC",
+        replace(
+            result_module.OFFICIAL_F3_DATASET_SPEC,
+            dataset_id="f3d-official-v1",
+        ),
+    )
 
     with pytest.raises(F3ResultValidationError, match="official F3 dataset ID"):
         validate_completed_f3d_bundle(root)
@@ -448,7 +558,16 @@ def test_nonofficial_shape_cannot_be_validated_as_canonical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _complete_small_bundle(tmp_path)
-    monkeypatch.setattr(result_module, "F3D_SHAPE", (420, 400, 100))
+    shape = (420, 400, 100)
+    monkeypatch.setattr(
+        result_module,
+        "OFFICIAL_F3_DATASET_SPEC",
+        replace(
+            result_module.OFFICIAL_F3_DATASET_SPEC,
+            shape=shape,
+            expected_bytes=int(np.prod(shape)) * np.dtype(">f4").itemsize,
+        ),
+    )
 
     with pytest.raises(F3ResultValidationError, match="official F3 shape"):
         validate_completed_f3d_bundle(root)

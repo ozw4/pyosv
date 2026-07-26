@@ -5,7 +5,7 @@ import json
 import shutil
 import weakref
 from collections import Counter
-from dataclasses import fields
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import pyosv.evaluation.f3d_mode_comparison.artifacts as artifacts_module
+import pyosv.evaluation.f3d_mode_comparison.builder as builder_module
 import pyosv.evaluation.f3d_mode_comparison.data as data_module
 import pyosv.evaluation.f3d_mode_comparison.result as result_module
 import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
@@ -30,7 +31,6 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3WorkspaceMismatchError,
     PeakRSSRecorder,
     artifact_file_metadata,
-    build_f3d_mode_comparison_plan,
     canonical_json_bytes,
     extract_f3d_diagnostics,
     extract_f3d_metrics,
@@ -136,23 +136,17 @@ def _fixture_plan(
     spec: F3DatasetSpec,
     config: F3ModeComparisonConfig | None = None,
 ) -> F3ModeComparisonPlan:
-    """Clone the canonical plan while keeping the public builder official-only."""
+    """Build a supported non-public plan with an injected fixture dataset."""
 
-    canonical = build_f3d_mode_comparison_plan(
+    fixture_config = replace(
         config
         or F3ModeComparisonConfig(
             boundary_diagnostic_margin=0,
             skinning_enabled=True,
         ),
+        shape=spec.shape,
     )
-    plan = object.__new__(F3ModeComparisonPlan)
-    for item in fields(F3ModeComparisonPlan):
-        object.__setattr__(
-            plan,
-            item.name,
-            spec if item.name == "dataset_spec" else getattr(canonical, item.name),
-        )
-    return plan
+    return builder_module._build_f3d_mode_comparison_plan(fixture_config, spec)
 
 
 def _run_fixture(
@@ -169,8 +163,6 @@ def _run_fixture(
     workflow_implementation_identity: str = "small-fixture-workflow-v1",
     scanner_factory: Any = None,
 ) -> F3ModeComparisonResult:
-    monkeypatch.setattr(result_module, "F3_DATASET_ID", spec.dataset_id)
-    monkeypatch.setattr(result_module, "F3D_SHAPE", spec.shape)
     plan = _fixture_plan(spec, plan_config)
     with F3VolumeSource(data_root, spec=spec) as source:
         workspace = prepare_run_workspace(
@@ -182,7 +174,11 @@ def _run_fixture(
         )
         if (workspace.path / "completion.json").exists():
             calls["complete result load"] += 1
-            return load_f3d_mode_comparison_result(workspace.path, deep=True)
+            return load_f3d_mode_comparison_result(
+                workspace.path,
+                deep=True,
+                _dataset_spec=spec,
+            )
 
         rss = PeakRSSRecorder(lambda: 0, source="fixture", semantics="fixture")
         resolved_scanner_factory = scanner_factory or (
@@ -230,8 +226,15 @@ def _run_fixture(
             metrics=metrics,
             diagnostics=diagnostics,
             resources=resources,
+            _dataset_spec=spec,
         )
-        return finalize_f3d_bundle(workspace, result, resume=resume, deep=True)
+        return finalize_f3d_bundle(
+            workspace,
+            result,
+            resume=resume,
+            deep=True,
+            _dataset_spec=spec,
+        )
 
 
 def _csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -330,8 +333,12 @@ def test_small_external_style_fixture_end_to_end_and_complete_resume(
         "run_manifest.json",
         "stages",
     ]
-    assert validate_completed_f3d_bundle(output_root)
-    assert validate_completed_f3d_bundle(output_root, deep=True)
+    assert validate_completed_f3d_bundle(output_root, _dataset_spec=spec)
+    assert validate_completed_f3d_bundle(
+        output_root,
+        deep=True,
+        _dataset_spec=spec,
+    )
 
     cell_report = json.loads((output_root / "reports" / "cells.json").read_text())
     assert [row["label"] for row in cell_report["cells"]] == [
@@ -459,7 +466,11 @@ def test_incomplete_resume_reuses_independent_stages(
     assert resume_calls["workflow callback"] == expected_workflows[missing_kind]
     assert resume_calls["metric callback"] == 1
     assert (untouched / "complete.json").read_bytes() == untouched_completion
-    assert validate_completed_f3d_bundle(output_root, deep=True)
+    assert validate_completed_f3d_bundle(
+        output_root,
+        deep=True,
+        _dataset_spec=spec,
+    )
 
 
 @pytest.mark.parametrize("filename", ["ep.dat", "fl.dat"])
@@ -632,7 +643,11 @@ def test_stage_implementation_change_invalidates_only_dependent_cache(
         for left, right in zip(first.cells, second.cells, strict=True)
     )
     assert all(path.read_bytes() == payload for path, payload in old_stage_completions.items())
-    assert validate_completed_f3d_bundle(output_root, deep=True)
+    assert validate_completed_f3d_bundle(
+        output_root,
+        deep=True,
+        _dataset_spec=spec,
+    )
 
 
 @pytest.mark.parametrize(
@@ -690,7 +705,11 @@ def test_corrupt_and_partial_fixture_artifacts_are_rejected(
         completion_path.write_bytes(canonical_json_bytes(completion) + b"\n")
 
     with pytest.raises((F3ArtifactError, F3ResultValidationError, ValueError)):
-        validate_completed_f3d_bundle(output_root, deep=True)
+        validate_completed_f3d_bundle(
+            output_root,
+            deep=True,
+            _dataset_spec=spec,
+        )
 
 
 def test_failure_preserves_stages_and_cleans_partial_publication(
