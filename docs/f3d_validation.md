@@ -144,7 +144,7 @@ The external full-run pytest gate is opt-in and separate from normal tests:
 PYOSV_RUN_F3D_MODE_COMPARISON=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_001 \
-python -m pytest -q tests/cli/test_f3d_mode_comparison_cli.py -s
+python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 ```
 
 Normal CLI unit tests stub orchestration and do not require F3 files or

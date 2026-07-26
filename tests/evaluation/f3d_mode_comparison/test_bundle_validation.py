@@ -45,7 +45,7 @@ def _small_official_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(result_module, "F3D_SHAPE", (3, 4, 5))
 
 
-def _complete_small_bundle(tmp_path: Path) -> Path:
+def _complete_small_bundle(tmp_path: Path, *, skinning_enabled: bool = False) -> Path:
     shape = (3, 4, 5)
     roles = (
         ("input", "ep.dat"),
@@ -71,7 +71,7 @@ def _complete_small_bundle(tmp_path: Path) -> Path:
         (root / "stages" / kind).mkdir(parents=True)
     (root / "cells").mkdir()
     (root / "reports").mkdir()
-    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=False))
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(skinning_enabled=skinning_enabled))
     plan_payload = plan.as_dict()
     plan_payload["dataset_spec"] = asdict(spec)
     computation = {
@@ -125,6 +125,31 @@ def _complete_small_bundle(tmp_path: Path) -> Path:
         *scanner_stage_resource_rows(scanners),
         *extract_stage_resources(cell_result.stage_runtime, shape=shape),
     )
+    stage_keys = tuple(dict.fromkeys((row.stage_kind, row.fingerprint) for row in runtime))
+    rss_snapshots = (
+        *(
+            RSSSnapshot(
+                1,
+                "stage_snapshot",
+                f"{kind}:{stage_fingerprint}:fixture:{boundary}",
+                0,
+                "available",
+                "fixture",
+                "fixture",
+            )
+            for kind, stage_fingerprint in stage_keys
+            for boundary in ("before", "after")
+        ),
+        RSSSnapshot(
+            1,
+            "process_peak",
+            "fixture_end",
+            0,
+            "available",
+            "fixture",
+            "fixture",
+        ),
+    )
     result = F3ModeComparisonResult(
         fingerprint,
         spec.dataset_id,
@@ -138,17 +163,7 @@ def _complete_small_bundle(tmp_path: Path) -> Path:
         diagnostics.regional_rows,
         diagnostics.orientation_rows,
         tuple(runtime),
-        (
-            RSSSnapshot(
-                1,
-                "process_peak",
-                "fixture_end",
-                0,
-                "available",
-                "fixture",
-                "fixture",
-            ),
-        ),
+        tuple(rss_snapshots),
         storage_report(workspace),
     )
     finalize_f3d_bundle(workspace, result)
@@ -230,6 +245,48 @@ def test_rehashed_runtime_coverage_tamper_is_rejected(tmp_path: Path) -> None:
     _rehash_report(root, "runtime.csv")
 
     with pytest.raises(F3ResultValidationError, match="runtime stage coverage"):
+        validate_completed_f3d_bundle(root)
+
+
+@pytest.mark.parametrize("scope", ["process_peak", "stage_snapshot"])
+def test_rehashed_rss_coverage_tamper_is_rejected(
+    tmp_path: Path,
+    scope: str,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / "resources.json"
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["rss"] = [row for row in payload["rss"] if row["scope"] != scope]
+    report.write_bytes(canonical_json_bytes(payload) + b"\n")
+    _rehash_report(root, "resources.json")
+
+    with pytest.raises(F3ResultValidationError, match="resource RSS"):
+        validate_completed_f3d_bundle(root)
+
+
+@pytest.mark.parametrize(
+    ("filename", "message"),
+    [
+        ("metrics_long.csv", "metric row order"),
+        ("voxel_contrast_summaries.csv", "voxel contrast row order"),
+        ("regional_metrics.csv", "regional diagnostic row order"),
+        ("orientation_diagnostics.csv", "orientation diagnostic row order"),
+        ("runtime.csv", "runtime row order"),
+    ],
+)
+def test_rehashed_report_row_reordering_is_rejected(
+    tmp_path: Path,
+    filename: str,
+    message: str,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / filename
+    fieldnames, rows = _csv_rows(report)
+    rows[0], rows[1] = rows[1], rows[0]
+    _write_csv_rows(report, fieldnames, rows)
+    _rehash_report(root, filename)
+
+    with pytest.raises(F3ResultValidationError, match=message):
         validate_completed_f3d_bundle(root)
 
 
@@ -321,6 +378,51 @@ def test_deep_validation_recomputes_voxel_contrast_scalars(tmp_path: Path) -> No
 
     assert validate_completed_f3d_bundle(root)
     with pytest.raises(F3ResultValidationError, match="deep voxel contrast summary"):
+        validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_deep_validation_recomputes_skin_metric_evidence(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path, skinning_enabled=True)
+    loaded = load_f3d_mode_comparison_result(root)
+    target = next(
+        item
+        for item in loaded.metric_evidence
+        if item.cell_label == "RL-REF" and item.stage == "skin"
+    )
+    changed_counts = tuple(
+        (name, value + 1 if name == "skin_count" else value) for name, value in target.counts
+    )
+    changed_evidence = tuple(
+        replace(item, counts=changed_counts) if item is target else item
+        for item in loaded.metric_evidence
+    )
+    changed_rows = tuple(
+        replace(row, value=float(row.value) + 1.0)
+        if row.cell_label == "RL-REF" and row.stage == "skin" and row.metric == "skin_count"
+        else row
+        for row in loaded.metric_rows
+    )
+    changed_contrasts = result_module.compute_contrast_rows(
+        changed_rows,
+        changed_evidence,
+    )
+    changed = replace(
+        loaded,
+        metric_rows=changed_rows,
+        metric_evidence=changed_evidence,
+        contrast_rows=changed_contrasts,
+    )
+    payloads = result_module._serialize_reports(changed)
+    for filename in (
+        "metrics_long.csv",
+        "metric_evidence.json",
+        "contrasts.csv",
+    ):
+        (root / "reports" / filename).write_bytes(payloads[filename])
+        _rehash_report(root, filename)
+
+    assert validate_completed_f3d_bundle(root)
+    with pytest.raises(F3ResultValidationError, match="deep metric"):
         validate_completed_f3d_bundle(root, deep=True)
 
 

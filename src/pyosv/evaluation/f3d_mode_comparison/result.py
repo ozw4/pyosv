@@ -53,6 +53,7 @@ from .metrics import (
     VoxelwiseContrastSummary,
     compute_contrast_rows,
     compute_reference_metric_rows,
+    compute_skin_metric_rows,
     validate_shared_stage_metrics,
 )
 from .models import canonical_f3_cells
@@ -1029,6 +1030,15 @@ def _validate_metrics(
     actual_row_ids = {(row.cell_label, row.stage, row.selection, row.metric) for row in rows}
     if actual_row_ids != expected_row_ids:
         raise F3ResultValidationError("metric registry coverage mismatch")
+    expected_row_order = tuple(
+        (cell.label, definition.stage, definition.selection, definition.metric)
+        for cell in result.cells
+        for definition in METRIC_REGISTRY
+        if definition.stage != "skin" or cell.skinning_enabled
+    )
+    actual_row_order = tuple((row.cell_label, row.stage, row.selection, row.metric) for row in rows)
+    if actual_row_order != expected_row_order:
+        raise F3ResultValidationError("metric row order mismatch")
     expected_evidence_ids = {
         (
             result.dataset_id,
@@ -1378,6 +1388,14 @@ def _validate_voxelwise_contrasts(result: F3ModeComparisonResult) -> None:
     actual = {(row.stage, row.contrast_name) for row in result.voxelwise_contrasts}
     if actual != expected or len(actual) != len(result.voxelwise_contrasts):
         raise F3ResultValidationError("voxel contrast coverage mismatch")
+    expected_order = tuple(
+        (stage, definition.name)
+        for stage in F3_REFERENCE_STAGE_FILES
+        for definition in CONTRAST_DEFINITIONS
+    )
+    actual_order = tuple((row.stage, row.contrast_name) for row in result.voxelwise_contrasts)
+    if actual_order != expected_order:
+        raise F3ResultValidationError("voxel contrast row order mismatch")
     by_cell = {cell.label: cell for cell in result.cells}
     for row in result.voxelwise_contrasts:
         if row.dataset_id != result.dataset_id or row.shape != result.volume_shape:
@@ -1441,6 +1459,15 @@ def _validate_regional_rows(result: F3ModeComparisonResult) -> None:
     actual = {(row.cell_label, row.stage, row.region) for row in result.regional_rows}
     if actual != expected or len(actual) != len(result.regional_rows):
         raise F3ResultValidationError("regional diagnostic coverage mismatch")
+    expected_order = tuple(
+        (cell, stage, region)
+        for stage in F3_REFERENCE_STAGE_FILES
+        for cell in _CELL_ORDER
+        for region in F3_DIAGNOSTIC_REGIONS
+    )
+    actual_order = tuple((row.cell_label, row.stage, row.region) for row in result.regional_rows)
+    if actual_order != expected_order:
+        raise F3ResultValidationError("regional diagnostic row order mismatch")
     groups: dict[tuple[str, str], dict[str, RegionalDiagnosticRow]] = {}
     for row in result.regional_rows:
         owning_cell = by_cell[row.cell_label]
@@ -1560,6 +1587,16 @@ def _validate_orientation_rows(result: F3ModeComparisonResult) -> None:
     actual = {(row.stage, row.left_cell, row.right_cell) for row in result.orientation_rows}
     if actual != expected or len(actual) != len(result.orientation_rows):
         raise F3ResultValidationError("orientation diagnostic coverage mismatch")
+    expected_order = tuple(
+        (stage, left, right)
+        for stage in ("scanner", "voting")
+        for left, right in F3_ORIENTATION_PAIRS
+    )
+    actual_order = tuple(
+        (row.stage, row.left_cell, row.right_cell) for row in result.orientation_rows
+    )
+    if actual_order != expected_order:
+        raise F3ResultValidationError("orientation diagnostic row order mismatch")
     for row in result.orientation_rows:
         if row.dataset_id != result.dataset_id:
             raise F3ResultValidationError("orientation diagnostic dataset mismatch")
@@ -1617,6 +1654,23 @@ def _validate_resource_rows(result: F3ModeComparisonResult) -> None:
     )
     if set(identities) != expected_identities:
         raise F3ResultValidationError("runtime stage-use coverage mismatch")
+    expected_order = [
+        ("scanner", fingerprint, consumers[0])
+        for fingerprint in dict.fromkeys(cell.stages.scanner for cell in result.cells)
+        if (
+            consumers := tuple(
+                cell.label for cell in result.cells if cell.stages.scanner == fingerprint
+            )
+        )
+    ]
+    expected_order.extend(
+        (kind, getattr(cell.stages, kind), cell.label)
+        for cell in result.cells
+        for kind in ("voting", "thinning", "skinning")
+        if kind != "skinning" or cell.skinning_enabled
+    )
+    if identities != expected_order:
+        raise F3ResultValidationError("runtime row order mismatch")
     for row in result.runtime_rows:
         if row.stage_kind not in {"scanner", "voting", "thinning", "skinning"}:
             raise F3ResultValidationError("unknown runtime stage kind")
@@ -1645,6 +1699,36 @@ def _validate_resource_rows(result: F3ModeComparisonResult) -> None:
     rss_points = [(row.scope, row.point) for row in result.rss_snapshots]
     if len(rss_points) != len(set(rss_points)):
         raise F3ResultValidationError("duplicate RSS snapshot")
+    if not any(row.scope == "process_peak" for row in result.rss_snapshots):
+        raise F3ResultValidationError("resource RSS requires a process-peak snapshot")
+    stage_boundaries: dict[tuple[str, str], set[str]] = {}
+    for row in result.rss_snapshots:
+        if row.scope != "stage_snapshot":
+            continue
+        stage_key, boundary = _rss_stage_boundary(row.point)
+        if stage_key not in referenced:
+            raise F3ResultValidationError("resource RSS references an unknown stage")
+        stage_boundaries.setdefault(stage_key, set()).add(boundary)
+    if set(stage_boundaries) != referenced or any(
+        boundaries != {"before", "after"} for boundaries in stage_boundaries.values()
+    ):
+        raise F3ResultValidationError("resource RSS stage-boundary coverage mismatch")
+
+
+def _rss_stage_boundary(point: str) -> tuple[tuple[str, str], str]:
+    parts = point.split(":")
+    if parts[-1].startswith("occurrence="):
+        parts = parts[:-1]
+    if len(parts) < 3 or parts[-1] not in {"before", "after"}:
+        raise F3ResultValidationError("resource RSS stage point is not canonical")
+    stage_kind, fingerprint = parts[:2]
+    if stage_kind not in {"scanner", "voting", "thinning", "skinning"}:
+        raise F3ResultValidationError("resource RSS has an unknown stage kind")
+    try:
+        _sha256(fingerprint, "resource RSS stage fingerprint")
+    except ValueError as error:
+        raise F3ResultValidationError("resource RSS stage fingerprint is invalid") from error
+    return (stage_kind, fingerprint), parts[-1]
 
 
 def _deep_validate_reference_metrics(
@@ -1719,6 +1803,28 @@ def _deep_validate_reference_metrics(
             )
             if computed_regional != stored_regional:
                 raise F3ResultValidationError("deep regional metric mismatch")
+        if cell.skinning_enabled:
+            stage_path = root / "stages" / "skinning" / cell.stages.skinning
+            report = _read_json_object(
+                stage_path / "report.json",
+                f"{cell.label} skinning report",
+            )
+            try:
+                computed_rows, computed_evidence = compute_skin_metric_rows(
+                    dataset_id=result.dataset_id,
+                    cell_label=cell.label,
+                    scanner_backend=cell.backend,
+                    workflow_mode=cell.workflow,
+                    report=report,
+                    source_stage_fingerprint=cell.stages.skinning,
+                    shape=result.volume_shape,
+                )
+            except ValueError as error:
+                raise F3ResultValidationError(
+                    f"deep skin metric report mismatch: {cell.label}"
+                ) from error
+            by_rows[(cell.label, "skin")] = computed_rows
+            by_evidence[(cell.label, "skin")] = computed_evidence
     for key, computed in by_rows.items():
         stored = tuple(row for row in result.metric_rows if (row.cell_label, row.stage) == key)
         if len(computed) != len(stored) or any(

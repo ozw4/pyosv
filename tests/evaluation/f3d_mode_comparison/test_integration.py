@@ -343,6 +343,32 @@ def test_small_external_style_fixture_end_to_end_and_complete_resume(
     metric_header, metric_rows = _csv(output_root / "reports" / "metrics_long.csv")
     assert metric_header == list(F3_METRIC_ROW_FIELDS)
     assert len(metric_rows) == 932
+    assert [
+        (row["cell_label"], row["stage"], row["selection"], row["metric"]) for row in metric_rows
+    ] == [
+        (cell.label, definition.stage, definition.selection, definition.metric)
+        for cell in first.cells
+        for definition in result_module.METRIC_REGISTRY
+    ]
+    _, voxel_rows = _csv(output_root / "reports" / "voxel_contrast_summaries.csv")
+    assert [(row["stage"], row["contrast_name"]) for row in voxel_rows] == [
+        (stage, definition.name)
+        for stage in result_module.F3_REFERENCE_STAGE_FILES
+        for definition in result_module.CONTRAST_DEFINITIONS
+    ]
+    _, regional_rows = _csv(output_root / "reports" / "regional_metrics.csv")
+    assert [(row["cell_label"], row["stage"], row["region"]) for row in regional_rows] == [
+        (cell.label, stage, region)
+        for stage in result_module.F3_REFERENCE_STAGE_FILES
+        for cell in first.cells
+        for region in result_module.F3_DIAGNOSTIC_REGIONS
+    ]
+    _, orientation_rows = _csv(output_root / "reports" / "orientation_diagnostics.csv")
+    assert [(row["stage"], row["left_cell"], row["right_cell"]) for row in orientation_rows] == [
+        (stage, left, right)
+        for stage in ("scanner", "voting")
+        for left, right in result_module.F3_ORIENTATION_PAIRS
+    ]
     _, runtime_rows = _csv(output_root / "reports" / "runtime.csv")
     assert len(runtime_rows) == 14
     assert Counter(row["state"] for row in runtime_rows) == Counter({"computed": 12, "reused": 2})
@@ -352,6 +378,23 @@ def test_small_external_style_fixture_end_to_end_and_complete_resume(
         "voting",
         "thinning",
     }
+    expected_runtime_order = [
+        ("scanner", fingerprint, consumers[0])
+        for fingerprint in dict.fromkeys(cell.stages.scanner for cell in first.cells)
+        if (
+            consumers := tuple(
+                cell.label for cell in first.cells if cell.stages.scanner == fingerprint
+            )
+        )
+    ]
+    expected_runtime_order.extend(
+        (kind, getattr(cell.stages, kind), cell.label)
+        for cell in first.cells
+        for kind in ("voting", "thinning", "skinning")
+    )
+    assert [
+        (row["stage_kind"], row["fingerprint"], row["cell"]) for row in runtime_rows
+    ] == expected_runtime_order
 
     before_resume = calls.copy()
     second = _run_fixture(
