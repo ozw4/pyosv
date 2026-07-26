@@ -925,6 +925,21 @@ def test_rehashed_unknown_cell_is_rejected(tmp_path: Path) -> None:
         validate_completed_f3d_bundle(root)
 
 
+def test_disabled_skinning_fingerprint_tamper_is_rejected(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path, skinning_enabled=False)
+    report = root / "reports" / "cells.json"
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    cell = payload["cells"][0]
+    cell["stages"]["skinning"] = "f" * 64
+    report.write_bytes(canonical_json_bytes(payload) + b"\n")
+    cell_path = root / "cells" / f"{cell['label']}.json"
+    cell_path.write_bytes(canonical_json_bytes(cell) + b"\n")
+    _rehash_report(root, "cells.json")
+
+    with pytest.raises(F3ResultValidationError, match="skinning stage fingerprint mismatch"):
+        validate_completed_f3d_bundle(root)
+
+
 @pytest.mark.parametrize("failure", ["report_write", "deep_validation", "completion_write"])
 def test_finalization_failure_never_leaves_completion(
     tmp_path: Path,
@@ -961,6 +976,23 @@ def test_finalization_failure_never_leaves_completion(
     assert not (root / "completion.json").exists()
     assert not tuple(root.glob(".completion.json.tmp-*"))
     assert not tuple((root / "reports").glob(".*.tmp-*"))
+
+
+def test_interrupted_completion_temporary_does_not_block_finalization(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    result = load_f3d_mode_comparison_result(root)
+    (root / "completion.json").unlink()
+    temporary = root / ".completion.json.tmp-interrupted"
+    temporary.write_text("interrupted\n", encoding="utf-8")
+    result = replace(result, storage_rows=storage_report(root))
+
+    finalized = finalize_f3d_bundle(root, result)
+
+    assert finalized == result
+    assert (root / "completion.json").is_file()
+    assert not temporary.exists()
 
 
 def test_valid_resume_does_not_serialize_or_write_reports(

@@ -148,6 +148,10 @@ def test_storage_counts_stage_once_and_does_not_dereference_cell_json(
     reports.mkdir()
     (reports / "runtime.csv").write_text("runtime\n", encoding="utf-8")
     (tmp_path / "completion.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / ".completion.json.tmp-interrupted").write_text(
+        "temporary\n",
+        encoding="utf-8",
+    )
 
     _, completed_workspace_row = storage_report(tmp_path)
     assert completed_workspace_row == workspace_row

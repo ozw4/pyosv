@@ -172,6 +172,33 @@ def test_validate_only_uses_manifest_data_root_for_nesting_preflight(
     assert "inside the F3 data root" in capsys.readouterr().err
 
 
+def test_validate_only_environment_cannot_override_manifest_nesting_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = tmp_path / "data"
+    output = data / "bundle"
+    output.mkdir(parents=True)
+    (output / "run_manifest.json").write_text(
+        json.dumps({"provenance": {"data_root": str(data)}}),
+        encoding="utf-8",
+    )
+    unrelated_data = tmp_path / "unrelated-data"
+    unrelated_data.mkdir()
+    monkeypatch.setenv("PYOSV_F3D_DATA_ROOT", str(unrelated_data))
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_completed_f3d_bundle",
+        lambda *args, **kwargs: pytest.fail("nested bundle must fail preflight"),
+    )
+
+    code = f3d_mode_comparison.main(["--output-dir", str(output), "--validate-only"])
+
+    assert code == 1
+    assert "inside the F3 data root" in capsys.readouterr().err
+
+
 def test_main_rejects_existing_new_output_and_data_nested_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

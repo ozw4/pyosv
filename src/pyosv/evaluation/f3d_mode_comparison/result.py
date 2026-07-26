@@ -821,6 +821,24 @@ def _validate_cells_and_stages(
                 result.volume_shape,
                 workflow_identity,
             )
+        if not cell.skinning_enabled:
+            if workflow_identity is _MISSING:
+                raise F3ResultValidationError("workflow runner identity is missing")
+            skinning_settings = _canonical_skinning_stage_settings(
+                cell.resolved_config,
+                workflow_identity,
+            )
+            expected_skinning_fingerprint = canonical_fingerprint(
+                {
+                    "run_fingerprint": result.run_fingerprint,
+                    "kind": "skinning",
+                    "parent_fingerprint": cell.stages.thinning,
+                    "resolved_settings": skinning_settings,
+                    "artifact_schema": {},
+                }
+            )
+            if cell.stages.skinning != expected_skinning_fingerprint:
+                raise F3ResultValidationError("skinning stage fingerprint mismatch")
         _validate_cell_stage_reports(root, cell, result.volume_shape)
     by_label = {cell.label: cell for cell in result.cells}
     for left, right in (("RL-REF", "RL-QUAL"), ("Q-REF", "Q-QUAL")):
@@ -1078,22 +1096,10 @@ def _validate_stage_resolved_settings(
                     "semantic_key": asdict(final_thinning_key),
                 }
             elif kind == "skinning":
-                skinning = dict(_object(resolved["skinning"], "cell skinning config"))
-                expected = {
-                    "cell_runner_contract_version": F3_CELL_RUNNER_CONTRACT_VERSION,
-                    "implementation_contract": F3_SKINNING_STAGE_IMPLEMENTATION,
-                    "workflow_runner_identity": workflow_identity,
-                    "enabled": skinning["enabled"],
-                    "resolved_skinner_config": skinning,
-                    "growth_source": skinning["growth_source"],
-                    "fallback_policy": {
-                        "enabled": skinning["boundary_skinner_fallback"],
-                        "policy": skinning["boundary_skinner_fallback_policy"],
-                    },
-                    "primary_skinner_identity": (
-                        "pyosv.experimental.boundary_skinning.find_synthetic_skins"
-                    ),
-                }
+                expected = _canonical_skinning_stage_settings(
+                    resolved,
+                    workflow_identity,
+                )
             else:
                 raise ValueError(f"unknown stage kind: {kind}")
         normalized = json.loads(canonical_json_bytes(expected))
@@ -1106,6 +1112,30 @@ def _validate_stage_resolved_settings(
             f"{kind} stage resolved_settings does not match the run plan/cell config"
         )
     return workflow_identity
+
+
+def _canonical_skinning_stage_settings(
+    resolved_config: Mapping[str, Any],
+    workflow_identity: Any,
+) -> dict[str, Any]:
+    skinning = dict(_object(resolved_config["skinning"], "cell skinning config"))
+    settings = {
+        "cell_runner_contract_version": F3_CELL_RUNNER_CONTRACT_VERSION,
+        "implementation_contract": F3_SKINNING_STAGE_IMPLEMENTATION,
+        "workflow_runner_identity": workflow_identity,
+        "enabled": skinning["enabled"],
+        "resolved_skinner_config": skinning,
+        "growth_source": skinning["growth_source"],
+        "fallback_policy": {
+            "enabled": skinning["boundary_skinner_fallback"],
+            "policy": skinning["boundary_skinner_fallback_policy"],
+        },
+        "primary_skinner_identity": ("pyosv.experimental.boundary_skinning.find_synthetic_skins"),
+    }
+    normalized = json.loads(canonical_json_bytes(settings))
+    if not isinstance(normalized, dict):
+        raise AssertionError("skinning stage settings must be an object")
+    return normalized
 
 
 def _validate_metrics(

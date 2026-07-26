@@ -216,16 +216,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.validate_only:
-            configured_data_root = (
-                args.data_root if args.data_root is not None else os.environ.get(F3D_ENV_VAR)
-            )
             requested_bundle = args.output_dir.resolve(strict=False)
-            data_root = (
-                _recorded_data_root(requested_bundle)
-                if configured_data_root is None
-                else Path(configured_data_root)
+            if args.data_root is not None:
+                requested_bundle = ensure_output_not_in_data_root(
+                    requested_bundle,
+                    args.data_root,
+                )
+            bundle = ensure_output_not_in_data_root(
+                requested_bundle,
+                _recorded_data_root(requested_bundle),
             )
-            bundle = ensure_output_not_in_data_root(requested_bundle, data_root)
             validate_completed_f3d_bundle(bundle, deep=args.deep_validate)
         else:
             data_root = resolve_f3d_data_root(args.data_root).resolve(strict=False)

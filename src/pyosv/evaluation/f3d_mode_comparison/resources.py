@@ -371,10 +371,11 @@ def storage_report(workspace: F3RunWorkspace | str | os.PathLike[str]) -> tuple[
                         count,
                     )
                 )
+    completion_temporaries = tuple(root.glob(".completion.json.tmp-*"))
     logical, actual, allocated, count = _directory_storage(
         root,
         excluded_roots=(root / "reports",),
-        excluded_files=(root / "completion.json",),
+        excluded_files=(root / "completion.json", *completion_temporaries),
     )
     rows.append(
         StorageRow(
