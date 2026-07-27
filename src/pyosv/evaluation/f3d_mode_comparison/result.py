@@ -77,6 +77,7 @@ from .runner import (
     voting_stage_artifacts,
 )
 from .scanner import scanner_stage_artifacts, scanner_stage_resolved_settings
+from .runtime_identity import validate_numerical_runtime_identity
 from ..synthetic_quality.config import SyntheticVotingConfig
 from ..synthetic_quality.stage_keys import (
     build_final_thinning_stage_key,
@@ -123,6 +124,7 @@ _RUN_COMPUTATION_FIELDS = (
     "plan",
     "dataset_identity",
     "implementation_identity",
+    "runtime_identity",
 )
 _STAGE_COMPUTATION_FIELDS = (
     "artifact_schema_version",
@@ -653,6 +655,10 @@ def _validated_run_manifest(root: Path) -> dict[str, Any]:
     fingerprint = _sha256(manifest["run_fingerprint"], "run manifest fingerprint")
     if canonical_fingerprint(computation) != fingerprint:
         raise F3ResultValidationError("run manifest fingerprint mismatch")
+    try:
+        validate_numerical_runtime_identity(manifest["runtime_identity"])
+    except ValueError as error:
+        raise F3ResultValidationError("run manifest runtime identity is invalid") from error
     return manifest
 
 

@@ -28,6 +28,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     build_f3d_mode_comparison_plan,
     canonical_fingerprint,
     canonical_json_bytes,
+    numerical_runtime_identity,
     extract_f3d_diagnostics,
     extract_f3d_metric_rows,
     extract_stage_resources,
@@ -82,10 +83,11 @@ def _workspace(path: Path) -> F3RunWorkspace:
     computation = {
         "artifact_schema_version": 1,
         "stage_contract_version": 1,
-        "fingerprint_contract_version": 1,
+        "fingerprint_contract_version": 2,
         "plan": {"name": "runner-fixture"},
         "dataset_identity": source.identity.computation_identity,
         "implementation_identity": {"name": "test"},
+        "runtime_identity": numerical_runtime_identity(),
     }
     fingerprint = canonical_fingerprint(computation)
     manifest = {

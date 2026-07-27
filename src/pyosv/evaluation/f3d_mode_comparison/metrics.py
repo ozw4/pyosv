@@ -28,6 +28,7 @@ from .artifacts import (
 )
 from .data import F3VolumeSource
 from .runner import F3CellReference
+from .runtime_identity import validate_numerical_runtime_identity
 
 F3_METRIC_SCHEMA_VERSION = 1
 F3_METRIC_ROW_FIELDS = (
@@ -78,6 +79,7 @@ _RUN_COMPUTATION_FIELDS = (
     "plan",
     "dataset_identity",
     "implementation_identity",
+    "runtime_identity",
 )
 _STAGE_COMPUTATION_FIELDS = (
     "artifact_schema_version",
@@ -1769,6 +1771,10 @@ def _validated_extraction_workspace(
     )
     if canonical_fingerprint(computation) != run_fingerprint:
         raise F3WorkspaceMismatchError("run manifest fingerprint mismatch")
+    try:
+        validate_numerical_runtime_identity(run_manifest["runtime_identity"])
+    except ValueError as error:
+        raise F3WorkspaceMismatchError("run manifest runtime identity is invalid") from error
     if run_manifest["dataset_identity"] != volume_source.identity.computation_identity:
         raise F3WorkspaceMismatchError(
             "volume_source dataset identity does not match the run workspace"

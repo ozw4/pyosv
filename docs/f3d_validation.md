@@ -100,6 +100,7 @@ comparison with the official controls documented below:
 
 ```bash
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
+PYOSV_ACCEL=auto \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```
@@ -111,10 +112,13 @@ diagnostic partition. Primary metrics remain full-volume metrics.
 
 Without `--resume`, the output path must not exist. An interrupted run has no
 root `completion.json`; resume accepts it only when the immutable manifest,
-dataset identity, implementation identity, resolved plan, and resulting run
-fingerprint match exactly. Valid content-addressed stages are reused and
-missing stages are computed. A complete bundle is accepted by `--resume` only
-after strict validation and is not recomputed:
+dataset identity, implementation identity, numerical runtime identity, resolved
+plan, and resulting run fingerprint match exactly. The runtime identity records
+the requested acceleration mode, effective Numba path and version, platform,
+allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
+BLAS/LAPACK build digest. Valid content-addressed stages are reused and missing
+stages are computed. A complete bundle is accepted by `--resume` only after
+strict validation and is not recomputed:
 
 ```bash
 python -m pyosv.cli.f3d_mode_comparison \
@@ -137,6 +141,13 @@ recorded provenance and recomputes metric evidence. Only a valid root
 `completion.json`, written after reports and referenced stages pass semantic
 validation, marks the workspace complete. Output paths are rejected when they
 are equal to or nested under the F3 data root.
+
+The runtime identity in `run_manifest.json` is a compatibility contract that
+prevents stages produced through different numerical execution paths from
+being mixed by resume. It is not a cryptographic signature and does not prove
+bitwise reproducibility across arbitrary hardware. An official gated-run
+completion report must retain the recorded `runtime_identity` together with
+the run fingerprint.
 
 The external full-run pytest gate is opt-in and separate from normal tests:
 

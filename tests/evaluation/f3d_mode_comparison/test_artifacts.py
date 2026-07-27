@@ -23,10 +23,13 @@ from pyosv.evaluation.f3d_mode_comparison import (
     canonical_fingerprint,
     canonical_json_bytes,
     implementation_identity,
+    numerical_runtime_identity,
     prepare_run_workspace,
     run_fingerprint,
+    validate_numerical_runtime_identity,
 )
 from pyosv.evaluation.f3d_mode_comparison import artifacts as artifacts_module
+from pyosv.evaluation.f3d_mode_comparison import runtime_identity as runtime_identity_module
 
 _VERSIONS = {
     "pyosv": "test-pyosv",
@@ -41,6 +44,28 @@ _IMPLEMENTATION = {
             "sha256": hashlib.sha256(b"scanner").hexdigest(),
             "size": 7,
         }
+    },
+}
+_RUNTIME_IDENTITY = {
+    "runtime_identity_schema_version": 1,
+    "python_implementation": "CPython",
+    "platform_system": "Linux",
+    "platform_machine": "test-machine",
+    "byte_order": "little",
+    "requested_acceleration_mode": "auto",
+    "numba_available": True,
+    "numba_version": "test-numba",
+    "effective_acceleration_state": "numba_enabled",
+    "thread_environment": {
+        "OMP_NUM_THREADS": None,
+        "OPENBLAS_NUM_THREADS": None,
+        "MKL_NUM_THREADS": None,
+        "NUMEXPR_NUM_THREADS": None,
+    },
+    "python_hash_seed": None,
+    "numpy_build": {
+        "status": "available",
+        "sha256": hashlib.sha256(b"numpy-build").hexdigest(),
     },
 }
 
@@ -187,6 +212,223 @@ def test_run_fingerprint_excludes_paths_but_includes_content_and_implementation(
     }
     assert run_fingerprint(plan, first, implementation=changed_versions) != baseline
     assert run_fingerprint(plan, first, implementation=changed_source) != baseline
+
+
+def test_runtime_identity_is_canonical_and_default_is_valid() -> None:
+    reordered = {
+        name: (dict(reversed(tuple(value.items()))) if name == "thread_environment" else value)
+        for name, value in reversed(tuple(_RUNTIME_IDENTITY.items()))
+    }
+
+    assert validate_numerical_runtime_identity(reordered) == _RUNTIME_IDENTITY
+    assert canonical_json_bytes(reordered) == canonical_json_bytes(_RUNTIME_IDENTITY)
+    validate_numerical_runtime_identity(numerical_runtime_identity())
+
+
+def test_numpy_build_digest_normalizes_paths_and_has_stable_unavailable_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = {
+        "Build Dependencies": {
+            "blas": {
+                "name": "openblas",
+                "version": "1.0",
+                "lib directory": "/first/build/lib",
+            }
+        },
+        "Compilers": {
+            "c": {
+                "commands": "cc",
+                "c_args": ["-O3", "/first/build/specs"],
+            }
+        },
+    }
+    second = {
+        "Build Dependencies": {
+            "blas": {
+                "lib directory": "/moved/build/lib",
+                "version": "1.0",
+                "name": "openblas",
+            }
+        },
+        "Compilers": {
+            "c": {
+                "c_args": ["-O3", "/moved/build/specs"],
+                "commands": "cc",
+            }
+        },
+    }
+    monkeypatch.setattr(runtime_identity_module.np.__config__, "CONFIG", first)
+    first_identity = runtime_identity_module._numpy_build_identity()
+    monkeypatch.setattr(runtime_identity_module.np.__config__, "CONFIG", second)
+
+    assert runtime_identity_module._numpy_build_identity() == first_identity
+
+    monkeypatch.setattr(runtime_identity_module.np.__config__, "CONFIG", None)
+    monkeypatch.setattr(
+        runtime_identity_module.np.__config__,
+        "get_info",
+        lambda name: {},
+        raising=False,
+    )
+    assert runtime_identity_module._numpy_build_identity() == {
+        "status": "not_available",
+        "sha256": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("commands", "clang"),
+        ("c_args", ["-O2"]),
+    ),
+)
+def test_numpy_build_digest_tracks_compiler_commands_and_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    config = {
+        "Compilers": {
+            "c": {
+                "commands": "cc",
+                "c_args": ["-O3"],
+            }
+        }
+    }
+    monkeypatch.setattr(runtime_identity_module.np.__config__, "CONFIG", config)
+    baseline = runtime_identity_module._numpy_build_identity()
+    changed = {
+        "Compilers": {
+            "c": {
+                **config["Compilers"]["c"],
+                field: value,
+            }
+        }
+    }
+    monkeypatch.setattr(runtime_identity_module.np.__config__, "CONFIG", changed)
+
+    assert runtime_identity_module._numpy_build_identity() != baseline
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        {"requested_acceleration_mode": "required"},
+        {
+            "numba_available": False,
+            "numba_version": None,
+            "effective_acceleration_state": "python_only",
+        },
+        {"numba_version": "other-numba"},
+        {"platform_machine": "other-machine"},
+        {
+            "thread_environment": {
+                **_RUNTIME_IDENTITY["thread_environment"],
+                "OMP_NUM_THREADS": "2",
+            }
+        },
+        {"python_hash_seed": "123"},
+        {
+            "numpy_build": {
+                "status": "available",
+                "sha256": hashlib.sha256(b"other-build").hexdigest(),
+            }
+        },
+    ),
+)
+def test_run_fingerprint_tracks_runtime_identity_fields(
+    tmp_path: Path,
+    change: dict[str, object],
+) -> None:
+    plan = _plan()
+    dataset = _identity(tmp_path / "data")
+    changed_runtime = {**_RUNTIME_IDENTITY, **change}
+    baseline = run_fingerprint(
+        plan,
+        dataset,
+        implementation=_IMPLEMENTATION,
+        runtime_identity=_RUNTIME_IDENTITY,
+    )
+
+    assert (
+        run_fingerprint(
+            plan,
+            dataset,
+            implementation=_IMPLEMENTATION,
+            runtime_identity=changed_runtime,
+        )
+        != baseline
+    )
+
+
+@pytest.mark.parametrize(
+    "runtime_identity",
+    (
+        {},
+        {**_RUNTIME_IDENTITY, "unknown": None},
+        {**_RUNTIME_IDENTITY, "runtime_identity_schema_version": True},
+        {**_RUNTIME_IDENTITY, "numba_version": ""},
+        {**_RUNTIME_IDENTITY, "numba_version": None},
+        {**_RUNTIME_IDENTITY, "python_hash_seed": object()},
+        {
+            **_RUNTIME_IDENTITY,
+            "thread_environment": {
+                **_RUNTIME_IDENTITY["thread_environment"],
+                "UNKNOWN_THREADS": "1",
+            },
+        },
+    ),
+)
+def test_run_fingerprint_rejects_malformed_runtime_identity(
+    tmp_path: Path,
+    runtime_identity: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="runtime identity"):
+        run_fingerprint(
+            _plan(),
+            _identity(tmp_path / "data"),
+            implementation=_IMPLEMENTATION,
+            runtime_identity=runtime_identity,
+        )
+
+
+def test_runtime_mismatch_rejects_resume_without_modifying_workspace(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run"
+    first = prepare_run_workspace(
+        path,
+        _plan(),
+        _identity(tmp_path / "data"),
+        resume=False,
+        implementation=_IMPLEMENTATION,
+        runtime_identity=_RUNTIME_IDENTITY,
+    )
+    stage_marker = first.path / "stages" / "scanner" / "existing-stage"
+    stage_marker.mkdir()
+    completion = first.path / "completion.json"
+    completion.write_bytes(b"existing completion")
+    manifest_before = (first.path / "run_manifest.json").read_bytes()
+    changed_runtime = {
+        **_RUNTIME_IDENTITY,
+        "platform_machine": "other-machine",
+    }
+
+    with pytest.raises(F3WorkspaceMismatchError, match="runtime_identity"):
+        prepare_run_workspace(
+            path,
+            _plan(),
+            _identity(tmp_path / "moved-data"),
+            resume=True,
+            implementation=_IMPLEMENTATION,
+            runtime_identity=changed_runtime,
+        )
+
+    assert (first.path / "run_manifest.json").read_bytes() == manifest_before
+    assert stage_marker.is_dir()
+    assert completion.read_bytes() == b"existing completion"
 
 
 @pytest.mark.parametrize(

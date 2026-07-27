@@ -158,6 +158,7 @@ root and an ignored output path:
 
 ```bash
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
+PYOSV_ACCEL=auto \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```

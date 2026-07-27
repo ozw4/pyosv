@@ -28,10 +28,14 @@ import pyosv
 
 from .data import F3DatasetIdentity, ensure_output_not_in_data_root
 from .models import F3ModeComparisonPlan
+from .runtime_identity import (
+    numerical_runtime_identity,
+    validate_numerical_runtime_identity,
+)
 
 F3_ARTIFACT_SCHEMA_VERSION = 1
 F3_STAGE_CONTRACT_VERSION = 1
-F3_FINGERPRINT_CONTRACT_VERSION = 1
+F3_FINGERPRINT_CONTRACT_VERSION = 2
 
 RUN_MANIFEST_FILE = "run_manifest.json"
 STAGE_MANIFEST_FILE = "stage_manifest.json"
@@ -348,6 +352,7 @@ def run_computation_identity(
     dataset_identity: F3DatasetIdentity,
     *,
     implementation: Mapping[str, Any] | None = None,
+    runtime_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the complete path- and time-independent run identity."""
 
@@ -361,6 +366,11 @@ def run_computation_identity(
         if implementation is None
         else _validate_implementation_identity(implementation)
     )
+    runtime = (
+        numerical_runtime_identity()
+        if runtime_identity is None
+        else validate_numerical_runtime_identity(runtime_identity)
+    )
     return {
         "artifact_schema_version": F3_ARTIFACT_SCHEMA_VERSION,
         "stage_contract_version": F3_STAGE_CONTRACT_VERSION,
@@ -368,6 +378,7 @@ def run_computation_identity(
         "plan": plan.as_dict(),
         "dataset_identity": dataset_identity.computation_identity,
         "implementation_identity": identity,
+        "runtime_identity": runtime,
     }
 
 
@@ -376,6 +387,7 @@ def run_fingerprint(
     dataset_identity: F3DatasetIdentity,
     *,
     implementation: Mapping[str, Any] | None = None,
+    runtime_identity: Mapping[str, Any] | None = None,
 ) -> str:
     """Return the computation fingerprint for one resolved F3 run."""
 
@@ -384,6 +396,7 @@ def run_fingerprint(
             plan,
             dataset_identity,
             implementation=implementation,
+            runtime_identity=runtime_identity,
         )
     )
 
@@ -395,6 +408,7 @@ def prepare_run_workspace(
     *,
     resume: bool,
     implementation: Mapping[str, Any] | None = None,
+    runtime_identity: Mapping[str, Any] | None = None,
     created_at: str | None = None,
     source_provenance: Mapping[str, Any] | None = None,
 ) -> F3RunWorkspace:
@@ -411,6 +425,7 @@ def prepare_run_workspace(
         plan,
         dataset_identity,
         implementation=implementation,
+        runtime_identity=runtime_identity,
     )
     fingerprint = canonical_fingerprint(computation)
 

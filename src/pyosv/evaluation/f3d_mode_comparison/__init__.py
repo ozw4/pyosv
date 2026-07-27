@@ -141,6 +141,12 @@ from .resources import (
     stage_resource_row,
     storage_report,
 )
+from .runtime_identity import (
+    F3_RUNTIME_IDENTITY_SCHEMA_VERSION,
+    THREAD_ENVIRONMENT_VARIABLES,
+    numerical_runtime_identity,
+    validate_numerical_runtime_identity,
+)
 from .result import (
     CELLS_REPORT_FILE,
     CONTRASTS_REPORT_FILE,
@@ -205,6 +211,7 @@ __all__ = [
     "F3_REGION_SEMANTICS",
     "F3_RESOURCE_INTERPRETATION",
     "F3_RESOURCE_SCHEMA_VERSION",
+    "F3_RUNTIME_IDENTITY_SCHEMA_VERSION",
     "F3_BUFFERED_PERCENTILE",
     "F3_BUFFER_RADIUS",
     "F3_METRIC_ROW_FIELDS",
@@ -251,6 +258,7 @@ __all__ = [
     "ResourceExtraction",
     "StageResourceRow",
     "StorageRow",
+    "THREAD_ENVIRONMENT_VARIABLES",
     "VoxelwiseContrastSummary",
     "build_f3d_mode_comparison_plan",
     "build_f3d_cell_stage_fingerprints",
@@ -279,6 +287,7 @@ __all__ = [
     "finalize_f3d_bundle",
     "finalize_f3d_mode_comparison_result",
     "implementation_identity",
+    "numerical_runtime_identity",
     "load_scanner_stage",
     "load_f3d_mode_comparison",
     "load_f3d_mode_comparison_cells",
@@ -304,6 +313,7 @@ __all__ = [
     "validate_completed_f3d_bundle",
     "validate_f3d_mode_comparison_result",
     "validate_f3d_result",
+    "validate_numerical_runtime_identity",
     "write_or_reuse_stage",
     "voting_stage_artifacts",
     "storage_report",

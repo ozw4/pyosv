@@ -286,9 +286,14 @@ existing operational validation paths.
   full-volume plan, checksum-bound run workspace, shared reference-like and
   quality scanner stages, all four workflow cells, exact stage validation and
   resume, public-reference agreement metrics, 2×2 contrasts, regional and
-  orientation diagnostics, and runtime/resource rows. Cell references point
-  to shared content-addressed stages instead of duplicating full-volume
-  artifacts.
+  orientation diagnostics, and runtime/resource rows. Exact resume also
+  requires the numerical runtime identity in `run_manifest.json` to match,
+  including acceleration, Numba, platform, thread environment,
+  `PYTHONHASHSEED`, and the NumPy BLAS/LAPACK build digest. This identity keeps
+  numerical generations from being mixed; it is neither a cryptographic
+  signature nor proof of bitwise reproducibility on arbitrary hardware. Cell
+  references point to shared content-addressed stages instead of duplicating
+  full-volume artifacts.
 - `python -m pyosv.cli.f3d_mode_comparison` runs, resumes, or validates that
   canonical matrix. It always targets all four cells. A run without `--resume`
   requires a new output path; exact resume reuses only matching validated

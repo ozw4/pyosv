@@ -38,6 +38,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     finalize_f3d_bundle,
     implementation_identity,
     load_f3d_mode_comparison_result,
+    numerical_runtime_identity,
     prepare_run_workspace,
     run_f3d_mode_comparison_cells,
     run_scanner_stages,
@@ -159,6 +160,7 @@ def _run_fixture(
     monkeypatch: pytest.MonkeyPatch,
     plan_config: F3ModeComparisonConfig | None = None,
     workspace_implementation: Mapping[str, Any] | None = None,
+    workspace_runtime_identity: Mapping[str, Any] | None = None,
     scanner_implementation_identity: str = "small-fixture-scanner-v1",
     workflow_implementation_identity: str = "small-fixture-workflow-v1",
     scanner_factory: Any = None,
@@ -171,6 +173,7 @@ def _run_fixture(
             source.identity,
             resume=resume,
             implementation=workspace_implementation,
+            runtime_identity=workspace_runtime_identity,
         )
         if (workspace.path / "completion.json").exists():
             calls["complete result load"] += 1
@@ -275,6 +278,7 @@ def test_small_external_style_fixture_end_to_end_and_complete_resume(
 
     monkeypatch.setattr(data_module, "_stream_sha256", counted_sha256)
     monkeypatch.setattr(F3VolumeSource, "read_native_volume", counted_native_read)
+    injected_runtime = numerical_runtime_identity()
 
     first = _run_fixture(
         data_root,
@@ -283,6 +287,7 @@ def test_small_external_style_fixture_end_to_end_and_complete_resume(
         calls,
         resume=False,
         monkeypatch=monkeypatch,
+        workspace_runtime_identity=injected_runtime,
     )
 
     assert [cell.label for cell in first.cells] == [
@@ -411,6 +416,7 @@ def test_small_external_style_fixture_end_to_end_and_complete_resume(
         calls,
         resume=True,
         monkeypatch=monkeypatch,
+        workspace_runtime_identity=injected_runtime,
     )
     assert second == first
     assert calls - before_resume == Counter({"complete result load": 1})
@@ -433,6 +439,7 @@ def test_incomplete_resume_reuses_independent_stages(
     output_root = tmp_path / "run"
     spec = _write_fixture(data_root)
     first_calls: Counter[str] = Counter()
+    injected_runtime = numerical_runtime_identity()
     first = _run_fixture(
         data_root,
         output_root,
@@ -440,6 +447,7 @@ def test_incomplete_resume_reuses_independent_stages(
         first_calls,
         resume=False,
         monkeypatch=monkeypatch,
+        workspace_runtime_identity=injected_runtime,
     )
     untouched = output_root / "stages" / "thinning" / first.cells[-1].stages.thinning
     untouched_completion = (untouched / "complete.json").read_bytes()
@@ -456,6 +464,7 @@ def test_incomplete_resume_reuses_independent_stages(
         resume_calls,
         resume=True,
         monkeypatch=monkeypatch,
+        workspace_runtime_identity=injected_runtime,
     )
 
     assert resumed.run_fingerprint == first.run_fingerprint
