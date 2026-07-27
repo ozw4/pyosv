@@ -26,6 +26,7 @@ from pyosv.metrics import (
 )
 
 from .artifacts import (
+    F3_FINGERPRINT_CONTRACT_VERSION,
     F3StageCorruptionError,
     F3WorkspaceMismatchError,
     canonical_fingerprint,
@@ -1787,6 +1788,8 @@ def _validated_extraction_workspace(
     )
     if canonical_fingerprint(computation) != run_fingerprint:
         raise F3WorkspaceMismatchError("run manifest fingerprint mismatch")
+    if run_manifest["fingerprint_contract_version"] != F3_FINGERPRINT_CONTRACT_VERSION:
+        raise F3WorkspaceMismatchError("run manifest fingerprint contract mismatch")
     try:
         validate_numerical_runtime_identity(run_manifest["runtime_identity"])
     except ValueError as error:

@@ -83,7 +83,7 @@ def _workspace(path: Path) -> F3RunWorkspace:
     computation = {
         "artifact_schema_version": 1,
         "stage_contract_version": 1,
-        "fingerprint_contract_version": 2,
+        "fingerprint_contract_version": 3,
         "plan": {"name": "runner-fixture"},
         "dataset_identity": source.identity.computation_identity,
         "implementation_identity": {"name": "test"},

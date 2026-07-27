@@ -99,7 +99,7 @@ def _complete_small_bundle(
     computation = {
         "artifact_schema_version": 1,
         "stage_contract_version": 1,
-        "fingerprint_contract_version": 2,
+        "fingerprint_contract_version": 3,
         "plan": plan_payload,
         "dataset_identity": source.identity.computation_identity,
         "implementation_identity": {"name": "test"},
@@ -1034,6 +1034,21 @@ def test_run_manifest_mismatch_is_rejected(tmp_path: Path) -> None:
     manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
 
     with pytest.raises(F3ResultValidationError, match="run manifest fingerprint"):
+        validate_completed_f3d_bundle(root)
+
+
+def test_previous_fingerprint_contract_is_rejected_even_when_rehashed(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    manifest_path = root / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["fingerprint_contract_version"] = 2
+    computation = {name: manifest[name] for name in result_module._RUN_COMPUTATION_FIELDS}
+    manifest["run_fingerprint"] = canonical_fingerprint(computation)
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+
+    with pytest.raises(F3ResultValidationError, match="fingerprint contract"):
         validate_completed_f3d_bundle(root)
 
 

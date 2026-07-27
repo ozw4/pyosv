@@ -22,10 +22,13 @@ from pyosv.evaluation.f3d_mode_comparison import (
     extract_f3d_metrics,
     extract_f3d_resources,
     finalize_f3d_bundle,
+    numerical_runtime_identity,
     prepare_run_workspace,
     run_f3d_mode_comparison,
     run_scanner_stages,
     validate_completed_f3d_bundle,
+    validate_numerical_runtime_identity,
+    validate_publication_runtime_identity,
 )
 from pyosv.f3d_reference import F3D_ENV_VAR, resolve_f3d_data_root
 
@@ -123,11 +126,22 @@ def run_experiment(
     resume: bool,
     deep: bool,
     pretty: bool = False,
+    runtime_identity: Mapping[str, object] | None = None,
+    _enforce_publication_runtime: bool = True,
 ) -> Path:
     """Run or resume one canonical comparison and return its bundle path."""
 
-    plan = build_f3d_mode_comparison_plan(config)
     root = Path(output_dir)
+    completed_resume = resume and os.path.lexists(root / RUN_COMPLETION_FILE)
+    if runtime_identity is not None:
+        runtime = validate_numerical_runtime_identity(runtime_identity)
+    elif completed_resume:
+        runtime = _recorded_runtime_identity(root)
+    else:
+        runtime = numerical_runtime_identity()
+    if _enforce_publication_runtime and not completed_resume:
+        validate_publication_runtime_identity(runtime)
+    plan = build_f3d_mode_comparison_plan(config)
     completion: Path | None = None
     completion_preexisted = False
 
@@ -138,6 +152,7 @@ def run_experiment(
                 plan,
                 source.identity,
                 resume=resume,
+                runtime_identity=runtime,
             )
             completion = workspace.path / RUN_COMPLETION_FILE
             completion_preexisted = os.path.lexists(completion)
@@ -208,6 +223,21 @@ def _recorded_data_root(bundle: Path) -> Path:
     if not isinstance(data_root, str) or not data_root:
         raise ValueError("bundle run manifest has invalid data-root provenance")
     return Path(data_root)
+
+
+def _recorded_runtime_identity(bundle: Path) -> dict[str, object]:
+    manifest_path = bundle / RUN_MANIFEST_FILE
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read bundle runtime identity: {manifest_path}") from error
+    if not isinstance(payload, Mapping):
+        raise ValueError("bundle run manifest must contain an object")
+    runtime = payload.get("runtime_identity")
+    try:
+        return validate_numerical_runtime_identity(runtime)
+    except ValueError as error:
+        raise ValueError("bundle run manifest has invalid runtime identity") from error
 
 
 def main(argv: Sequence[str] | None = None) -> int:

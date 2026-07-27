@@ -10,7 +10,9 @@ from pyosv.cli import f3d_mode_comparison
 from pyosv.evaluation.f3d_mode_comparison import (
     OFFICIAL_F3_DATASET_SPEC,
     load_f3d_mode_comparison_result,
+    numerical_runtime_identity,
     validate_completed_f3d_bundle,
+    validate_publication_runtime_identity,
 )
 
 
@@ -39,6 +41,7 @@ def _required_environment() -> tuple[Path, Path]:
 
 def test_official_f3_full_volume_mode_comparison() -> None:
     data_root, output_root = _required_environment()
+    runtime_identity = validate_publication_runtime_identity(numerical_runtime_identity())
     deep = os.environ.get("PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE") == "1"
     arguments = [
         "--data-root",
@@ -68,6 +71,14 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     assert len({cell.stages.skinning for cell in result.cells}) == 4
 
     manifest = json.loads((output_root / "run_manifest.json").read_text())
+    assert manifest["runtime_identity"] == runtime_identity
+    assert manifest["runtime_identity"]["numpy_runtime_cpu"]["status"] == "available"
+    assert manifest["runtime_identity"]["numpy_runtime_blas"]["status"] == "available"
+    assert manifest["runtime_identity"]["scipy_build"]["status"] == "available"
+    assert all(
+        library["effective_thread_count"] == 1
+        for library in manifest["runtime_identity"]["numpy_runtime_blas"]["libraries"]
+    )
     identities = manifest["dataset_identity"]["files"]
     assert [item["role"] for item in identities] == list(OFFICIAL_F3_DATASET_SPEC.roles)
     assert all(len(item["sha256"]) == 64 for item in identities)

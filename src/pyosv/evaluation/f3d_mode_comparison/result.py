@@ -21,6 +21,7 @@ from pyosv.candidate_volume import NONZERO_EPSILON
 
 from .artifacts import (
     F3_ARTIFACT_SCHEMA_VERSION,
+    F3_FINGERPRINT_CONTRACT_VERSION,
     RUN_COMPLETION_FILE,
     RUN_MANIFEST_FILE,
     STAGE_COMPLETION_FILE,
@@ -33,7 +34,7 @@ from .artifacts import (
     canonical_json_bytes,
     validate_stage,
 )
-from .data import F3DatasetSpec, OFFICIAL_F3_DATASET_SPEC
+from .data import F3_DATASET_ID, F3DatasetSpec, OFFICIAL_F3_DATASET_SPEC
 from .diagnostics import (
     F3_DIAGNOSTIC_REGIONS,
     F3_ORIENTATION_PAIRS,
@@ -86,7 +87,11 @@ from .skin_artifacts import (
     parse_skins_json,
     validate_skin_artifact_semantics,
 )
-from .runtime_identity import validate_numerical_runtime_identity
+from .runtime_identity import (
+    numerical_runtime_identity,
+    validate_numerical_runtime_identity,
+    validate_publication_runtime_identity,
+)
 from ..synthetic_quality.config import SyntheticVotingConfig
 from ..synthetic_quality.stage_keys import (
     build_final_thinning_stage_key,
@@ -396,6 +401,8 @@ def validate_completed_f3d_bundle(
         raise TypeError("deep must be bool")
     root = Path(path)
     _require_directory(root, "F3 bundle")
+    if deep and _dataset_spec is None and _manifest_is_official(root):
+        _validate_current_publication_runtime(root)
     completion = _read_json_object(root / RUN_COMPLETION_FILE, "completion.json")
     expected_fields = {
         "completion_schema_version",
@@ -467,6 +474,12 @@ def validate_f3d_mode_comparison_result(
         raise TypeError("_dataset_spec must be an F3DatasetSpec or None")
     root = _workspace_path(workspace)
     manifest = _validated_run_manifest(root)
+    if (
+        deep
+        and _dataset_spec is None
+        and manifest["dataset_identity"].get("dataset_id") == F3_DATASET_ID
+    ):
+        _validate_current_publication_runtime(root)
     dataset = _dataset_contract(
         manifest,
         OFFICIAL_F3_DATASET_SPEC if _dataset_spec is None else _dataset_spec,
@@ -665,11 +678,37 @@ def _validated_run_manifest(root: Path) -> dict[str, Any]:
     fingerprint = _sha256(manifest["run_fingerprint"], "run manifest fingerprint")
     if canonical_fingerprint(computation) != fingerprint:
         raise F3ResultValidationError("run manifest fingerprint mismatch")
+    if manifest["fingerprint_contract_version"] != F3_FINGERPRINT_CONTRACT_VERSION:
+        raise F3ResultValidationError("run manifest fingerprint contract mismatch")
     try:
         validate_numerical_runtime_identity(manifest["runtime_identity"])
     except ValueError as error:
         raise F3ResultValidationError("run manifest runtime identity is invalid") from error
     return manifest
+
+
+def _validate_current_publication_runtime(root: Path) -> None:
+    """Reject deep recomputation before reading any numerical stage artifact."""
+
+    manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
+    recorded = manifest.get("runtime_identity")
+    try:
+        normalized_recorded = validate_numerical_runtime_identity(recorded)
+        current = validate_publication_runtime_identity(numerical_runtime_identity())
+    except ValueError as error:
+        raise F3ResultValidationError(
+            "deep validation publication runtime contract mismatch"
+        ) from error
+    if current != normalized_recorded:
+        raise F3ResultValidationError(
+            "deep validation current runtime identity does not match run manifest"
+        )
+
+
+def _manifest_is_official(root: Path) -> bool:
+    manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
+    dataset = manifest.get("dataset_identity")
+    return isinstance(dataset, Mapping) and dataset.get("dataset_id") == F3_DATASET_ID
 
 
 def _dataset_contract(
