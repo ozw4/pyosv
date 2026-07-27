@@ -66,6 +66,13 @@ the same. With `return_confidence=True`, the quality scanner backend also
 returns a normalized confidence map derived from the gap between the best and
 second-best sampled orientation scores.
 
+Orientation backend, interpolation backend and order, smoothing sigma, and
+normalization are common scanner controls. The canonical F3 comparison applies
+their resolved values identically to both the reference-like and quality
+scanner backends. `refinement_factor` is different: it changes only the quality
+backend's sampling refinement and is not passed to the reference-like scanner.
+The official defaults for all of these controls remain unchanged.
+
 The name `quality` alone is not evidence of higher accuracy. Accuracy must be
 measured on controlled synthetic truth and practical behavior must be reviewed
 on real data. `scan_fast()` remains an explicit legacy derivative-bank scanner

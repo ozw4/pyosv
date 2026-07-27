@@ -864,7 +864,13 @@ def _validate_cells_and_stages(
             )
             if cell.stages.skinning != expected_skinning_fingerprint:
                 raise F3ResultValidationError("skinning stage fingerprint mismatch")
-        _validate_cell_stage_reports(root, cell, result.volume_shape)
+        _validate_cell_stage_reports(
+            root,
+            cell,
+            result.volume_shape,
+            plan,
+            validated[("scanner", cell.stages.scanner)],
+        )
     by_label = {cell.label: cell for cell in result.cells}
     for left, right in (("RL-REF", "RL-QUAL"), ("Q-REF", "Q-QUAL")):
         if by_label[left].stages.scanner != by_label[right].stages.scanner:
@@ -918,12 +924,26 @@ def _validate_cell_stage_reports(
     root: Path,
     cell: F3CellReference,
     shape: tuple[int, int, int],
+    plan_value: Any,
+    scanner_settings: Mapping[str, Any],
 ) -> None:
+    plan = _object(plan_value, "run plan")
+    scanner_name = (
+        "reference_like_scanner_config"
+        if cell.backend == "reference-like"
+        else "quality_scanner_config"
+    )
+    scanner_config = dict(_object(plan[scanner_name], f"run plan {scanner_name}"))
     contracts = (
         (
             "scanner",
             cell.stages.scanner,
-            {"fingerprint": cell.stages.scanner, "backend": cell.backend},
+            {
+                "fingerprint": cell.stages.scanner,
+                "backend": cell.backend,
+                "resolved_config": scanner_config,
+                "resolved_stage_settings": dict(scanner_settings),
+            },
         ),
         (
             "voting",
@@ -963,7 +983,11 @@ def _validate_cell_stage_reports(
         _reject_crop_semantics(report)
         if tuple(report.get("shape", ())) != shape:
             raise F3ResultValidationError(f"{kind} report shape mismatch")
-        if any(report.get(name) != value for name, value in expected.items()):
+        for name, value in expected.items():
+            if report.get(name) == value:
+                continue
+            if name in {"resolved_config", "resolved_stage_settings"}:
+                raise F3ResultValidationError(f"{kind} report {name} mismatch")
             raise F3ResultValidationError(f"{kind} report source identity mismatch")
 
 

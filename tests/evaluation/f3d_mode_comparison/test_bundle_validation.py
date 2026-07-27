@@ -485,6 +485,25 @@ def test_rehashed_cell_resolved_config_tamper_is_rejected(tmp_path: Path) -> Non
         validate_completed_f3d_bundle(root)
 
 
+@pytest.mark.parametrize("field", ("resolved_config", "resolved_stage_settings"))
+def test_rehashed_scanner_report_resolved_controls_tamper_is_rejected(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    fingerprint = loaded.cells[0].stages.scanner
+    stage = root / "stages" / "scanner" / fingerprint
+    report_path = stage / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report[field]["normalize"] = not report[field]["normalize"]
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    _rehash_stage_artifact(root, stage, "report.json")
+
+    with pytest.raises(F3ResultValidationError, match=f"scanner report {field} mismatch"):
+        validate_completed_f3d_bundle(root)
+
+
 def test_rehashed_stage_report_crop_semantics_are_rejected(tmp_path: Path) -> None:
     root = _complete_small_bundle(tmp_path)
     loaded = load_f3d_mode_comparison_result(root)

@@ -1384,10 +1384,60 @@ def test_scan_matches_reference_like_default_backend() -> None:
     image, _ = _low_planarity_fault(60.0, 60.0, shape=(9, 10, 11), width=1.0)
 
     default = scanner.scan(0.0, 90.0, 30.0, 90.0, image)
-    reference_like = scanner.scan_reference_like(0.0, 90.0, 30.0, 90.0, image)
+    explicit = scanner.scan(
+        0.0,
+        90.0,
+        30.0,
+        90.0,
+        image,
+        backend="rotate_shear",
+        interpolation_order=1,
+        interpolation_backend="scipy",
+        smoothing_sigma=None,
+        normalize=True,
+    )
 
-    for default_array, reference_array in zip(default, reference_like):
-        np.testing.assert_array_equal(default_array, reference_array)
+    for default_array, explicit_array in zip(default, explicit):
+        np.testing.assert_array_equal(default_array, explicit_array)
+
+
+def test_scan_forwards_all_reference_like_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    scanner = FaultOrientScanner3(sigma1=1.0, sigma2=1.0)
+    image = np.zeros((2, 3, 4), dtype=np.float32)
+    expected = tuple(np.zeros_like(image) for _ in range(3))
+    observed: dict[str, object] = {}
+
+    def scan_reference_like(*args: object, **kwargs: object) -> tuple[np.ndarray, ...]:
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return expected
+
+    monkeypatch.setattr(scanner, "scan_reference_like", scan_reference_like)
+
+    actual = scanner.scan(
+        10.0,
+        20.0,
+        30.0,
+        40.0,
+        image,
+        backend="directional",
+        interpolation_order=3,
+        interpolation_backend="scipy",
+        smoothing_sigma=1.25,
+        normalize=False,
+    )
+
+    assert actual is expected
+    assert observed == {
+        "args": (10.0, 20.0, 30.0, 40.0, image),
+        "kwargs": {
+            "backend": "directional",
+            "interpolation_order": 3,
+            "interpolation_backend": "scipy",
+            "smoothing_sigma": 1.25,
+            "normalize": False,
+        },
+    }
 
 
 def test_default_scipy_interpolation_backend_is_exactly_unchanged() -> None:

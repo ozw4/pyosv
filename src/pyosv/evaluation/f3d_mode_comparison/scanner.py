@@ -31,8 +31,8 @@ from .config import F3ScannerConfig
 from .data import F3FileIdentity, F3VolumeSource
 from .models import F3ModeComparisonPlan, F3ScannerBackend
 
-F3_SCANNER_STAGE_CONTRACT_VERSION = 2
-F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v2"
+F3_SCANNER_STAGE_CONTRACT_VERSION = 3
+F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v3"
 F3_SCANNER_BACKEND_ORDER: tuple[F3ScannerBackend, ...] = (
     "reference-like",
     "quality",
@@ -414,7 +414,11 @@ def _write_scanner_stage(
             config.theta_min,
             config.theta_max,
             scanner_input,
+            backend=config.orientation_backend,
+            interpolation_order=config.interpolation_order,
             interpolation_backend=config.interpolation_backend,
+            smoothing_sigma=config.smoothing_sigma,
+            normalize=config.normalize,
         )
     else:
         ft, pt, tt, confidence = scanner.scan_quality(

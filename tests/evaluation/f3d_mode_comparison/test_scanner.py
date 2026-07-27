@@ -206,6 +206,54 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
     assert len(reuse_recorder.snapshots) == 4
 
 
+def test_runner_passes_effective_controls_to_both_scanner_backends(tmp_path: Path) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    calls = _calls()
+    observed: dict[str, object] = {}
+    config = F3ScannerConfig(
+        orientation_backend="directional",
+        interpolation_order=3,
+        smoothing_sigma=1.25,
+        normalize=False,
+    )
+
+    class ObservingScanner(_Scanner):
+        def scan(self, *args: object, **kwargs: object):
+            observed["reference-like"] = kwargs
+            return super().scan(*args, **kwargs)
+
+        def scan_quality(self, *args: object, **kwargs: object):
+            observed["quality"] = kwargs
+            return super().scan_quality(*args, **kwargs)
+
+    def factory(sigma1: float, sigma2: float) -> ObservingScanner:
+        assert (sigma1, sigma2) == (config.sigma1, config.sigma2)
+        return ObservingScanner(calls)
+
+    run_scanner_stages(
+        _workspace(tmp_path / "run", source),
+        source,  # type: ignore[arg-type]
+        build_f3d_mode_comparison_plan(F3ModeComparisonConfig(scanner_template=config)),
+        scanner_factory=factory,  # type: ignore[arg-type]
+        implementation_identity=_IMPLEMENTATION,
+    )
+
+    common = {
+        "backend": config.orientation_backend,
+        "interpolation_order": config.interpolation_order,
+        "interpolation_backend": config.interpolation_backend,
+        "smoothing_sigma": config.smoothing_sigma,
+        "normalize": config.normalize,
+    }
+    assert observed["reference-like"] == common
+    assert observed["quality"] == {
+        **common,
+        "refinement_factor": config.refinement_factor,
+        "return_confidence": True,
+    }
+
+
 def test_array_summary_uses_and_records_nonzero_epsilon() -> None:
     values = np.array([0.0, 5.0e-8, -5.0e-8, 2.0e-6, -2.0e-6], dtype=np.float32)
 
@@ -456,6 +504,42 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
             _workspace(tmp_path / "changed-run", changed_source),
             changed_source.identity.file_for("input"),
             config,
+            implementation_identity=_IMPLEMENTATION,
+        )
+        != baseline
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("orientation_backend", "directional"),
+        ("interpolation_order", 3),
+        ("interpolation_backend", "structured_linear"),
+        ("smoothing_sigma", 1.25),
+        ("normalize", False),
+    ),
+)
+def test_fingerprint_tracks_each_common_scanner_control(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    baseline = scanner_stage_fingerprint(
+        workspace,
+        source.identity.file_for("input"),
+        F3ScannerConfig(),
+        implementation_identity=_IMPLEMENTATION,
+    )
+
+    assert (
+        scanner_stage_fingerprint(
+            workspace,
+            source.identity.file_for("input"),
+            replace(F3ScannerConfig(), **{field: value}),
             implementation_identity=_IMPLEMENTATION,
         )
         != baseline
