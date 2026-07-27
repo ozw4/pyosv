@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import PureWindowsPath
@@ -66,6 +67,10 @@ _RUNTIME_LIBRARY_FIELDS = {
     "effective_thread_count",
 }
 _SHA256_LENGTH = 64
+_EMBEDDED_ABSOLUTE_PATH = re.compile(
+    r"""(?:^|[\s"'(<\[{=,:;])"""
+    r"""(?:/[^\s"')>\]},;]+|[A-Za-z]:[\\/][^\s"')>\]},;]+|\\\\[^\s"')>\]},;]+)"""
+)
 
 
 def numerical_runtime_identity() -> dict[str, Any]:
@@ -403,7 +408,7 @@ def _validate_cpu_identity(value: Any) -> dict[str, Any]:
         or features != sorted(set(features))
     ):
         raise ValueError(f"runtime identity {context} features must be a sorted feature set")
-    if any(_is_absolute_path(item) for item in features):
+    if any(_contains_absolute_path(item) for item in features):
         raise ValueError(f"runtime identity {context} features must not contain paths")
     return {"status": status, "features": list(features)}
 
@@ -497,6 +502,10 @@ def _is_absolute_path(value: str) -> bool:
     return os.path.isabs(value) or PureWindowsPath(value).is_absolute()
 
 
+def _contains_absolute_path(value: str) -> bool:
+    return _is_absolute_path(value) or _EMBEDDED_ABSOLUTE_PATH.search(value) is not None
+
+
 def _is_build_path_field(name: str) -> bool:
     normalized = name.lower().replace(" ", "_")
     return "path" in normalized or "directory" in normalized or "dirs" in normalized
@@ -505,15 +514,15 @@ def _is_build_path_field(name: str) -> bool:
 def _nonempty_nonpath_string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{context} must be a non-empty string")
-    if _is_absolute_path(value):
-        raise ValueError(f"{context} must not be an absolute path")
+    if _contains_absolute_path(value):
+        raise ValueError(f"{context} must not contain an absolute path")
     return value
 
 
 def _optional_nonpath_string(value: Any, context: str) -> str | None:
     value = _optional_string(value, context)
-    if value is not None and _is_absolute_path(value):
-        raise ValueError(f"{context} must not be an absolute path")
+    if value is not None and _contains_absolute_path(value):
+        raise ValueError(f"{context} must not contain an absolute path")
     return value
 
 

@@ -341,21 +341,25 @@ def test_runtime_identity_rejects_unsorted_features_and_runtime_library_paths() 
         )
     libraries = _RUNTIME_IDENTITY["numpy_runtime_blas"]["libraries"]
     assert isinstance(libraries, list)
-    with pytest.raises(ValueError, match="absolute path"):
-        validate_numerical_runtime_identity(
-            {
-                **_RUNTIME_IDENTITY,
-                "numpy_runtime_blas": {
-                    "status": "available",
-                    "libraries": [
-                        {
-                            **libraries[0],
-                            "implementation": "/usr/lib/libopenblas.so",
-                        }
-                    ],
-                },
-            }
-        )
+    for implementation in (
+        "/usr/lib/libopenblas.so",
+        "openblas at /usr/lib/libopenblas.so",
+    ):
+        with pytest.raises(ValueError, match="absolute path"):
+            validate_numerical_runtime_identity(
+                {
+                    **_RUNTIME_IDENTITY,
+                    "numpy_runtime_blas": {
+                        "status": "available",
+                        "libraries": [
+                            {
+                                **libraries[0],
+                                "implementation": implementation,
+                            }
+                        ],
+                    },
+                }
+            )
 
 
 def test_numpy_build_digest_normalizes_paths_and_has_stable_unavailable_status(
