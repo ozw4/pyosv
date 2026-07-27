@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy<2",
     "scipy",
+    "threadpoolctl",
 ]
 
 [project.optional-dependencies]

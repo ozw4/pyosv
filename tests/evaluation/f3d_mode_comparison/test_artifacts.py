@@ -27,6 +27,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     prepare_run_workspace,
     run_fingerprint,
     validate_numerical_runtime_identity,
+    validate_publication_runtime_identity,
 )
 from pyosv.evaluation.f3d_mode_comparison import artifacts as artifacts_module
 from pyosv.evaluation.f3d_mode_comparison import runtime_identity as runtime_identity_module
@@ -47,12 +48,13 @@ _IMPLEMENTATION = {
     },
 }
 _RUNTIME_IDENTITY = {
-    "runtime_identity_schema_version": 1,
+    "runtime_identity_schema_version": 2,
     "python_implementation": "CPython",
     "platform_system": "Linux",
     "platform_machine": "test-machine",
     "byte_order": "little",
     "requested_acceleration_mode": "auto",
+    "pyosv_accel": "auto",
     "numba_available": True,
     "numba_version": "test-numba",
     "effective_acceleration_state": "numba_enabled",
@@ -61,11 +63,43 @@ _RUNTIME_IDENTITY = {
         "OPENBLAS_NUM_THREADS": None,
         "MKL_NUM_THREADS": None,
         "NUMEXPR_NUM_THREADS": None,
+        "GOTO_NUM_THREADS": None,
+        "BLIS_NUM_THREADS": None,
+        "VECLIB_MAXIMUM_THREADS": None,
     },
     "python_hash_seed": None,
+    "numpy_disable_cpu_features": None,
+    "numba_environment": {
+        "NUMBA_DISABLE_JIT": None,
+        "NUMBA_NUM_THREADS": None,
+        "NUMBA_THREADING_LAYER": None,
+        "NUMBA_CPU_NAME": None,
+        "NUMBA_CPU_FEATURES": None,
+    },
+    "openblas_coretype": None,
     "numpy_build": {
         "status": "available",
         "sha256": hashlib.sha256(b"numpy-build").hexdigest(),
+    },
+    "numpy_runtime_cpu": {
+        "status": "available",
+        "features": ["AVX2", "SSE2"],
+    },
+    "numpy_runtime_blas": {
+        "status": "available",
+        "libraries": [
+            {
+                "implementation": "openblas",
+                "version": "test-openblas",
+                "threading_layer": "pthreads",
+                "architecture": "test-arch",
+                "effective_thread_count": 1,
+            }
+        ],
+    },
+    "scipy_build": {
+        "status": "available",
+        "sha256": hashlib.sha256(b"scipy-build").hexdigest(),
     },
 }
 
@@ -225,6 +259,125 @@ def test_runtime_identity_is_canonical_and_default_is_valid() -> None:
     validate_numerical_runtime_identity(numerical_runtime_identity())
 
 
+@pytest.mark.parametrize("spelling", ("plain", "surrounding-whitespace", "uppercase"))
+def test_runtime_identity_normalizes_configured_acceleration_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    spelling: str,
+) -> None:
+    mode = runtime_identity_module._accel._ACCEL_MODE
+    configured = {
+        "plain": mode,
+        "surrounding-whitespace": f"  {mode}  ",
+        "uppercase": mode.upper(),
+    }[spelling]
+    monkeypatch.setenv("PYOSV_ACCEL", configured)
+
+    assert numerical_runtime_identity()["pyosv_accel"] == mode
+
+
+def _publication_runtime_identity() -> dict[str, object]:
+    return {
+        **_RUNTIME_IDENTITY,
+        "python_hash_seed": "0",
+        "thread_environment": {
+            **_RUNTIME_IDENTITY["thread_environment"],
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        },
+    }
+
+
+def test_publication_runtime_identity_accepts_fixed_available_runtime() -> None:
+    identity = _publication_runtime_identity()
+
+    assert validate_publication_runtime_identity(identity) == identity
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("python_hash_seed", None, "PYTHONHASHSEED"),
+        ("python_hash_seed", "1", "PYTHONHASHSEED"),
+        ("pyosv_accel", None, "PYOSV_ACCEL"),
+        (
+            "numpy_runtime_cpu",
+            {"status": "not_available", "features": None},
+            "numpy_runtime_cpu",
+        ),
+        (
+            "numpy_runtime_blas",
+            {"status": "not_available", "libraries": None},
+            "numpy_runtime_blas",
+        ),
+        (
+            "scipy_build",
+            {"status": "not_available", "sha256": None},
+            "scipy_build",
+        ),
+    ),
+)
+def test_publication_runtime_identity_rejects_unfixed_or_unavailable_runtime(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_publication_runtime_identity({**_publication_runtime_identity(), field: value})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"),
+)
+def test_publication_runtime_identity_requires_single_thread_environment(
+    name: str,
+) -> None:
+    identity = _publication_runtime_identity()
+    identity["thread_environment"] = {
+        **identity["thread_environment"],
+        name: "2",
+    }
+
+    with pytest.raises(ValueError, match=name):
+        validate_publication_runtime_identity(identity)
+
+
+def test_runtime_identity_rejects_unsorted_features_and_runtime_library_paths() -> None:
+    with pytest.raises(ValueError, match="sorted feature set"):
+        validate_numerical_runtime_identity(
+            {
+                **_RUNTIME_IDENTITY,
+                "numpy_runtime_cpu": {
+                    "status": "available",
+                    "features": ["SSE2", "AVX2"],
+                },
+            }
+        )
+    libraries = _RUNTIME_IDENTITY["numpy_runtime_blas"]["libraries"]
+    assert isinstance(libraries, list)
+    for implementation in (
+        "/usr/lib/libopenblas.so",
+        "openblas at /usr/lib/libopenblas.so",
+    ):
+        with pytest.raises(ValueError, match="absolute path"):
+            validate_numerical_runtime_identity(
+                {
+                    **_RUNTIME_IDENTITY,
+                    "numpy_runtime_blas": {
+                        "status": "available",
+                        "libraries": [
+                            {
+                                **libraries[0],
+                                "implementation": implementation,
+                            }
+                        ],
+                    },
+                }
+            )
+
+
 def test_numpy_build_digest_normalizes_paths_and_has_stable_unavailable_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -239,7 +392,12 @@ def test_numpy_build_digest_normalizes_paths_and_has_stable_unavailable_status(
         "Compilers": {
             "c": {
                 "commands": "cc",
-                "c_args": ["-O3", "/first/build/specs"],
+                "c_args": [
+                    "-O3",
+                    "/first/build/specs",
+                    "-I/first/build/include",
+                    "-Wl,-rpath,/first/build/lib",
+                ],
             }
         },
     }
@@ -253,7 +411,12 @@ def test_numpy_build_digest_normalizes_paths_and_has_stable_unavailable_status(
         },
         "Compilers": {
             "c": {
-                "c_args": ["-O3", "/moved/build/specs"],
+                "c_args": [
+                    "-O3",
+                    "/moved/build/specs",
+                    "-I/moved/build/include",
+                    "-Wl,-rpath,/moved/build/lib",
+                ],
                 "commands": "cc",
             }
         },
@@ -315,7 +478,7 @@ def test_numpy_build_digest_tracks_compiler_commands_and_arguments(
 @pytest.mark.parametrize(
     "change",
     (
-        {"requested_acceleration_mode": "required"},
+        {"requested_acceleration_mode": "required", "pyosv_accel": "required"},
         {
             "numba_available": False,
             "numba_version": None,
@@ -334,6 +497,55 @@ def test_numpy_build_digest_tracks_compiler_commands_and_arguments(
             "numpy_build": {
                 "status": "available",
                 "sha256": hashlib.sha256(b"other-build").hexdigest(),
+            }
+        },
+        {
+            "numpy_runtime_cpu": {
+                "status": "available",
+                "features": ["AVX2", "AVX512F", "SSE2"],
+            }
+        },
+        {"numpy_disable_cpu_features": "AVX512F"},
+        {
+            "numpy_runtime_blas": {
+                "status": "available",
+                "libraries": [
+                    {
+                        "implementation": "openblas",
+                        "version": "test-openblas",
+                        "threading_layer": "pthreads",
+                        "architecture": "test-arch",
+                        "effective_thread_count": 2,
+                    }
+                ],
+            }
+        },
+        {
+            "scipy_build": {
+                "status": "available",
+                "sha256": hashlib.sha256(b"other-scipy-build").hexdigest(),
+            }
+        },
+        {
+            "numba_environment": {
+                **_RUNTIME_IDENTITY["numba_environment"],
+                "NUMBA_DISABLE_JIT": "1",
+            }
+        },
+        {
+            "numba_environment": {
+                **_RUNTIME_IDENTITY["numba_environment"],
+                "NUMBA_NUM_THREADS": "2",
+                "NUMBA_THREADING_LAYER": "workqueue",
+                "NUMBA_CPU_NAME": "generic",
+                "NUMBA_CPU_FEATURES": "-avx512f",
+            }
+        },
+        {"openblas_coretype": "Haswell"},
+        {
+            "thread_environment": {
+                **_RUNTIME_IDENTITY["thread_environment"],
+                "BLIS_NUM_THREADS": "2",
             }
         },
     ),
@@ -368,6 +580,7 @@ def test_run_fingerprint_tracks_runtime_identity_fields(
     (
         {},
         {**_RUNTIME_IDENTITY, "unknown": None},
+        {**_RUNTIME_IDENTITY, "runtime_identity_schema_version": 1},
         {**_RUNTIME_IDENTITY, "runtime_identity_schema_version": True},
         {**_RUNTIME_IDENTITY, "numba_version": ""},
         {**_RUNTIME_IDENTITY, "numba_version": None},
@@ -377,6 +590,27 @@ def test_run_fingerprint_tracks_runtime_identity_fields(
             "thread_environment": {
                 **_RUNTIME_IDENTITY["thread_environment"],
                 "UNKNOWN_THREADS": "1",
+            },
+        },
+        {
+            **_RUNTIME_IDENTITY,
+            "numpy_runtime_cpu": {
+                "status": "unknown",
+                "features": None,
+            },
+        },
+        {
+            **_RUNTIME_IDENTITY,
+            "numpy_runtime_blas": {
+                "status": "not_available",
+                "libraries": [],
+            },
+        },
+        {
+            **_RUNTIME_IDENTITY,
+            "scipy_build": {
+                "status": "available",
+                "sha256": "A" * 64,
             },
         },
     ),

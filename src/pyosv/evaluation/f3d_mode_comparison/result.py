@@ -17,10 +17,13 @@ from typing import Any
 
 import numpy as np
 
-from pyosv.candidate_volume import NONZERO_EPSILON
+from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
+from pyosv.experimental.boundary_skinning import apply_boundary_skinner_fallback
+from pyosv.orient3d import FaultOrientScanner3
 
 from .artifacts import (
     F3_ARTIFACT_SCHEMA_VERSION,
+    F3_FINGERPRINT_CONTRACT_VERSION,
     RUN_COMPLETION_FILE,
     RUN_MANIFEST_FILE,
     STAGE_COMPLETION_FILE,
@@ -33,7 +36,7 @@ from .artifacts import (
     canonical_json_bytes,
     validate_stage,
 )
-from .data import F3DatasetSpec, OFFICIAL_F3_DATASET_SPEC
+from .data import F3_DATASET_ID, F3DatasetSpec, OFFICIAL_F3_DATASET_SPEC
 from .diagnostics import (
     F3_DIAGNOSTIC_REGIONS,
     F3_ORIENTATION_PAIRS,
@@ -57,7 +60,7 @@ from .metrics import (
     compute_skin_metric_rows,
     validate_shared_stage_metrics,
 )
-from .models import canonical_f3_cells
+from .models import F3ScannerBackend, canonical_f3_cells
 from .config import F3ScannerConfig
 from .resources import (
     F3_RESOURCE_INTERPRETATION,
@@ -79,23 +82,39 @@ from .runner import (
     thinning_stage_artifacts,
     voting_stage_artifacts,
 )
-from .scanner import scanner_stage_artifacts, scanner_stage_resolved_settings
+from .scanner import (
+    F3_SCANNER_STAGE_CONTRACT_VERSION,
+    scanner_array_summary,
+    scanner_sampling_count,
+    scanner_stage_artifacts,
+    scanner_stage_resolved_settings,
+)
 from .skin_artifacts import (
     ParsedSkinArtifacts,
     SkinArtifactValidationError,
+    canonical_skins_payload,
     parse_skins_json,
+    resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
 )
-from .runtime_identity import validate_numerical_runtime_identity
-from ..synthetic_quality.config import SyntheticVotingConfig
+from .runtime_identity import (
+    numerical_runtime_identity,
+    validate_numerical_runtime_identity,
+    validate_publication_runtime_identity,
+)
+from ..synthetic_quality.config import SyntheticSkinningConfig, SyntheticVotingConfig
 from ..synthetic_quality.stage_keys import (
     build_final_thinning_stage_key,
     build_seed_stage_key,
     build_thinning_stage_key,
     build_voting_stage_key,
 )
-from ..synthetic_quality.variants import VariantSpec
-from ..workflow3d import PreparedAttributeIdentity, VolumeVotingControls
+from ..synthetic_quality.variants import SkinningPatch, VariantSpec, VotingPatch
+from ..workflow3d import (
+    PreparedAttributeIdentity,
+    VolumeVotingControls,
+    execute_skinning_phase3d,
+)
 
 F3_RESULT_SCHEMA_VERSION = 1
 F3_COMPLETION_SCHEMA_VERSION = 1
@@ -145,6 +164,32 @@ _STAGE_COMPUTATION_FIELDS = (
     "resolved_settings",
     "artifact_schema",
 )
+_SCANNER_REPORT_FIELDS = {
+    "scanner_stage_contract_version",
+    "fingerprint",
+    "backend",
+    "shape",
+    "input_fingerprint",
+    "resolved_config",
+    "resolved_stage_settings",
+    "sampling_count",
+    "requested_remove_edge_effects",
+    "effective_remove_edge_effects",
+    "raw",
+    "thinned",
+}
+_SCANNER_SUMMARY_FIELDS = {
+    "shape",
+    "dtype",
+    "finite_count",
+    "min",
+    "max",
+    "mean",
+    "nonzero_epsilon",
+    "nonzero_count",
+    "nonzero_fraction",
+}
+_SCANNER_THINNED_NAMES = {"fet", "fpt", "ftt"}
 _CELL_ORDER = tuple(cell.label for cell in canonical_f3_cells())
 _CELL_AXES = {
     cell.label: (cell.scanner_backend, cell.workflow_mode) for cell in canonical_f3_cells()
@@ -162,6 +207,7 @@ _CSV_MODELS = {
     RUNTIME_REPORT_FILE: StageResourceRow,
 }
 _SHA256_LENGTH = 64
+_SKIN_RECOMPUTE_CHUNK_VOXELS = 1_000_000
 _FLOAT_REL_TOL = 1.0e-9
 _FLOAT_ABS_TOL = 1.0e-12
 _MISSING = object()
@@ -360,9 +406,11 @@ def finalize_f3d_bundle(
             _completion_json_bytes(completion, pretty=pretty),
             temporary_prefix=".completion.json.tmp-",
         )
+        # The reports and stages already passed deep validation above. Validate the
+        # newly published completion contract without repeating expensive recomputation.
         validate_completed_f3d_bundle(
             root,
-            deep=deep,
+            deep=False,
             _dataset_spec=_dataset_spec,
         )
     except BaseException:
@@ -396,6 +444,8 @@ def validate_completed_f3d_bundle(
         raise TypeError("deep must be bool")
     root = Path(path)
     _require_directory(root, "F3 bundle")
+    if deep and _dataset_spec is None and _manifest_is_official(root):
+        _validate_current_publication_runtime(root)
     completion = _read_json_object(root / RUN_COMPLETION_FILE, "completion.json")
     expected_fields = {
         "completion_schema_version",
@@ -431,7 +481,10 @@ def validate_completed_f3d_bundle(
     for filename in F3_REPORT_FILES:
         _verify_file_metadata(reports / filename, report_metadata[filename], filename)
 
-    manifest = _validated_run_manifest(root)
+    manifest = _validated_run_manifest(
+        root,
+        enforce_publication_runtime=_dataset_spec is None,
+    )
     _reject_crop_semantics(manifest)
     if completion["run_fingerprint"] != manifest["run_fingerprint"]:
         raise F3ResultValidationError("completion run fingerprint mismatch")
@@ -466,7 +519,16 @@ def validate_f3d_mode_comparison_result(
     if _dataset_spec is not None and not isinstance(_dataset_spec, F3DatasetSpec):
         raise TypeError("_dataset_spec must be an F3DatasetSpec or None")
     root = _workspace_path(workspace)
-    manifest = _validated_run_manifest(root)
+    manifest = _validated_run_manifest(
+        root,
+        enforce_publication_runtime=_dataset_spec is None,
+    )
+    if (
+        deep
+        and _dataset_spec is None
+        and manifest["dataset_identity"].get("dataset_id") == F3_DATASET_ID
+    ):
+        _validate_current_publication_runtime(root)
     dataset = _dataset_contract(
         manifest,
         OFFICIAL_F3_DATASET_SPEC if _dataset_spec is None else _dataset_spec,
@@ -486,6 +548,7 @@ def validate_f3d_mode_comparison_result(
     _validate_orientation_rows(result)
     _validate_resource_rows(root, result)
     if deep:
+        _deep_validate_scanner_stages(root, result, manifest["plan"])
         _deep_validate_skin_artifacts(root, result, parsed_skins)
         _deep_validate_reference_metrics(root, result, dataset)
         _deep_validate_voxelwise_contrasts(root, result)
@@ -657,7 +720,11 @@ def _load_reports(root: Path) -> F3ModeComparisonResult:
     )
 
 
-def _validated_run_manifest(root: Path) -> dict[str, Any]:
+def _validated_run_manifest(
+    root: Path,
+    *,
+    enforce_publication_runtime: bool,
+) -> dict[str, Any]:
     manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
     if set(manifest) != {*_RUN_COMPUTATION_FIELDS, "run_fingerprint", "provenance"}:
         raise F3ResultValidationError("run manifest field set mismatch")
@@ -665,11 +732,48 @@ def _validated_run_manifest(root: Path) -> dict[str, Any]:
     fingerprint = _sha256(manifest["run_fingerprint"], "run manifest fingerprint")
     if canonical_fingerprint(computation) != fingerprint:
         raise F3ResultValidationError("run manifest fingerprint mismatch")
+    if manifest["fingerprint_contract_version"] != F3_FINGERPRINT_CONTRACT_VERSION:
+        raise F3ResultValidationError("run manifest fingerprint contract mismatch")
+    dataset_identity = manifest.get("dataset_identity")
+    is_official = (
+        isinstance(dataset_identity, Mapping)
+        and dataset_identity.get("dataset_id") == F3_DATASET_ID
+    )
     try:
-        validate_numerical_runtime_identity(manifest["runtime_identity"])
+        if enforce_publication_runtime and is_official:
+            validate_publication_runtime_identity(manifest["runtime_identity"])
+        else:
+            validate_numerical_runtime_identity(manifest["runtime_identity"])
     except ValueError as error:
-        raise F3ResultValidationError("run manifest runtime identity is invalid") from error
+        contract = (
+            "publication runtime" if enforce_publication_runtime and is_official else "runtime"
+        )
+        raise F3ResultValidationError(f"run manifest {contract} identity is invalid") from error
     return manifest
+
+
+def _validate_current_publication_runtime(root: Path) -> None:
+    """Reject deep recomputation before reading any numerical stage artifact."""
+
+    manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
+    recorded = manifest.get("runtime_identity")
+    try:
+        normalized_recorded = validate_numerical_runtime_identity(recorded)
+        current = validate_publication_runtime_identity(numerical_runtime_identity())
+    except ValueError as error:
+        raise F3ResultValidationError(
+            "deep validation publication runtime contract mismatch"
+        ) from error
+    if current != normalized_recorded:
+        raise F3ResultValidationError(
+            "deep validation current runtime identity does not match run manifest"
+        )
+
+
+def _manifest_is_official(root: Path) -> bool:
+    manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
+    dataset = manifest.get("dataset_identity")
+    return isinstance(dataset, Mapping) and dataset.get("dataset_id") == F3_DATASET_ID
 
 
 def _dataset_contract(
@@ -790,6 +894,15 @@ def _validate_cells_and_stages(
     input_file = dataset["files"].get("input")
     input_digest = input_file["sha256"] if input_file is not None else None
     validated: dict[tuple[str, str], Mapping[str, Any]] = {}
+    scanner_report_backends: dict[str, str] = {}
+    for cell in result.cells:
+        scanner_report_backend = scanner_report_backends.setdefault(
+            cell.stages.scanner,
+            cell.backend,
+        )
+        if scanner_report_backend != cell.backend:
+            raise F3ResultValidationError("scanner stage backend reuse mismatch")
+    validated_scanner_reports: set[str] = set()
     parsed_skins: dict[str, ParsedSkinArtifacts] = {}
     workflow_identity: Any = _MISSING
     for cell in result.cells:
@@ -838,13 +951,58 @@ def _validate_cells_and_stages(
                 result.volume_shape,
                 workflow_identity,
             )
+        if cell.stages.scanner not in validated_scanner_reports:
+            scanner_name = (
+                "reference_like_scanner_config"
+                if cell.backend == "reference-like"
+                else "quality_scanner_config"
+            )
+            scanner_config_value = dict(
+                _object(
+                    _object(plan, "run plan")[scanner_name],
+                    f"run plan {scanner_name}",
+                )
+            )
+            try:
+                scanner_config = F3ScannerConfig(**scanner_config_value)
+            except (TypeError, ValueError) as error:
+                raise F3ResultValidationError(
+                    "scanner report config cannot be derived from the run plan"
+                ) from error
+            scanner_report = _read_json_object(
+                root / "stages" / "scanner" / cell.stages.scanner / "report.json",
+                "scanner report",
+            )
+            _validate_scanner_report_contract(
+                scanner_report,
+                fingerprint=cell.stages.scanner,
+                backend=cell.backend,
+                shape=result.volume_shape,
+                input_identity=dict(input_file) if input_file is not None else None,
+                config=scanner_config,
+                settings=validated[("scanner", cell.stages.scanner)],
+            )
+            validated_scanner_reports.add(cell.stages.scanner)
         if cell.skinning_enabled and cell.stages.skinning not in parsed_skins:
             try:
+                scanner_settings = validated[("scanner", cell.stages.scanner)]
+                angle_range = _object(
+                    scanner_settings["angle_range"],
+                    f"{cell.label} scanner angle range",
+                )
                 parsed_skins[cell.stages.skinning] = parse_skins_json(
                     root / "stages" / "skinning" / cell.stages.skinning / "skins.json",
                     result.volume_shape,
+                    strike_range=(
+                        angle_range["phi_min"],
+                        angle_range["phi_max"],
+                    ),
+                    dip_range=(
+                        angle_range["theta_min"],
+                        angle_range["theta_max"],
+                    ),
                 )
-            except SkinArtifactValidationError as error:
+            except (KeyError, TypeError, SkinArtifactValidationError) as error:
                 raise F3ResultValidationError(f"invalid skin artifact schema: {error}") from error
         if not cell.skinning_enabled:
             if workflow_identity is _MISSING:
@@ -868,8 +1026,6 @@ def _validate_cells_and_stages(
             root,
             cell,
             result.volume_shape,
-            plan,
-            validated[("scanner", cell.stages.scanner)],
         )
     by_label = {cell.label: cell for cell in result.cells}
     for left, right in (("RL-REF", "RL-QUAL"), ("Q-REF", "Q-QUAL")):
@@ -924,27 +1080,8 @@ def _validate_cell_stage_reports(
     root: Path,
     cell: F3CellReference,
     shape: tuple[int, int, int],
-    plan_value: Any,
-    scanner_settings: Mapping[str, Any],
 ) -> None:
-    plan = _object(plan_value, "run plan")
-    scanner_name = (
-        "reference_like_scanner_config"
-        if cell.backend == "reference-like"
-        else "quality_scanner_config"
-    )
-    scanner_config = dict(_object(plan[scanner_name], f"run plan {scanner_name}"))
     contracts = (
-        (
-            "scanner",
-            cell.stages.scanner,
-            {
-                "fingerprint": cell.stages.scanner,
-                "backend": cell.backend,
-                "resolved_config": scanner_config,
-                "resolved_stage_settings": dict(scanner_settings),
-            },
-        ),
         (
             "voting",
             cell.stages.voting,
@@ -989,6 +1126,174 @@ def _validate_cell_stage_reports(
             if name in {"resolved_config", "resolved_stage_settings"}:
                 raise F3ResultValidationError(f"{kind} report {name} mismatch")
             raise F3ResultValidationError(f"{kind} report source identity mismatch")
+
+
+def _validate_scanner_report_contract(
+    report: Mapping[str, Any],
+    *,
+    fingerprint: str,
+    backend: str,
+    shape: tuple[int, int, int],
+    input_identity: Mapping[str, Any] | None,
+    config: F3ScannerConfig,
+    settings: Mapping[str, Any],
+) -> None:
+    if set(report) != _SCANNER_REPORT_FIELDS:
+        raise F3ResultValidationError("scanner report field set mismatch")
+    version = report["scanner_stage_contract_version"]
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != F3_SCANNER_STAGE_CONTRACT_VERSION
+    ):
+        raise F3ResultValidationError("scanner report contract version mismatch")
+    if (
+        report["fingerprint"] != fingerprint
+        or report["backend"] != backend
+        or report["shape"] != list(shape)
+        or input_identity is None
+        or report["input_fingerprint"] != dict(input_identity)
+    ):
+        raise F3ResultValidationError("scanner report source identity mismatch")
+    if report["resolved_config"] != asdict(config):
+        raise F3ResultValidationError("scanner report resolved_config mismatch")
+    if report["resolved_stage_settings"] != dict(settings):
+        raise F3ResultValidationError("scanner report resolved_stage_settings mismatch")
+    if report["requested_remove_edge_effects"] is not config.remove_edge_effects:
+        raise F3ResultValidationError("scanner report requested edge removal mismatch")
+    if report["effective_remove_edge_effects"] is not config.effective_remove_edge_effects:
+        raise F3ResultValidationError("scanner report effective edge removal mismatch")
+
+    sampling_count = _object(report["sampling_count"], "scanner sampling_count")
+    if set(sampling_count) != {"strike", "dip", "orientations"}:
+        raise F3ResultValidationError("scanner sampling_count field set mismatch")
+    sampling = _integer_mapping(sampling_count, "scanner sampling_count")
+    if (
+        sampling["strike"] <= 0
+        or sampling["dip"] <= 0
+        or sampling["orientations"] != sampling["strike"] * sampling["dip"]
+    ):
+        raise F3ResultValidationError("scanner sampling_count relation mismatch")
+
+    expected_raw = {"ft", "pt", "tt"}
+    if backend == "quality":
+        expected_raw.add("confidence")
+    raw = _object(report["raw"], "scanner raw summaries")
+    thinned = _object(report["thinned"], "scanner thinned summaries")
+    if set(raw) != expected_raw:
+        raise F3ResultValidationError("scanner raw summary key set mismatch")
+    if set(thinned) != _SCANNER_THINNED_NAMES:
+        raise F3ResultValidationError("scanner thinned summary key set mismatch")
+    for name, value in raw.items():
+        _validate_scanner_summary(value, name=name, shape=shape, config=config, thinned=False)
+    for name, value in thinned.items():
+        _validate_scanner_summary(value, name=name, shape=shape, config=config, thinned=True)
+
+
+def _validate_scanner_summary(
+    value: Any,
+    *,
+    name: str,
+    shape: tuple[int, int, int],
+    config: F3ScannerConfig,
+    thinned: bool,
+) -> None:
+    summary = _object(value, f"scanner {name} summary")
+    if set(summary) != _SCANNER_SUMMARY_FIELDS:
+        raise F3ResultValidationError(f"scanner {name} summary field set mismatch")
+    if summary["shape"] != list(shape):
+        raise F3ResultValidationError(f"scanner {name} summary shape mismatch")
+    if summary["dtype"] != "float32":
+        raise F3ResultValidationError(f"scanner {name} summary dtype mismatch")
+
+    finite_count = summary["finite_count"]
+    nonzero_count = summary["nonzero_count"]
+    if (
+        isinstance(finite_count, bool)
+        or not isinstance(finite_count, int)
+        or finite_count != math.prod(shape)
+    ):
+        raise F3ResultValidationError(f"scanner {name} finite_count mismatch")
+    if (
+        isinstance(nonzero_count, bool)
+        or not isinstance(nonzero_count, int)
+        or not 0 <= nonzero_count <= finite_count
+    ):
+        raise F3ResultValidationError(f"scanner {name} nonzero_count is invalid")
+
+    minimum = _scanner_summary_number(summary["min"], name, "min")
+    maximum = _scanner_summary_number(summary["max"], name, "max")
+    mean = _scanner_summary_number(summary["mean"], name, "mean")
+    epsilon = _scanner_summary_number(
+        summary["nonzero_epsilon"],
+        name,
+        "nonzero_epsilon",
+    )
+    fraction = _scanner_summary_number(
+        summary["nonzero_fraction"],
+        name,
+        "nonzero_fraction",
+    )
+    if epsilon != NONZERO_EPSILON:
+        raise F3ResultValidationError(f"scanner {name} nonzero_epsilon mismatch")
+    if fraction != nonzero_count / finite_count or not 0.0 <= fraction <= 1.0:
+        raise F3ResultValidationError(f"scanner {name} nonzero_fraction mismatch")
+    if not minimum <= mean <= maximum:
+        raise F3ResultValidationError(f"scanner {name} summary extrema are invalid")
+
+    if name in {"ft", "fet", "confidence"} and (minimum < 0.0 or maximum > 1.0):
+        raise F3ResultValidationError(f"scanner {name} summary range is invalid")
+    if name in {"pt", "fpt"}:
+        _validate_scanner_summary_angle_range(
+            name,
+            minimum,
+            maximum,
+            config.phi_min,
+            config.phi_max,
+            allow_zero=thinned,
+        )
+    if name in {"tt", "ftt"}:
+        _validate_scanner_summary_angle_range(
+            name,
+            minimum,
+            maximum,
+            config.theta_min,
+            config.theta_max,
+            allow_zero=thinned,
+        )
+
+
+def _scanner_summary_number(value: Any, name: str, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise F3ResultValidationError(f"scanner {name} summary {field} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise F3ResultValidationError(f"scanner {name} summary {field} must be finite")
+    return result
+
+
+def _validate_scanner_summary_angle_range(
+    name: str,
+    observed_minimum: float,
+    observed_maximum: float,
+    configured_minimum: float,
+    configured_maximum: float,
+    *,
+    allow_zero: bool,
+) -> None:
+    tolerance = (
+        8.0
+        * float(np.finfo(np.float32).eps)
+        * max(
+            1.0,
+            abs(configured_minimum),
+            abs(configured_maximum),
+        )
+    )
+    minimum = min(configured_minimum, 0.0) if allow_zero else configured_minimum
+    maximum = max(configured_maximum, 0.0) if allow_zero else configured_maximum
+    if observed_minimum < minimum - tolerance or observed_maximum > maximum + tolerance:
+        raise F3ResultValidationError(f"scanner {name} summary angle range is invalid")
 
 
 def _validate_referenced_stage(
@@ -1965,12 +2270,128 @@ def _rss_stage_boundary(point: str) -> tuple[tuple[str, str], str]:
     return (stage_kind, fingerprint), parts[-1]
 
 
+def _deep_validate_scanner_stages(
+    root: Path,
+    result: F3ModeComparisonResult,
+    plan_value: Any,
+) -> None:
+    plan = _object(plan_value, "run plan")
+    stages: dict[str, F3ScannerBackend] = {}
+    for cell in result.cells:
+        previous = stages.setdefault(cell.stages.scanner, cell.backend)
+        if previous != cell.backend:
+            raise F3ResultValidationError("scanner stage backend reuse mismatch")
+
+    for fingerprint, backend in stages.items():
+        scanner_name = (
+            "reference_like_scanner_config"
+            if backend == "reference-like"
+            else "quality_scanner_config"
+        )
+        try:
+            config = F3ScannerConfig(
+                **dict(_object(plan[scanner_name], f"run plan {scanner_name}"))
+            )
+            scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
+            expected_sampling = scanner_sampling_count(
+                scanner,
+                config,
+                backend,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise F3ResultValidationError(
+                "deep scanner sampling contract cannot be derived"
+            ) from error
+
+        stage_path = root / "stages" / "scanner" / fingerprint
+        report = _read_json_object(stage_path / "report.json", "scanner report")
+        if report["sampling_count"] != expected_sampling:
+            raise F3ResultValidationError("deep scanner sampling_count mismatch")
+
+        groups = (
+            ("raw", ("ft", "pt", "tt", *(("confidence",) if backend == "quality" else ()))),
+            ("thinned", ("fet", "fpt", "ftt")),
+        )
+        expected_bytes = math.prod(result.volume_shape) * np.dtype(">f4").itemsize
+        for group, names in groups:
+            summaries = _object(report[group], f"scanner {group} summaries")
+            for name in names:
+                path = stage_path / f"{name}.dat"
+                array: np.memmap | None = None
+                try:
+                    if path.stat().st_size != expected_bytes:
+                        raise ValueError("storage size mismatch")
+                    array = np.memmap(
+                        path,
+                        dtype=">f4",
+                        mode="r",
+                        shape=result.volume_shape,
+                        order="C",
+                    )
+                    if array.dtype.str != ">f4" or array.shape != result.volume_shape:
+                        raise ValueError("storage layout mismatch")
+                    actual = scanner_array_summary(array)
+                    _deep_validate_scanner_array_range(
+                        array,
+                        name=name,
+                        config=config,
+                        thinned=group == "thinned",
+                    )
+                except (OSError, ValueError) as error:
+                    raise F3ResultValidationError(
+                        f"deep scanner array validation failed: {name}"
+                    ) from error
+                finally:
+                    if array is not None:
+                        mapping = getattr(array, "_mmap", None)
+                        if mapping is not None and not mapping.closed:
+                            mapping.close()
+                        del array
+                if summaries[name] != actual:
+                    raise F3ResultValidationError(f"deep scanner summary mismatch: {name}")
+
+
+def _deep_validate_scanner_array_range(
+    values: np.ndarray,
+    *,
+    name: str,
+    config: F3ScannerConfig,
+    thinned: bool,
+) -> None:
+    if not np.all(np.isfinite(values)):
+        raise ValueError("array contains non-finite values")
+    if name in {"ft", "fet", "confidence"}:
+        if float(np.min(values)) < 0.0 or float(np.max(values)) > 1.0:
+            raise ValueError("unit-interval array is out of range")
+        return
+    if name in {"pt", "fpt"}:
+        minimum, maximum = config.phi_min, config.phi_max
+    elif name in {"tt", "ftt"}:
+        minimum, maximum = config.theta_min, config.theta_max
+    else:
+        raise ValueError("unknown scanner array")
+    tolerance = (
+        8.0
+        * float(np.finfo(np.float32).eps)
+        * max(
+            1.0,
+            abs(minimum),
+            abs(maximum),
+        )
+    )
+    valid = (values >= minimum - tolerance) & (values <= maximum + tolerance)
+    if thinned:
+        valid |= values == np.float32(0.0)
+    if not np.all(valid):
+        raise ValueError("angle array is out of range")
+
+
 def _deep_validate_skin_artifacts(
     root: Path,
     result: F3ModeComparisonResult,
     parsed_skins: Mapping[str, ParsedSkinArtifacts],
 ) -> None:
-    """Validate each referenced final skin collection exactly once."""
+    """Validate and exactly reproduce each referenced final skin collection once."""
 
     validated: set[str] = set()
     for cell in result.cells:
@@ -1989,11 +2410,245 @@ def _deep_validate_skin_artifacts(
                 small_skin_size=skinning_config["small_skin_size"],
                 parsed=parsed,
             )
-        except (KeyError, TypeError, SkinArtifactValidationError) as error:
+            skinning_report = _read_json_object(
+                root / "stages" / "skinning" / fingerprint / "report.json",
+                "skinning report",
+            )
+            diagnostics = _object(
+                skinning_report["diagnostics"],
+                f"{cell.label} skinning diagnostics",
+            )
+            fallback_used = diagnostics.get("fallback_used")
+            if not isinstance(fallback_used, bool):
+                raise SkinArtifactValidationError("skinning report fallback_used must be bool")
+            parent_contract = resolve_skin_parent_volume_contract(
+                cell.stages.as_dict(),
+                skinning_config,
+                _object(
+                    cell.resolved_config["variant"],
+                    f"{cell.label} variant config",
+                ),
+                fallback_used=fallback_used,
+            )
+            _validate_skin_parent_samples(
+                root,
+                parsed,
+                result.volume_shape,
+                parent_contract.likelihood,
+                parent_contract.strike,
+                parent_contract.dip,
+            )
+            _recompute_skin_artifacts(
+                root,
+                cell,
+                parsed,
+                result.volume_shape,
+                skinning_config,
+                fallback_used,
+                parent_contract.scanner_target,
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
             raise F3ResultValidationError(
                 f"deep skin artifact mismatch: {cell.label}: {error}"
             ) from error
         validated.add(fingerprint)
+
+
+def _validate_skin_parent_samples(
+    root: Path,
+    parsed: ParsedSkinArtifacts,
+    shape: tuple[int, int, int],
+    likelihood: tuple[str, str, str],
+    strike: tuple[str, str, str],
+    dip: tuple[str, str, str],
+) -> None:
+    for field_name, source in (
+        ("fl", likelihood),
+        ("fp", strike),
+        ("ft", dip),
+    ):
+        values = _open_parent_volume(root, source, shape)
+        try:
+            for skin in parsed.skins:
+                for cell in skin:
+                    expected = np.float32(values[cell.i3, cell.i2, cell.i1])
+                    if np.float32(getattr(cell, field_name)) != expected:
+                        raise SkinArtifactValidationError(
+                            f"skins.json cell {field_name} does not match parent volume"
+                        )
+        finally:
+            _close_memmap(values)
+
+
+def _recompute_skin_artifacts(
+    root: Path,
+    cell: F3CellReference,
+    parsed: ParsedSkinArtifacts,
+    shape: tuple[int, int, int],
+    skinning_config: Mapping[str, Any],
+    fallback_used: bool,
+    scanner_target: tuple[str, str, str] | None,
+) -> None:
+    voting = ("voting", cell.stages.voting)
+    thinning = ("thinning", cell.stages.thinning)
+    sources = (
+        (*voting, "fv.dat"),
+        (*thinning, "fvt.dat"),
+        (*voting, "vp.dat"),
+        (*voting, "vt.dat"),
+    )
+    recomputed_payload: dict[str, Any] | None = None
+    recomputed = None
+    volume_size = math.prod(shape)
+    float_bytes = volume_size * np.dtype(np.float32).itemsize
+    mask_bytes = (volume_size + 7) // 8 if scanner_target is not None else 0
+    with tempfile.TemporaryFile(dir=root) as staging:
+        staging.truncate(len(sources) * float_bytes + mask_bytes)
+        backing = np.memmap(
+            staging,
+            dtype=np.uint8,
+            mode="r+",
+            shape=(len(sources) * float_bytes + mask_bytes,),
+        )
+        parent_views: list[np.ndarray] = []
+        scanner_mask_bits: np.ndarray | None = None
+        try:
+            for index, source in enumerate(sources):
+                parent = np.ndarray(
+                    shape,
+                    dtype=np.float32,
+                    buffer=backing,
+                    offset=index * float_bytes,
+                    order="C",
+                )
+                _copy_parent_volume(root, source, shape, parent)
+                parent.flags.writeable = False
+                parent_views.append(parent)
+            if scanner_target is not None:
+                scanner_mask_bits = np.ndarray(
+                    (mask_bytes,),
+                    dtype=np.uint8,
+                    buffer=backing,
+                    offset=len(sources) * float_bytes,
+                    order="C",
+                )
+                _copy_parent_positive_mask(root, scanner_target, shape, scanner_mask_bits)
+                scanner_mask_bits.flags.writeable = False
+            backing.flush()
+            backing.flags.writeable = False
+            fv, fvt, vp, vt = parent_views
+
+            def rerun_boundary_fallback(*args: Any, **kwargs: Any) -> None:
+                scanner_mask = (
+                    None
+                    if scanner_mask_bits is None
+                    else np.unpackbits(
+                        scanner_mask_bits,
+                        count=volume_size,
+                    )
+                    .reshape(shape)
+                    .view(np.bool_)
+                )
+                if scanner_mask is not None:
+                    scanner_mask.flags.writeable = False
+                kwargs["scanner_target_positive_mask"] = scanner_mask
+                try:
+                    apply_boundary_skinner_fallback(*args, **kwargs)
+                finally:
+                    scanner_mask = None
+
+            recomputed = execute_skinning_phase3d(
+                fv=fv,
+                fvt=fvt,
+                vp=vp,
+                vt=vt,
+                skinning_settings=SyntheticSkinningConfig(**dict(skinning_config)),
+                variant_spec=_resolved_variant_spec(cell.resolved_config["variant"]),
+                scanner_target_positive_mask=None,
+                boundary_fallback_runner=rerun_boundary_fallback,
+            )
+            if recomputed.diagnostics.get("fallback_used") is not fallback_used:
+                raise SkinArtifactValidationError(
+                    "recomputed fallback state does not match skinning report"
+                )
+            recomputed_payload = canonical_skins_payload(recomputed.skins)
+        finally:
+            scanner_mask_bits = None
+            parent_views.clear()
+            recomputed = None
+            _close_memmap(backing)
+    if recomputed_payload != canonical_skins_payload(parsed.skins):
+        raise SkinArtifactValidationError(
+            "skins.json does not exactly match skin-only recomputation"
+        )
+
+
+def _copy_parent_volume(
+    root: Path,
+    source: tuple[str, str, str],
+    shape: tuple[int, int, int],
+    target: np.ndarray,
+) -> None:
+    values = _open_parent_volume(root, source, shape)
+    try:
+        source_flat = values.reshape(-1)
+        target_flat = target.reshape(-1)
+        for start in range(0, source_flat.size, _SKIN_RECOMPUTE_CHUNK_VOXELS):
+            stop = min(source_flat.size, start + _SKIN_RECOMPUTE_CHUNK_VOXELS)
+            target_flat[start:stop] = source_flat[start:stop]
+    finally:
+        _close_memmap(values)
+
+
+def _copy_parent_positive_mask(
+    root: Path,
+    source: tuple[str, str, str],
+    shape: tuple[int, int, int],
+    target: np.ndarray,
+) -> None:
+    values = _open_parent_volume(root, source, shape)
+    try:
+        source_flat = values.reshape(-1)
+        target_offset = 0
+        for start in range(0, source_flat.size, _SKIN_RECOMPUTE_CHUNK_VOXELS):
+            stop = min(source_flat.size, start + _SKIN_RECOMPUTE_CHUNK_VOXELS)
+            packed = np.packbits(positive_candidate_mask(source_flat[start:stop]))
+            target[target_offset : target_offset + packed.size] = packed
+            target_offset += packed.size
+    finally:
+        _close_memmap(values)
+
+
+def _resolved_variant_spec(value: Any) -> VariantSpec:
+    variant = _object(value, "cell variant")
+    return VariantSpec(
+        name=variant["name"],
+        voting=VotingPatch(**dict(_object(variant["voting"], "cell variant voting patch"))),
+        seed_policy=variant["seed_policy"],
+        thinning_policy=variant["thinning_policy"],
+        post_thinning_policy=variant["post_thinning_policy"],
+        skinning=SkinningPatch(**dict(_object(variant["skinning"], "cell variant skinning patch"))),
+        experimental=variant["experimental"],
+        presets=tuple(variant["presets"]),
+        baseline=variant["baseline"],
+    )
+
+
+def _open_parent_volume(
+    root: Path,
+    source: tuple[str, str, str],
+    shape: tuple[int, int, int],
+) -> np.memmap:
+    kind, fingerprint, filename = source
+    values = np.memmap(
+        root / "stages" / kind / fingerprint / filename,
+        dtype=">f4",
+        mode="r",
+        shape=shape,
+        order="C",
+    )
+    values.flags.writeable = False
+    return values
 
 
 def _deep_validate_reference_metrics(

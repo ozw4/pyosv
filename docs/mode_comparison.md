@@ -295,10 +295,17 @@ existing operational validation paths.
   resume, public-reference agreement metrics, 2×2 contrasts, regional and
   orientation diagnostics, and runtime/resource rows. Exact resume also
   requires the numerical runtime identity in `run_manifest.json` to match,
-  including acceleration, Numba, platform, thread environment,
-  `PYTHONHASHSEED`, and the NumPy BLAS/LAPACK build digest. This identity keeps
+  including acceleration, Numba controls, platform, CPU dispatch, NumPy's
+  loaded BLAS implementation and effective thread count, SciPy build identity,
+  thread environment, `PYTHONHASHSEED`, and the NumPy BLAS/LAPACK build digest.
+  Official runs set `PYTHONHASHSEED=0`, `OMP_NUM_THREADS=1`,
+  `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and
+  `NUMEXPR_NUM_THREADS=1`, and explicitly set `PYOSV_ACCEL`, before Python
+  starts. Preserve `run_manifest.json`, which records this normalized identity,
+  with `completion.json` and the report files. This identity keeps
   numerical generations from being mixed; it is neither a cryptographic
-  signature nor proof of bitwise reproducibility on arbitrary hardware. Cell
+  signature nor proof of bitwise reproducibility on arbitrary hardware or of
+  geological correctness. Cell
   references point to shared content-addressed stages instead of duplicating
   full-volume artifacts. Continuous candidate and public-reference volumes use
   `abs(value) > 1e-6` for nonzero metrics. This epsilon-aware magnitude test is
@@ -312,9 +319,19 @@ existing operational validation paths.
   requires a new output path; exact resume reuses only matching validated
   stages, and a valid complete bundle is validated without recomputation.
   Root completion is published only after the fixed reports and referenced
-  stages pass semantic validation. `--deep-validate` recomputes full-volume
-  metric evidence. Runtime rows are within-run attribution, not isolated
-  benchmarks.
+  stages pass semantic validation. `--deep-validate` recomputes every scanner
+  array summary from its persisted DAT artifact, re-derives scanner sampling
+  counts from the resolved configuration, recomputes full-volume metric
+  evidence, and reruns only the final skinning phase from the persisted scanner,
+  voting, and thinning parents. The rerun exactly checks every final
+  cell's subvoxel geometry, voxel index, likelihood, strike, dip, ordering, and
+  duplicate occurrence against `skins.json`, while retaining the mask and
+  topology cross-checks. It therefore requires the current fixed publication
+  runtime to match the manifest. This establishes internal numerical
+  consistency, not artifact authenticity or geological truth. Shallow
+  `--validate-only` validates only the recorded contract and does not impose
+  that requirement on the current process.
+  Runtime rows are within-run attribution, not isolated benchmarks.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   legacy full-volume scan/vote command. It calls `FaultOrientScanner3.scan()`,
   then performs separately configurable scanner and voter thinning. This

@@ -159,9 +159,22 @@ root and an ignored output path:
 ```bash
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 PYOSV_ACCEL=auto \
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```
+
+Set these variables before starting Python so NumPy, SciPy, and their loaded
+BLAS runtime use the recorded publication environment. The run saves the
+normalized CPU dispatch, BLAS runtime, SciPy build, Numba controls, and thread
+identity in `run_manifest.json`; preserve that manifest with the completion
+report. Shallow `--validate-only` checks the recorded bundle without requiring
+the current process to reproduce this environment. Resume computation and
+`--deep-validate` require the current runtime identity to match it exactly.
 
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](examples/run_3d_f3d_mode_comparison.py)

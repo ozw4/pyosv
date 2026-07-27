@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -68,6 +68,16 @@ class SkinCellRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SkinParentVolumeContract:
+    """Persisted parent volumes that define final skin cell values."""
+
+    likelihood: tuple[str, str, str]
+    strike: tuple[str, str, str]
+    dip: tuple[str, str, str]
+    scanner_target: tuple[str, str, str] | None
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedSkinArtifacts:
     """Canonical skins with duplicate voxel occurrences preserved."""
 
@@ -86,13 +96,110 @@ class ParsedSkinArtifacts:
         return self.cell_count - len(self.unique_indices)
 
 
+def canonical_skins_payload(
+    skins: Sequence[Any],
+) -> dict[str, Any]:
+    """Serialize skins with the one canonical field and cell ordering."""
+
+    def cell_payload(cell: Any) -> dict[str, int | float]:
+        return {
+            "x1": float(cell.x1),
+            "x2": float(cell.x2),
+            "x3": float(cell.x3),
+            "i1": int(cell.i1),
+            "i2": int(cell.i2),
+            "i3": int(cell.i3),
+            "fl": float(cell.fl),
+            "fp": float(cell.fp),
+            "ft": float(cell.ft),
+        }
+
+    serialized = []
+    for skin_index, skin in enumerate(skins):
+        cells = sorted(skin, key=lambda cell: (cell.i3, cell.i2, cell.i1))
+        serialized.append(
+            {
+                "skin_index": skin_index,
+                "cell_count": len(cells),
+                "cells": [cell_payload(cell) for cell in cells],
+            }
+        )
+    return {
+        "format_version": 1,
+        "skinning_enabled": True,
+        "skin_count": len(serialized),
+        "skins": serialized,
+    }
+
+
+def resolve_skin_parent_volume_contract(
+    stages: Mapping[str, str],
+    resolved_skinning: Mapping[str, Any],
+    resolved_variant: Mapping[str, Any],
+    *,
+    fallback_used: bool,
+) -> SkinParentVolumeContract:
+    """Purely resolve final cell sources from recorded stage and skin settings."""
+
+    if not isinstance(fallback_used, bool):
+        raise TypeError("fallback_used must be bool")
+    try:
+        scanner = stages["scanner"]
+        voting = stages["voting"]
+        thinning = stages["thinning"]
+        growth_source = resolved_skinning["growth_source"]
+        fallback_enabled = resolved_skinning["boundary_skinner_fallback"]
+        post_thinning_policy = resolved_variant["post_thinning_policy"]
+    except (KeyError, TypeError) as error:
+        raise SkinArtifactValidationError("skin parent volume contract is incomplete") from error
+    if any(not isinstance(value, str) or not value for value in (scanner, voting, thinning)):
+        raise SkinArtifactValidationError("skin parent stage fingerprint is invalid")
+    if growth_source not in {"pre_thin", "thinned"}:
+        raise SkinArtifactValidationError("skin growth_source is invalid")
+    if not isinstance(fallback_enabled, bool):
+        raise SkinArtifactValidationError("skin boundary fallback setting is invalid")
+    if not isinstance(post_thinning_policy, str) or post_thinning_policy not in {
+        "none",
+        "recenter_scanner_target",
+        "boundary_edge_thin_v1",
+    }:
+        raise SkinArtifactValidationError("skin post-thinning policy is invalid")
+    if fallback_used and not fallback_enabled:
+        raise SkinArtifactValidationError("skin fallback state conflicts with resolved settings")
+    if fallback_used:
+        likelihood = ("thinning", thinning, "fvt.dat")
+    elif growth_source == "pre_thin":
+        likelihood = ("voting", voting, "fv.dat")
+    else:
+        # The thinning artifact stores the final fvt: base thinning for "none",
+        # otherwise the output of the resolved post-thinning policy.
+        assert growth_source == "thinned"
+        assert post_thinning_policy in {
+            "none",
+            "recenter_scanner_target",
+            "boundary_edge_thin_v1",
+        }
+        likelihood = ("thinning", thinning, "fvt.dat")
+    return SkinParentVolumeContract(
+        likelihood=likelihood,
+        strike=("voting", voting, "vp.dat"),
+        dip=("voting", voting, "vt.dat"),
+        scanner_target=("scanner", scanner, "ft.dat") if fallback_enabled else None,
+    )
+
+
 def parse_skins_json(
     path: str | Path,
     shape: tuple[int, int, int],
+    *,
+    strike_range: tuple[float, float] = (0.0, 360.0),
+    dip_range: tuple[float, float] = (65.0, 80.0),
 ) -> ParsedSkinArtifacts:
     """Parse one canonical ``skins.json`` and validate its low-cost schema."""
 
     volume_shape = _volume_shape(shape)
+    strike_bounds = _scalar_range(strike_range, "strike_range")
+    dip_bounds = _scalar_range(dip_range, "dip_range")
     artifact_path = Path(path)
     payload = _read_json_object(artifact_path, "skins.json")
     if set(payload) != _ROOT_FIELDS:
@@ -135,6 +242,13 @@ def parse_skins_json(
                 name: _finite_scalar(cell_value[name], f"skins.json cell {name}")
                 for name in _SCALAR_FIELDS
             }
+            _validate_cell_values(
+                indices,
+                scalars,
+                volume_shape,
+                strike_bounds,
+                dip_bounds,
+            )
             canonical_key = (indices[2], indices[1], indices[0])
             if previous_key is not None and canonical_key < previous_key:
                 raise SkinArtifactValidationError("skins.json cell order is not canonical")
@@ -153,7 +267,14 @@ def parse_skins_json(
                 )
             )
         parsed_skins.append(tuple(cells))
-    return ParsedSkinArtifacts(tuple(parsed_skins))
+    parsed = ParsedSkinArtifacts(tuple(parsed_skins))
+    if _canonical_json_bytes(payload) != _canonical_json_bytes(
+        canonical_skins_payload(parsed.skins)
+    ):
+        raise SkinArtifactValidationError(
+            "skins.json values do not match the canonical skin serializer"
+        )
+    return parsed
 
 
 def validate_skin_artifact_semantics(
@@ -274,6 +395,7 @@ def _read_json_object(path: Path, context: str) -> dict[str, Any]:
         value = json.loads(
             payload.decode("utf-8"),
             parse_constant=lambda token: _raise_nonfinite(token),
+            object_pairs_hook=_reject_duplicate_keys,
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SkinArtifactValidationError(f"{context} is not strict JSON") from error
@@ -284,6 +406,25 @@ def _read_json_object(path: Path, context: str) -> dict[str, Any]:
 
 def _raise_nonfinite(token: str) -> None:
     raise ValueError(f"non-finite JSON constant: {token}")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError(f"duplicate JSON key: {name}")
+        result[name] = value
+    return result
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
 
 
 def _volume_shape(shape: tuple[int, int, int]) -> tuple[int, int, int]:
@@ -324,10 +465,52 @@ def _validate_bounds(
         raise SkinArtifactValidationError("skins.json cell index is out of bounds")
 
 
+def _scalar_range(value: tuple[float, float], context: str) -> tuple[float, float]:
+    if not isinstance(value, tuple) or len(value) != 2:
+        raise TypeError(f"{context} must contain exactly two finite scalars")
+    lower = _finite_scalar(value[0], context)
+    upper = _finite_scalar(value[1], context)
+    if upper < lower:
+        raise SkinArtifactValidationError(f"{context} upper bound must not be less than lower")
+    return lower, upper
+
+
+def _validate_cell_values(
+    indices: tuple[int, int, int],
+    scalars: Mapping[str, float],
+    shape: tuple[int, int, int],
+    strike_range: tuple[float, float],
+    dip_range: tuple[float, float],
+) -> None:
+    n3, n2, n1 = shape
+    coordinates = (scalars["x1"], scalars["x2"], scalars["x3"])
+    for axis, (coordinate, index, size) in enumerate(
+        zip(coordinates, indices, (n1, n2, n3), strict=True),
+        start=1,
+    ):
+        if not (-0.5 <= coordinate < size - 0.5):
+            raise SkinArtifactValidationError(
+                f"skins.json cell x{axis} is outside the voxel-center domain"
+            )
+        if math.floor(coordinate + 0.5) != index:
+            raise SkinArtifactValidationError(
+                f"skins.json cell x{axis}/i{axis} Java rounding mismatch"
+            )
+    if not 0.0 <= scalars["fl"] <= 1.0:
+        raise SkinArtifactValidationError("skins.json cell fl is outside [0, 1]")
+    if not strike_range[0] <= scalars["fp"] <= strike_range[1]:
+        raise SkinArtifactValidationError("skins.json cell fp is outside scanner strike range")
+    if not dip_range[0] <= scalars["ft"] <= dip_range[1]:
+        raise SkinArtifactValidationError("skins.json cell ft is outside scanner dip range")
+
+
 __all__ = [
     "ParsedSkinArtifacts",
     "SkinArtifactValidationError",
     "SkinCellRecord",
+    "SkinParentVolumeContract",
+    "canonical_skins_payload",
     "parse_skins_json",
+    "resolve_skin_parent_volume_contract",
     "validate_skin_artifact_semantics",
 ]

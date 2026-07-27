@@ -144,9 +144,11 @@ from .resources import (
 )
 from .runtime_identity import (
     F3_RUNTIME_IDENTITY_SCHEMA_VERSION,
+    NUMBA_ENVIRONMENT_VARIABLES,
     THREAD_ENVIRONMENT_VARIABLES,
     numerical_runtime_identity,
     validate_numerical_runtime_identity,
+    validate_publication_runtime_identity,
 )
 from .result import (
     CELLS_REPORT_FILE,
@@ -253,6 +255,7 @@ __all__ = [
     "MetricEvidence",
     "MetricExtraction",
     "MetricRow",
+    "NUMBA_ENVIRONMENT_VARIABLES",
     "OrientationDiagnosticRow",
     "PeakRSSRecorder",
     "RSSSnapshot",
@@ -316,6 +319,7 @@ __all__ = [
     "validate_f3d_mode_comparison_result",
     "validate_f3d_result",
     "validate_numerical_runtime_identity",
+    "validate_publication_runtime_identity",
     "write_or_reuse_stage",
     "voting_stage_artifacts",
     "storage_report",

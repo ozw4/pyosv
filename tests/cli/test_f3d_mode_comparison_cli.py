@@ -315,6 +315,11 @@ def test_complete_resume_validates_without_compute(
     )
     monkeypatch.setattr(
         f3d_mode_comparison,
+        "_recorded_runtime_identity",
+        lambda root: {},
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
         "prepare_run_workspace",
         lambda *args, **kwargs: SimpleNamespace(path=output),
     )
@@ -340,6 +345,39 @@ def test_complete_resume_validates_without_compute(
 
     assert result == output
     assert seen == [(output, True)]
+
+
+def test_publication_runtime_failure_precedes_dataset_open_and_stage_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def reject_runtime(_identity: object) -> None:
+        raise ValueError("runtime rejected")
+
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_publication_runtime_identity",
+        reject_runtime,
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "F3VolumeSource",
+        lambda root: pytest.fail("runtime rejection must precede dataset open"),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "build_f3d_mode_comparison_plan",
+        lambda config: pytest.fail("runtime rejection must precede stage selection"),
+    )
+
+    with pytest.raises(ValueError, match="runtime rejected"):
+        f3d_mode_comparison.run_experiment(
+            config=F3ModeComparisonConfig(),
+            data_root=tmp_path / "data",
+            output_dir=tmp_path / "run",
+            resume=False,
+            deep=False,
+        )
 
 
 def test_requested_deep_validation_is_part_of_atomic_finalization(
@@ -436,6 +474,7 @@ def test_requested_deep_validation_is_part_of_atomic_finalization(
             resume=True,
             deep=True,
             pretty=True,
+            _enforce_publication_runtime=False,
         )
 
     assert not (output / "completion.json").exists()
