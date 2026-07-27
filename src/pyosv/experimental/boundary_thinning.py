@@ -98,7 +98,7 @@ def recenter_edge_fvt_to_target(
         "fvt_recenter_edge_shell_only": True,
         "fvt_recenter_positive_count_before": int(np.count_nonzero(before_positive)),
         "fvt_recenter_positive_count_after": int(
-            np.count_nonzero(recentered > np.float32(quality_metrics.NONZERO_EPSILON))
+            np.count_nonzero(quality_metrics.positive_candidate_mask(recentered))
         ),
         "fvt_recenter_value_source": "original_fvt",
     }

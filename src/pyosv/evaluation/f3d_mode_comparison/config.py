@@ -109,7 +109,16 @@ class F3ScannerConfig:
         if order > 5:
             raise ValueError("interpolation_order must be between 0 and 5")
         if self.interpolation_backend == "structured_linear" and order != 1:
-            raise ValueError("structured_linear requires interpolation_order=1")
+            raise ValueError(
+                "interpolation_backend='structured_linear' requires interpolation_order=1"
+            )
+        if (
+            self.interpolation_backend == "structured_linear"
+            and self.orientation_backend != "rotate_shear"
+        ):
+            raise ValueError(
+                "interpolation_backend='structured_linear' requires backend='rotate_shear'"
+            )
         object.__setattr__(self, "interpolation_order", order)
         if self.smoothing_sigma is not None:
             object.__setattr__(

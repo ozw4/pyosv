@@ -233,7 +233,11 @@ class FaultOrientScanner3:
         theta_max: float,
         g: np.ndarray,
         *,
+        backend: str = "rotate_shear",
+        interpolation_order: int = 1,
         interpolation_backend: str = "scipy",
+        smoothing_sigma: float | None = None,
+        normalize: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Scan a 3D image with the reference-like backend.
 
@@ -248,7 +252,11 @@ class FaultOrientScanner3:
             theta_min,
             theta_max,
             g,
+            backend=backend,
+            interpolation_order=interpolation_order,
             interpolation_backend=interpolation_backend,
+            smoothing_sigma=smoothing_sigma,
+            normalize=normalize,
         )
 
     def scan_fast(

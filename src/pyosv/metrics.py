@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
+from pyosv.candidate_volume import positive_candidate_mask
+
 
 @dataclass(frozen=True)
 class _SparseRidgeDistanceField:
@@ -88,12 +90,17 @@ def normalized_correlation(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def top_percentile_mask(
-    x: np.ndarray, percentile: float, *, positive_only: bool = True
+    x: np.ndarray,
+    percentile: float,
+    *,
+    positive_only: bool = True,
+    positive_epsilon: float = 0.0,
 ) -> np.ndarray:
     """Return a boolean mask for values at or above a percentile threshold.
 
-    When ``positive_only`` is true, values less than or equal to zero are never
-    selected. Arrays with no positive samples return an empty mask.
+    When ``positive_only`` is true, values less than or equal to
+    ``positive_epsilon`` are never selected. The default epsilon of zero
+    preserves the strict positive-only contract.
     """
 
     values = np.asarray(x)
@@ -104,7 +111,7 @@ def top_percentile_mask(
         raise ValueError("array must contain only finite values")
 
     if positive_only:
-        selectable = values > 0
+        selectable = positive_candidate_mask(values, epsilon=positive_epsilon)
         if not np.any(selectable):
             return np.zeros(values.shape, dtype=bool)
         percentile_values = values[selectable]
@@ -123,6 +130,7 @@ def _sparse_ridge_distance_field(
     *,
     percentile: float = 99.0,
     positive_only: bool = True,
+    positive_epsilon: float = 0.0,
     return_indices: bool = False,
 ) -> _SparseRidgeDistanceField:
     """Return the shared sparse-mask Euclidean distance representation.
@@ -132,7 +140,12 @@ def _sparse_ridge_distance_field(
     :func:`scipy.ndimage.distance_transform_edt` on the inverse mask.
     """
 
-    mask = top_percentile_mask(x, percentile, positive_only=positive_only)
+    mask = top_percentile_mask(
+        x,
+        percentile,
+        positive_only=positive_only,
+        positive_epsilon=positive_epsilon,
+    )
     count = int(np.count_nonzero(mask))
     if count == 0:
         return _SparseRidgeDistanceField(
@@ -164,6 +177,7 @@ def buffered_ridge_overlap(
     percentile: float = 99.0,
     radius: float = 2.0,
     positive_only: bool = True,
+    positive_epsilon: float = 0.0,
 ) -> dict[str, float | int]:
     """Compare sparse ridge masks with exact and buffered overlap metrics.
 
@@ -176,8 +190,18 @@ def buffered_ridge_overlap(
     reference_values, candidate_values = _validate_comparable_finite_arrays(reference, candidate)
     _validate_radius(radius)
 
-    reference_mask = top_percentile_mask(reference_values, percentile, positive_only=positive_only)
-    candidate_mask = top_percentile_mask(candidate_values, percentile, positive_only=positive_only)
+    reference_mask = top_percentile_mask(
+        reference_values,
+        percentile,
+        positive_only=positive_only,
+        positive_epsilon=positive_epsilon,
+    )
+    candidate_mask = top_percentile_mask(
+        candidate_values,
+        percentile,
+        positive_only=positive_only,
+        positive_epsilon=positive_epsilon,
+    )
 
     reference_count = int(np.count_nonzero(reference_mask))
     candidate_count = int(np.count_nonzero(candidate_mask))
@@ -219,6 +243,7 @@ def sparse_ridge_distance_metrics(
     *,
     percentile: float = 99.0,
     positive_only: bool = True,
+    positive_epsilon: float = 0.0,
 ) -> dict[str, float | int | None]:
     """Return symmetric distance-transform metrics between sparse ridge masks.
 
@@ -232,11 +257,13 @@ def sparse_ridge_distance_metrics(
         reference_values,
         percentile=percentile,
         positive_only=positive_only,
+        positive_epsilon=positive_epsilon,
     )
     candidate_field = _sparse_ridge_distance_field(
         candidate_values,
         percentile=percentile,
         positive_only=positive_only,
+        positive_epsilon=positive_epsilon,
     )
 
     reference_count = reference_field.count
@@ -370,13 +397,28 @@ def strike_dip_angle_error(
 
 
 def top_percentile_overlap(
-    a: np.ndarray, b: np.ndarray, percentile: float = 95.0, *, positive_only: bool = False
+    a: np.ndarray,
+    b: np.ndarray,
+    percentile: float = 95.0,
+    *,
+    positive_only: bool = False,
+    positive_epsilon: float = 0.0,
 ) -> dict[str, float]:
     """Compare overlap of high-value masks from two finite arrays."""
 
     av, bv = _validate_comparable_finite_arrays(a, b)
-    a_mask = top_percentile_mask(av, percentile, positive_only=positive_only)
-    b_mask = top_percentile_mask(bv, percentile, positive_only=positive_only)
+    a_mask = top_percentile_mask(
+        av,
+        percentile,
+        positive_only=positive_only,
+        positive_epsilon=positive_epsilon,
+    )
+    b_mask = top_percentile_mask(
+        bv,
+        percentile,
+        positive_only=positive_only,
+        positive_epsilon=positive_epsilon,
+    )
 
     size = float(a_mask.size)
     a_count = float(np.count_nonzero(a_mask))

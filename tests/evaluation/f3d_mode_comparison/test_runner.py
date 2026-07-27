@@ -28,6 +28,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     build_f3d_mode_comparison_plan,
     canonical_fingerprint,
     canonical_json_bytes,
+    numerical_runtime_identity,
     extract_f3d_diagnostics,
     extract_f3d_metric_rows,
     extract_stage_resources,
@@ -82,10 +83,11 @@ def _workspace(path: Path) -> F3RunWorkspace:
     computation = {
         "artifact_schema_version": 1,
         "stage_contract_version": 1,
-        "fingerprint_contract_version": 1,
+        "fingerprint_contract_version": 2,
         "plan": {"name": "runner-fixture"},
         "dataset_identity": source.identity.computation_identity,
         "implementation_identity": {"name": "test"},
+        "runtime_identity": numerical_runtime_identity(),
     }
     fingerprint = canonical_fingerprint(computation)
     manifest = {
@@ -683,6 +685,47 @@ def test_enabled_skinning_writes_only_the_fixed_stage_artifacts(
         report = json.loads((path / "report.json").read_text())
         assert report["enabled"] is True
         assert "geological_accuracy" not in report
+
+
+def test_boundary_fallback_scanner_mask_uses_positive_candidate_epsilon(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path / "run")
+    scanners = _scanner_stages(workspace)
+    plan = build_f3d_mode_comparison_plan(
+        F3ModeComparisonConfig(
+            skinning_template=SyntheticSkinningConfig(
+                boundary_skinner_fallback=True,
+            ),
+            skinner_boundary_fallback_explicit=True,
+        )
+    )
+    observed: list[np.ndarray] = []
+
+    def loader(stage: F3ScannerStageResult) -> _LoadedScanner:
+        loaded = _LoadedScanner(stage, [])
+        loaded.ft.fill(0.0)
+        loaded.ft.ravel()[:5] = (0.0, 5.0e-8, -5.0e-8, 2.0e-6, -2.0e-6)
+        return loaded
+
+    def workflow_runner(**kwargs: Any) -> Any:
+        observed.append(np.array(kwargs["scanner_target_positive_mask"], copy=True))
+        return runner_module.execute_workflow3d(**kwargs)
+
+    run_f3d_mode_comparison_cells(
+        workspace,
+        plan,
+        scanners,
+        workflow_runner=workflow_runner,
+        scanner_loader=loader,  # type: ignore[arg-type]
+    )
+
+    assert len(observed) == 4
+    for mask in observed:
+        np.testing.assert_array_equal(
+            mask.ravel()[:5],
+            [False, False, False, True, False],
+        )
 
 
 def test_corrupt_stage_and_unknown_cell_fingerprint_are_rejected(

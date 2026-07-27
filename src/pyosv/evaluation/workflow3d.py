@@ -78,7 +78,6 @@ from pyosv.voting3d import (
 )
 
 EDGE_FALSE_POSITIVE_MARGIN = quality_metrics.EDGE_FALSE_POSITIVE_MARGIN
-NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
 
 _T = TypeVar("_T")
 
@@ -574,7 +573,7 @@ def execute_workflow3d(
         recenter_diagnostic = None
         boundary_thin_diagnostic = None
         if variant_spec.post_thinning_policy == "recenter_scanner_target":
-            recenter_before = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
+            recenter_before = quality_metrics.positive_candidate_mask(fvt)
             recenter_target = ft if fvt_recenter_target is None else fvt_recenter_target
             recenter_result = recenter_edge_fvt_to_target(
                 fvt,
@@ -590,8 +589,8 @@ def execute_workflow3d(
             recenter_diagnostic.update(
                 recenter_distance_diagnostic_runner(
                     before=recenter_before,
-                    after=np.asarray(fvt) > np.float32(NONZERO_EPSILON),
-                    target=np.asarray(recenter_target) > np.float32(NONZERO_EPSILON),
+                    after=quality_metrics.positive_candidate_mask(fvt),
+                    target=quality_metrics.positive_candidate_mask(recenter_target),
                 )
             )
         elif variant_spec.post_thinning_policy == "boundary_edge_thin_v1":
@@ -637,7 +636,7 @@ def execute_workflow3d(
     primary_cache_enabled = stage_cache is not None and primary_key is not None
     if skinning_settings.enabled:
         primary_diagnostic_candidate_count = int(
-            np.count_nonzero(np.asarray(fvt) > np.float32(NONZERO_EPSILON))
+            np.count_nonzero(quality_metrics.positive_candidate_mask(fvt))
         )
 
         def build_primary_result() -> PrimarySkinningStageResult:

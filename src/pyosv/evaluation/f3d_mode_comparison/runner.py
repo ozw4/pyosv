@@ -14,6 +14,7 @@ from typing import Any, Literal, Protocol
 
 import numpy as np
 
+from pyosv.candidate_volume import positive_candidate_mask
 from pyosv.evaluation.synthetic_quality.config import SyntheticVotingConfig
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     FinalThinningStageResult,
@@ -62,6 +63,7 @@ F3_CELL_RUNNER_CONTRACT_VERSION = 1
 F3_VOTING_STAGE_IMPLEMENTATION = "pyosv-f3-voting-stage-v1"
 F3_THINNING_STAGE_IMPLEMENTATION = "pyosv-f3-thinning-stage-v1"
 F3_SKINNING_STAGE_IMPLEMENTATION = "pyosv-f3-skinning-stage-v1"
+F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 1
 F3_CELL_REFERENCE_SCHEMA_VERSION = 1
 
 _DAT_DTYPE = np.dtype(">f4")
@@ -440,7 +442,7 @@ def run_f3d_mode_comparison_cells(
                             )
 
                 scanner_mask = (
-                    np.asarray(loaded.ft) > np.float32(0.0)
+                    positive_candidate_mask(loaded.ft)
                     if execution.resolved_config["skinning"]["boundary_skinner_fallback"]
                     else None
                 )
@@ -693,6 +695,10 @@ def _cell_execution(
         },
         "primary_skinner_identity": ("pyosv.experimental.boundary_skinning.find_synthetic_skins"),
     }
+    if workflow.skinning_config.enabled:
+        skinning_settings["skin_artifact_semantic_contract_version"] = (
+            F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        )
     voting_fingerprint = stage_fingerprint(
         "voting",
         run_fingerprint_value=workspace.fingerprint,
@@ -1452,6 +1458,7 @@ __all__ = [
     "F3_THINNING_STAGE_IMPLEMENTATION",
     "F3_VOTING_STAGE_IMPLEMENTATION",
     "F3_SKINNING_STAGE_IMPLEMENTATION",
+    "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
     "F3CellReference",
     "F3CellRunResult",
     "F3CellStageFingerprints",

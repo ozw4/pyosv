@@ -72,7 +72,7 @@ NONZERO_EPSILON = quality_metrics.NONZERO_EPSILON
 
 
 def _positive_candidate_mask(values: np.ndarray) -> np.ndarray:
-    return np.asarray(values) > np.float32(NONZERO_EPSILON)
+    return quality_metrics.positive_candidate_mask(values)
 
 
 def _array_summary(array: np.ndarray) -> dict[str, Any]:

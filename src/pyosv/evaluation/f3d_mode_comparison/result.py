@@ -17,6 +17,8 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.candidate_volume import NONZERO_EPSILON
+
 from .artifacts import (
     F3_ARTIFACT_SCHEMA_VERSION,
     RUN_COMPLETION_FILE,
@@ -67,6 +69,7 @@ from .resources import (
 )
 from .runner import (
     F3_CELL_RUNNER_CONTRACT_VERSION,
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     F3_SKINNING_STAGE_IMPLEMENTATION,
     F3_THINNING_STAGE_IMPLEMENTATION,
     F3_VOTING_STAGE_IMPLEMENTATION,
@@ -77,6 +80,13 @@ from .runner import (
     voting_stage_artifacts,
 )
 from .scanner import scanner_stage_artifacts, scanner_stage_resolved_settings
+from .skin_artifacts import (
+    ParsedSkinArtifacts,
+    SkinArtifactValidationError,
+    parse_skins_json,
+    validate_skin_artifact_semantics,
+)
+from .runtime_identity import validate_numerical_runtime_identity
 from ..synthetic_quality.config import SyntheticVotingConfig
 from ..synthetic_quality.stage_keys import (
     build_final_thinning_stage_key,
@@ -123,6 +133,7 @@ _RUN_COMPUTATION_FIELDS = (
     "plan",
     "dataset_identity",
     "implementation_identity",
+    "runtime_identity",
 )
 _STAGE_COMPUTATION_FIELDS = (
     "artifact_schema_version",
@@ -468,13 +479,14 @@ def validate_f3d_mode_comparison_result(
     ):
         raise F3ResultValidationError("result identity does not match the run manifest")
     _reject_crop_semantics(result.as_dict())
-    _validate_cells_and_stages(root, result, dataset, manifest["plan"])
+    parsed_skins = _validate_cells_and_stages(root, result, dataset, manifest["plan"])
     _validate_metrics(result, dataset)
     _validate_voxelwise_contrasts(result)
     _validate_regional_rows(result, manifest["plan"])
     _validate_orientation_rows(result)
     _validate_resource_rows(root, result)
     if deep:
+        _deep_validate_skin_artifacts(root, result, parsed_skins)
         _deep_validate_reference_metrics(root, result, dataset)
         _deep_validate_voxelwise_contrasts(root, result)
         _deep_validate_orientation_diagnostics(root, result)
@@ -653,6 +665,10 @@ def _validated_run_manifest(root: Path) -> dict[str, Any]:
     fingerprint = _sha256(manifest["run_fingerprint"], "run manifest fingerprint")
     if canonical_fingerprint(computation) != fingerprint:
         raise F3ResultValidationError("run manifest fingerprint mismatch")
+    try:
+        validate_numerical_runtime_identity(manifest["runtime_identity"])
+    except ValueError as error:
+        raise F3ResultValidationError("run manifest runtime identity is invalid") from error
     return manifest
 
 
@@ -764,7 +780,7 @@ def _validate_cells_and_stages(
     result: F3ModeComparisonResult,
     dataset: Mapping[str, Any],
     plan: Any,
-) -> None:
+) -> dict[str, ParsedSkinArtifacts]:
     if tuple(cell.label for cell in result.cells) != _CELL_ORDER:
         raise F3ResultValidationError("cells must have exact canonical coverage and order")
     cell_dir = root / "cells"
@@ -774,6 +790,7 @@ def _validate_cells_and_stages(
     input_file = dataset["files"].get("input")
     input_digest = input_file["sha256"] if input_file is not None else None
     validated: dict[tuple[str, str], Mapping[str, Any]] = {}
+    parsed_skins: dict[str, ParsedSkinArtifacts] = {}
     workflow_identity: Any = _MISSING
     for cell in result.cells:
         expected_axes = _CELL_AXES[cell.label]
@@ -821,6 +838,14 @@ def _validate_cells_and_stages(
                 result.volume_shape,
                 workflow_identity,
             )
+        if cell.skinning_enabled and cell.stages.skinning not in parsed_skins:
+            try:
+                parsed_skins[cell.stages.skinning] = parse_skins_json(
+                    root / "stages" / "skinning" / cell.stages.skinning / "skins.json",
+                    result.volume_shape,
+                )
+            except SkinArtifactValidationError as error:
+                raise F3ResultValidationError(f"invalid skin artifact schema: {error}") from error
         if not cell.skinning_enabled:
             if workflow_identity is _MISSING:
                 raise F3ResultValidationError("workflow runner identity is missing")
@@ -839,7 +864,13 @@ def _validate_cells_and_stages(
             )
             if cell.stages.skinning != expected_skinning_fingerprint:
                 raise F3ResultValidationError("skinning stage fingerprint mismatch")
-        _validate_cell_stage_reports(root, cell, result.volume_shape)
+        _validate_cell_stage_reports(
+            root,
+            cell,
+            result.volume_shape,
+            plan,
+            validated[("scanner", cell.stages.scanner)],
+        )
     by_label = {cell.label: cell for cell in result.cells}
     for left, right in (("RL-REF", "RL-QUAL"), ("Q-REF", "Q-QUAL")):
         if by_label[left].stages.scanner != by_label[right].stages.scanner:
@@ -849,6 +880,7 @@ def _validate_cells_and_stages(
     for left, right in (("RL-REF", "Q-REF"), ("RL-QUAL", "Q-QUAL")):
         if by_label[left].resolved_config != by_label[right].resolved_config:
             raise F3ResultValidationError("scanner cells differ outside the scanner-owned stage")
+    return parsed_skins
 
 
 def _resolved_cell_contract(plan_value: Any, workflow: str) -> tuple[dict[str, Any], bool]:
@@ -892,12 +924,26 @@ def _validate_cell_stage_reports(
     root: Path,
     cell: F3CellReference,
     shape: tuple[int, int, int],
+    plan_value: Any,
+    scanner_settings: Mapping[str, Any],
 ) -> None:
+    plan = _object(plan_value, "run plan")
+    scanner_name = (
+        "reference_like_scanner_config"
+        if cell.backend == "reference-like"
+        else "quality_scanner_config"
+    )
+    scanner_config = dict(_object(plan[scanner_name], f"run plan {scanner_name}"))
     contracts = (
         (
             "scanner",
             cell.stages.scanner,
-            {"fingerprint": cell.stages.scanner, "backend": cell.backend},
+            {
+                "fingerprint": cell.stages.scanner,
+                "backend": cell.backend,
+                "resolved_config": scanner_config,
+                "resolved_stage_settings": dict(scanner_settings),
+            },
         ),
         (
             "voting",
@@ -937,7 +983,11 @@ def _validate_cell_stage_reports(
         _reject_crop_semantics(report)
         if tuple(report.get("shape", ())) != shape:
             raise F3ResultValidationError(f"{kind} report shape mismatch")
-        if any(report.get(name) != value for name, value in expected.items()):
+        for name, value in expected.items():
+            if report.get(name) == value:
+                continue
+            if name in {"resolved_config", "resolved_stage_settings"}:
+                raise F3ResultValidationError(f"{kind} report {name} mismatch")
             raise F3ResultValidationError(f"{kind} report source identity mismatch")
 
 
@@ -1132,6 +1182,10 @@ def _canonical_skinning_stage_settings(
         },
         "primary_skinner_identity": ("pyosv.experimental.boundary_skinning.find_synthetic_skins"),
     }
+    if skinning["enabled"]:
+        settings["skin_artifact_semantic_contract_version"] = (
+            F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        )
     normalized = json.loads(canonical_json_bytes(settings))
     if not isinstance(normalized, dict):
         raise AssertionError("skinning stage settings must be an object")
@@ -1287,7 +1341,7 @@ def _validate_metric_evidence_fields(item: MetricEvidence) -> None:
             "absolute_difference_p99",
             "absolute_difference_max",
         }
-        expected_thresholds = set()
+        expected_thresholds = {"nonzero_epsilon"}
     elif item.selection.endswith("_distance"):
         expected_counts = {"reference_count", "candidate_count"}
         expected_accumulators = set()
@@ -1343,7 +1397,10 @@ def _validate_metric_evidence_fields(item: MetricEvidence) -> None:
             f"{item.stage}/{item.selection}; counts={sorted(counts)}; "
             f"accumulators={sorted(accumulators)}; thresholds={sorted(thresholds)}"
         )
-    if thresholds:
+    if item.selection == "all":
+        if thresholds["nonzero_epsilon"] != NONZERO_EPSILON:
+            raise F3ResultValidationError("metric evidence nonzero epsilon mismatch")
+    elif thresholds:
         expected_percentile = {
             "positive_p95": 95.0,
             "positive_p99": 99.0,
@@ -1908,6 +1965,37 @@ def _rss_stage_boundary(point: str) -> tuple[tuple[str, str], str]:
     return (stage_kind, fingerprint), parts[-1]
 
 
+def _deep_validate_skin_artifacts(
+    root: Path,
+    result: F3ModeComparisonResult,
+    parsed_skins: Mapping[str, ParsedSkinArtifacts],
+) -> None:
+    """Validate each referenced final skin collection exactly once."""
+
+    validated: set[str] = set()
+    for cell in result.cells:
+        fingerprint = cell.stages.skinning
+        if not cell.skinning_enabled or fingerprint in validated:
+            continue
+        try:
+            parsed = parsed_skins[fingerprint]
+            skinning_config = _object(
+                cell.resolved_config["skinning"],
+                f"{cell.label} skinning config",
+            )
+            validate_skin_artifact_semantics(
+                root / "stages" / "skinning" / fingerprint,
+                result.volume_shape,
+                small_skin_size=skinning_config["small_skin_size"],
+                parsed=parsed,
+            )
+        except (KeyError, TypeError, SkinArtifactValidationError) as error:
+            raise F3ResultValidationError(
+                f"deep skin artifact mismatch: {cell.label}: {error}"
+            ) from error
+        validated.add(fingerprint)
+
+
 def _deep_validate_reference_metrics(
     root: Path,
     result: F3ModeComparisonResult,
@@ -1945,6 +2033,13 @@ def _deep_validate_reference_metrics(
                     shape=result.volume_shape,
                     order="C",
                 )
+                stored_all_evidence = next(
+                    item
+                    for item in result.metric_evidence
+                    if item.cell_label == cell.label
+                    and item.stage == stage
+                    and item.selection == "all"
+                )
                 computed_rows, computed_evidence = compute_reference_metric_rows(
                     dataset_id=result.dataset_id,
                     cell_label=cell.label,
@@ -1956,6 +2051,7 @@ def _deep_validate_reference_metrics(
                     reference=reference,
                     source_stage_fingerprint=candidate_fingerprint,
                     reference_sha256=dataset["files"][role]["sha256"],
+                    nonzero_epsilon=dict(stored_all_evidence.thresholds)["nonzero_epsilon"],
                 )
                 computed_regional = compute_regional_reference_diagnostics(
                     dataset_id=result.dataset_id,

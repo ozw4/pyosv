@@ -158,7 +158,7 @@ def fallback_component_diagnostics(
     connectivity: str,
     component_policy: str = "all",
 ) -> dict[str, int | float | str]:
-    mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
+    mask = quality_metrics.positive_candidate_mask(fvt)
     candidate_count = int(np.count_nonzero(mask))
     components = positive_mask_components(mask, connectivity=connectivity)
     sizes = [len(component) for component in components]
@@ -438,7 +438,7 @@ def apply_boundary_skinner_fallback(
         largest_fraction=float(diagnostics.get("skin_primary_largest_fraction", 0.0)),
         small_skin_cell_fraction=float(diagnostics.get("skin_primary_small_cell_fraction", 0.0)),
     )
-    positive_mask = np.asarray(fvt) > np.float32(NONZERO_EPSILON)
+    positive_mask = quality_metrics.positive_candidate_mask(fvt)
     edge_fraction = quality_metrics.edge_candidate_fraction(positive_mask, edge_margin=EDGE_MARGIN)
     primary_edge_fraction = float(diagnostics.get("skin_primary_edge_shell_fraction", 0.0))
     target_edge_fraction = None

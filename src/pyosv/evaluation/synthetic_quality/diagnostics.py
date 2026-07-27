@@ -337,7 +337,7 @@ def _scanner_downstream_thinning_report(
         "fvt_positive_buffered_f1_r2": quality["buffered_overlap_radius2"]["buffered_f1"],
         "fvt_positive_distance_p95": quality["surface_distance"]["candidate_to_truth_p95"],
         "fvt_positive_edge_candidate_fraction": quality_metrics.edge_candidate_fraction(
-            fvt > np.float32(quality_metrics.NONZERO_EPSILON),
+            quality_metrics.positive_candidate_mask(fvt),
             edge_margin=quality_metrics.EDGE_FALSE_POSITIVE_MARGIN,
         ),
         "fvt_positive_edge_false_positive_fraction": edge_false_positive_ratio(

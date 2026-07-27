@@ -103,6 +103,33 @@ def test_builder_rejects_noncanonical_scanner(field: str, value: object, message
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig(scanner_template=scanner))
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    (
+        (
+            {
+                "interpolation_backend": "structured_linear",
+                "interpolation_order": 3,
+            },
+            "interpolation_backend='structured_linear' requires interpolation_order=1",
+        ),
+        (
+            {
+                "interpolation_backend": "structured_linear",
+                "orientation_backend": "directional",
+            },
+            "interpolation_backend='structured_linear' requires backend='rotate_shear'",
+        ),
+    ),
+)
+def test_scanner_config_rejects_cross_field_combinations(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        F3ScannerConfig(**kwargs)
+
+
 def test_builder_rejects_noncanonical_dataset() -> None:
     with pytest.raises(ValueError, match="official F3 shape"):
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig(shape=(421, 400, 100)))

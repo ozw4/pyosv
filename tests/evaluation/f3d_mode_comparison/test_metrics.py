@@ -5,6 +5,13 @@ from dataclasses import fields
 import numpy as np
 import pytest
 
+from pyosv.candidate_volume import (
+    NONZERO_EPSILON,
+    nonzero_count,
+    nonzero_fraction,
+    nonzero_mask,
+    positive_candidate_mask,
+)
 from pyosv.evaluation.f3d_mode_comparison.metrics import (
     CONTRAST_DEFINITIONS,
     F3_METRIC_ROW_FIELDS,
@@ -139,6 +146,46 @@ def test_all_voxel_accumulator_matches_direct_numpy() -> None:
     )
     assert dict(all_evidence.accumulators)["absolute_difference_max"] == pytest.approx(
         np.max(absolute)
+    )
+
+
+def test_continuous_candidate_contract_and_all_voxel_evidence() -> None:
+    epsilon = np.float32(NONZERO_EPSILON)
+    above = np.nextafter(epsilon, np.float32(np.inf))
+    values = np.array([0.0, epsilon, above, -epsilon, -above], dtype=np.float32)
+
+    np.testing.assert_array_equal(nonzero_mask(values), [False, False, True, False, True])
+    np.testing.assert_array_equal(
+        positive_candidate_mask(values), [False, False, True, False, False]
+    )
+    assert nonzero_count(values) == 2
+    assert nonzero_fraction(values) == 2 / 5
+
+    candidate = np.array([0.0, 5.0e-8, -5.0e-8, 2.0e-6, -2.0e-6], dtype=np.float32)
+    reference = np.array([0.0, 5.0e-8, -5.0e-8, 2.0e-6, 0.0], dtype=np.float32)
+    rows, evidence = _reference_rows(candidate.reshape(1, 1, 5), reference.reshape(1, 1, 5))
+
+    assert _value(rows, "candidate_nonzero_count") == 2
+    assert _value(rows, "reference_nonzero_count") == 1
+    assert _value(rows, "candidate_nonzero_fraction") == pytest.approx(2 / 5)
+    assert _value(rows, "reference_nonzero_fraction") == pytest.approx(1 / 5)
+    assert _value(rows, "nonzero_fraction_ratio") == 2.0
+    all_evidence = next(item for item in evidence if item.selection == "all")
+    assert dict(all_evidence.thresholds) == {"nonzero_epsilon": NONZERO_EPSILON}
+    assert dict(all_evidence.counts)["candidate_nonzero_count"] == 2
+    assert dict(all_evidence.counts)["reference_nonzero_count"] == 1
+
+
+def test_nonzero_count_preserves_integer_and_boolean_semantics() -> None:
+    assert nonzero_count(np.array([0, 1, -1], dtype=np.int32)) == 2
+    assert nonzero_count(np.array([False, True, True], dtype=bool)) == 2
+    np.testing.assert_array_equal(
+        positive_candidate_mask(np.array([-1, 0, 1], dtype=np.int32)),
+        [False, False, True],
+    )
+    np.testing.assert_array_equal(
+        positive_candidate_mask(np.array([False, True], dtype=bool)),
+        [False, True],
     )
 
 

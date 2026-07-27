@@ -63,8 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Without --resume, OUTPUT_DIR must not exist. --resume accepts only an "
-            "incomplete workspace with the matching run fingerprint or a valid "
-            "complete bundle; a complete bundle is validated without recomputation."
+            "incomplete workspace with the matching run fingerprint, including "
+            "numerical runtime identity, or a valid complete bundle; a complete "
+            "bundle is validated without recomputation."
         ),
     )
     parser.add_argument(

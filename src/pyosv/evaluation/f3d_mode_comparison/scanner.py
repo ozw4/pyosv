@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from pyosv.candidate_volume import NONZERO_EPSILON, nonzero_count
 from pyosv.orient3d import FaultOrientScanner3
 
 from .artifacts import (
@@ -30,8 +31,8 @@ from .config import F3ScannerConfig
 from .data import F3FileIdentity, F3VolumeSource
 from .models import F3ModeComparisonPlan, F3ScannerBackend
 
-F3_SCANNER_STAGE_CONTRACT_VERSION = 1
-F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v1"
+F3_SCANNER_STAGE_CONTRACT_VERSION = 3
+F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v3"
 F3_SCANNER_BACKEND_ORDER: tuple[F3ScannerBackend, ...] = (
     "reference-like",
     "quality",
@@ -413,7 +414,11 @@ def _write_scanner_stage(
             config.theta_min,
             config.theta_max,
             scanner_input,
+            backend=config.orientation_backend,
+            interpolation_order=config.interpolation_order,
             interpolation_backend=config.interpolation_backend,
+            smoothing_sigma=config.smoothing_sigma,
+            normalize=config.normalize,
         )
     else:
         ft, pt, tt, confidence = scanner.scan_quality(
@@ -563,6 +568,7 @@ def _sampling_count(
 
 
 def _array_summary(array: np.ndarray) -> dict[str, Any]:
+    count = nonzero_count(array)
     return {
         "shape": list(array.shape),
         "dtype": array.dtype.name,
@@ -570,8 +576,9 @@ def _array_summary(array: np.ndarray) -> dict[str, Any]:
         "min": float(np.min(array)),
         "max": float(np.max(array)),
         "mean": float(np.mean(array, dtype=np.float64)),
-        "nonzero_count": int(np.count_nonzero(array)),
-        "nonzero_fraction": float(np.count_nonzero(array) / array.size),
+        "nonzero_epsilon": NONZERO_EPSILON,
+        "nonzero_count": count,
+        "nonzero_fraction": float(count / array.size),
     }
 
 

@@ -87,6 +87,26 @@ def test_regional_basic_metrics_match_manual_mask_selection() -> None:
     assert extraction.as_dict()["boundary_margin"] == 1
 
 
+def test_regional_basic_nonzero_fractions_ignore_sub_epsilon_tails() -> None:
+    candidate = np.zeros((3, 3, 5), dtype=np.float32)
+    reference = np.zeros_like(candidate)
+    candidate[1, 1, :] = (0.0, 5.0e-8, -5.0e-8, 2.0e-6, -2.0e-6)
+    reference[1, 1, :] = (0.0, 5.0e-8, -5.0e-8, 2.0e-6, 0.0)
+    candidate[0, 0, :] = candidate[1, 1, :]
+    reference[0, 0, :] = reference[1, 1, :]
+
+    rows = _regional(candidate, reference)
+    partition = build_region_partition(candidate.shape, 1)
+    for row in rows:
+        mask = partition.mask_for(row.region)
+        assert row.metrics["candidate_nonzero_fraction"] == pytest.approx(
+            np.count_nonzero(np.abs(candidate[mask]) > np.float32(1.0e-6)) / np.count_nonzero(mask)
+        )
+        assert row.metrics["reference_nonzero_fraction"] == pytest.approx(
+            np.count_nonzero(np.abs(reference[mask]) > np.float32(1.0e-6)) / np.count_nonzero(mask)
+        )
+
+
 def test_regional_basic_metrics_process_mask_selection_in_bounded_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
