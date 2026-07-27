@@ -479,7 +479,10 @@ def validate_completed_f3d_bundle(
     for filename in F3_REPORT_FILES:
         _verify_file_metadata(reports / filename, report_metadata[filename], filename)
 
-    manifest = _validated_run_manifest(root)
+    manifest = _validated_run_manifest(
+        root,
+        enforce_publication_runtime=_dataset_spec is None,
+    )
     _reject_crop_semantics(manifest)
     if completion["run_fingerprint"] != manifest["run_fingerprint"]:
         raise F3ResultValidationError("completion run fingerprint mismatch")
@@ -514,7 +517,10 @@ def validate_f3d_mode_comparison_result(
     if _dataset_spec is not None and not isinstance(_dataset_spec, F3DatasetSpec):
         raise TypeError("_dataset_spec must be an F3DatasetSpec or None")
     root = _workspace_path(workspace)
-    manifest = _validated_run_manifest(root)
+    manifest = _validated_run_manifest(
+        root,
+        enforce_publication_runtime=_dataset_spec is None,
+    )
     if (
         deep
         and _dataset_spec is None
@@ -712,7 +718,11 @@ def _load_reports(root: Path) -> F3ModeComparisonResult:
     )
 
 
-def _validated_run_manifest(root: Path) -> dict[str, Any]:
+def _validated_run_manifest(
+    root: Path,
+    *,
+    enforce_publication_runtime: bool,
+) -> dict[str, Any]:
     manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
     if set(manifest) != {*_RUN_COMPUTATION_FIELDS, "run_fingerprint", "provenance"}:
         raise F3ResultValidationError("run manifest field set mismatch")
@@ -722,10 +732,21 @@ def _validated_run_manifest(root: Path) -> dict[str, Any]:
         raise F3ResultValidationError("run manifest fingerprint mismatch")
     if manifest["fingerprint_contract_version"] != F3_FINGERPRINT_CONTRACT_VERSION:
         raise F3ResultValidationError("run manifest fingerprint contract mismatch")
+    dataset_identity = manifest.get("dataset_identity")
+    is_official = (
+        isinstance(dataset_identity, Mapping)
+        and dataset_identity.get("dataset_id") == F3_DATASET_ID
+    )
     try:
-        validate_numerical_runtime_identity(manifest["runtime_identity"])
+        if enforce_publication_runtime and is_official:
+            validate_publication_runtime_identity(manifest["runtime_identity"])
+        else:
+            validate_numerical_runtime_identity(manifest["runtime_identity"])
     except ValueError as error:
-        raise F3ResultValidationError("run manifest runtime identity is invalid") from error
+        contract = (
+            "publication runtime" if enforce_publication_runtime and is_official else "runtime"
+        )
+        raise F3ResultValidationError(f"run manifest {contract} identity is invalid") from error
     return manifest
 
 

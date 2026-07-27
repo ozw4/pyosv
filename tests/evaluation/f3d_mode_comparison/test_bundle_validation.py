@@ -1402,6 +1402,26 @@ def test_run_manifest_mismatch_is_rejected(tmp_path: Path) -> None:
         validate_completed_f3d_bundle(root)
 
 
+def test_shallow_validation_rejects_nonpublication_recorded_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    manifest_path = root / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_identity"]["thread_environment"]["OMP_NUM_THREADS"] = None
+    computation = {name: manifest[name] for name in result_module._RUN_COMPUTATION_FIELDS}
+    manifest["run_fingerprint"] = canonical_fingerprint(computation)
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+    monkeypatch.setattr(result_module, "F3_DATASET_ID", "result-fixture")
+
+    with pytest.raises(
+        F3ResultValidationError,
+        match="run manifest publication runtime identity",
+    ):
+        validate_completed_f3d_bundle(root)
+
+
 def test_previous_fingerprint_contract_is_rejected_even_when_rehashed(
     tmp_path: Path,
 ) -> None:
