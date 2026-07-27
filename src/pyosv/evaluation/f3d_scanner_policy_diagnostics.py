@@ -17,6 +17,7 @@ from scipy.ndimage import (
     label,
 )
 
+from pyosv.candidate_volume import NONZERO_EPSILON, nonzero_fraction
 from pyosv.f3d_reference import interior_slices
 from pyosv.metrics import (
     _sparse_ridge_distance_field,
@@ -32,7 +33,7 @@ DEFAULT_RIDGE_PERCENTILE = 99.0
 DEFAULT_ALLOWED_P95_DELTA = 5.0
 DEFAULT_MAX_POINTS = 64
 DEFAULT_MAX_COMPONENTS = 8
-DEFAULT_NONZERO_EPSILON = 1.0e-6
+DEFAULT_NONZERO_EPSILON = NONZERO_EPSILON
 DEFAULT_RIDGE_BUFFER_RADIUS = 2.0
 DEFAULT_PERSISTENCE_RADIUS = 2.0
 
@@ -1231,7 +1232,7 @@ def _optional_output_scalar(
 
 
 def _nonzero_fraction(values: np.ndarray, epsilon: float) -> float:
-    return float(np.count_nonzero(np.abs(values) > epsilon) / values.size)
+    return nonzero_fraction(values, epsilon=epsilon)
 
 
 def _validate_percentile(value: float) -> float:

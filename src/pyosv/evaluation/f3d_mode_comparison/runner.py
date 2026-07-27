@@ -14,6 +14,7 @@ from typing import Any, Literal, Protocol
 
 import numpy as np
 
+from pyosv.candidate_volume import positive_candidate_mask
 from pyosv.evaluation.synthetic_quality.config import SyntheticVotingConfig
 from pyosv.evaluation.synthetic_quality.stage_cache import (
     FinalThinningStageResult,
@@ -441,7 +442,7 @@ def run_f3d_mode_comparison_cells(
                             )
 
                 scanner_mask = (
-                    np.asarray(loaded.ft) > np.float32(0.0)
+                    positive_candidate_mask(loaded.ft)
                     if execution.resolved_config["skinning"]["boundary_skinner_fallback"]
                     else None
                 )

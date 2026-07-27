@@ -293,7 +293,13 @@ existing operational validation paths.
   numerical generations from being mixed; it is neither a cryptographic
   signature nor proof of bitwise reproducibility on arbitrary hardware. Cell
   references point to shared content-addressed stages instead of duplicating
-  full-volume artifacts.
+  full-volume artifacts. Continuous candidate and public-reference volumes use
+  `abs(value) > 1e-6` for nonzero metrics. This epsilon-aware magnitude test is
+  not strict IEEE nonzero testing: negative values beyond the threshold count,
+  while interpolation or smoothing tails at or below it do not. Positive
+  candidate masks instead use `value > 1e-6` and exclude negative values.
+  Metric evidence and scanner array summaries record the fixed epsilon so
+  their nonzero counts and fractions can be reproduced.
 - `python -m pyosv.cli.f3d_mode_comparison` runs, resumes, or validates that
   canonical matrix. It always targets all four cells. A run without `--resume`
   requires a new output path; exact resume reuses only matching validated

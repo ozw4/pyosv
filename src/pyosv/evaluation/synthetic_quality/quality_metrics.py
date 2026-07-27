@@ -7,6 +7,11 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.candidate_volume import (
+    NONZERO_EPSILON as _NONZERO_EPSILON,
+    nonzero_fraction,
+    positive_candidate_mask,
+)
 from pyosv.synthetic_metrics import (
     buffered_surface_overlap,
     edge_false_positive_ratio,
@@ -23,7 +28,7 @@ from .variants import BASELINE_VARIANT
 
 
 EDGE_FALSE_POSITIVE_MARGIN = 2
-NONZERO_EPSILON = 1.0e-6
+NONZERO_EPSILON = _NONZERO_EPSILON
 VARIANT_COMPARISON_METRICS = (
     (
         "fvt_buffered_f1_r2_delta_vs_current",
@@ -157,40 +162,10 @@ def positive_candidate_count(array: np.ndarray) -> int:
 def array_nonzero_fraction(array: np.ndarray) -> float:
     """Return the fraction of finite numeric values above the report epsilon."""
 
-    values = np.asarray(array)
     try:
-        numeric = np.issubdtype(values.dtype, np.number)
-    except TypeError as error:
-        raise ValueError("array must be numeric") from error
-    if not numeric:
-        raise ValueError("array must be numeric")
-    if values.size == 0:
-        return 0.0
-    if np.issubdtype(values.dtype, np.complexfloating):
-        extrema = (
-            np.min(values.real),
-            np.max(values.real),
-            np.min(values.imag),
-            np.max(values.imag),
-        )
-    else:
-        extrema = (np.min(values), np.max(values))
-    if not all(np.isfinite(extremum) for extremum in extrema):
-        raise ValueError("array must contain only finite values")
-
-    if np.issubdtype(values.dtype, np.integer):
-        count = np.count_nonzero(values)
-    elif np.issubdtype(values.dtype, np.complexfloating):
-        count = np.count_nonzero(np.abs(values) > np.float32(NONZERO_EPSILON))
-    else:
-        threshold = np.float32(NONZERO_EPSILON)
-        count = np.count_nonzero(values > threshold)
-        count += np.count_nonzero(values < -threshold)
-    return float(count / values.size)
-
-
-def positive_candidate_mask(array: np.ndarray) -> np.ndarray:
-    return np.asarray(array) > np.float32(NONZERO_EPSILON)
+        return nonzero_fraction(array)
+    except ValueError as error:
+        raise ValueError(str(error).replace("values", "array")) from error
 
 
 def candidate_count(mask: np.ndarray) -> int:

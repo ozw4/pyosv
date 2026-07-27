@@ -17,6 +17,8 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.candidate_volume import NONZERO_EPSILON
+
 from .artifacts import (
     F3_ARTIFACT_SCHEMA_VERSION,
     RUN_COMPLETION_FILE,
@@ -1315,7 +1317,7 @@ def _validate_metric_evidence_fields(item: MetricEvidence) -> None:
             "absolute_difference_p99",
             "absolute_difference_max",
         }
-        expected_thresholds = set()
+        expected_thresholds = {"nonzero_epsilon"}
     elif item.selection.endswith("_distance"):
         expected_counts = {"reference_count", "candidate_count"}
         expected_accumulators = set()
@@ -1371,7 +1373,10 @@ def _validate_metric_evidence_fields(item: MetricEvidence) -> None:
             f"{item.stage}/{item.selection}; counts={sorted(counts)}; "
             f"accumulators={sorted(accumulators)}; thresholds={sorted(thresholds)}"
         )
-    if thresholds:
+    if item.selection == "all":
+        if thresholds["nonzero_epsilon"] != NONZERO_EPSILON:
+            raise F3ResultValidationError("metric evidence nonzero epsilon mismatch")
+    elif thresholds:
         expected_percentile = {
             "positive_p95": 95.0,
             "positive_p99": 99.0,
@@ -2004,6 +2009,13 @@ def _deep_validate_reference_metrics(
                     shape=result.volume_shape,
                     order="C",
                 )
+                stored_all_evidence = next(
+                    item
+                    for item in result.metric_evidence
+                    if item.cell_label == cell.label
+                    and item.stage == stage
+                    and item.selection == "all"
+                )
                 computed_rows, computed_evidence = compute_reference_metric_rows(
                     dataset_id=result.dataset_id,
                     cell_label=cell.label,
@@ -2015,6 +2027,7 @@ def _deep_validate_reference_metrics(
                     reference=reference,
                     source_stage_fingerprint=candidate_fingerprint,
                     reference_sha256=dataset["files"][role]["sha256"],
+                    nonzero_epsilon=dict(stored_all_evidence.thresholds)["nonzero_epsilon"],
                 )
                 computed_regional = compute_regional_reference_diagnostics(
                     dataset_id=result.dataset_id,

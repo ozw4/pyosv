@@ -206,6 +206,16 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
     assert len(reuse_recorder.snapshots) == 4
 
 
+def test_array_summary_uses_and_records_nonzero_epsilon() -> None:
+    values = np.array([0.0, 5.0e-8, -5.0e-8, 2.0e-6, -2.0e-6], dtype=np.float32)
+
+    summary = scanner_module._array_summary(values)
+
+    assert summary["nonzero_epsilon"] == 1.0e-6
+    assert summary["nonzero_count"] == 2
+    assert summary["nonzero_fraction"] == pytest.approx(2 / 5)
+
+
 def test_runner_rejects_input_not_bound_to_workspace_before_compute(tmp_path: Path) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     source = _Source(tmp_path / "data", values)

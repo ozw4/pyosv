@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
+from pyosv.candidate_volume import NONZERO_EPSILON, nonzero_count
 from pyosv.f3d_reference import interior_slices
 from pyosv.metrics import top_percentile_mask
 
@@ -327,8 +328,18 @@ def compute_regional_reference_diagnostics(
         for region in F3_DIAGNOSTIC_REGIONS
     }
     for percentile in percentile_values:
-        reference_mask = top_percentile_mask(reference_values, percentile, positive_only=True)
-        candidate_mask = top_percentile_mask(candidate_values, percentile, positive_only=True)
+        reference_mask = top_percentile_mask(
+            reference_values,
+            percentile,
+            positive_only=True,
+            positive_epsilon=NONZERO_EPSILON,
+        )
+        candidate_mask = top_percentile_mask(
+            candidate_values,
+            percentile,
+            positive_only=True,
+            positive_epsilon=NONZERO_EPSILON,
+        )
         for region in F3_DIAGNOSTIC_REGIONS:
             metrics_by_region[region].update(
                 _regional_overlap_metrics(
@@ -342,10 +353,16 @@ def compute_regional_reference_diagnostics(
         candidate_mask = None
 
     buffered_reference = top_percentile_mask(
-        reference_values, float(buffered_percentile), positive_only=True
+        reference_values,
+        float(buffered_percentile),
+        positive_only=True,
+        positive_epsilon=NONZERO_EPSILON,
     )
     buffered_candidate = top_percentile_mask(
-        candidate_values, float(buffered_percentile), positive_only=True
+        candidate_values,
+        float(buffered_percentile),
+        positive_only=True,
+        positive_epsilon=NONZERO_EPSILON,
     )
     reference_buffer = _dilate_mask(buffered_reference, buffer_radius)
     candidate_buffer = _dilate_mask(buffered_candidate, buffer_radius)
@@ -733,8 +750,8 @@ class _RegionalBasicAccumulator:
         count = int(candidate.size)
         if count == 0:
             return
-        self.candidate_nonzero += int(np.count_nonzero(candidate))
-        self.reference_nonzero += int(np.count_nonzero(reference))
+        self.candidate_nonzero += nonzero_count(candidate)
+        self.reference_nonzero += nonzero_count(reference)
 
         difference = candidate - reference
         self.absolute_difference_parts.append(float(np.sum(np.abs(difference), dtype=np.float64)))

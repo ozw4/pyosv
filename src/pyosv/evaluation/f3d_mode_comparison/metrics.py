@@ -14,6 +14,11 @@ from typing import Any, Literal
 
 import numpy as np
 
+from pyosv.candidate_volume import (
+    NONZERO_EPSILON,
+    nonzero_count,
+    positive_candidate_mask,
+)
 from pyosv.metrics import (
     buffered_ridge_overlap,
     sparse_ridge_distance_metrics,
@@ -659,6 +664,7 @@ def compute_reference_metric_rows(
     reference_sha256: str,
     slab_depth: int = 8,
     temporary_directory: str | Path | None = None,
+    nonzero_epsilon: float = NONZERO_EPSILON,
 ) -> tuple[tuple[MetricRow, ...], tuple[MetricEvidence, ...]]:
     """Compute one candidate/reference stage pair without partial-row failure."""
 
@@ -675,6 +681,9 @@ def compute_reference_metric_rows(
     _sha256(reference_sha256, "reference_sha256")
     candidate_values, reference_values = _comparable_3d_arrays(candidate, reference)
     depth = _positive_int(slab_depth, "slab_depth")
+    epsilon = _finite_number(nonzero_epsilon, "nonzero_epsilon")
+    if epsilon != NONZERO_EPSILON:
+        raise ValueError(f"nonzero_epsilon must be the canonical value {NONZERO_EPSILON}")
 
     values: dict[tuple[str, str], float | int | None] = {}
     evidence: list[MetricEvidence] = []
@@ -684,6 +693,7 @@ def compute_reference_metric_rows(
             reference_values,
             slab_depth=depth,
             temporary_directory=Path(temp_dir),
+            nonzero_epsilon=epsilon,
         )
         values.update((("all", metric), value) for metric, value in basic.items())
         evidence.append(
@@ -696,6 +706,7 @@ def compute_reference_metric_rows(
                 source_stage_fingerprint,
                 reference_sha256,
                 candidate_values.shape,
+                thresholds={"nonzero_epsilon": epsilon},
                 counts=basic_counts,
                 accumulators=basic_accumulators,
             )
@@ -708,6 +719,7 @@ def compute_reference_metric_rows(
                 candidate_values,
                 percentile,
                 positive_only=True,
+                positive_epsilon=NONZERO_EPSILON,
             )
             exact = _exact_overlap_values(overlap)
             values.update(((selection, metric), value) for metric, value in exact.items())
@@ -735,6 +747,7 @@ def compute_reference_metric_rows(
             percentile=F3_BUFFERED_PERCENTILE,
             radius=F3_BUFFER_RADIUS,
             positive_only=True,
+            positive_epsilon=NONZERO_EPSILON,
         )
         selection = "positive_p99_radius2"
         for definition in _definitions_for(stage, selection):
@@ -765,6 +778,7 @@ def compute_reference_metric_rows(
             candidate_values,
             percentile=F3_BUFFERED_PERCENTILE,
             positive_only=True,
+            positive_epsilon=NONZERO_EPSILON,
         )
         selection = "positive_p99_distance"
         for definition in _definitions_for(stage, selection):
@@ -1308,6 +1322,7 @@ def _all_voxel_metrics(
     *,
     slab_depth: int,
     temporary_directory: Path,
+    nonzero_epsilon: float,
 ) -> tuple[dict[str, float | int], dict[str, int], dict[str, float]]:
     shape = candidate.shape
     size = int(candidate.size)
@@ -1348,8 +1363,8 @@ def _all_voxel_metrics(
             candidate_max = max(candidate_max, float(np.max(candidate_flat)))
             reference_min = min(reference_min, float(np.min(reference_flat)))
             reference_max = max(reference_max, float(np.max(reference_flat)))
-            candidate_nonzero += int(np.count_nonzero(candidate_flat))
-            reference_nonzero += int(np.count_nonzero(reference_flat))
+            candidate_nonzero += nonzero_count(candidate_flat, epsilon=nonzero_epsilon)
+            reference_nonzero += nonzero_count(reference_flat, epsilon=nonzero_epsilon)
             absolute_sum_parts.append(float(np.sum(slab_absolute, dtype=np.float64)))
             squared_difference_parts.append(float(np.dot(difference, difference)))
         absolute.flush()
@@ -1622,7 +1637,8 @@ def _selection_thresholds(
 
 
 def _positive_percentile_threshold(values: np.ndarray, percentile: float) -> float:
-    positive = np.asarray(values)[np.asarray(values) > 0]
+    array = np.asarray(values)
+    positive = array[positive_candidate_mask(array)]
     if positive.size == 0:
         return 0.0
     return float(np.percentile(positive.astype(np.float64, copy=False), percentile))

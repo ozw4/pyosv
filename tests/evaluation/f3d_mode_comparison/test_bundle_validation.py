@@ -683,6 +683,26 @@ def test_deep_validation_recomputes_skin_metric_evidence(tmp_path: Path) -> None
         validate_completed_f3d_bundle(root, deep=True)
 
 
+def test_metric_evidence_requires_canonical_nonzero_epsilon(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    target = next(
+        item
+        for item in loaded.metric_evidence
+        if item.cell_label == "RL-REF" and item.stage == "ft" and item.selection == "all"
+    )
+    changed = replace(
+        loaded,
+        metric_evidence=tuple(
+            replace(item, thresholds=(("nonzero_epsilon", 0.5),)) if item is target else item
+            for item in loaded.metric_evidence
+        ),
+    )
+
+    with pytest.raises(F3ResultValidationError, match="nonzero epsilon"):
+        result_module.validate_f3d_mode_comparison_result(root, changed)
+
+
 def test_nonofficial_dataset_cannot_be_validated_as_canonical(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

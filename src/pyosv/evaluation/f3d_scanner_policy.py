@@ -16,13 +16,14 @@ from typing import Any
 
 import numpy as np
 
-from pyosv.f3d_reference import interior_slices
+from pyosv.candidate_volume import NONZERO_EPSILON, nonzero_count, nonzero_fraction
 from pyosv.evaluation.promotion.scanner_policy import (
     QUALITY_WORKFLOW_SCANNER_THINNING_POLICY_PROFILE,
     REFERENCE_LIKE_NORMAL_SCANNER_POLICY_ID,
     REFERENCE_LIKE_REFERENCE_SCANNER_POLICY_ID,
     effective_remove_edge_effects,
 )
+from pyosv.f3d_reference import interior_slices
 from pyosv.metrics import (
     buffered_ridge_overlap,
     sparse_ridge_distance_metrics,
@@ -53,7 +54,7 @@ DEFAULT_DENSITY_RATIO_MAX = 2.0
 DEFAULT_EDGE_DENSITY_MAX_DELTA = 0.10
 DEFAULT_SPARSE_DISTANCE_P95_MAX_DELTA = 5.0
 DEFAULT_CROP_STABILITY_MAX_CV = 2.0
-DEFAULT_NONZERO_EPSILON = 1.0e-6
+DEFAULT_NONZERO_EPSILON = NONZERO_EPSILON
 DEFAULT_RIDGE_PERCENTILE = 99.0
 DEFAULT_RIDGE_BUFFER_RADIUS = 2.0
 
@@ -372,7 +373,7 @@ def build_stage_density_report(
         full_fraction = _nonzero_fraction(values, epsilon)
         interior_fraction = _nonzero_fraction(values[local_interior], epsilon)
         stages[name] = {
-            "nonzero_count": int(np.count_nonzero(np.abs(values) > epsilon)),
+            "nonzero_count": nonzero_count(values, epsilon=epsilon),
             "nonzero_fraction": full_fraction,
             "interior_nonzero_fraction": interior_fraction,
             "edge_density_proxy": max(0.0, full_fraction - interior_fraction),
@@ -875,7 +876,7 @@ def _output_array(outputs: Mapping[str, np.ndarray], name: str) -> np.ndarray:
 
 
 def _nonzero_fraction(values: np.ndarray, epsilon: float) -> float:
-    return float(np.count_nonzero(np.abs(values) > epsilon) / values.size) if values.size else 0.0
+    return nonzero_fraction(values, epsilon=epsilon)
 
 
 def _ratio(numerator: int | float, denominator: int | float) -> float:

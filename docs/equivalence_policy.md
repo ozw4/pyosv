@@ -92,12 +92,15 @@ values raise `ValueError`. Empty arrays raise `ValueError`. If either centered
 array is constant and has zero norm, the function returns `0.0` because the
 correlation is undefined and carries no localization signal.
 
-`top_percentile_mask(x, percentile, positive_only=True)` returns a boolean mask
-for finite values at or above the requested percentile threshold. When
-`positive_only` is true, values less than or equal to zero are excluded before
-the percentile threshold is computed; arrays with no positive samples return an
-empty mask. Percentiles must be finite and in the inclusive range `[0, 100]`;
-empty arrays and arrays containing non-finite values raise `ValueError`.
+`top_percentile_mask(x, percentile, positive_only=True,
+positive_epsilon=0.0)` returns a boolean mask for finite values at or above the
+requested percentile threshold. When `positive_only` is true, values less than
+or equal to `positive_epsilon` are excluded before the percentile threshold is
+computed; arrays with no eligible positive samples return an empty mask. The
+overlap, buffered-overlap, and sparse-distance helpers accept and propagate the
+same optional epsilon. Its default remains strict positive-only selection.
+Percentiles must be finite and in the inclusive range `[0, 100]`; empty arrays
+and arrays containing non-finite values raise `ValueError`.
 
 `top_percentile_overlap(a, b, percentile=95.0, positive_only=False)` compares
 the high-value masks from two same-shape finite arrays. The report includes
