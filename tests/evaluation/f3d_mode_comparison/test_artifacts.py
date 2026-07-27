@@ -259,6 +259,22 @@ def test_runtime_identity_is_canonical_and_default_is_valid() -> None:
     validate_numerical_runtime_identity(numerical_runtime_identity())
 
 
+@pytest.mark.parametrize("spelling", ("plain", "surrounding-whitespace", "uppercase"))
+def test_runtime_identity_normalizes_configured_acceleration_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    spelling: str,
+) -> None:
+    mode = runtime_identity_module._accel._ACCEL_MODE
+    configured = {
+        "plain": mode,
+        "surrounding-whitespace": f"  {mode}  ",
+        "uppercase": mode.upper(),
+    }[spelling]
+    monkeypatch.setenv("PYOSV_ACCEL", configured)
+
+    assert numerical_runtime_identity()["pyosv_accel"] == mode
+
+
 def _publication_runtime_identity() -> dict[str, object]:
     return {
         **_RUNTIME_IDENTITY,
@@ -376,7 +392,12 @@ def test_numpy_build_digest_normalizes_paths_and_has_stable_unavailable_status(
         "Compilers": {
             "c": {
                 "commands": "cc",
-                "c_args": ["-O3", "/first/build/specs"],
+                "c_args": [
+                    "-O3",
+                    "/first/build/specs",
+                    "-I/first/build/include",
+                    "-Wl,-rpath,/first/build/lib",
+                ],
             }
         },
     }
@@ -390,7 +411,12 @@ def test_numpy_build_digest_normalizes_paths_and_has_stable_unavailable_status(
         },
         "Compilers": {
             "c": {
-                "c_args": ["-O3", "/moved/build/specs"],
+                "c_args": [
+                    "-O3",
+                    "/moved/build/specs",
+                    "-I/moved/build/include",
+                    "-Wl,-rpath,/moved/build/lib",
+                ],
                 "commands": "cc",
             }
         },

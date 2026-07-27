@@ -915,7 +915,7 @@ def test_full_fixture_releases_stage_arrays_and_limits_deep_metric_pairs(
     assert cached_workflow_arrays
     assert all(reference() is None for reference in cached_workflow_arrays)
     assert len(cleared_caches) == 4
-    assert metric_passes >= 2
+    assert metric_passes == 1
     assert metric_pair_peak == 2
     assert not active
     result_module._reject_volume_bearing_values(result)

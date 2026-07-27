@@ -1530,6 +1530,37 @@ def test_finalization_failure_never_leaves_completion(
     assert not tuple((root / "reports").glob(".*.tmp-*"))
 
 
+def test_deep_finalization_runs_expensive_validation_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    result = load_f3d_mode_comparison_result(root)
+    (root / "completion.json").unlink()
+    scanner_calls = 0
+    skin_calls = 0
+    original_scanner = result_module._deep_validate_scanner_stages
+    original_skin = result_module._deep_validate_skin_artifacts
+
+    def tracked_scanner(*args: Any, **kwargs: Any) -> None:
+        nonlocal scanner_calls
+        scanner_calls += 1
+        original_scanner(*args, **kwargs)
+
+    def tracked_skin(*args: Any, **kwargs: Any) -> None:
+        nonlocal skin_calls
+        skin_calls += 1
+        original_skin(*args, **kwargs)
+
+    monkeypatch.setattr(result_module, "_deep_validate_scanner_stages", tracked_scanner)
+    monkeypatch.setattr(result_module, "_deep_validate_skin_artifacts", tracked_skin)
+
+    finalize_f3d_bundle(root, result, deep=True)
+
+    assert scanner_calls == 1
+    assert skin_calls == 1
+
+
 def test_interrupted_completion_temporary_does_not_block_finalization(
     tmp_path: Path,
 ) -> None:

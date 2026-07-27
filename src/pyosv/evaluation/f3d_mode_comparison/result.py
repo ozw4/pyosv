@@ -406,9 +406,11 @@ def finalize_f3d_bundle(
             _completion_json_bytes(completion, pretty=pretty),
             temporary_prefix=".completion.json.tmp-",
         )
+        # The reports and stages already passed deep validation above. Validate the
+        # newly published completion contract without repeating expensive recomputation.
         validate_completed_f3d_bundle(
             root,
-            deep=deep,
+            deep=False,
             _dataset_spec=_dataset_spec,
         )
     except BaseException:

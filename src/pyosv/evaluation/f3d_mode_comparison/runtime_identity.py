@@ -68,8 +68,10 @@ _RUNTIME_LIBRARY_FIELDS = {
 }
 _SHA256_LENGTH = 64
 _EMBEDDED_ABSOLUTE_PATH = re.compile(
-    r"""(?:^|[\s"'(<\[{=,:;])"""
-    r"""(?:/[^\s"')>\]},;]+|[A-Za-z]:[\\/][^\s"')>\]},;]+|\\\\[^\s"')>\]},;]+)"""
+    r"""(?P<prefix>^|[\s"'(<\[{=,:;]|"""
+    r"""-I|-L|-F|-isystem|-iquote|-include|-imacros|-idirafter|-isysroot)"""
+    r"""(?P<path>/[^\s"')>\]},;]+|"""
+    r"""[A-Za-z]:[\\/][^\s"')>\]},;]+|\\\\[^\s"')>\]},;]+)"""
 )
 
 
@@ -77,6 +79,7 @@ def numerical_runtime_identity() -> dict[str, Any]:
     """Return the process identity that selects the numerical execution path."""
 
     numba_available = bool(_accel.NUMBA_AVAILABLE)
+    raw_pyosv_accel = os.environ.get("PYOSV_ACCEL")
     numba_version: str | None = None
     if numba_available:
         try:
@@ -96,7 +99,9 @@ def numerical_runtime_identity() -> dict[str, Any]:
             "platform_machine": platform.machine(),
             "byte_order": sys.byteorder,
             "requested_acceleration_mode": _accel._ACCEL_MODE,
-            "pyosv_accel": os.environ.get("PYOSV_ACCEL"),
+            "pyosv_accel": (
+                raw_pyosv_accel.strip().lower() if raw_pyosv_accel is not None else None
+            ),
             "numba_available": numba_available,
             "numba_version": numba_version,
             "effective_acceleration_state": ("numba_enabled" if numba_available else "python_only"),
@@ -480,8 +485,13 @@ def _normalize_build_value(value: Any) -> Any:
     if value is None or type(value) in {bool, int, float, str}:
         if isinstance(value, float) and not np.isfinite(value):
             raise ValueError("non-finite build value")
-        if isinstance(value, str) and _is_absolute_path(value):
-            return "<absolute-path>"
+        if isinstance(value, str):
+            if _is_absolute_path(value):
+                return "<absolute-path>"
+            return _EMBEDDED_ABSOLUTE_PATH.sub(
+                lambda match: f"{match.group('prefix')}<absolute-path>",
+                value,
+            )
         return value
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
