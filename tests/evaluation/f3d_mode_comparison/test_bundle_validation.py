@@ -201,6 +201,31 @@ def _rehash_report(root: Path, filename: str) -> None:
     completion_path.write_bytes(canonical_json_bytes(completion) + b"\n")
 
 
+def _rehash_stage_artifact(root: Path, stage: Path, filename: str) -> None:
+    manifest_path = stage / "stage_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][filename] = {
+        **manifest["files"][filename],
+        **artifact_file_metadata(stage / filename),
+    }
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+
+    stage_completion_path = stage / "complete.json"
+    stage_completion = json.loads(stage_completion_path.read_text(encoding="utf-8"))
+    stage_completion["files"][filename] = {
+        **stage_completion["files"][filename],
+        **artifact_file_metadata(stage / filename),
+    }
+    stage_completion["files"]["stage_manifest.json"] = artifact_file_metadata(manifest_path)
+    stage_completion_path.write_bytes(canonical_json_bytes(stage_completion) + b"\n")
+
+    completion_path = root / "completion.json"
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    stage_key = f"{manifest['kind']}/{manifest['fingerprint']}"
+    completion["stage_completions"][stage_key] = artifact_file_metadata(stage_completion_path)
+    completion_path.write_bytes(canonical_json_bytes(completion) + b"\n")
+
+
 def _csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -227,6 +252,76 @@ def test_complete_bundle_strict_load_deep_validation_and_resume(tmp_path: Path) 
     loaded = load_f3d_mode_comparison_result(root)
     resumed = finalize_f3d_bundle(root, resume=True)
     assert resumed == loaded
+
+
+def test_rehashed_skin_schema_tamper_is_rejected_by_strict_validation(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path, skinning_enabled=True)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    skins_path = stage / "skins.json"
+    payload = json.loads(skins_path.read_text(encoding="utf-8"))
+    payload["unknown"] = True
+    skins_path.write_bytes(canonical_json_bytes(payload) + b"\n")
+    _rehash_stage_artifact(root, stage, "skins.json")
+
+    with pytest.raises(F3ResultValidationError, match="skin artifact schema"):
+        validate_completed_f3d_bundle(root)
+
+
+@pytest.mark.parametrize("filename", ("skin_mask.dat", "report.json"))
+def test_rehashed_skin_cross_file_tamper_requires_deep_validation(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    root = _complete_small_bundle(tmp_path, skinning_enabled=True)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    artifact = stage / filename
+    if filename == "skin_mask.dat":
+        mask = np.fromfile(artifact, dtype=">f4").reshape(loaded.volume_shape)
+        mask.flat[0] = 1.0
+        mask.tofile(artifact)
+    else:
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
+        payload["topology"]["skin_count"] = 1
+        artifact.write_bytes(canonical_json_bytes(payload) + b"\n")
+    _rehash_stage_artifact(root, stage, filename)
+
+    assert validate_completed_f3d_bundle(root)
+    with pytest.raises(F3ResultValidationError, match="deep skin artifact mismatch"):
+        validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_deep_skin_validation_is_unique_and_precedes_skin_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_small_bundle(tmp_path, skinning_enabled=True)
+    loaded = load_f3d_mode_comparison_result(root)
+    validated: list[str] = []
+    original_validator = result_module.validate_skin_artifact_semantics
+    original_metrics = result_module.compute_skin_metric_rows
+
+    def validating(*args: object, **kwargs: object) -> object:
+        fingerprint = Path(args[0]).name
+        assert fingerprint not in validated
+        result = original_validator(*args, **kwargs)
+        validated.append(fingerprint)
+        return result
+
+    def computing(*args: object, **kwargs: object) -> object:
+        assert kwargs["source_stage_fingerprint"] in validated
+        return original_metrics(*args, **kwargs)
+
+    monkeypatch.setattr(result_module, "validate_skin_artifact_semantics", validating)
+    monkeypatch.setattr(result_module, "compute_skin_metric_rows", computing)
+
+    assert validate_completed_f3d_bundle(root, deep=True)
+    assert set(validated) == {
+        cell.stages.skinning for cell in loaded.cells if cell.skinning_enabled
+    }
 
 
 def test_pretty_only_formats_root_completion(tmp_path: Path) -> None:
@@ -940,6 +1035,22 @@ def test_disabled_skinning_fingerprint_tamper_is_rejected(tmp_path: Path) -> Non
 
     with pytest.raises(F3ResultValidationError, match="skinning stage fingerprint mismatch"):
         validate_completed_f3d_bundle(root)
+
+
+def test_disabled_skinning_does_not_parse_or_require_skin_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_small_bundle(tmp_path, skinning_enabled=False)
+    assert not any((root / "stages" / "skinning").iterdir())
+
+    def unexpected_parse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("disabled skinning must not parse skins.json")
+
+    monkeypatch.setattr(result_module, "parse_skins_json", unexpected_parse)
+
+    assert validate_completed_f3d_bundle(root)
+    assert validate_completed_f3d_bundle(root, deep=True)
 
 
 @pytest.mark.parametrize("failure", ["report_write", "deep_validation", "completion_write"])

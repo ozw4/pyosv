@@ -67,6 +67,7 @@ from .resources import (
 )
 from .runner import (
     F3_CELL_RUNNER_CONTRACT_VERSION,
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     F3_SKINNING_STAGE_IMPLEMENTATION,
     F3_THINNING_STAGE_IMPLEMENTATION,
     F3_VOTING_STAGE_IMPLEMENTATION,
@@ -77,6 +78,12 @@ from .runner import (
     voting_stage_artifacts,
 )
 from .scanner import scanner_stage_artifacts, scanner_stage_resolved_settings
+from .skin_artifacts import (
+    ParsedSkinArtifacts,
+    SkinArtifactValidationError,
+    parse_skins_json,
+    validate_skin_artifact_semantics,
+)
 from .runtime_identity import validate_numerical_runtime_identity
 from ..synthetic_quality.config import SyntheticVotingConfig
 from ..synthetic_quality.stage_keys import (
@@ -470,13 +477,14 @@ def validate_f3d_mode_comparison_result(
     ):
         raise F3ResultValidationError("result identity does not match the run manifest")
     _reject_crop_semantics(result.as_dict())
-    _validate_cells_and_stages(root, result, dataset, manifest["plan"])
+    parsed_skins = _validate_cells_and_stages(root, result, dataset, manifest["plan"])
     _validate_metrics(result, dataset)
     _validate_voxelwise_contrasts(result)
     _validate_regional_rows(result, manifest["plan"])
     _validate_orientation_rows(result)
     _validate_resource_rows(root, result)
     if deep:
+        _deep_validate_skin_artifacts(root, result, parsed_skins)
         _deep_validate_reference_metrics(root, result, dataset)
         _deep_validate_voxelwise_contrasts(root, result)
         _deep_validate_orientation_diagnostics(root, result)
@@ -770,7 +778,7 @@ def _validate_cells_and_stages(
     result: F3ModeComparisonResult,
     dataset: Mapping[str, Any],
     plan: Any,
-) -> None:
+) -> dict[str, ParsedSkinArtifacts]:
     if tuple(cell.label for cell in result.cells) != _CELL_ORDER:
         raise F3ResultValidationError("cells must have exact canonical coverage and order")
     cell_dir = root / "cells"
@@ -780,6 +788,7 @@ def _validate_cells_and_stages(
     input_file = dataset["files"].get("input")
     input_digest = input_file["sha256"] if input_file is not None else None
     validated: dict[tuple[str, str], Mapping[str, Any]] = {}
+    parsed_skins: dict[str, ParsedSkinArtifacts] = {}
     workflow_identity: Any = _MISSING
     for cell in result.cells:
         expected_axes = _CELL_AXES[cell.label]
@@ -827,6 +836,14 @@ def _validate_cells_and_stages(
                 result.volume_shape,
                 workflow_identity,
             )
+        if cell.skinning_enabled and cell.stages.skinning not in parsed_skins:
+            try:
+                parsed_skins[cell.stages.skinning] = parse_skins_json(
+                    root / "stages" / "skinning" / cell.stages.skinning / "skins.json",
+                    result.volume_shape,
+                )
+            except SkinArtifactValidationError as error:
+                raise F3ResultValidationError(f"invalid skin artifact schema: {error}") from error
         if not cell.skinning_enabled:
             if workflow_identity is _MISSING:
                 raise F3ResultValidationError("workflow runner identity is missing")
@@ -855,6 +872,7 @@ def _validate_cells_and_stages(
     for left, right in (("RL-REF", "Q-REF"), ("RL-QUAL", "Q-QUAL")):
         if by_label[left].resolved_config != by_label[right].resolved_config:
             raise F3ResultValidationError("scanner cells differ outside the scanner-owned stage")
+    return parsed_skins
 
 
 def _resolved_cell_contract(plan_value: Any, workflow: str) -> tuple[dict[str, Any], bool]:
@@ -1138,6 +1156,10 @@ def _canonical_skinning_stage_settings(
         },
         "primary_skinner_identity": ("pyosv.experimental.boundary_skinning.find_synthetic_skins"),
     }
+    if skinning["enabled"]:
+        settings["skin_artifact_semantic_contract_version"] = (
+            F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        )
     normalized = json.loads(canonical_json_bytes(settings))
     if not isinstance(normalized, dict):
         raise AssertionError("skinning stage settings must be an object")
@@ -1912,6 +1934,37 @@ def _rss_stage_boundary(point: str) -> tuple[tuple[str, str], str]:
     except ValueError as error:
         raise F3ResultValidationError("resource RSS stage fingerprint is invalid") from error
     return (stage_kind, fingerprint), parts[-1]
+
+
+def _deep_validate_skin_artifacts(
+    root: Path,
+    result: F3ModeComparisonResult,
+    parsed_skins: Mapping[str, ParsedSkinArtifacts],
+) -> None:
+    """Validate each referenced final skin collection exactly once."""
+
+    validated: set[str] = set()
+    for cell in result.cells:
+        fingerprint = cell.stages.skinning
+        if not cell.skinning_enabled or fingerprint in validated:
+            continue
+        try:
+            parsed = parsed_skins[fingerprint]
+            skinning_config = _object(
+                cell.resolved_config["skinning"],
+                f"{cell.label} skinning config",
+            )
+            validate_skin_artifact_semantics(
+                root / "stages" / "skinning" / fingerprint,
+                result.volume_shape,
+                small_skin_size=skinning_config["small_skin_size"],
+                parsed=parsed,
+            )
+        except (KeyError, TypeError, SkinArtifactValidationError) as error:
+            raise F3ResultValidationError(
+                f"deep skin artifact mismatch: {cell.label}: {error}"
+            ) from error
+        validated.add(fingerprint)
 
 
 def _deep_validate_reference_metrics(

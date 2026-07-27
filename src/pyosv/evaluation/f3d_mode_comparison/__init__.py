@@ -111,6 +111,7 @@ from .scanner import (
 from .runner import (
     F3_CELL_REFERENCE_SCHEMA_VERSION,
     F3_CELL_RUNNER_CONTRACT_VERSION,
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     F3_SKINNING_STAGE_IMPLEMENTATION,
     F3_THINNING_STAGE_IMPLEMENTATION,
     F3_VOTING_STAGE_IMPLEMENTATION,
@@ -176,6 +177,7 @@ __all__ = [
     "F3ArtifactError",
     "F3ModeComparisonResult",
     "F3ResultValidationError",
+    "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
     "CONTRAST_DEFINITIONS",
     "ContrastDefinition",
     "ContrastRow",
