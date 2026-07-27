@@ -307,13 +307,16 @@ existing operational validation paths.
   signature nor proof of bitwise reproducibility on arbitrary hardware or of
   geological correctness. Cell
   references point to shared content-addressed stages instead of duplicating
-  full-volume artifacts. Continuous candidate and public-reference volumes use
-  `abs(value) > 1e-6` for nonzero metrics. This epsilon-aware magnitude test is
-  not strict IEEE nonzero testing: negative values beyond the threshold count,
-  while interpolation or smoothing tails at or below it do not. Positive
-  candidate masks instead use `value > 1e-6` and exclude negative values.
-  Metric evidence and scanner array summaries record the fixed epsilon so
-  their nonzero counts and fractions can be reproduced.
+  full-volume artifacts. F3 metric artifact schema version 2 identifies the
+  epsilon-aware contract: continuous candidate and public-reference volumes
+  use `abs(value) > 1e-6` for nonzero metrics. This is not strict IEEE nonzero
+  testing: negative values beyond the threshold count, while interpolation or
+  smoothing tails at or below it do not. Positive percentile candidates use
+  `value > 1e-6` and exclude negative values. Every all-selection metric
+  evidence item records `nonzero_epsilon=1e-6`. Schema version 1 represents the
+  incompatible legacy strict-nonzero contract, so its metric artifacts must be
+  regenerated rather than implicitly upgraded. The CSV header, row identity,
+  units, directions, and contrast formulas are unchanged in version 2.
 - `python -m pyosv.cli.f3d_mode_comparison` runs, resumes, or validates that
   canonical matrix. It always targets all four cells. A run without `--resume`
   requires a new output path; exact resume reuses only matching validated

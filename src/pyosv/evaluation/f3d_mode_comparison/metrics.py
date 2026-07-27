@@ -36,7 +36,7 @@ from .data import F3VolumeSource
 from .runner import F3CellReference
 from .runtime_identity import validate_numerical_runtime_identity
 
-F3_METRIC_SCHEMA_VERSION = 1
+F3_METRIC_SCHEMA_VERSION = 2
 F3_METRIC_ROW_FIELDS = (
     "schema_version",
     "dataset_id",
@@ -122,6 +122,20 @@ def _positive_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral) or int(value) <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return int(value)
+
+
+def _metric_schema_version(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(f"schema_version must be integer {F3_METRIC_SCHEMA_VERSION}")
+    version = int(value)
+    if version == 1:
+        raise ValueError(
+            "schema_version 1 is the legacy strict-nonzero metric contract; "
+            "regenerate the metric artifacts with schema version 2"
+        )
+    if version != F3_METRIC_SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {F3_METRIC_SCHEMA_VERSION}")
+    return version
 
 
 def _nonnegative_int(value: Any, name: str) -> int:
@@ -234,13 +248,11 @@ class MetricRow:
     contrast_eligible: bool
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.schema_version, bool)
-            or not isinstance(self.schema_version, Integral)
-            or int(self.schema_version) != F3_METRIC_SCHEMA_VERSION
-        ):
-            raise ValueError(f"schema_version must be {F3_METRIC_SCHEMA_VERSION}")
-        object.__setattr__(self, "schema_version", int(self.schema_version))
+        object.__setattr__(
+            self,
+            "schema_version",
+            _metric_schema_version(self.schema_version),
+        )
         for name in (
             "dataset_id",
             "cell_label",
@@ -318,8 +330,11 @@ class MetricEvidence:
     accumulators: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
-        if self.schema_version != F3_METRIC_SCHEMA_VERSION:
-            raise ValueError(f"schema_version must be {F3_METRIC_SCHEMA_VERSION}")
+        object.__setattr__(
+            self,
+            "schema_version",
+            _metric_schema_version(self.schema_version),
+        )
         for name in ("dataset_id", "cell_label", "stage", "region", "selection"):
             _nonempty_string(getattr(self, name), name)
         if self.cell_label not in _CELL_AXES:
@@ -442,8 +457,11 @@ class ContrastRow:
     improvement_value: float | None
 
     def __post_init__(self) -> None:
-        if self.schema_version != F3_METRIC_SCHEMA_VERSION:
-            raise ValueError(f"schema_version must be {F3_METRIC_SCHEMA_VERSION}")
+        object.__setattr__(
+            self,
+            "schema_version",
+            _metric_schema_version(self.schema_version),
+        )
         definition = _contrast_definition(self.contrast_name)
         if self.component_cells != definition.component_cells:
             raise ValueError("component_cells must match the contrast definition")
@@ -492,8 +510,11 @@ class VoxelwiseContrastSummary:
     epsilon_nonzero_fraction: float
 
     def __post_init__(self) -> None:
-        if self.schema_version != F3_METRIC_SCHEMA_VERSION:
-            raise ValueError(f"schema_version must be {F3_METRIC_SCHEMA_VERSION}")
+        object.__setattr__(
+            self,
+            "schema_version",
+            _metric_schema_version(self.schema_version),
+        )
         definition = _contrast_definition(self.contrast_name)
         if self.component_cells != definition.component_cells:
             raise ValueError("component_cells must match the contrast definition")

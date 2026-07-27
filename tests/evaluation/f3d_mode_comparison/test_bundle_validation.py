@@ -336,6 +336,64 @@ def test_complete_bundle_strict_load_deep_validation_and_resume(tmp_path: Path) 
     assert resumed == loaded
 
 
+def test_completed_bundle_metric_artifacts_use_schema_version_2(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    reports = root / "reports"
+
+    for filename in (
+        "metrics_long.csv",
+        "contrasts.csv",
+        "voxel_contrast_summaries.csv",
+    ):
+        _, rows = _csv_rows(reports / filename)
+        assert rows
+        assert {row["schema_version"] for row in rows} == {"2"}
+    evidence = json.loads((reports / "metric_evidence.json").read_text(encoding="utf-8"))
+    assert evidence["metric_evidence"]
+    assert {item["schema_version"] for item in evidence["metric_evidence"]} == {2}
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "metrics_long.csv",
+        "contrasts.csv",
+        "voxel_contrast_summaries.csv",
+        "metric_evidence.json",
+    ],
+)
+def test_completed_bundle_rejects_legacy_or_mixed_metric_versions(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / filename
+    if filename == "metric_evidence.json":
+        payload = json.loads(report.read_text(encoding="utf-8"))
+        payload["metric_evidence"][0]["schema_version"] = 1
+        report.write_bytes(canonical_json_bytes(payload) + b"\n")
+    else:
+        fieldnames, rows = _csv_rows(report)
+        rows[0]["schema_version"] = "1"
+        _write_csv_rows(report, fieldnames, rows)
+    _rehash_report(root, filename)
+
+    with pytest.raises(ValueError, match="legacy strict-nonzero"):
+        validate_completed_f3d_bundle(root)
+
+
+def test_completed_bundle_rejects_missing_metric_evidence_version(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    report = root / "reports" / "metric_evidence.json"
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    del payload["metric_evidence"][0]["schema_version"]
+    report.write_bytes(canonical_json_bytes(payload) + b"\n")
+    _rehash_report(root, "metric_evidence.json")
+
+    with pytest.raises(F3ResultValidationError, match="metric evidence field set mismatch"):
+        validate_completed_f3d_bundle(root)
+
+
 def test_scanner_report_requires_exact_backend_summary_keys(tmp_path: Path) -> None:
     root = _complete_small_bundle(tmp_path)
     loaded = load_f3d_mode_comparison_result(root)
