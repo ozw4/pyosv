@@ -157,13 +157,13 @@ Run the canonical full-volume four-cell comparison with an external F3 data
 root and an ignored output path:
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
-PYOSV_ACCEL=auto \
 PYTHONHASHSEED=0 \
 OMP_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 \
 NUMEXPR_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```

@@ -99,8 +99,13 @@ The package CLI runs the canonical, potentially slow, full-volume four-cell
 comparison with the official controls documented below:
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
 PYOSV_ACCEL=auto \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```
@@ -141,9 +146,11 @@ recorded provenance, recomputes every scanner summary from its corresponding
 DAT volume, re-derives scanner sampling counts from the resolved configuration,
 recomputes metric evidence, and reruns the final skinning phase from its
 persisted scanner, voting, and thinning parents. The skin-only rerun exactly
-checks final cell geometry, attributes, ordering, and duplicate occurrences
-together with the recorded mask and topology. Scanner DAT volumes are mapped
-read-only and released one file at a time. This is an internal
+checks final cell subvoxel coordinates, voxel indices, `fl`/`fp`/`ft`
+attributes, ordering, and duplicate occurrences together with the recorded
+mask and topology. It does not rerun scanner, voting, or base thinning
+computation. Scanner DAT volumes are mapped read-only and released one file at
+a time. This is an internal
 numerical-consistency check, not proof of artifact authenticity or geological
 truth. Only a valid root `completion.json`, written after reports and referenced
 stages pass semantic validation, marks the workspace complete.
@@ -160,14 +167,29 @@ the run fingerprint.
 The external full-run pytest gate is opt-in and separate from normal tests:
 
 ```bash
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
 PYOSV_RUN_F3D_MODE_COMPARISON=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
-PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_001 \
+PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_v2 \
+PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE=1 \
 python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 ```
 
 Normal CLI unit tests stub orchestration and do not require F3 files or
 full-volume computation.
+
+The publication contract currently records runtime identity schema 2,
+fingerprint contract 3, scanner stage contract 4, skin artifact semantic
+contract 2, and metric schema 2. A validated bundle provides PR4 with validated
+DAT volumes, the validated skin mask, exactly recomputed skin cells and
+attributes, metric-schema-2 rows, and runtime/resource diagnostics. Validation
+does not establish cryptographic authenticity, independent geological truth,
+or bitwise reproducibility across arbitrary hardware.
 
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)
