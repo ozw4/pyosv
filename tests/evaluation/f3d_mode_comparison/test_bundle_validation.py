@@ -6,11 +6,16 @@ import shutil
 from dataclasses import asdict
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
 
 import numpy as np
 import pytest
 
 import pyosv.evaluation.f3d_mode_comparison.result as result_module
+import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
+import pyosv.evaluation.f3d_mode_comparison.scanner as scanner_module
+import pyosv.evaluation.workflow3d as workflow3d_module
 from pyosv.evaluation.f3d_mode_comparison import (
     F3ModeComparisonConfig,
     F3ModeComparisonResult,
@@ -34,6 +39,12 @@ from pyosv.evaluation.f3d_mode_comparison import (
 )
 from pyosv.evaluation.f3d_mode_comparison.data import F3DatasetSpec, F3VolumeSource
 from pyosv.evaluation.f3d_mode_comparison.artifacts import F3ArtifactError
+from pyosv.evaluation.synthetic_quality.config import SyntheticSkinningConfig
+from pyosv.evaluation.synthetic_quality.variants import (
+    SkinningPatch,
+    VariantSpec,
+)
+from pyosv.evaluation.workflow3d import execute_skinning_phase3d
 
 from .test_runner import _LoadedScanner, _scanner_stage
 
@@ -62,6 +73,8 @@ def _complete_small_bundle(
     *,
     skinning_enabled: bool = False,
     pretty: bool = False,
+    config: F3ModeComparisonConfig | None = None,
+    workflow_runner: Callable[..., Any] | None = None,
 ) -> Path:
     shape = (3, 4, 5)
     roles = (
@@ -89,7 +102,8 @@ def _complete_small_bundle(
     (root / "cells").mkdir()
     (root / "reports").mkdir()
     plan = build_f3d_mode_comparison_plan(
-        F3ModeComparisonConfig(
+        config
+        or F3ModeComparisonConfig(
             skinning_enabled=skinning_enabled,
             boundary_diagnostic_margin=0,
         )
@@ -132,11 +146,15 @@ def _complete_small_bundle(
         )
         for backend in ("reference-like", "quality")
     }
+    runner_kwargs: dict[str, Any] = {}
+    if workflow_runner is not None:
+        runner_kwargs["workflow_runner"] = workflow_runner
     cell_result = run_f3d_mode_comparison_cells(
         workspace,
         plan,
         scanners,
         scanner_loader=lambda stage: _LoadedScanner(stage, []),
+        **runner_kwargs,
     )
     metrics = extract_f3d_metrics(source, cell_result.cells, slab_depth=1)
     diagnostics = extract_f3d_diagnostics(
@@ -192,6 +210,70 @@ def _complete_small_bundle(
     finalize_f3d_bundle(workspace, result, pretty=pretty)
     source.close()
     return root
+
+
+def _boundary_skin_config() -> F3ModeComparisonConfig:
+    return F3ModeComparisonConfig(
+        skinning_enabled=True,
+        boundary_diagnostic_margin=0,
+        skinning_template=SyntheticSkinningConfig(
+            min_likelihood=0.5,
+            min_skin_size=1,
+            d=1,
+            ru=2,
+            rv=2,
+            rw=2,
+            max_steps=2,
+            reskin=False,
+            accepted_occupancy_radius=0,
+            small_skin_size=1,
+            boundary_skinner_fallback=True,
+        ),
+        skinner_method_explicit=True,
+        skinner_min_likelihood_explicit=True,
+        skinner_growth_source_explicit=True,
+        skinner_accepted_occupancy_radius_explicit=True,
+        skinner_boundary_fallback_explicit=True,
+    )
+
+
+def _controlled_boundary_skin_workflow(**kwargs: Any) -> Any:
+    base = runner_module.execute_workflow3d(**kwargs)
+    shape = base.fv.shape
+    fvt = np.zeros(shape, dtype=np.float32)
+    fvt[0, 0, 0] = np.float32(1.0)
+    fvt[0, 0, 1] = np.float32(0.95)
+    fvt[-1, -1, -1] = np.float32(0.9)
+    fv = fvt.copy()
+    vp = np.full(shape, np.float32(20.0), dtype=np.float32)
+    vt = np.full(shape, np.float32(70.0), dtype=np.float32)
+    skin = execute_skinning_phase3d(
+        fv=fv,
+        fvt=fvt,
+        vp=vp,
+        vt=vt,
+        skinning_settings=kwargs["skinning_settings"],
+        variant_spec=kwargs["variant_spec"],
+        scanner_target_positive_mask=kwargs["scanner_target_positive_mask"],
+        boundary_fallback_runner=kwargs["boundary_fallback_runner"],
+    )
+    return replace(
+        base,
+        fv=fv,
+        fvt=fvt,
+        vp=vp,
+        vt=vt,
+        skin=skin,
+        diagnostics=replace(base.diagnostics, skinning=skin.diagnostics),
+    )
+
+
+def _complete_boundary_skin_bundle(tmp_path: Path) -> Path:
+    return _complete_small_bundle(
+        tmp_path,
+        config=_boundary_skin_config(),
+        workflow_runner=_controlled_boundary_skin_workflow,
+    )
 
 
 def _rehash_report(root: Path, filename: str) -> None:
@@ -322,6 +404,160 @@ def test_deep_skin_validation_is_unique_and_precedes_skin_metrics(
     assert set(validated) == {
         cell.stages.skinning for cell in loaded.cells if cell.skinning_enabled
     }
+
+
+def test_deep_validation_exactly_reexecutes_boundary_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_boundary_skin_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    fingerprints = {cell.stages.skinning for cell in loaded.cells if cell.skinning_enabled}
+    fallback_calls = 0
+    original_fallback = result_module.apply_boundary_skinner_fallback
+
+    def tracked_fallback(*args: Any, **kwargs: Any) -> None:
+        nonlocal fallback_calls
+        fallback_calls += 1
+        original_fallback(*args, **kwargs)
+
+    for fingerprint in fingerprints:
+        stage = root / "stages" / "skinning" / fingerprint
+        report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+        skins = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+        assert report["diagnostics"]["fallback_used"] is True
+        assert [skin["cell_count"] for skin in skins["skins"]] == [2, 1]
+
+    monkeypatch.setattr(
+        result_module,
+        "apply_boundary_skinner_fallback",
+        tracked_fallback,
+    )
+
+    assert validate_completed_f3d_bundle(root, deep=True)
+    assert fallback_calls == len(fingerprints)
+
+
+@pytest.mark.parametrize(
+    ("stage_kind", "filename", "replacement"),
+    (
+        ("thinning", "fvt.dat", 0.75),
+        ("voting", "vp.dat", 21.0),
+        ("voting", "vt.dat", 71.0),
+    ),
+)
+def test_deep_validation_rejects_rehashed_skin_parent_sample_tampering(
+    tmp_path: Path,
+    stage_kind: str,
+    filename: str,
+    replacement: float,
+) -> None:
+    root = _complete_boundary_skin_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    cell = loaded.cells[0]
+    fingerprint = getattr(cell.stages, stage_kind)
+    stage = root / "stages" / stage_kind / fingerprint
+    artifact = stage / filename
+    values = np.fromfile(artifact, dtype=">f4").reshape(loaded.volume_shape)
+    values[0, 0, 0] = np.float32(replacement)
+    values.tofile(artifact)
+    _rehash_stage_artifact(root, stage, filename)
+
+    assert validate_completed_f3d_bundle(root)
+    with pytest.raises(
+        F3ResultValidationError,
+        match="cell (fl|fp|ft) does not match parent volume",
+    ):
+        validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_deep_validation_rejects_rehashed_subvoxel_geometry_tampering(
+    tmp_path: Path,
+) -> None:
+    root = _complete_boundary_skin_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    skins_path = stage / "skins.json"
+    payload = json.loads(skins_path.read_text(encoding="utf-8"))
+    payload["skins"][0]["cells"][0]["x1"] = 0.1
+    skins_path.write_bytes(canonical_json_bytes(payload) + b"\n")
+    _rehash_stage_artifact(root, stage, "skins.json")
+
+    assert validate_completed_f3d_bundle(root)
+    with pytest.raises(
+        F3ResultValidationError,
+        match="does not exactly match skin-only recomputation",
+    ):
+        validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_deep_validation_rejects_rehashed_skin_order_tampering(
+    tmp_path: Path,
+) -> None:
+    root = _complete_boundary_skin_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    skins_path = stage / "skins.json"
+    payload = json.loads(skins_path.read_text(encoding="utf-8"))
+    payload["skins"].reverse()
+    for skin_index, skin in enumerate(payload["skins"]):
+        skin["skin_index"] = skin_index
+    skins_path.write_bytes(canonical_json_bytes(payload) + b"\n")
+    _rehash_stage_artifact(root, stage, "skins.json")
+
+    assert validate_completed_f3d_bundle(root)
+    with pytest.raises(
+        F3ResultValidationError,
+        match="does not exactly match skin-only recomputation",
+    ):
+        validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_shared_skin_stage_is_reexecuted_once_without_upstream_recomputation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_boundary_skin_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    cell = loaded.cells[0]
+    fingerprint = cell.stages.skinning
+    parsed = result_module.parse_skins_json(
+        root / "stages" / "skinning" / fingerprint / "skins.json",
+        loaded.volume_shape,
+    )
+    shared = replace(loaded, cells=(cell, cell))
+    skinning_calls = 0
+    original_skinning = result_module.execute_skinning_phase3d
+
+    def tracked_skinning(**kwargs: Any) -> Any:
+        nonlocal skinning_calls
+        skinning_calls += 1
+        return original_skinning(**kwargs)
+
+    def unexpected_upstream(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("deep skin validation recomputed an upstream stage")
+
+    monkeypatch.setattr(result_module, "execute_skinning_phase3d", tracked_skinning)
+    monkeypatch.setattr(scanner_module, "run_scanner_stages", unexpected_upstream)
+    monkeypatch.setattr(workflow3d_module, "execute_workflow3d", unexpected_upstream)
+    monkeypatch.setattr(
+        workflow3d_module.OptimalSurfaceVoter,
+        "apply_voting_from_seeds",
+        unexpected_upstream,
+    )
+    monkeypatch.setattr(
+        workflow3d_module.OptimalSurfaceVoter,
+        "thin",
+        unexpected_upstream,
+    )
+
+    result_module._deep_validate_skin_artifacts(
+        root,
+        shared,
+        {fingerprint: parsed},
+    )
+
+    assert skinning_calls == 1
 
 
 def test_pretty_only_formats_root_completion(tmp_path: Path) -> None:
@@ -1237,6 +1473,122 @@ def test_deep_validation_releases_each_full_volume_pair(
     assert orientation_calls == 2 * len(result_module.F3_ORIENTATION_PAIRS)
     assert peak == 6
     assert not active
+
+
+def test_skin_recomputation_stages_one_read_only_parent_map_at_a_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shape = (2, 3, 4)
+    root = tmp_path / "run"
+    sources = (
+        ("voting", "voting-stage", "fv.dat"),
+        ("thinning", "thinning-stage", "fvt.dat"),
+        ("voting", "voting-stage", "vp.dat"),
+        ("voting", "voting-stage", "vt.dat"),
+    )
+    scanner_source = ("scanner", "scanner-stage", "ft.dat")
+    for offset, source in enumerate((*sources, scanner_source)):
+        kind, fingerprint, filename = source
+        stage = root / "stages" / kind / fingerprint
+        stage.mkdir(parents=True, exist_ok=True)
+        values = np.full(shape, np.float32(0.1 * (offset + 1)), dtype=np.float32)
+        values.astype(">f4").tofile(stage / filename)
+
+    variant = VariantSpec(
+        "producing-variant",
+        skinning=SkinningPatch(
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_filtered",
+        ),
+        experimental=False,
+    )
+    cell = SimpleNamespace(
+        stages=SimpleNamespace(voting="voting-stage", thinning="thinning-stage"),
+        resolved_config={"variant": asdict(variant)},
+    )
+    parsed = result_module.ParsedSkinArtifacts(skins=())
+    skinning_config = asdict(
+        SyntheticSkinningConfig(
+            enabled=True,
+            boundary_skinner_fallback=True,
+            boundary_skinner_fallback_policy="degraded_primary_filtered",
+        )
+    )
+    original_open = result_module._open_parent_volume
+    original_close = result_module._close_memmap
+    active: dict[int, tuple[str, str, str]] = {}
+    opened: list[np.memmap] = []
+    peak = 0
+    fallback_called = False
+
+    def tracked_open(
+        root_path: Path,
+        source: tuple[str, str, str],
+        volume_shape: tuple[int, int, int],
+    ) -> np.memmap:
+        nonlocal peak
+        values = original_open(root_path, source, volume_shape)
+        opened.append(values)
+        active[id(values)] = source
+        peak = max(peak, len(active))
+        return values
+
+    def tracked_close(values: np.memmap | None) -> None:
+        original_close(values)
+        if values is not None:
+            active.pop(id(values), None)
+
+    def fake_skinning_phase(**kwargs: object) -> SimpleNamespace:
+        assert kwargs["variant_spec"] == variant
+        assert not active
+        assert all(values.mode == "r" and not values.flags.writeable for values in opened)
+        parents = tuple(kwargs[name] for name in ("fv", "fvt", "vp", "vt"))
+        assert all(isinstance(values, np.ndarray) for values in parents)
+        assert all(not values.flags.writeable for values in parents)
+        assert kwargs["scanner_target_positive_mask"] is None
+        boundary_fallback_runner = kwargs["boundary_fallback_runner"]
+        assert callable(boundary_fallback_runner)
+        boundary_fallback_runner()
+        return SimpleNamespace(
+            diagnostics={"fallback_used": False},
+            skins=(),
+        )
+
+    def fake_boundary_fallback(*args: object, **kwargs: object) -> None:
+        nonlocal fallback_called
+        fallback_called = True
+        assert not args
+        scanner_mask = kwargs["scanner_target_positive_mask"]
+        assert isinstance(scanner_mask, np.ndarray)
+        assert scanner_mask.dtype == np.dtype(bool)
+        assert not scanner_mask.flags.writeable
+        assert np.all(scanner_mask)
+
+    monkeypatch.setattr(result_module, "_open_parent_volume", tracked_open)
+    monkeypatch.setattr(result_module, "_close_memmap", tracked_close)
+    monkeypatch.setattr(result_module, "execute_skinning_phase3d", fake_skinning_phase)
+    monkeypatch.setattr(
+        result_module,
+        "apply_boundary_skinner_fallback",
+        fake_boundary_fallback,
+    )
+
+    result_module._recompute_skin_artifacts(
+        root,
+        cell,
+        parsed,
+        shape,
+        skinning_config,
+        False,
+        scanner_source,
+    )
+
+    assert len(opened) == 5
+    assert peak == 1
+    assert fallback_called
+    assert not active
+    assert all(values._mmap.closed for values in opened)
 
 
 def test_loaded_result_holds_no_open_workspace_handles(tmp_path: Path) -> None:

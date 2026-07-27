@@ -17,7 +17,8 @@ from typing import Any
 
 import numpy as np
 
-from pyosv.candidate_volume import NONZERO_EPSILON
+from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
+from pyosv.experimental.boundary_skinning import apply_boundary_skinner_fallback
 
 from .artifacts import (
     F3_ARTIFACT_SCHEMA_VERSION,
@@ -84,7 +85,9 @@ from .scanner import scanner_stage_artifacts, scanner_stage_resolved_settings
 from .skin_artifacts import (
     ParsedSkinArtifacts,
     SkinArtifactValidationError,
+    canonical_skins_payload,
     parse_skins_json,
+    resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
 )
 from .runtime_identity import (
@@ -92,15 +95,19 @@ from .runtime_identity import (
     validate_numerical_runtime_identity,
     validate_publication_runtime_identity,
 )
-from ..synthetic_quality.config import SyntheticVotingConfig
+from ..synthetic_quality.config import SyntheticSkinningConfig, SyntheticVotingConfig
 from ..synthetic_quality.stage_keys import (
     build_final_thinning_stage_key,
     build_seed_stage_key,
     build_thinning_stage_key,
     build_voting_stage_key,
 )
-from ..synthetic_quality.variants import VariantSpec
-from ..workflow3d import PreparedAttributeIdentity, VolumeVotingControls
+from ..synthetic_quality.variants import SkinningPatch, VariantSpec, VotingPatch
+from ..workflow3d import (
+    PreparedAttributeIdentity,
+    VolumeVotingControls,
+    execute_skinning_phase3d,
+)
 
 F3_RESULT_SCHEMA_VERSION = 1
 F3_COMPLETION_SCHEMA_VERSION = 1
@@ -167,6 +174,7 @@ _CSV_MODELS = {
     RUNTIME_REPORT_FILE: StageResourceRow,
 }
 _SHA256_LENGTH = 64
+_SKIN_RECOMPUTE_CHUNK_VOXELS = 1_000_000
 _FLOAT_REL_TOL = 1.0e-9
 _FLOAT_ABS_TOL = 1.0e-12
 _MISSING = object()
@@ -879,11 +887,24 @@ def _validate_cells_and_stages(
             )
         if cell.skinning_enabled and cell.stages.skinning not in parsed_skins:
             try:
+                scanner_settings = validated[("scanner", cell.stages.scanner)]
+                angle_range = _object(
+                    scanner_settings["angle_range"],
+                    f"{cell.label} scanner angle range",
+                )
                 parsed_skins[cell.stages.skinning] = parse_skins_json(
                     root / "stages" / "skinning" / cell.stages.skinning / "skins.json",
                     result.volume_shape,
+                    strike_range=(
+                        angle_range["phi_min"],
+                        angle_range["phi_max"],
+                    ),
+                    dip_range=(
+                        angle_range["theta_min"],
+                        angle_range["theta_max"],
+                    ),
                 )
-            except SkinArtifactValidationError as error:
+            except (KeyError, TypeError, SkinArtifactValidationError) as error:
                 raise F3ResultValidationError(f"invalid skin artifact schema: {error}") from error
         if not cell.skinning_enabled:
             if workflow_identity is _MISSING:
@@ -2009,7 +2030,7 @@ def _deep_validate_skin_artifacts(
     result: F3ModeComparisonResult,
     parsed_skins: Mapping[str, ParsedSkinArtifacts],
 ) -> None:
-    """Validate each referenced final skin collection exactly once."""
+    """Validate and exactly reproduce each referenced final skin collection once."""
 
     validated: set[str] = set()
     for cell in result.cells:
@@ -2028,11 +2049,245 @@ def _deep_validate_skin_artifacts(
                 small_skin_size=skinning_config["small_skin_size"],
                 parsed=parsed,
             )
-        except (KeyError, TypeError, SkinArtifactValidationError) as error:
+            skinning_report = _read_json_object(
+                root / "stages" / "skinning" / fingerprint / "report.json",
+                "skinning report",
+            )
+            diagnostics = _object(
+                skinning_report["diagnostics"],
+                f"{cell.label} skinning diagnostics",
+            )
+            fallback_used = diagnostics.get("fallback_used")
+            if not isinstance(fallback_used, bool):
+                raise SkinArtifactValidationError("skinning report fallback_used must be bool")
+            parent_contract = resolve_skin_parent_volume_contract(
+                cell.stages.as_dict(),
+                skinning_config,
+                _object(
+                    cell.resolved_config["variant"],
+                    f"{cell.label} variant config",
+                ),
+                fallback_used=fallback_used,
+            )
+            _validate_skin_parent_samples(
+                root,
+                parsed,
+                result.volume_shape,
+                parent_contract.likelihood,
+                parent_contract.strike,
+                parent_contract.dip,
+            )
+            _recompute_skin_artifacts(
+                root,
+                cell,
+                parsed,
+                result.volume_shape,
+                skinning_config,
+                fallback_used,
+                parent_contract.scanner_target,
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
             raise F3ResultValidationError(
                 f"deep skin artifact mismatch: {cell.label}: {error}"
             ) from error
         validated.add(fingerprint)
+
+
+def _validate_skin_parent_samples(
+    root: Path,
+    parsed: ParsedSkinArtifacts,
+    shape: tuple[int, int, int],
+    likelihood: tuple[str, str, str],
+    strike: tuple[str, str, str],
+    dip: tuple[str, str, str],
+) -> None:
+    for field_name, source in (
+        ("fl", likelihood),
+        ("fp", strike),
+        ("ft", dip),
+    ):
+        values = _open_parent_volume(root, source, shape)
+        try:
+            for skin in parsed.skins:
+                for cell in skin:
+                    expected = np.float32(values[cell.i3, cell.i2, cell.i1])
+                    if np.float32(getattr(cell, field_name)) != expected:
+                        raise SkinArtifactValidationError(
+                            f"skins.json cell {field_name} does not match parent volume"
+                        )
+        finally:
+            _close_memmap(values)
+
+
+def _recompute_skin_artifacts(
+    root: Path,
+    cell: F3CellReference,
+    parsed: ParsedSkinArtifacts,
+    shape: tuple[int, int, int],
+    skinning_config: Mapping[str, Any],
+    fallback_used: bool,
+    scanner_target: tuple[str, str, str] | None,
+) -> None:
+    voting = ("voting", cell.stages.voting)
+    thinning = ("thinning", cell.stages.thinning)
+    sources = (
+        (*voting, "fv.dat"),
+        (*thinning, "fvt.dat"),
+        (*voting, "vp.dat"),
+        (*voting, "vt.dat"),
+    )
+    recomputed_payload: dict[str, Any] | None = None
+    recomputed = None
+    volume_size = math.prod(shape)
+    float_bytes = volume_size * np.dtype(np.float32).itemsize
+    mask_bytes = (volume_size + 7) // 8 if scanner_target is not None else 0
+    with tempfile.TemporaryFile(dir=root) as staging:
+        staging.truncate(len(sources) * float_bytes + mask_bytes)
+        backing = np.memmap(
+            staging,
+            dtype=np.uint8,
+            mode="r+",
+            shape=(len(sources) * float_bytes + mask_bytes,),
+        )
+        parent_views: list[np.ndarray] = []
+        scanner_mask_bits: np.ndarray | None = None
+        try:
+            for index, source in enumerate(sources):
+                parent = np.ndarray(
+                    shape,
+                    dtype=np.float32,
+                    buffer=backing,
+                    offset=index * float_bytes,
+                    order="C",
+                )
+                _copy_parent_volume(root, source, shape, parent)
+                parent.flags.writeable = False
+                parent_views.append(parent)
+            if scanner_target is not None:
+                scanner_mask_bits = np.ndarray(
+                    (mask_bytes,),
+                    dtype=np.uint8,
+                    buffer=backing,
+                    offset=len(sources) * float_bytes,
+                    order="C",
+                )
+                _copy_parent_positive_mask(root, scanner_target, shape, scanner_mask_bits)
+                scanner_mask_bits.flags.writeable = False
+            backing.flush()
+            backing.flags.writeable = False
+            fv, fvt, vp, vt = parent_views
+
+            def rerun_boundary_fallback(*args: Any, **kwargs: Any) -> None:
+                scanner_mask = (
+                    None
+                    if scanner_mask_bits is None
+                    else np.unpackbits(
+                        scanner_mask_bits,
+                        count=volume_size,
+                    )
+                    .reshape(shape)
+                    .view(np.bool_)
+                )
+                if scanner_mask is not None:
+                    scanner_mask.flags.writeable = False
+                kwargs["scanner_target_positive_mask"] = scanner_mask
+                try:
+                    apply_boundary_skinner_fallback(*args, **kwargs)
+                finally:
+                    scanner_mask = None
+
+            recomputed = execute_skinning_phase3d(
+                fv=fv,
+                fvt=fvt,
+                vp=vp,
+                vt=vt,
+                skinning_settings=SyntheticSkinningConfig(**dict(skinning_config)),
+                variant_spec=_resolved_variant_spec(cell.resolved_config["variant"]),
+                scanner_target_positive_mask=None,
+                boundary_fallback_runner=rerun_boundary_fallback,
+            )
+            if recomputed.diagnostics.get("fallback_used") is not fallback_used:
+                raise SkinArtifactValidationError(
+                    "recomputed fallback state does not match skinning report"
+                )
+            recomputed_payload = canonical_skins_payload(recomputed.skins)
+        finally:
+            scanner_mask_bits = None
+            parent_views.clear()
+            recomputed = None
+            _close_memmap(backing)
+    if recomputed_payload != canonical_skins_payload(parsed.skins):
+        raise SkinArtifactValidationError(
+            "skins.json does not exactly match skin-only recomputation"
+        )
+
+
+def _copy_parent_volume(
+    root: Path,
+    source: tuple[str, str, str],
+    shape: tuple[int, int, int],
+    target: np.ndarray,
+) -> None:
+    values = _open_parent_volume(root, source, shape)
+    try:
+        source_flat = values.reshape(-1)
+        target_flat = target.reshape(-1)
+        for start in range(0, source_flat.size, _SKIN_RECOMPUTE_CHUNK_VOXELS):
+            stop = min(source_flat.size, start + _SKIN_RECOMPUTE_CHUNK_VOXELS)
+            target_flat[start:stop] = source_flat[start:stop]
+    finally:
+        _close_memmap(values)
+
+
+def _copy_parent_positive_mask(
+    root: Path,
+    source: tuple[str, str, str],
+    shape: tuple[int, int, int],
+    target: np.ndarray,
+) -> None:
+    values = _open_parent_volume(root, source, shape)
+    try:
+        source_flat = values.reshape(-1)
+        target_offset = 0
+        for start in range(0, source_flat.size, _SKIN_RECOMPUTE_CHUNK_VOXELS):
+            stop = min(source_flat.size, start + _SKIN_RECOMPUTE_CHUNK_VOXELS)
+            packed = np.packbits(positive_candidate_mask(source_flat[start:stop]))
+            target[target_offset : target_offset + packed.size] = packed
+            target_offset += packed.size
+    finally:
+        _close_memmap(values)
+
+
+def _resolved_variant_spec(value: Any) -> VariantSpec:
+    variant = _object(value, "cell variant")
+    return VariantSpec(
+        name=variant["name"],
+        voting=VotingPatch(**dict(_object(variant["voting"], "cell variant voting patch"))),
+        seed_policy=variant["seed_policy"],
+        thinning_policy=variant["thinning_policy"],
+        post_thinning_policy=variant["post_thinning_policy"],
+        skinning=SkinningPatch(**dict(_object(variant["skinning"], "cell variant skinning patch"))),
+        experimental=variant["experimental"],
+        presets=tuple(variant["presets"]),
+        baseline=variant["baseline"],
+    )
+
+
+def _open_parent_volume(
+    root: Path,
+    source: tuple[str, str, str],
+    shape: tuple[int, int, int],
+) -> np.memmap:
+    kind, fingerprint, filename = source
+    values = np.memmap(
+        root / "stages" / kind / fingerprint / filename,
+        dtype=">f4",
+        mode="r",
+        shape=shape,
+        order="C",
+    )
+    values.flags.writeable = False
+    return values
 
 
 def _deep_validate_reference_metrics(

@@ -315,6 +315,104 @@ def _resolve_primary_skinner_identity(
     return None
 
 
+def execute_skinning_phase3d(
+    *,
+    fv: np.ndarray,
+    fvt: np.ndarray,
+    vp: np.ndarray,
+    vt: np.ndarray,
+    skinning_settings: SyntheticSkinningConfig,
+    variant_spec: VariantSpec = VariantSpec("generic", experimental=False),
+    scanner_target_positive_mask: np.ndarray | None = None,
+    primary_skinner: Callable[..., list[Any]] = find_synthetic_skins,
+    boundary_fallback_runner: Callable[..., None] = apply_boundary_skinner_fallback,
+    stage_cache: PipelineStageCache | None = None,
+    primary_key: PrimarySkinningStageKey | None = None,
+    stage_timer: PipelineStageBuildTimer | None = None,
+) -> Workflow3DSkinResult:
+    """Execute only the final skinning phase from persisted parent volumes."""
+
+    if not isinstance(skinning_settings, SyntheticSkinningConfig):
+        raise TypeError("skinning_settings must be a SyntheticSkinningConfig")
+    if not isinstance(variant_spec, VariantSpec):
+        raise TypeError("variant_spec must be a VariantSpec")
+    arrays = tuple(np.asarray(value) for value in (fv, fvt, vp, vt))
+    shape = arrays[0].shape
+    if len(shape) != 3 or any(array.shape != shape for array in arrays[1:]):
+        raise ValueError("fv, fvt, vp, and vt must have one matching 3D shape")
+    if (
+        scanner_target_positive_mask is not None
+        and np.asarray(scanner_target_positive_mask).shape != shape
+    ):
+        raise ValueError("scanner_target_positive_mask shape must match parent volumes")
+    if not skinning_settings.enabled:
+        return Workflow3DSkinResult(
+            enabled=False,
+            skins=(),
+            primary_mask=_readonly_bool_clone(np.zeros(shape, dtype=bool)),
+            diagnostics=freeze_scalar_evidence({}, "skinning"),
+        )
+
+    primary_diagnostic_candidate_count = int(
+        np.count_nonzero(quality_metrics.positive_candidate_mask(fvt))
+    )
+
+    def build_primary_result() -> PrimarySkinningStageResult:
+        built_diagnostics: dict[str, Any] = {}
+        built_skins = primary_skinner(
+            fv,
+            fvt,
+            vp,
+            vt,
+            skinning_config=skinning_settings,
+            diagnostics=built_diagnostics,
+        )
+        return PrimarySkinningStageResult.from_skins(
+            built_skins,
+            built_diagnostics,
+        )
+
+    primary_result = (
+        None
+        if stage_cache is None or primary_key is None
+        else stage_cache.get_primary_skinning(primary_key)
+    )
+    if primary_result is None:
+        primary_result = _time_build(
+            stage="primary_skinning",
+            semantic_key=primary_key,
+            builder=build_primary_result,
+            timer=stage_timer,
+        )
+        if stage_cache is not None and primary_key is not None:
+            stage_cache.put_primary_skinning(primary_key, primary_result)
+    skins, skin_diagnostics = primary_result.clone()
+    add_primary_skin_diagnostics(
+        skin_diagnostics,
+        skins,
+        shape=shape,
+        fvt_positive_candidate_count=primary_diagnostic_candidate_count,
+        small_skin_size=skinning_settings.small_skin_size,
+    )
+    primary_mask = skin_mask_from_skins(skins, shape)
+    boundary_fallback_runner(
+        skins,
+        fvt,
+        vp,
+        vt,
+        skinning_config=skinning_settings,
+        variant_spec=variant_spec,
+        diagnostics=skin_diagnostics,
+        scanner_target_positive_mask=scanner_target_positive_mask,
+    )
+    return Workflow3DSkinResult(
+        enabled=True,
+        skins=tuple(skins),
+        primary_mask=_readonly_bool_clone(primary_mask),
+        diagnostics=freeze_scalar_evidence(skin_diagnostics, "skinning"),
+    )
+
+
 def execute_workflow3d(
     *,
     ft: np.ndarray,
@@ -634,66 +732,20 @@ def execute_workflow3d(
         )
     )
     primary_cache_enabled = stage_cache is not None and primary_key is not None
-    if skinning_settings.enabled:
-        primary_diagnostic_candidate_count = int(
-            np.count_nonzero(quality_metrics.positive_candidate_mask(fvt))
-        )
-
-        def build_primary_result() -> PrimarySkinningStageResult:
-            built_diagnostics: dict[str, Any] = {}
-            built_skins = primary_skinner(
-                fv,
-                fvt,
-                vp,
-                vt,
-                skinning_config=skinning_settings,
-                diagnostics=built_diagnostics,
-            )
-            return PrimarySkinningStageResult.from_skins(
-                built_skins,
-                built_diagnostics,
-            )
-
-        if primary_cache_enabled and stage_cache is not None and primary_key is not None:
-            primary_result = stage_cache.get_primary_skinning(primary_key)
-            if primary_result is None:
-                primary_result = _time_build(
-                    stage="primary_skinning",
-                    semantic_key=primary_key,
-                    builder=build_primary_result,
-                    timer=timer,
-                )
-                stage_cache.put_primary_skinning(primary_key, primary_result)
-        else:
-            primary_result = _time_build(
-                stage="primary_skinning",
-                semantic_key=primary_key,
-                builder=build_primary_result,
-                timer=stage_timer,
-            )
-        skins, skin_diagnostics = primary_result.clone()
-        add_primary_skin_diagnostics(
-            skin_diagnostics,
-            skins,
-            shape=field.ft.shape,
-            fvt_positive_candidate_count=primary_diagnostic_candidate_count,
-            small_skin_size=skinning_settings.small_skin_size,
-        )
-        primary_mask = skin_mask_from_skins(skins, field.ft.shape)
-        boundary_fallback_runner(
-            skins,
-            fvt,
-            vp,
-            vt,
-            skinning_config=skinning_settings,
-            variant_spec=variant_spec,
-            diagnostics=skin_diagnostics,
-            scanner_target_positive_mask=scanner_target_positive_mask,
-        )
-    else:
-        skins = []
-        skin_diagnostics = {}
-        primary_mask = np.zeros(field.ft.shape, dtype=bool)
+    skin_result = execute_skinning_phase3d(
+        fv=fv,
+        fvt=fvt,
+        vp=vp,
+        vt=vt,
+        skinning_settings=skinning_settings,
+        variant_spec=variant_spec,
+        scanner_target_positive_mask=scanner_target_positive_mask,
+        primary_skinner=primary_skinner,
+        boundary_fallback_runner=boundary_fallback_runner,
+        stage_cache=stage_cache if primary_cache_enabled else None,
+        primary_key=primary_key if primary_cache_enabled else None,
+        stage_timer=timer if primary_cache_enabled else stage_timer,
+    )
 
     frozen_seed = None
     if seed_result is not None and seed_result.diagnostics() is not None:
@@ -706,18 +758,13 @@ def execute_workflow3d(
         },
         "thinning",
     )
-    frozen_skinning = freeze_scalar_evidence(skin_diagnostics, "skinning")
+    frozen_skinning = skin_result.diagnostics
     return Workflow3DResult(
         fv=_readonly_clone(fv),
         vp=_readonly_clone(vp),
         vt=_readonly_clone(vt),
         fvt=_readonly_clone(fvt),
-        skin=Workflow3DSkinResult(
-            enabled=skinning_settings.enabled,
-            skins=tuple(skins),
-            primary_mask=_readonly_bool_clone(primary_mask),
-            diagnostics=frozen_skinning,
-        ),
+        skin=skin_result,
         diagnostics=Workflow3DDiagnostics(
             seed=frozen_seed,
             voting=frozen_voting,
@@ -759,6 +806,7 @@ __all__ = [
     "Workflow3DSkinResult",
     "Workflow3DStageKeys",
     "build_external_attribute_stage_key",
+    "execute_skinning_phase3d",
     "execute_workflow3d",
     "run_workflow3d",
 ]

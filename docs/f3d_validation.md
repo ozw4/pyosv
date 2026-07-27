@@ -137,10 +137,15 @@ python -m pyosv.cli.f3d_mode_comparison \
 ```
 
 Deep validation rereads full-volume reference and stage artifacts from the
-recorded provenance and recomputes metric evidence. Only a valid root
-`completion.json`, written after reports and referenced stages pass semantic
-validation, marks the workspace complete. Output paths are rejected when they
-are equal to or nested under the F3 data root.
+recorded provenance, recomputes metric evidence, and reruns the final skinning
+phase from its persisted scanner, voting, and thinning parents. The skin-only
+rerun exactly checks final cell geometry, attributes, ordering, and duplicate
+occurrences together with the recorded mask and topology. This is an internal
+numerical-consistency check, not proof of artifact authenticity or geological
+truth. Only a valid root `completion.json`, written after reports and
+referenced stages pass semantic validation, marks the workspace complete.
+Output paths are rejected when they are equal to or nested under the F3 data
+root.
 
 The runtime identity in `run_manifest.json` is a compatibility contract that
 prevents stages produced through different numerical execution paths from

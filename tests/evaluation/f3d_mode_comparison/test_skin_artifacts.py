@@ -9,8 +9,11 @@ import numpy as np
 import pytest
 
 from pyosv.evaluation.f3d_mode_comparison.skin_artifacts import (
+    SkinCellRecord,
     SkinArtifactValidationError,
+    canonical_skins_payload,
     parse_skins_json,
+    resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
 )
 
@@ -49,6 +52,15 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, allow_nan=True, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _single_cell_payload(cell: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "format_version": 1,
+        "skinning_enabled": True,
+        "skin_count": 1,
+        "skins": [{"skin_index": 0, "cell_count": 1, "cells": [cell]}],
+    }
 
 
 def _write_stage(path: Path) -> None:
@@ -156,6 +168,151 @@ def test_duplicate_cells_are_retained_and_cross_file_validation_passes(
         )
         is parsed
     )
+
+
+def test_canonical_serializer_preserves_cell_attributes() -> None:
+    cell = SkinCellRecord(0.5, 0.0, 0.0, 1, 0, 0, 0.1, 10.0, 65.0)
+
+    payload = canonical_skins_payload(((cell,),))
+
+    assert payload["skins"][0]["cells"][0] == {
+        **_cell(1, 0, 0, fl=0.1),
+        "x1": 0.5,
+        "fp": 10.0,
+        "ft": 65.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("growth_source", "post_thinning_policy", "fallback_used", "expected"),
+    (
+        ("pre_thin", "none", False, ("voting", "vote", "fv.dat")),
+        (
+            "pre_thin",
+            "recenter_scanner_target",
+            False,
+            ("voting", "vote", "fv.dat"),
+        ),
+        ("thinned", "none", False, ("thinning", "thin", "fvt.dat")),
+        (
+            "thinned",
+            "boundary_edge_thin_v1",
+            False,
+            ("thinning", "thin", "fvt.dat"),
+        ),
+        (
+            "pre_thin",
+            "recenter_scanner_target",
+            True,
+            ("thinning", "thin", "fvt.dat"),
+        ),
+    ),
+)
+def test_parent_likelihood_uses_resolved_execution_contract(
+    growth_source: str,
+    post_thinning_policy: str,
+    fallback_used: bool,
+    expected: tuple[str, str, str],
+) -> None:
+    contract = resolve_skin_parent_volume_contract(
+        {"scanner": "scan", "voting": "vote", "thinning": "thin"},
+        {
+            "growth_source": growth_source,
+            "boundary_skinner_fallback": fallback_used,
+        },
+        {"post_thinning_policy": post_thinning_policy},
+        fallback_used=fallback_used,
+    )
+
+    assert contract.likelihood == expected
+
+
+def test_parent_volume_contract_rejects_unknown_post_thinning_policy() -> None:
+    with pytest.raises(SkinArtifactValidationError, match="post-thinning"):
+        resolve_skin_parent_volume_contract(
+            {"scanner": "scan", "voting": "vote", "thinning": "thin"},
+            {
+                "growth_source": "thinned",
+                "boundary_skinner_fallback": False,
+            },
+            {"post_thinning_policy": "unknown"},
+            fallback_used=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("x1", "i1", "valid"),
+    (
+        (-0.5, 0, True),
+        (float(np.nextafter(np.float32(0.5), np.float32(-np.inf))), 0, True),
+        (0.5, 1, True),
+        (float(np.nextafter(np.float32(-0.5), np.float32(-np.inf))), 0, False),
+        (_SHAPE[2] - 0.5, _SHAPE[2] - 1, False),
+        (0.5, 0, False),
+    ),
+)
+def test_cell_coordinates_use_java_rounding_and_half_open_volume_bounds(
+    tmp_path: Path,
+    x1: float,
+    i1: int,
+    valid: bool,
+) -> None:
+    path = tmp_path / "skins.json"
+    cell = _cell(i1, 0, 0)
+    cell["x1"] = x1
+    _write_json(path, _single_cell_payload(cell))
+
+    if valid:
+        assert parse_skins_json(path, _SHAPE).cell_count == 1
+    else:
+        with pytest.raises(SkinArtifactValidationError):
+            parse_skins_json(path, _SHAPE)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("fl", 2.0, "fl"),
+        ("fp", 60.0, "strike"),
+        ("ft", 81.0, "dip"),
+    ),
+)
+def test_cell_attributes_respect_resolved_ranges(
+    tmp_path: Path,
+    field: str,
+    value: float,
+    message: str,
+) -> None:
+    path = tmp_path / "skins.json"
+    cell = _cell(0, 0, 0)
+    cell[field] = value
+    _write_json(path, _single_cell_payload(cell))
+
+    with pytest.raises(SkinArtifactValidationError, match=message):
+        parse_skins_json(
+            path,
+            _SHAPE,
+            strike_range=(20.0, 50.0),
+            dip_range=(65.0, 80.0),
+        )
+
+
+@pytest.mark.parametrize("level", ("root", "skin", "cell"))
+def test_duplicate_json_keys_are_rejected_at_every_object_level(
+    tmp_path: Path,
+    level: str,
+) -> None:
+    text = json.dumps(_single_cell_payload(_cell(0, 0, 0)), separators=(",", ":"))
+    old, new = {
+        "root": ('"format_version":1', '"format_version":1,"format_version":1'),
+        "skin": ('"skin_index":0', '"skin_index":0,"skin_index":0'),
+        "cell": ('"x1":0.0', '"x1":0.0,"x1":0.0'),
+    }[level]
+    path = tmp_path / "skins.json"
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    with pytest.raises(SkinArtifactValidationError, match="strict JSON"):
+        parse_skins_json(path, _SHAPE)
 
 
 @pytest.mark.parametrize(

@@ -320,9 +320,15 @@ existing operational validation paths.
   stages, and a valid complete bundle is validated without recomputation.
   Root completion is published only after the fixed reports and referenced
   stages pass semantic validation. `--deep-validate` recomputes full-volume
-  metric evidence and therefore requires the current fixed publication runtime
-  to match the manifest. Shallow `--validate-only` validates only the recorded
-  contract and does not impose that requirement on the current process.
+  metric evidence and reruns only the final skinning phase from the persisted
+  scanner, voting, and thinning parents. The rerun exactly checks every final
+  cell's subvoxel geometry, voxel index, likelihood, strike, dip, ordering, and
+  duplicate occurrence against `skins.json`, while retaining the mask and
+  topology cross-checks. It therefore requires the current fixed publication
+  runtime to match the manifest. This establishes internal numerical
+  consistency, not artifact authenticity or geological truth. Shallow
+  `--validate-only` validates only the recorded contract and does not impose
+  that requirement on the current process.
   Runtime rows are within-run attribution, not isolated benchmarks.
 - [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
   legacy full-volume scan/vote command. It calls `FaultOrientScanner3.scan()`,

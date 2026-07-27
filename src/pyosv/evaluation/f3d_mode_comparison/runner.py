@@ -58,12 +58,13 @@ from .scanner import (
     scanner_stage_artifacts,
     scanner_stage_resolved_settings,
 )
+from .skin_artifacts import canonical_skins_payload
 
 F3_CELL_RUNNER_CONTRACT_VERSION = 1
 F3_VOTING_STAGE_IMPLEMENTATION = "pyosv-f3-voting-stage-v1"
 F3_THINNING_STAGE_IMPLEMENTATION = "pyosv-f3-thinning-stage-v1"
 F3_SKINNING_STAGE_IMPLEMENTATION = "pyosv-f3-skinning-stage-v1"
-F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 1
+F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 2
 F3_CELL_REFERENCE_SCHEMA_VERSION = 1
 
 _DAT_DTYPE = np.dtype(">f4")
@@ -975,6 +976,9 @@ def _persist_or_reuse_cell_stages(
 
         if execution.skinning_settings["enabled"]:
             skins = tuple(result.skins)
+            fallback_used = result.diagnostics.skinning.get("fallback_used")
+            if not isinstance(fallback_used, bool):
+                raise ValueError("workflow skinning fallback_used diagnostic must be bool")
             skin_report = {
                 "fingerprint": execution.stages.skinning,
                 "thinning_stage_fingerprint": execution.stages.thinning,
@@ -992,7 +996,10 @@ def _persist_or_reuse_cell_stages(
             def write_skinning(path: Path) -> None:
                 mask = skin_mask_from_skins(skins, shape).astype(np.float32, copy=False)
                 _write_dat(path / "skin_mask.dat", mask)
-                _write_json(path / "skins.json", _skins_payload(skins))
+                _write_json(
+                    path / "skins.json",
+                    canonical_skins_payload(skins),
+                )
                 _write_json(path / "report.json", skin_report)
 
             skinning_stage = (
@@ -1418,38 +1425,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise F3StageCorruptionError(f"JSON artifact must contain an object: {path}")
     return value
-
-
-def _skins_payload(skins: Sequence[Any]) -> dict[str, Any]:
-    serialized = []
-    for skin_index, skin in enumerate(skins):
-        cells = sorted(skin, key=lambda cell: (cell.i3, cell.i2, cell.i1))
-        serialized.append(
-            {
-                "skin_index": skin_index,
-                "cell_count": len(cells),
-                "cells": [
-                    {
-                        "x1": float(cell.x1),
-                        "x2": float(cell.x2),
-                        "x3": float(cell.x3),
-                        "i1": int(cell.i1),
-                        "i2": int(cell.i2),
-                        "i3": int(cell.i3),
-                        "fl": float(cell.fl),
-                        "fp": float(cell.fp),
-                        "ft": float(cell.ft),
-                    }
-                    for cell in cells
-                ],
-            }
-        )
-    return {
-        "format_version": 1,
-        "skinning_enabled": True,
-        "skin_count": len(serialized),
-        "skins": serialized,
-    }
 
 
 __all__ = [
