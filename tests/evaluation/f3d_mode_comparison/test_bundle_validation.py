@@ -336,6 +336,132 @@ def test_complete_bundle_strict_load_deep_validation_and_resume(tmp_path: Path) 
     assert resumed == loaded
 
 
+def test_scanner_report_requires_exact_backend_summary_keys(tmp_path: Path) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "scanner" / loaded.cells[0].stages.scanner
+    report_path = stage / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["raw"]["unexpected"] = report["raw"]["ft"]
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    _rehash_stage_artifact(root, stage, "report.json")
+
+    with pytest.raises(F3ResultValidationError, match="raw summary key set"):
+        validate_completed_f3d_bundle(root)
+
+
+def test_deep_validation_recomputes_scanner_summary_and_sampling_count(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    stages = {
+        cell.backend: root / "stages" / "scanner" / cell.stages.scanner for cell in loaded.cells
+    }
+
+    report_path = stages["reference-like"] / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["raw"]["ft"].update({"min": 0.1, "mean": 0.1, "max": 0.1})
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    _rehash_stage_artifact(root, stages["reference-like"], "report.json")
+
+    assert validate_completed_f3d_bundle(root)
+    with pytest.raises(F3ResultValidationError, match="deep scanner summary mismatch"):
+        validate_completed_f3d_bundle(root, deep=True)
+
+    report["raw"]["ft"].update({"min": 0.0, "mean": 0.0, "max": 0.0})
+    report["sampling_count"]["strike"] += 1
+    report["sampling_count"]["orientations"] = (
+        report["sampling_count"]["strike"] * report["sampling_count"]["dip"]
+    )
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    _rehash_stage_artifact(root, stages["reference-like"], "report.json")
+
+    assert validate_completed_f3d_bundle(root)
+    with pytest.raises(F3ResultValidationError, match="deep scanner sampling_count mismatch"):
+        validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_deep_scanner_validation_rejects_rehashed_trailing_dat_bytes(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    manifest = json.loads((root / "run_manifest.json").read_text(encoding="utf-8"))
+    stage = root / "stages" / "scanner" / loaded.cells[0].stages.scanner
+    path = stage / "ft.dat"
+    with path.open("ab") as stream:
+        stream.write(b"\0\0\0\0")
+    _rehash_stage_artifact(root, stage, path.name)
+
+    with pytest.raises(
+        F3ResultValidationError,
+        match="deep scanner array validation failed: ft",
+    ):
+        result_module._deep_validate_scanner_stages(root, loaded, manifest["plan"])
+
+
+def test_deep_scanner_validation_is_unique_and_sampling_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    manifest = json.loads((root / "run_manifest.json").read_text(encoding="utf-8"))
+    original_scanner = result_module.FaultOrientScanner3
+    original_summary = result_module.scanner_array_summary
+    original_memmap = result_module.np.memmap
+    constructions = 0
+    summary_calls = 0
+    mappings: list[Any] = []
+
+    class SamplingOnlyScanner:
+        def __init__(self, sigma1: float, sigma2: float) -> None:
+            nonlocal constructions
+            constructions += 1
+            self._scanner = original_scanner(sigma1, sigma2)
+
+        def __getattr__(self, name: str) -> Any:
+            if name in {"scan", "scan_quality", "thin"}:
+                raise AssertionError(f"deep scanner validation called {name}")
+            return getattr(self._scanner, name)
+
+    def tracked_summary(array: np.ndarray) -> dict[str, Any]:
+        nonlocal summary_calls
+        summary_calls += 1
+        return original_summary(array)
+
+    def tracked_memmap(*args: Any, **kwargs: Any) -> np.memmap:
+        array = original_memmap(*args, **kwargs)
+        mappings.append(array._mmap)
+        return array
+
+    monkeypatch.setattr(result_module, "FaultOrientScanner3", SamplingOnlyScanner)
+    monkeypatch.setattr(result_module, "scanner_array_summary", tracked_summary)
+    monkeypatch.setattr(result_module.np, "memmap", tracked_memmap)
+
+    result_module._deep_validate_scanner_stages(root, loaded, manifest["plan"])
+    assert constructions == 2
+    assert summary_calls == 13
+    assert len(mappings) == 13
+    assert all(mapping.closed for mapping in mappings)
+    shutil.rmtree(root / "stages" / "scanner")
+
+
+def test_deep_scanner_validation_accepts_semantic_json_formatting(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "scanner" / loaded.cells[0].stages.scanner
+    report_path = stage / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report_path.write_bytes(canonical_json_bytes(report) + b" ")
+    _rehash_stage_artifact(root, stage, "report.json")
+
+    assert validate_completed_f3d_bundle(root, deep=True)
+
+
 def test_rehashed_skin_schema_tamper_is_rejected_by_strict_validation(
     tmp_path: Path,
 ) -> None:
@@ -1112,7 +1238,10 @@ def test_rehashed_mixed_generation_cell_is_rejected(tmp_path: Path) -> None:
     cell_path.write_bytes(canonical_json_bytes(cell_payload) + b"\n")
     _rehash_report(root, "cells.json")
 
-    with pytest.raises(F3ResultValidationError):
+    with pytest.raises(
+        F3ResultValidationError,
+        match="scanner stage backend reuse mismatch",
+    ):
         validate_completed_f3d_bundle(root)
 
 

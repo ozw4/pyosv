@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
+import pyosv.evaluation.f3d_mode_comparison.scanner as scanner_module
 from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetIdentity,
     F3DatasetSpec,
@@ -166,19 +167,50 @@ def _scanner_stage(
         artifacts=artifacts,
     )
     report = {
+        "scanner_stage_contract_version": scanner_module.F3_SCANNER_STAGE_CONTRACT_VERSION,
         "fingerprint": fingerprint,
         "backend": backend,
         "shape": list(shape),
-        "input_fingerprint": {"sha256": input_fingerprint},
+        "input_fingerprint": {
+            "role": "input",
+            "size": int(np.prod(shape)) * np.dtype(">f4").itemsize,
+            "sha256": input_fingerprint,
+            "shape": list(shape),
+            "storage_dtype": ">f4",
+        },
         "resolved_config": asdict(config),
         "resolved_stage_settings": settings,
+        "sampling_count": scanner_module.scanner_sampling_count(
+            scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
+            config,
+            backend,  # type: ignore[arg-type]
+        ),
+        "requested_remove_edge_effects": config.remove_edge_effects,
+        "effective_remove_edge_effects": config.effective_remove_edge_effects,
+    }
+    arrays = {
+        "ft": np.zeros(shape, dtype=np.float32),
+        "pt": np.full(shape, 20.0, dtype=np.float32),
+        "tt": np.full(shape, 70.0, dtype=np.float32),
+        "fet": np.zeros(shape, dtype=np.float32),
+        "fpt": np.full(shape, 20.0, dtype=np.float32),
+        "ftt": np.full(shape, 70.0, dtype=np.float32),
+    }
+    if backend == "quality":
+        arrays["confidence"] = np.zeros(shape, dtype=np.float32)
+    report["raw"] = {
+        name: scanner_module.scanner_array_summary(arrays[name])
+        for name in ("ft", "pt", "tt", *(("confidence",) if backend == "quality" else ()))
+    }
+    report["thinned"] = {
+        name: scanner_module.scanner_array_summary(arrays[name]) for name in ("fet", "fpt", "ftt")
     }
 
     def writer(path: Path) -> None:
         for artifact in artifacts:
             artifact_path = path / artifact.filename
             if artifact.format == "dat":
-                np.zeros(shape, dtype=">f4").tofile(artifact_path)
+                arrays[artifact_path.stem].astype(">f4").tofile(artifact_path)
             else:
                 artifact_path.write_bytes(canonical_json_bytes(report) + b"\n")
 

@@ -319,9 +319,11 @@ existing operational validation paths.
   requires a new output path; exact resume reuses only matching validated
   stages, and a valid complete bundle is validated without recomputation.
   Root completion is published only after the fixed reports and referenced
-  stages pass semantic validation. `--deep-validate` recomputes full-volume
-  metric evidence and reruns only the final skinning phase from the persisted
-  scanner, voting, and thinning parents. The rerun exactly checks every final
+  stages pass semantic validation. `--deep-validate` recomputes every scanner
+  array summary from its persisted DAT artifact, re-derives scanner sampling
+  counts from the resolved configuration, recomputes full-volume metric
+  evidence, and reruns only the final skinning phase from the persisted scanner,
+  voting, and thinning parents. The rerun exactly checks every final
   cell's subvoxel geometry, voxel index, likelihood, strike, dip, ordering, and
   duplicate occurrence against `skins.json`, while retaining the mask and
   topology cross-checks. It therefore requires the current fixed publication

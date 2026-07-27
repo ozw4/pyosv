@@ -31,8 +31,8 @@ from .config import F3ScannerConfig
 from .data import F3FileIdentity, F3VolumeSource
 from .models import F3ModeComparisonPlan, F3ScannerBackend
 
-F3_SCANNER_STAGE_CONTRACT_VERSION = 3
-F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v3"
+F3_SCANNER_STAGE_CONTRACT_VERSION = 4
+F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v4"
 F3_SCANNER_BACKEND_ORDER: tuple[F3ScannerBackend, ...] = (
     "reference-like",
     "quality",
@@ -470,11 +470,15 @@ def _write_scanner_stage(
         "input_fingerprint": input_identity.computation_identity,
         "resolved_config": asdict(config),
         "resolved_stage_settings": dict(settings),
-        "sampling_count": _sampling_count(scanner, config, backend),
+        "sampling_count": scanner_sampling_count(
+            FaultOrientScanner3(config.sigma1, config.sigma2),
+            config,
+            backend,
+        ),
         "requested_remove_edge_effects": config.remove_edge_effects,
         "effective_remove_edge_effects": config.effective_remove_edge_effects,
-        "raw": {name: _array_summary(values) for name, values in raw.items()},
-        "thinned": {name: _array_summary(values) for name, values in thinned.items()},
+        "raw": {name: scanner_array_summary(values) for name, values in raw.items()},
+        "thinned": {name: scanner_array_summary(values) for name, values in thinned.items()},
     }
 
     for name in ("ft", "pt", "tt"):
@@ -541,11 +545,13 @@ def _validate_angle_range(
         raise ValueError(f"{name} must be within the configured angle range")
 
 
-def _sampling_count(
+def scanner_sampling_count(
     scanner: FaultOrientScanner3,
     config: F3ScannerConfig,
     backend: F3ScannerBackend,
 ) -> dict[str, int]:
+    """Return the canonical scanner sampling counts without scanning a volume."""
+
     if backend == "reference-like":
         strike = scanner.reference_like_strike_sampling(config.phi_min, config.phi_max)
         dip = scanner.reference_like_dip_sampling(config.theta_min, config.theta_max)
@@ -567,11 +573,16 @@ def _sampling_count(
     }
 
 
-def _array_summary(array: np.ndarray) -> dict[str, Any]:
+def scanner_array_summary(array: np.ndarray) -> dict[str, Any]:
+    """Return the canonical semantic summary for one finite scanner array."""
+
+    array = np.asarray(array)
+    if array.dtype.kind != "f" or array.dtype.itemsize != np.dtype(np.float32).itemsize:
+        raise ValueError("scanner summary array must use float32 storage")
     count = nonzero_count(array)
     return {
         "shape": list(array.shape),
-        "dtype": array.dtype.name,
+        "dtype": np.dtype(np.float32).name,
         "finite_count": int(array.size),
         "min": float(np.min(array)),
         "max": float(np.max(array)),
