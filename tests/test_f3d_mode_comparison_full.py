@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,11 @@ import pytest
 
 from pyosv.cli import f3d_mode_comparison
 from pyosv.evaluation.f3d_mode_comparison import (
+    F3_FINGERPRINT_CONTRACT_VERSION,
+    F3_METRIC_SCHEMA_VERSION,
+    F3_RUNTIME_IDENTITY_SCHEMA_VERSION,
+    F3_SCANNER_STAGE_CONTRACT_VERSION,
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     OFFICIAL_F3_DATASET_SPEC,
     load_f3d_mode_comparison_result,
     numerical_runtime_identity,
@@ -55,6 +61,7 @@ def test_official_f3_full_volume_mode_comparison() -> None:
         arguments.append("--deep-validate")
 
     assert f3d_mode_comparison.main(arguments) == 0
+    assert validate_completed_f3d_bundle(output_root)
     assert validate_completed_f3d_bundle(output_root, deep=deep)
     result = load_f3d_mode_comparison_result(output_root, deep=deep)
     assert result.dataset_id == OFFICIAL_F3_DATASET_SPEC.dataset_id
@@ -71,7 +78,12 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     assert len({cell.stages.skinning for cell in result.cells}) == 4
 
     manifest = json.loads((output_root / "run_manifest.json").read_text())
+    assert manifest["fingerprint_contract_version"] == F3_FINGERPRINT_CONTRACT_VERSION
     assert manifest["runtime_identity"] == runtime_identity
+    assert (
+        manifest["runtime_identity"]["runtime_identity_schema_version"]
+        == F3_RUNTIME_IDENTITY_SCHEMA_VERSION
+    )
     assert manifest["runtime_identity"]["numpy_runtime_cpu"]["status"] == "available"
     assert manifest["runtime_identity"]["numpy_runtime_blas"]["status"] == "available"
     assert manifest["runtime_identity"]["scipy_build"]["status"] == "available"
@@ -87,3 +99,26 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     assert all(
         len(metadata["sha256"]) == 64 for metadata in completion["stage_completions"].values()
     )
+
+    scanner_fingerprints = {cell.stages.scanner for cell in result.cells}
+    for fingerprint in scanner_fingerprints:
+        report = json.loads(
+            (output_root / "stages" / "scanner" / fingerprint / "report.json").read_text()
+        )
+        assert report["scanner_stage_contract_version"] == F3_SCANNER_STAGE_CONTRACT_VERSION
+    for cell in result.cells:
+        manifest_path = (
+            output_root / "stages" / "skinning" / cell.stages.skinning / "stage_manifest.json"
+        )
+        stage_manifest = json.loads(manifest_path.read_text())
+        assert (
+            stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"]
+            == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        )
+
+    with (output_root / "reports" / "metrics_long.csv").open(
+        encoding="utf-8", newline=""
+    ) as stream:
+        assert {int(row["schema_version"]) for row in csv.DictReader(stream)} == {
+            F3_METRIC_SCHEMA_VERSION
+        }

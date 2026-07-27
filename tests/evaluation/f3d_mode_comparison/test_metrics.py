@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 
 import numpy as np
 import pytest
@@ -15,6 +15,7 @@ from pyosv.candidate_volume import (
 from pyosv.evaluation.f3d_mode_comparison.metrics import (
     CONTRAST_DEFINITIONS,
     F3_METRIC_ROW_FIELDS,
+    F3_METRIC_SCHEMA_VERSION,
     ContrastRow,
     MetricEvidence,
     MetricRow,
@@ -88,7 +89,7 @@ def _metric_row(
 ) -> MetricRow:
     scanner_backend, workflow_mode = _AXES[cell_label]
     return MetricRow(
-        1,
+        F3_METRIC_SCHEMA_VERSION,
         "fixture",
         cell_label,
         scanner_backend,
@@ -113,6 +114,31 @@ def test_metric_row_field_order_and_full_region_contract() -> None:
     assert row.region == "full"
     assert "crop" not in row.as_dict()
     assert "tile" not in row.as_dict()
+
+
+def test_metric_artifacts_use_integer_schema_version_2_only() -> None:
+    values = np.zeros((1, 1, 2), dtype=np.float32)
+    metric_rows, evidence = _reference_rows(values, values)
+    contrast_rows = compute_contrast_rows(
+        tuple(_metric_row(cell, value) for cell, value in zip(_AXES, range(4), strict=True))
+    )
+    voxel_rows = compute_voxelwise_contrast_summaries(
+        dataset_id="fixture",
+        stage="fvt",
+        volumes={cell: values for cell in _AXES},
+        stage_fingerprints=_FINGERPRINTS,
+        registration_id="fixture-registration",
+        epsilon=0.0,
+        slab_depth=1,
+    )
+    artifacts = (metric_rows[0], evidence[0], contrast_rows[0], voxel_rows[0])
+
+    assert F3_METRIC_SCHEMA_VERSION == 2
+    assert all(type(item.schema_version) is int and item.schema_version == 2 for item in artifacts)
+    for item in artifacts:
+        for invalid in (1, True, 2.0, "2"):
+            with pytest.raises(ValueError, match="schema_version"):
+                replace(item, schema_version=invalid)
 
 
 def test_all_voxel_accumulator_matches_direct_numpy() -> None:
@@ -358,7 +384,7 @@ def test_contrast_pairing_rejects_incomplete_or_mismatched_identity() -> None:
 def test_contrasts_skip_nullable_distance_group_with_mixed_empty_ridges() -> None:
     rows = tuple(
         MetricRow(
-            1,
+            F3_METRIC_SCHEMA_VERSION,
             "fixture",
             cell,
             *_AXES[cell],
