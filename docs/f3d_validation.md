@@ -126,9 +126,13 @@ platform, allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
 BLAS/LAPACK build digest. Valid content-addressed stages are reused and missing
 stages are computed. The publication validator rejects an available Numba
 runtime with JIT disabled and requires `NUMBA_NUM_THREADS=1` when that variable
-is set. `PYOSV_ACCEL=auto` remains valid when Numba is unavailable. A complete
-bundle is accepted by `--resume` only after strict validation and is not
-recomputed:
+is set. `PYOSV_ACCEL=auto` remains valid when Numba is unavailable. Shallow
+validation always applies the publication runtime policy to the identity
+recorded by an official bundle, but does not inspect or compare the current
+process identity. Deep validation and resume computation for missing stages
+require the current identity to satisfy the publication policy and exactly
+match the recorded identity. A complete bundle is accepted by `--resume` only
+after strict validation and is not recomputed:
 
 ```bash
 python -m pyosv.cli.f3d_mode_comparison \
@@ -207,15 +211,24 @@ and runtime/resource diagnostics. Validation does not establish cryptographic
 authenticity, independent geological truth, or bitwise reproducibility across
 arbitrary hardware.
 
-Scanner stage contract 5 records sampling evidence from the same scanner
-instance that produces each volume. The bounded strike and dip grids are stored
-as float32 values with exact bit-pattern SHA-256 digests, counts, effective
-refinement, and sampling-helper implementation identities. The legacy
-`sampling_count` view is derived from that evidence. Official CLI stages
-explicitly require the canonical scanner implementation identity, and deep
-validation re-derives its sampling evidence from the resolved scanner config
-without running scanning or thinning. Injected fixture scanners retain their
-own implementation-bound evidence and are not treated as canonical stages.
+Scanner stage contract 5 records precomputed sampling evidence and verifies it
+exactly against the scanner instance before that instance produces a volume.
+The bounded strike and dip grids are stored as float32 values with exact
+bit-pattern SHA-256 digests, counts, effective refinement, and sampling-helper
+implementation identities. The legacy `sampling_count` view is derived from
+that evidence. Official CLI stages explicitly require the canonical scanner
+implementation identity and derive canonical sampling evidence without
+constructing a scanner. Consequently, an all-reuse run performs no scanner
+construction, instance sampling, source-volume read, scan, or thinning. A
+custom scanner factory must supply validated evidence for both backends; a
+computed stage checks the actual instance against that declared contract before
+reading the source volume or scanning. When only one scanner stage is missing,
+resume constructs and computes only that backend; the independently complete
+backend is validated and reused without constructing its scanner. Deep
+validation also re-derives
+canonical evidence without constructing a scanner. Injected fixture scanners
+retain their own implementation-bound evidence and are not treated as canonical
+stages.
 
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)

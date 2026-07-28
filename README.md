@@ -177,8 +177,11 @@ Numba controls, and thread identity in `run_manifest.json`; preserve that
 manifest with the completion report. Publication runs reject an available
 Numba runtime with JIT disabled; `PYOSV_ACCEL=auto` remains valid when Numba is
 unavailable. Shallow `--validate-only` checks the recorded bundle without
-requiring the current process to reproduce this environment. Resume computation
-and `--deep-validate` require the current runtime identity to match it exactly.
+requiring the current process to reproduce this environment, but it still
+requires an official bundle's recorded identity to satisfy the publication
+runtime policy. Deep validation and resume computation for missing stages
+require the current runtime to satisfy that policy and match the recorded
+identity exactly.
 
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](examples/run_3d_f3d_mode_comparison.py)

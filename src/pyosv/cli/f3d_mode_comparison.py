@@ -12,6 +12,7 @@ from pathlib import Path
 from pyosv.evaluation.f3d_mode_comparison.artifacts import RUN_MANIFEST_FILE
 from pyosv.evaluation.f3d_mode_comparison import (
     RUN_COMPLETION_FILE,
+    F3_DATASET_ID,
     F3ModeComparisonConfig,
     F3ModeComparisonResult,
     F3VolumeSource,
@@ -128,19 +129,21 @@ def run_experiment(
     deep: bool,
     pretty: bool = False,
     runtime_identity: Mapping[str, object] | None = None,
-    _enforce_publication_runtime: bool = True,
+    _skip_current_publication_runtime_policy_for_testing: bool = False,
 ) -> Path:
     """Run or resume one canonical comparison and return its bundle path."""
 
     root = Path(output_dir)
     completed_resume = resume and os.path.lexists(root / RUN_COMPLETION_FILE)
+    if completed_resume:
+        validate_completed_f3d_bundle(root, deep=deep)
     if runtime_identity is not None:
         runtime = validate_numerical_runtime_identity(runtime_identity)
     elif completed_resume:
         runtime = _recorded_runtime_identity(root)
     else:
         runtime = numerical_runtime_identity()
-    if _enforce_publication_runtime and not completed_resume:
+    if not _skip_current_publication_runtime_policy_for_testing and not completed_resume:
         validate_publication_runtime_identity(runtime)
     plan = build_f3d_mode_comparison_plan(config)
     completion: Path | None = None
@@ -158,7 +161,6 @@ def run_experiment(
             completion = workspace.path / RUN_COMPLETION_FILE
             completion_preexisted = os.path.lexists(completion)
             if completion_preexisted:
-                validate_completed_f3d_bundle(workspace.path, deep=deep)
                 return workspace.path
 
             rss = PeakRSSRecorder()
@@ -236,8 +238,14 @@ def _recorded_runtime_identity(bundle: Path) -> dict[str, object]:
     if not isinstance(payload, Mapping):
         raise ValueError("bundle run manifest must contain an object")
     runtime = payload.get("runtime_identity")
+    dataset = payload.get("dataset_identity")
+    validator = (
+        validate_publication_runtime_identity
+        if isinstance(dataset, Mapping) and dataset.get("dataset_id") == F3_DATASET_ID
+        else validate_numerical_runtime_identity
+    )
     try:
-        return validate_numerical_runtime_identity(runtime)
+        return validator(runtime)
     except ValueError as error:
         raise ValueError(f"bundle run manifest has invalid runtime identity: {error}") from error
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import weakref
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetSpec,
     F3FileIdentity,
     F3ModeComparisonConfig,
+    F3ModeComparisonPlan,
     F3RunWorkspace,
     F3ScannerConfig,
     F3VolumeSource,
@@ -148,6 +150,26 @@ def _calls() -> dict[str, object]:
     }
 
 
+def _sampling_contract(
+    plan: F3ModeComparisonPlan | None = None,
+    *,
+    implementation_identity: Mapping[str, object] | str = _IMPLEMENTATION,
+    scanner: _Scanner | None = None,
+) -> dict[str, dict[str, object]]:
+    if plan is None:
+        plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    provider = _Scanner(_calls()) if scanner is None else scanner
+    return {
+        backend: scanner_module.scanner_sampling_evidence(
+            provider,
+            plan.scanner_config_for(backend),
+            backend,
+            implementation_identity=implementation_identity,
+        )
+        for backend in scanner_module.F3_SCANNER_BACKEND_ORDER
+    }
+
+
 def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     source = _Source(tmp_path / "data", values)
@@ -162,6 +184,7 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
         plan,
         scanner_factory=_factory(calls),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(plan),
         rss_recorder=recorder,
     )
 
@@ -214,17 +237,63 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
         plan,
         scanner_factory=_factory(reuse_calls),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(plan),
         rss_recorder=reuse_recorder,
     )
     assert all(stage.reused for stage in reused.values())
     assert reuse_source.read_count == 0
     assert reuse_calls == {
-        "construction": 2,
+        "construction": 0,
         "reference_scan": 0,
         "quality_scan": 0,
         "thin": 0,
     }
     assert len(reuse_recorder.snapshots) == 4
+
+
+def test_canonical_all_reuse_does_not_construct_scanners(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    first = run_scanner_stages(workspace, source, plan)  # type: ignore[arg-type]
+    assert all(not stage.reused for stage in first.values())
+
+    def unexpected_init(self: object, sigma1: float, sigma2: float) -> None:
+        del self, sigma1, sigma2
+        pytest.fail("all-reuse constructed FaultOrientScanner3")
+
+    monkeypatch.setattr(scanner_module.FaultOrientScanner3, "__init__", unexpected_init)
+    reuse_source = _Source(tmp_path / "reuse-data", values)
+    reused = run_scanner_stages(workspace, reuse_source, plan)  # type: ignore[arg-type]
+
+    assert all(stage.reused for stage in reused.values())
+    assert reuse_source.read_count == 0
+
+
+def test_custom_scanner_requires_sampling_contract_before_workspace_change(
+    tmp_path: Path,
+) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    calls = _calls()
+
+    with pytest.raises(ValueError, match="sampling_evidence_by_backend is required"):
+        run_scanner_stages(
+            workspace,
+            source,  # type: ignore[arg-type]
+            build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
+            scanner_factory=_factory(calls),  # type: ignore[arg-type]
+            implementation_identity=_IMPLEMENTATION,
+        )
+
+    assert calls["construction"] == 0
+    assert source.read_count == 0
+    assert not any((workspace.path / "stages" / "scanner").iterdir())
 
 
 def test_runner_passes_effective_controls_to_both_scanner_backends(tmp_path: Path) -> None:
@@ -252,12 +321,14 @@ def test_runner_passes_effective_controls_to_both_scanner_backends(tmp_path: Pat
         assert (sigma1, sigma2) == (config.sigma1, config.sigma2)
         return ObservingScanner(calls)
 
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig(scanner_template=config))
     run_scanner_stages(
         _workspace(tmp_path / "run", source),
         source,  # type: ignore[arg-type]
-        build_f3d_mode_comparison_plan(F3ModeComparisonConfig(scanner_template=config)),
+        plan,
         scanner_factory=factory,  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(plan),
     )
 
     common = {
@@ -308,12 +379,15 @@ def test_sampling_is_observed_on_the_scanner_instance_that_scans(tmp_path: Path)
         instances.append(instance)
         return instance
 
+    sampling_contract = _sampling_contract(scanner=IdentityScanner(calls))
+    observed.clear()
     run_scanner_stages(
         _workspace(tmp_path / "run", source),
         source,  # type: ignore[arg-type]
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
         scanner_factory=factory,
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=sampling_contract,
     )
 
     assert observed == [
@@ -354,6 +428,7 @@ def test_invalid_sampling_is_rejected_before_scan(
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=lambda sigma1, sigma2: InvalidSamplingScanner(calls),
             implementation_identity=_IMPLEMENTATION,
+            sampling_evidence_by_backend=_sampling_contract(),
         )
     assert calls["reference_scan"] == 0
     assert source.read_count == 0
@@ -377,6 +452,7 @@ def test_missing_sampling_helper_is_rejected_before_scan(tmp_path: Path) -> None
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=factory,  # type: ignore[arg-type]
             implementation_identity=_IMPLEMENTATION,
+            sampling_evidence_by_backend=_sampling_contract(),
         )
     assert calls["reference_scan"] == 0
     assert source.read_count == 0
@@ -417,6 +493,61 @@ def test_sampling_evidence_schema_rejects_inconsistent_metadata() -> None:
                 config,
                 "reference-like",
             )
+
+
+@pytest.mark.parametrize("backend", scanner_module.F3_SCANNER_BACKEND_ORDER)
+def test_canonical_pure_sampling_evidence_matches_scanner_instance(backend: str) -> None:
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    config = plan.scanner_config_for(backend)  # type: ignore[arg-type]
+    implementation = scanner_module.canonical_scanner_implementation_identity()
+
+    pure = scanner_module.canonical_scanner_sampling_evidence(
+        config,
+        backend,  # type: ignore[arg-type]
+        implementation_identity=implementation,
+    )
+    actual = scanner_module.scanner_sampling_evidence(
+        scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
+        config,
+        backend,  # type: ignore[arg-type]
+        implementation_identity=implementation,
+    )
+
+    assert pure == actual
+
+
+def test_actual_sampling_mismatch_is_rejected_before_source_read_or_scan(
+    tmp_path: Path,
+) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    calls = _calls()
+
+    class MismatchedScanner(_Scanner):
+        def reference_like_strike_sampling(self, *args: object) -> np.ndarray:
+            del args
+            return np.asarray([0.0, 40.0], dtype=np.float32)
+
+    def factory(sigma1: float, sigma2: float) -> MismatchedScanner:
+        del sigma1, sigma2
+        calls["construction"] = int(calls["construction"]) + 1
+        return MismatchedScanner(calls)
+
+    with pytest.raises(ValueError, match="does not match the precomputed contract"):
+        run_scanner_stages(
+            workspace,
+            source,  # type: ignore[arg-type]
+            build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
+            scanner_factory=factory,
+            implementation_identity=_IMPLEMENTATION,
+            sampling_evidence_by_backend=_sampling_contract(),
+        )
+
+    assert calls["construction"] == 1
+    assert calls["reference_scan"] == 0
+    assert source.read_count == 0
+    assert not any((workspace.path / "stages" / "scanner").iterdir())
 
 
 def test_sampling_evidence_rejects_unbounded_axis_before_array_conversion(
@@ -504,6 +635,7 @@ def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
         backend_order=("quality", "reference-like"),
         scanner_factory=_factory(calls),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(plan),
     )
 
     forward_source = _Source(tmp_path / "forward-data", values)
@@ -513,6 +645,7 @@ def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
         plan,
         scanner_factory=_factory(_calls()),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(plan),
     )
     for backend in ("reference-like", "quality"):
         filenames = ("ft.dat", "pt.dat", "tt.dat", "fet.dat", "fpt.dat", "ftt.dat", "report.json")
@@ -533,11 +666,12 @@ def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
         plan,
         scanner_factory=_factory(resumed_calls),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(plan),
     )
     assert resumed["reference-like"].reused is True
     assert resumed["quality"].reused is False
     assert resumed_source.read_count == 1
-    assert resumed_calls["construction"] == 2
+    assert resumed_calls["construction"] == 1
     assert resumed_calls["reference_scan"] == 0
     assert resumed_calls["quality_scan"] == 1
     assert resumed_calls["thin"] == 1
@@ -586,6 +720,7 @@ def test_invalid_scanner_outputs_are_rejected_before_publication(
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=factory,  # type: ignore[arg-type]
             implementation_identity=_IMPLEMENTATION,
+            sampling_evidence_by_backend=_sampling_contract(),
         )
 
     assert not any((run_root / "stages" / "scanner").iterdir())
@@ -612,6 +747,7 @@ def test_scan_exception_does_not_publish_partial_stage(tmp_path: Path) -> None:
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=factory,  # type: ignore[arg-type]
             implementation_identity=_IMPLEMENTATION,
+            sampling_evidence_by_backend=_sampling_contract(),
         )
 
     assert not any((run_root / "stages" / "scanner").iterdir())
@@ -638,6 +774,7 @@ def test_write_exception_does_not_publish_partial_stage(
             build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
             scanner_factory=_factory(_calls()),  # type: ignore[arg-type]
             implementation_identity=_IMPLEMENTATION,
+            sampling_evidence_by_backend=_sampling_contract(),
         )
 
     assert not any((run_root / "stages" / "scanner").iterdir())
@@ -677,6 +814,7 @@ def test_backend_arrays_are_released_before_next_backend(tmp_path: Path) -> None
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
         scanner_factory=factory,  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(),
     )
 
     assert references
@@ -775,11 +913,17 @@ def test_injected_scanner_factory_has_distinct_stage_identity(tmp_path: Path) ->
     source = _Source(tmp_path / "data", values)
     workspace = _workspace(tmp_path / "run", source)
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    factory = _factory(_calls())
+    implementation_identity = scanner_module._scanner_implementation_identity(factory, None)
     stages = run_scanner_stages(
         workspace,
         source,  # type: ignore[arg-type]
         plan,
-        scanner_factory=_factory(_calls()),  # type: ignore[arg-type]
+        scanner_factory=factory,  # type: ignore[arg-type]
+        sampling_evidence_by_backend=_sampling_contract(
+            plan,
+            implementation_identity=implementation_identity,
+        ),
     )
 
     stage = stages["reference-like"]
@@ -844,6 +988,7 @@ def test_loader_opens_big_endian_volumes_and_closes_maps(tmp_path: Path) -> None
         build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
         scanner_factory=_factory(calls),  # type: ignore[arg-type]
         implementation_identity=_IMPLEMENTATION,
+        sampling_evidence_by_backend=_sampling_contract(),
     )
     completion = json.loads((stages["quality"].path / "complete.json").read_text(encoding="utf-8"))
     assert completion["files"]["ft.dat"]["shape"] == list(values.shape)

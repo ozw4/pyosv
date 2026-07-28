@@ -63,6 +63,7 @@ class ScannerProtocol(Protocol):
 
 
 ScannerFactory = Callable[[float, float], ScannerProtocol]
+ScannerSamplingEvidence = Mapping[F3ScannerBackend, Mapping[str, Any]]
 
 
 class _StageRSSRecorder(Protocol):
@@ -189,8 +190,7 @@ def scanner_stage_resolved_settings(
             raise ValueError(
                 "sampling_evidence is required for a noncanonical scanner implementation"
             )
-        evidence = scanner_sampling_evidence(
-            FaultOrientScanner3(config.sigma1, config.sigma2),
+        evidence = canonical_scanner_sampling_evidence(
             config,
             config.backend,
             implementation_identity=implementation,
@@ -273,12 +273,15 @@ def run_scanner_stages(
     scanner_factory: ScannerFactory = FaultOrientScanner3,
     backend_order: Sequence[F3ScannerBackend] = F3_SCANNER_BACKEND_ORDER,
     implementation_identity: Mapping[str, Any] | str | None = None,
+    sampling_evidence_by_backend: ScannerSamplingEvidence | None = None,
     rss_recorder: _StageRSSRecorder | None = None,
 ) -> dict[F3ScannerBackend, F3ScannerStageResult]:
     """Materialize or reuse both scanner backends with one shared input read.
 
     Backends run sequentially. The input is read lazily, so an all-reuse run
-    performs no source read or scanner construction.
+    performs no source read or scanner construction. A custom ``scanner_factory``
+    must provide validated evidence for both backends via
+    ``sampling_evidence_by_backend``.
     """
 
     if not isinstance(workspace, F3RunWorkspace):
@@ -306,6 +309,35 @@ def run_scanner_stages(
         scanner_factory,
         implementation_identity,
     )
+    sampling_by_backend = _resolved_sampling_evidence_by_backend(
+        plan,
+        scanner_factory=scanner_factory,
+        implementation_identity=resolved_implementation_identity,
+        sampling_evidence_by_backend=sampling_evidence_by_backend,
+    )
+    stage_contracts: dict[
+        F3ScannerBackend,
+        tuple[F3ScannerConfig, dict[str, Any], tuple[F3StageArtifact, ...], str],
+    ] = {}
+    for backend in F3_SCANNER_BACKEND_ORDER:
+        config = plan.scanner_config_for(backend)
+        sampling_evidence = sampling_by_backend[backend]
+        settings = scanner_stage_resolved_settings(
+            config,
+            input_identity.shape,
+            implementation_identity=resolved_implementation_identity,
+            sampling_evidence=sampling_evidence,
+        )
+        artifacts = scanner_stage_artifacts(input_identity.shape, backend)
+        fingerprint = scanner_stage_fingerprint(
+            workspace,
+            input_identity,
+            config,
+            implementation_identity=resolved_implementation_identity,
+            sampling_evidence=sampling_evidence,
+        )
+        stage_contracts[backend] = (config, settings, artifacts, fingerprint)
+
     shared_input: np.ndarray | None = None
     results: dict[F3ScannerBackend, F3ScannerStageResult] = {}
 
@@ -319,28 +351,8 @@ def run_scanner_stages(
 
     try:
         for backend in order:
-            config = plan.scanner_config_for(backend)
-            scanner = scanner_factory(config.sigma1, config.sigma2)
-            sampling_evidence = scanner_sampling_evidence(
-                scanner,
-                config,
-                backend,
-                implementation_identity=resolved_implementation_identity,
-            )
-            settings = scanner_stage_resolved_settings(
-                config,
-                input_identity.shape,
-                implementation_identity=resolved_implementation_identity,
-                sampling_evidence=sampling_evidence,
-            )
-            artifacts = scanner_stage_artifacts(input_identity.shape, backend)
-            fingerprint = scanner_stage_fingerprint(
-                workspace,
-                input_identity,
-                config,
-                implementation_identity=resolved_implementation_identity,
-                sampling_evidence=sampling_evidence,
-            )
+            config, settings, artifacts, fingerprint = stage_contracts[backend]
+            sampling_evidence = sampling_by_backend[backend]
 
             def writer(
                 temporary_path: Path,
@@ -349,18 +361,34 @@ def run_scanner_stages(
                 config: F3ScannerConfig = config,
                 settings: Mapping[str, Any] = settings,
                 fingerprint: str = fingerprint,
+                sampling_evidence: Mapping[str, Any] = sampling_evidence,
             ) -> None:
-                _write_scanner_stage(
-                    temporary_path,
-                    backend=backend,
-                    config=config,
-                    settings=settings,
-                    fingerprint=fingerprint,
-                    input_identity=input_identity,
-                    scanner_input=immutable_input(),
-                    scanner=scanner,
-                    sampling_evidence=sampling_evidence,
-                )
+                scanner = scanner_factory(config.sigma1, config.sigma2)
+                try:
+                    actual_sampling_evidence = scanner_sampling_evidence(
+                        scanner,
+                        config,
+                        backend,
+                        implementation_identity=resolved_implementation_identity,
+                    )
+                    if actual_sampling_evidence != sampling_evidence:
+                        raise ValueError(
+                            f"{backend} scanner sampling evidence does not match "
+                            "the precomputed contract"
+                        )
+                    _write_scanner_stage(
+                        temporary_path,
+                        backend=backend,
+                        config=config,
+                        settings=settings,
+                        fingerprint=fingerprint,
+                        input_identity=input_identity,
+                        scanner_input=immutable_input(),
+                        scanner=scanner,
+                        sampling_evidence=sampling_evidence,
+                    )
+                finally:
+                    del scanner
 
             if rss_recorder is not None:
                 rss_recorder.stage_before(
@@ -680,6 +708,24 @@ def scanner_sampling_evidence(
     )
 
 
+def canonical_scanner_sampling_evidence(
+    config: F3ScannerConfig,
+    backend: F3ScannerBackend,
+    *,
+    implementation_identity: Mapping[str, Any] | str | None = None,
+) -> dict[str, Any]:
+    """Derive canonical scanner sampling evidence without constructing a scanner."""
+
+    implementation = _normalized_implementation_identity(implementation_identity)
+    return scanner_sampling_evidence(
+        FaultOrientScanner3,  # type: ignore[arg-type]
+        config,
+        backend,
+        implementation_identity=implementation,
+        require_full_protocol=False,
+    )
+
+
 def validate_scanner_sampling_evidence(
     value: Mapping[str, Any],
     config: F3ScannerConfig,
@@ -754,6 +800,43 @@ def validate_scanner_sampling_evidence(
             dict(stage_identity) if isinstance(stage_identity, Mapping) else stage_identity
         ),
         "sampling_source_implementation_identity": normalized_source,
+    }
+
+
+def _resolved_sampling_evidence_by_backend(
+    plan: F3ModeComparisonPlan,
+    *,
+    scanner_factory: ScannerFactory,
+    implementation_identity: Mapping[str, Any] | str,
+    sampling_evidence_by_backend: ScannerSamplingEvidence | None,
+) -> dict[F3ScannerBackend, dict[str, Any]]:
+    if sampling_evidence_by_backend is None:
+        if scanner_factory is not FaultOrientScanner3:
+            raise ValueError(
+                "sampling_evidence_by_backend is required for a custom scanner_factory"
+            )
+        return {
+            backend: canonical_scanner_sampling_evidence(
+                plan.scanner_config_for(backend),
+                backend,
+                implementation_identity=implementation_identity,
+            )
+            for backend in F3_SCANNER_BACKEND_ORDER
+        }
+    if not isinstance(sampling_evidence_by_backend, Mapping):
+        raise TypeError("sampling_evidence_by_backend must be a mapping")
+    if set(sampling_evidence_by_backend) != set(F3_SCANNER_BACKEND_ORDER):
+        raise ValueError(
+            "sampling_evidence_by_backend must contain reference-like and quality exactly once"
+        )
+    return {
+        backend: validate_scanner_sampling_evidence(
+            sampling_evidence_by_backend[backend],
+            plan.scanner_config_for(backend),
+            backend,
+            expected_implementation_identity=implementation_identity,
+        )
+        for backend in F3_SCANNER_BACKEND_ORDER
     }
 
 

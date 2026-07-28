@@ -169,7 +169,8 @@ class FaultOrientScanner3:
             sigma_name="sigma1",
         )
 
-    def reference_like_strike_sampling(self, phi_min: float, phi_max: float) -> np.ndarray:
+    @staticmethod
+    def reference_like_strike_sampling(phi_min: float, phi_max: float) -> np.ndarray:
         """Return Java-inspired strike samples for ``scan_reference_like``.
 
         Reference-like mode uses the Java scanner's fixed 18-sample strike grid
@@ -180,7 +181,8 @@ class FaultOrientScanner3:
 
         return _reference_like_strike_sampling(phi_min, phi_max)
 
-    def reference_like_dip_sampling(self, theta_min: float, theta_max: float) -> np.ndarray:
+    @staticmethod
+    def reference_like_dip_sampling(theta_min: float, theta_max: float) -> np.ndarray:
         """Return Java-inspired dip samples for ``scan_reference_like``.
 
         Reference-like mode uses approximately 5 degree dip spacing while
@@ -189,8 +191,8 @@ class FaultOrientScanner3:
 
         return _reference_like_dip_sampling(theta_min, theta_max)
 
+    @staticmethod
     def refined_reference_like_strike_sampling(
-        self,
         phi_min: float,
         phi_max: float,
         *,
@@ -199,12 +201,12 @@ class FaultOrientScanner3:
         """Return reference-like strike samples with optional interval refinement."""
 
         return _refined_reference_like_sampling(
-            self.reference_like_strike_sampling(phi_min, phi_max),
+            _reference_like_strike_sampling(phi_min, phi_max),
             refinement_factor=refinement_factor,
         )
 
+    @staticmethod
     def refined_reference_like_dip_sampling(
-        self,
         theta_min: float,
         theta_max: float,
         *,
@@ -213,7 +215,7 @@ class FaultOrientScanner3:
         """Return reference-like dip samples with optional interval refinement."""
 
         return _refined_reference_like_sampling(
-            self.reference_like_dip_sampling(theta_min, theta_max),
+            _reference_like_dip_sampling(theta_min, theta_max),
             refinement_factor=refinement_factor,
         )
 

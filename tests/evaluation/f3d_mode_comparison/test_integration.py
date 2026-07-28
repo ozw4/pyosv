@@ -42,6 +42,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     prepare_run_workspace,
     run_f3d_mode_comparison_cells,
     run_scanner_stages,
+    scanner_sampling_evidence,
     validate_completed_f3d_bundle,
 )
 
@@ -167,7 +168,9 @@ def _run_fixture(
     scanner_implementation_identity: str = "small-fixture-scanner-v1",
     workflow_implementation_identity: str = "small-fixture-workflow-v1",
     scanner_factory: Any = None,
+    sampling_evidence_by_backend: Mapping[str, Mapping[str, Any]] | None = None,
     workflow_runner: Any = None,
+    finalization_deep: bool = True,
 ) -> F3ModeComparisonResult:
     plan = _fixture_plan(spec, plan_config)
     with F3VolumeSource(data_root, spec=spec) as source:
@@ -193,12 +196,24 @@ def _run_fixture(
                 sigma1, sigma2, calls
             )
         )
+        if sampling_evidence_by_backend is None:
+            sampling_provider = _DeterministicScanner(0.0, 0.0, Counter())
+            sampling_evidence_by_backend = {
+                backend: scanner_sampling_evidence(
+                    sampling_provider,
+                    plan.scanner_config_for(backend),
+                    backend,
+                    implementation_identity=scanner_implementation_identity,
+                )
+                for backend in ("reference-like", "quality")
+            }
         scanners = run_scanner_stages(
             workspace,
             source,
             plan,
             scanner_factory=resolved_scanner_factory,
             implementation_identity=scanner_implementation_identity,
+            sampling_evidence_by_backend=sampling_evidence_by_backend,
             rss_recorder=rss,
         )
 
@@ -242,7 +257,7 @@ def _run_fixture(
             workspace,
             result,
             resume=resume,
-            deep=True,
+            deep=finalization_deep,
             _dataset_spec=spec,
         )
 

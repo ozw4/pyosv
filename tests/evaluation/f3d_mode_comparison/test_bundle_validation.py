@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+from copy import deepcopy
 from dataclasses import asdict
 from dataclasses import replace
 from pathlib import Path
@@ -76,6 +77,7 @@ def _complete_small_bundle(
     pretty: bool = False,
     config: F3ModeComparisonConfig | None = None,
     workflow_runner: Callable[..., Any] | None = None,
+    runtime_identity: dict[str, Any] | None = None,
 ) -> Path:
     roles = (
         ("input", "ep.dat"),
@@ -117,7 +119,9 @@ def _complete_small_bundle(
         "plan": plan_payload,
         "dataset_identity": source.identity.computation_identity,
         "implementation_identity": {"name": "test"},
-        "runtime_identity": numerical_runtime_identity(),
+        "runtime_identity": (
+            numerical_runtime_identity() if runtime_identity is None else runtime_identity
+        ),
     }
     fingerprint = canonical_fingerprint(computation)
     manifest = {
@@ -532,23 +536,10 @@ def test_deep_scanner_validation_is_unique_and_sampling_only(
     root = _complete_small_bundle(tmp_path)
     loaded = load_f3d_mode_comparison_result(root)
     manifest = json.loads((root / "run_manifest.json").read_text(encoding="utf-8"))
-    original_scanner = result_module.FaultOrientScanner3
     original_summary = result_module.scanner_array_summary
     original_memmap = result_module.np.memmap
-    constructions = 0
     summary_calls = 0
     mappings: list[Any] = []
-
-    class SamplingOnlyScanner:
-        def __init__(self, sigma1: float, sigma2: float) -> None:
-            nonlocal constructions
-            constructions += 1
-            self._scanner = original_scanner(sigma1, sigma2)
-
-        def __getattr__(self, name: str) -> Any:
-            if name in {"scan", "scan_quality", "thin"}:
-                raise AssertionError(f"deep scanner validation called {name}")
-            return getattr(self._scanner, name)
 
     def tracked_summary(array: np.ndarray) -> dict[str, Any]:
         nonlocal summary_calls
@@ -560,12 +551,10 @@ def test_deep_scanner_validation_is_unique_and_sampling_only(
         mappings.append(array._mmap)
         return array
 
-    monkeypatch.setattr(result_module, "FaultOrientScanner3", SamplingOnlyScanner)
     monkeypatch.setattr(result_module, "scanner_array_summary", tracked_summary)
     monkeypatch.setattr(result_module.np, "memmap", tracked_memmap)
 
     result_module._deep_validate_scanner_stages(root, loaded, manifest["plan"])
-    assert constructions == 2
     assert summary_calls == 13
     assert len(mappings) == 13
     assert all(mapping.closed for mapping in mappings)
@@ -1588,11 +1577,72 @@ def test_run_manifest_mismatch_is_rejected(tmp_path: Path) -> None:
         validate_completed_f3d_bundle(root)
 
 
-def test_shallow_validation_uses_only_recorded_runtime_internal_consistency(
+def _publication_runtime_identity() -> dict[str, Any]:
+    identity = numerical_runtime_identity()
+    identity.update(
+        {
+            "requested_acceleration_mode": "auto",
+            "pyosv_accel": "auto",
+            "numba_available": False,
+            "numba_version": None,
+            "numba_jit": {"status": "not_applicable", "enabled": None},
+            "effective_acceleration_state": "python_only",
+            "python_hash_seed": "0",
+            "numpy_runtime_cpu": {"status": "available", "features": ["TEST"]},
+            "numpy_runtime_blas": {
+                "status": "available",
+                "libraries": [
+                    {
+                        "implementation": "test-blas",
+                        "version": None,
+                        "threading_layer": None,
+                        "architecture": None,
+                        "effective_thread_count": 1,
+                    }
+                ],
+            },
+            "scipy_build": {"status": "available", "sha256": "0" * 64},
+        }
+    )
+    identity["thread_environment"].update(
+        {
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        }
+    )
+    identity["numba_environment"].update(
+        {
+            "NUMBA_DISABLE_JIT": "0",
+            "NUMBA_NUM_THREADS": "1",
+        }
+    )
+    return identity
+
+
+def test_nonofficial_shallow_validation_uses_only_recorded_runtime_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _complete_small_bundle(tmp_path)
+    monkeypatch.setattr(
+        result_module,
+        "numerical_runtime_identity",
+        lambda: pytest.fail("shallow validation must not inspect the current runtime"),
+    )
+
+    assert validate_completed_f3d_bundle(root)
+
+
+def test_official_shallow_validation_enforces_recorded_publication_runtime_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _complete_small_bundle(
+        tmp_path,
+        runtime_identity=_publication_runtime_identity(),
+    )
     monkeypatch.setattr(result_module, "F3_DATASET_ID", "result-fixture")
     monkeypatch.setattr(
         result_module,
@@ -1601,6 +1651,90 @@ def test_shallow_validation_uses_only_recorded_runtime_internal_consistency(
     )
 
     assert validate_completed_f3d_bundle(root)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("hash-seed", "PYTHONHASHSEED must equal 0"),
+        ("thread-environment", "OMP_NUM_THREADS must equal 1"),
+        ("implicit-acceleration", "PYOSV_ACCEL must be explicitly set"),
+        ("jit-disabled", "Numba JIT must be enabled"),
+        ("cpu-unavailable", "numpy_runtime_cpu must be available"),
+        ("blas-unavailable", "numpy_runtime_blas must be available"),
+        ("scipy-unavailable", "scipy_build must be available"),
+        ("blas-threads", "BLAS effective thread count must equal 1"),
+    ],
+)
+def test_official_shallow_validation_rejects_recorded_policy_violations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    expected_error: str,
+) -> None:
+    root = _complete_small_bundle(
+        tmp_path,
+        runtime_identity=_publication_runtime_identity(),
+    )
+    monkeypatch.setattr(result_module, "F3_DATASET_ID", "result-fixture")
+    manifest_path = root / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runtime = manifest["runtime_identity"]
+    if case == "hash-seed":
+        runtime["python_hash_seed"] = "1"
+    elif case == "thread-environment":
+        runtime["thread_environment"]["OMP_NUM_THREADS"] = "2"
+    elif case == "implicit-acceleration":
+        runtime["pyosv_accel"] = None
+    elif case == "jit-disabled":
+        runtime.update(
+            {
+                "numba_available": True,
+                "numba_version": "test-numba",
+                "numba_jit": {"status": "disabled", "enabled": False},
+                "effective_acceleration_state": "numba_jit_disabled",
+            }
+        )
+        runtime["numba_environment"]["NUMBA_DISABLE_JIT"] = "1"
+    elif case == "cpu-unavailable":
+        runtime["numpy_runtime_cpu"] = {"status": "not_available", "features": None}
+    elif case == "blas-unavailable":
+        runtime["numpy_runtime_blas"] = {"status": "not_available", "libraries": None}
+    elif case == "scipy-unavailable":
+        runtime["scipy_build"] = {"status": "not_available", "sha256": None}
+    else:
+        runtime["numpy_runtime_blas"]["libraries"][0]["effective_thread_count"] = 2
+    computation = {name: manifest[name] for name in result_module._RUN_COMPUTATION_FIELDS}
+    manifest["run_fingerprint"] = canonical_fingerprint(computation)
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+    monkeypatch.setattr(
+        result_module,
+        "_load_reports",
+        lambda root: pytest.fail("recorded policy must precede report loading"),
+    )
+
+    with pytest.raises(F3ResultValidationError, match=expected_error):
+        validate_completed_f3d_bundle(root)
+
+
+def test_official_deep_validation_matches_current_runtime_before_report_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _publication_runtime_identity()
+    root = _complete_small_bundle(tmp_path, runtime_identity=recorded)
+    monkeypatch.setattr(result_module, "F3_DATASET_ID", "result-fixture")
+    current = deepcopy(recorded)
+    current["platform_machine"] = "different-machine"
+    monkeypatch.setattr(result_module, "numerical_runtime_identity", lambda: current)
+    monkeypatch.setattr(
+        result_module,
+        "_load_reports",
+        lambda root: pytest.fail("runtime mismatch must precede report loading"),
+    )
+
+    with pytest.raises(F3ResultValidationError, match="does not match run manifest"):
+        validate_completed_f3d_bundle(root, deep=True)
 
 
 def test_previous_fingerprint_contract_is_rejected_even_when_rehashed(

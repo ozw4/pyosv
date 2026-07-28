@@ -19,7 +19,6 @@ import numpy as np
 
 from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
 from pyosv.experimental.boundary_skinning import apply_boundary_skinner_fallback
-from pyosv.orient3d import FaultOrientScanner3
 
 from .artifacts import (
     F3_ARTIFACT_SCHEMA_VERSION,
@@ -85,8 +84,8 @@ from .runner import (
 from .scanner import (
     F3_SCANNER_STAGE_CONTRACT_VERSION,
     canonical_scanner_implementation_identity,
+    canonical_scanner_sampling_evidence,
     scanner_array_summary,
-    scanner_sampling_evidence,
     sampling_count_from_evidence,
     scanner_stage_artifacts,
     scanner_stage_resolved_settings,
@@ -449,8 +448,6 @@ def validate_completed_f3d_bundle(
         raise TypeError("deep must be bool")
     root = Path(path)
     _require_directory(root, "F3 bundle")
-    if deep and _dataset_spec is None and _manifest_is_official(root):
-        _validate_current_publication_runtime(root)
     completion = _read_json_object(root / RUN_COMPLETION_FILE, "completion.json")
     expected_fields = {
         "completion_schema_version",
@@ -475,6 +472,13 @@ def validate_completed_f3d_bundle(
     if completion["interpretation"] != F3_RESULT_INTERPRETATION:
         raise F3ResultValidationError("completion interpretation mismatch")
 
+    manifest = _validated_run_manifest(root)
+    if deep:
+        _validate_current_publication_runtime(manifest)
+    _reject_crop_semantics(manifest)
+    if completion["run_fingerprint"] != manifest["run_fingerprint"]:
+        raise F3ResultValidationError("completion run fingerprint mismatch")
+
     reports = root / "reports"
     _require_directory(reports, "reports directory")
     report_entries = {item.name for item in reports.iterdir()}
@@ -486,19 +490,13 @@ def validate_completed_f3d_bundle(
     for filename in F3_REPORT_FILES:
         _verify_file_metadata(reports / filename, report_metadata[filename], filename)
 
-    manifest = _validated_run_manifest(
-        root,
-        enforce_publication_runtime=deep and _dataset_spec is None,
-    )
-    _reject_crop_semantics(manifest)
-    if completion["run_fingerprint"] != manifest["run_fingerprint"]:
-        raise F3ResultValidationError("completion run fingerprint mismatch")
     result = _load_reports(root)
     if result.run_fingerprint != completion["run_fingerprint"]:
         raise F3ResultValidationError("result run fingerprint mismatch")
-    validate_f3d_mode_comparison_result(
+    _validate_f3d_mode_comparison_result(
         root,
         result,
+        manifest,
         deep=deep,
         _dataset_spec=_dataset_spec,
     )
@@ -524,16 +522,26 @@ def validate_f3d_mode_comparison_result(
     if _dataset_spec is not None and not isinstance(_dataset_spec, F3DatasetSpec):
         raise TypeError("_dataset_spec must be an F3DatasetSpec or None")
     root = _workspace_path(workspace)
-    manifest = _validated_run_manifest(
+    manifest = _validated_run_manifest(root)
+    if deep:
+        _validate_current_publication_runtime(manifest)
+    return _validate_f3d_mode_comparison_result(
         root,
-        enforce_publication_runtime=deep and _dataset_spec is None,
+        result,
+        manifest,
+        deep=deep,
+        _dataset_spec=_dataset_spec,
     )
-    if (
-        deep
-        and _dataset_spec is None
-        and manifest["dataset_identity"].get("dataset_id") == F3_DATASET_ID
-    ):
-        _validate_current_publication_runtime(root)
+
+
+def _validate_f3d_mode_comparison_result(
+    root: Path,
+    result: F3ModeComparisonResult,
+    manifest: Mapping[str, Any],
+    *,
+    deep: bool,
+    _dataset_spec: F3DatasetSpec | None,
+) -> bool:
     dataset = _dataset_contract(
         manifest,
         OFFICIAL_F3_DATASET_SPEC if _dataset_spec is None else _dataset_spec,
@@ -725,11 +733,7 @@ def _load_reports(root: Path) -> F3ModeComparisonResult:
     )
 
 
-def _validated_run_manifest(
-    root: Path,
-    *,
-    enforce_publication_runtime: bool,
-) -> dict[str, Any]:
+def _validated_run_manifest(root: Path) -> dict[str, Any]:
     manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
     if set(manifest) != {*_RUN_COMPUTATION_FIELDS, "run_fingerprint", "provenance"}:
         raise F3ResultValidationError("run manifest field set mismatch")
@@ -745,42 +749,35 @@ def _validated_run_manifest(
         and dataset_identity.get("dataset_id") == F3_DATASET_ID
     )
     try:
-        if enforce_publication_runtime and is_official:
-            validate_publication_runtime_identity(manifest["runtime_identity"])
+        if is_official:
+            runtime_identity = validate_publication_runtime_identity(manifest["runtime_identity"])
         else:
-            validate_numerical_runtime_identity(manifest["runtime_identity"])
+            runtime_identity = validate_numerical_runtime_identity(manifest["runtime_identity"])
     except ValueError as error:
-        contract = (
-            "publication runtime" if enforce_publication_runtime and is_official else "runtime"
-        )
+        contract = "publication runtime" if is_official else "runtime"
         raise F3ResultValidationError(
             f"run manifest {contract} identity is invalid: {error}"
         ) from error
+    manifest["runtime_identity"] = runtime_identity
     return manifest
 
 
-def _validate_current_publication_runtime(root: Path) -> None:
+def _validate_current_publication_runtime(manifest: Mapping[str, Any]) -> None:
     """Reject deep recomputation before reading any numerical stage artifact."""
 
-    manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
-    recorded = manifest.get("runtime_identity")
+    dataset = manifest.get("dataset_identity")
+    if not isinstance(dataset, Mapping) or dataset.get("dataset_id") != F3_DATASET_ID:
+        return
     try:
-        normalized_recorded = validate_numerical_runtime_identity(recorded)
         current = validate_publication_runtime_identity(numerical_runtime_identity())
     except ValueError as error:
         raise F3ResultValidationError(
             f"deep validation publication runtime contract mismatch: {error}"
         ) from error
-    if current != normalized_recorded:
+    if current != manifest["runtime_identity"]:
         raise F3ResultValidationError(
             "deep validation current runtime identity does not match run manifest"
         )
-
-
-def _manifest_is_official(root: Path) -> bool:
-    manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
-    dataset = manifest.get("dataset_identity")
-    return isinstance(dataset, Mapping) and dataset.get("dataset_id") == F3_DATASET_ID
 
 
 def _dataset_contract(
@@ -2351,13 +2348,10 @@ def _deep_validate_scanner_stages(
         try:
             canonical_identity = canonical_scanner_implementation_identity()
             if persisted_identity == canonical_identity:
-                scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
-                expected_sampling = scanner_sampling_evidence(
-                    scanner,
+                expected_sampling = canonical_scanner_sampling_evidence(
                     config,
                     backend,
                     implementation_identity=canonical_identity,
-                    require_full_protocol=False,
                 )
                 if persisted_sampling != expected_sampling:
                     raise F3ResultValidationError("deep scanner sampling evidence mismatch")
