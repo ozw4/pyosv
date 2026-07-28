@@ -432,7 +432,7 @@ def test_publication_runtime_identity_accepts_fixed_available_runtime() -> None:
     assert validate_publication_runtime_identity(identity) == identity
 
 
-def test_publication_runtime_identity_allows_auto_without_numba() -> None:
+def test_publication_runtime_identity_rejects_auto_without_numba() -> None:
     identity = {
         **_publication_runtime_identity(),
         "numba_available": False,
@@ -444,7 +444,8 @@ def test_publication_runtime_identity_allows_auto_without_numba() -> None:
         "effective_acceleration_state": "python_only",
     }
 
-    assert validate_publication_runtime_identity(identity) == identity
+    with pytest.raises(ValueError, match="must be numba_jit_enabled"):
+        validate_publication_runtime_identity(identity)
 
 
 @pytest.mark.parametrize("value", (None, "", "0"))

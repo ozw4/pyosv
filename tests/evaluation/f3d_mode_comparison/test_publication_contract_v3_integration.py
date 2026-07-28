@@ -19,6 +19,7 @@ import pytest
 import pyosv._skinner.growth as skinner_growth_module
 import pyosv.evaluation.f3d_mode_comparison.result as result_module
 import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
+import pyosv.evaluation.f3d_mode_comparison.scanner as scanner_module
 import pyosv.evaluation.workflow3d as workflow3d_module
 from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetSpec,
@@ -548,6 +549,7 @@ def test_runtime_identity_changes_reject_resume_without_workspace_writes(
                 "available": False,
                 "jit": {"status": "not_applicable", "enabled": None},
                 "state": "python_only",
+                "publication_accepted": False,
             },
         ),
     ),
@@ -620,7 +622,7 @@ def test_fresh_process_runtime_identity_and_publication_preflight(
                 except ValueError as error:
                     publication_error = str(error)
                 run_error = None
-                if identity["effective_acceleration_state"] == "numba_jit_disabled":
+                if identity["effective_acceleration_state"] != "numba_jit_enabled":
                     try:
                         run_experiment(
                             config=F3ModeComparisonConfig(),
@@ -656,10 +658,12 @@ def test_fresh_process_runtime_identity_and_publication_preflight(
     observed = json.loads(completed.stdout)
 
     assert {name: observed[name] for name in expected} == expected
-    if expected["state"] == "numba_jit_disabled":
-        assert "Numba JIT" in observed["publication_error"]
+    if expected["state"] != "numba_jit_enabled":
+        assert observed["publication_error"].startswith("publication runtime contract violation:")
         assert observed["run_error"]["type"] == "ValueError"
-        assert "Numba JIT" in observed["run_error"]["message"]
+        assert observed["run_error"]["message"].startswith(
+            "publication runtime contract violation:"
+        )
         assert not output_root.exists()
     else:
         assert observed["run_error"] is None
@@ -698,6 +702,7 @@ def test_canonical_scanner_sampling_tamper_reaches_deep_rederivation(
         return original_sampling(scanner, config, backend, **kwargs)
 
     monkeypatch.setattr(result_module, "scanner_sampling_evidence", tracked_sampling)
+    monkeypatch.setattr(scanner_module, "scanner_sampling_evidence", tracked_sampling)
     assert validate_completed_f3d_bundle(root, deep=True, _dataset_spec=fixture_spec)
     assert sampling_rederivations == Counter(
         {fingerprint: 1 for fingerprint in scanner_fingerprints}

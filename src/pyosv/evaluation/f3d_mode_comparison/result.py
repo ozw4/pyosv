@@ -2349,11 +2349,7 @@ def _deep_validate_scanner_stages(
         persisted_sampling = report["sampling_evidence"]
         persisted_identity = persisted_sampling["scanner_stage_implementation_identity"]
         try:
-            canonical_settings = scanner_stage_resolved_settings(
-                config,
-                result.volume_shape,
-            )
-            canonical_identity = canonical_settings["scanner_stage_implementation_identity"]
+            canonical_identity = canonical_scanner_implementation_identity()
             if persisted_identity == canonical_identity:
                 scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
                 expected_sampling = scanner_sampling_evidence(
