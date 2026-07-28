@@ -153,10 +153,21 @@ def _scanner_stage(
 ) -> F3ScannerStageResult:
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
     config = plan.scanner_config_for(backend)  # type: ignore[arg-type]
+    sampling_evidence = (
+        scanner_module.scanner_sampling_evidence(
+            scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
+            config,
+            backend,  # type: ignore[arg-type]
+            implementation_identity=implementation_identity,
+        )
+        if implementation_identity is not None
+        else None
+    )
     settings = scanner_stage_resolved_settings(
         config,
         shape,
         implementation_identity=implementation_identity,
+        sampling_evidence=sampling_evidence,
     )
     artifacts = scanner_stage_artifacts(shape, backend)  # type: ignore[arg-type]
     fingerprint = stage_fingerprint(

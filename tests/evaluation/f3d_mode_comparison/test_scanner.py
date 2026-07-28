@@ -419,6 +419,37 @@ def test_sampling_evidence_schema_rejects_inconsistent_metadata() -> None:
             )
 
 
+def test_sampling_evidence_rejects_unbounded_axis_before_array_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = F3ScannerConfig()
+    evidence = scanner_module.scanner_sampling_evidence(
+        scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
+        config,
+        "reference-like",
+    )
+    count = scanner_module._MAX_SAMPLING_AXIS_COUNT + 1
+    changed = json.loads(json.dumps(evidence))
+    changed["strike"] = {
+        "count": count,
+        "values": [float(value) for value in np.linspace(0.0, 360.0, count)],
+        "sha256": "0" * 64,
+    }
+    changed["orientation_count"] = count * int(changed["dip"]["count"])
+    monkeypatch.setattr(
+        scanner_module.np,
+        "asarray",
+        lambda *args, **kwargs: pytest.fail("oversized evidence reached array conversion"),
+    )
+
+    with pytest.raises(ValueError, match="sampling evidence count must be at most"):
+        scanner_module.validate_scanner_sampling_evidence(
+            changed,
+            config,
+            "reference-like",
+        )
+
+
 def test_array_summary_uses_and_records_nonzero_epsilon() -> None:
     values = np.array([0.0, 5.0e-8, -5.0e-8, 2.0e-6, -2.0e-6], dtype=np.float32)
 
@@ -663,14 +694,12 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
         workspace,
         source.identity.file_for("input"),
         config,
-        implementation_identity=_IMPLEMENTATION,
     )
     assert (
         scanner_stage_fingerprint(
             workspace,
             source.identity.file_for("input"),
             replace(config, sigma1=9.0),
-            implementation_identity=_IMPLEMENTATION,
         )
         != baseline
     )
@@ -679,7 +708,6 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
             _workspace(tmp_path / "changed-run", changed_source),
             changed_source.identity.file_for("input"),
             config,
-            implementation_identity=_IMPLEMENTATION,
         )
         != baseline
     )
@@ -707,7 +735,6 @@ def test_fingerprint_tracks_each_common_scanner_control(
         workspace,
         source.identity.file_for("input"),
         F3ScannerConfig(),
-        implementation_identity=_IMPLEMENTATION,
     )
 
     assert (
@@ -715,10 +742,32 @@ def test_fingerprint_tracks_each_common_scanner_control(
             workspace,
             source.identity.file_for("input"),
             replace(F3ScannerConfig(), **{field: value}),
-            implementation_identity=_IMPLEMENTATION,
         )
         != baseline
     )
+
+
+def test_noncanonical_settings_and_fingerprint_require_actual_sampling_evidence(
+    tmp_path: Path,
+) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    config = F3ScannerConfig()
+
+    with pytest.raises(ValueError, match="sampling_evidence is required"):
+        scanner_module.scanner_stage_resolved_settings(
+            config,
+            values.shape,
+            implementation_identity=_IMPLEMENTATION,
+        )
+    with pytest.raises(ValueError, match="sampling_evidence is required"):
+        scanner_stage_fingerprint(
+            workspace,
+            source.identity.file_for("input"),
+            config,
+            implementation_identity=_IMPLEMENTATION,
+        )
 
 
 def test_injected_scanner_factory_has_distinct_stage_identity(tmp_path: Path) -> None:

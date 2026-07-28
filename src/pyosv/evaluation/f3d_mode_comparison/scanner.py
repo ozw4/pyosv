@@ -41,6 +41,7 @@ _COMMON_VOLUME_NAMES = ("ft", "pt", "tt", "fet", "fpt", "ftt")
 _UNIT_RANGE_NAMES = {"ft", "fet", "confidence"}
 _DAT_DTYPE = np.dtype(">f4")
 _WRITE_SLAB_COUNT = 1
+_MAX_SAMPLING_AXIS_COUNT = 4096
 
 
 class ScannerProtocol(Protocol):
@@ -180,21 +181,27 @@ def scanner_stage_resolved_settings(
         raise TypeError("config must be an F3ScannerConfig")
     valid_shape = _validated_shape(shape)
     implementation = _normalized_implementation_identity(implementation_identity)
-    evidence = (
-        scanner_sampling_evidence(
+    if sampling_evidence is None:
+        if (
+            implementation_identity is not None
+            and implementation != canonical_scanner_implementation_identity()
+        ):
+            raise ValueError(
+                "sampling_evidence is required for a noncanonical scanner implementation"
+            )
+        evidence = scanner_sampling_evidence(
             FaultOrientScanner3(config.sigma1, config.sigma2),
             config,
             config.backend,
             implementation_identity=implementation,
         )
-        if sampling_evidence is None
-        else validate_scanner_sampling_evidence(
+    else:
+        evidence = validate_scanner_sampling_evidence(
             sampling_evidence,
             config,
             config.backend,
             expected_implementation_identity=implementation,
         )
-    )
     return {
         "scanner_stage_contract_version": F3_SCANNER_STAGE_CONTRACT_VERSION,
         "scanner_stage_implementation_identity": implementation,
@@ -779,6 +786,8 @@ def _sampling_axis_evidence(value: object, name: str) -> dict[str, Any]:
         raise ValueError(f"{name} sampling dtype must be float32")
     if value.ndim != 1 or value.size < 1:
         raise ValueError(f"{name} sampling must be a non-empty 1D array")
+    if value.size > _MAX_SAMPLING_AXIS_COUNT:
+        raise ValueError(f"{name} sampling must contain at most {_MAX_SAMPLING_AXIS_COUNT} values")
     if not np.all(np.isfinite(value)):
         raise ValueError(f"{name} sampling must contain only finite values")
     if value.size > 1 and not np.all(np.diff(value) > np.float32(0.0)):
@@ -798,6 +807,10 @@ def _validate_sampling_axis(value: object, name: str) -> dict[str, Any]:
     values = value["values"]
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError(f"{name} sampling evidence count is invalid")
+    if count > _MAX_SAMPLING_AXIS_COUNT:
+        raise ValueError(
+            f"{name} sampling evidence count must be at most {_MAX_SAMPLING_AXIS_COUNT}"
+        )
     if (
         not isinstance(values, list)
         or len(values) != count

@@ -749,7 +749,7 @@ def test_rehashed_reskinned_cell_tampering_is_rejected(
     )
     source_before = _tree_bytes(base_parent / "data")
 
-    for case in ("skin-subvoxel", "skin-attributes"):
+    for case in ("skin-subvoxel", "skin-attributes", "coherent-skin-artifacts"):
         root = tmp_path / case
         shutil.copytree(base, root)
         loaded = load_f3d_mode_comparison_result(root, _dataset_spec=fixture_spec)
@@ -759,8 +759,20 @@ def test_rehashed_reskinned_cell_tampering_is_rejected(
 
         path = stage / "skins.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
-        cell = payload["skins"][0]["cells"][0]
-        if case == "skin-subvoxel":
+        skin = payload["skins"][0]
+        cell = skin["cells"][0]
+        if case == "coherent-skin-artifacts":
+            assert skin["cell_count"] > 1
+            changed_cell = skin["cells"][-1]
+            assert (changed_cell["i1"], changed_cell["i2"], changed_cell["i3"]) != (
+                cell["i1"],
+                cell["i2"],
+                cell["i3"],
+            )
+            for field in ("x1", "x2", "x3", "i1", "i2", "i3"):
+                changed_cell[field] = cell[field]
+            skin["cells"].sort(key=lambda item: (item["i3"], item["i2"], item["i1"]))
+        elif case == "skin-subvoxel":
             cell["x1"] = float(cell["x1"]) + 0.1
         else:
             cell["fl"] = 0.0 if float(cell["fl"]) > 0.5 else 1.0
@@ -771,9 +783,47 @@ def test_rehashed_reskinned_cell_tampering_is_rejected(
         path.write_bytes(canonical_json_bytes(payload) + b"\n")
         _rehash_stage_artifact(root, stage, "skins.json")
 
+        if case == "coherent-skin-artifacts":
+            parsed = result_module.parse_skins_json(path, shape)
+            mask = np.zeros(shape, dtype=np.float32)
+            for i1, i2, i3 in parsed.unique_indices:
+                mask[i3, i2, i1] = np.float32(1.0)
+            mask_path = stage / "skin_mask.dat"
+            mask.astype(">f4").tofile(mask_path)
+            _rehash_stage_artifact(root, stage, "skin_mask.dat")
+
+            report_path = stage / "report.json"
+            small_skin_size = int(report["topology"]["small_skin_size"])
+            topology = runner_module.skin_topology_metrics(
+                parsed.skins,
+                shape,
+                small_skin_size=small_skin_size,
+            )
+            report["topology"] = topology
+            report["diagnostics"]["accepted_skin_count"] = topology["skin_count"]
+            report["diagnostics"]["accepted_cell_count"] = topology["cell_count"]
+            report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+            _rehash_stage_artifact(root, stage, "report.json")
+            result_module.validate_skin_artifact_semantics(
+                stage,
+                shape,
+                small_skin_size=small_skin_size,
+                parsed=parsed,
+            )
+            resources_path = root / "reports" / "resources.json"
+            resources = json.loads(resources_path.read_text(encoding="utf-8"))
+            resources["storage"] = [row.as_dict() for row in result_module.storage_report(root)]
+            resources_path.write_bytes(canonical_json_bytes(resources) + b"\n")
+            _rehash_report(root, "resources.json")
+
         before_validation = _tree_bytes(root)
         paths_before_validation = _tree_paths(root)
-        with pytest.raises(F3ResultValidationError):
+        expected_error = (
+            "skins.json does not exactly match skin-only recomputation"
+            if case == "coherent-skin-artifacts"
+            else None
+        )
+        with pytest.raises(F3ResultValidationError, match=expected_error):
             validate_completed_f3d_bundle(root, deep=True, _dataset_spec=fixture_spec)
         assert _tree_bytes(root) == before_validation
         assert _tree_paths(root) == paths_before_validation
