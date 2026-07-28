@@ -84,16 +84,20 @@ from .runner import (
 )
 from .scanner import (
     F3_SCANNER_STAGE_CONTRACT_VERSION,
+    canonical_scanner_implementation_identity,
     scanner_array_summary,
-    scanner_sampling_count,
+    scanner_sampling_evidence,
+    sampling_count_from_evidence,
     scanner_stage_artifacts,
     scanner_stage_resolved_settings,
+    validate_scanner_sampling_evidence,
 )
 from .skin_artifacts import (
     ParsedSkinArtifacts,
     SkinArtifactValidationError,
     canonical_skins_payload,
     parse_skins_json,
+    resolve_final_skin_cell_value_provenance,
     resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
 )
@@ -172,6 +176,7 @@ _SCANNER_REPORT_FIELDS = {
     "input_fingerprint",
     "resolved_config",
     "resolved_stage_settings",
+    "sampling_evidence",
     "sampling_count",
     "requested_remove_edge_effects",
     "effective_remove_edge_effects",
@@ -483,7 +488,7 @@ def validate_completed_f3d_bundle(
 
     manifest = _validated_run_manifest(
         root,
-        enforce_publication_runtime=_dataset_spec is None,
+        enforce_publication_runtime=deep and _dataset_spec is None,
     )
     _reject_crop_semantics(manifest)
     if completion["run_fingerprint"] != manifest["run_fingerprint"]:
@@ -521,7 +526,7 @@ def validate_f3d_mode_comparison_result(
     root = _workspace_path(workspace)
     manifest = _validated_run_manifest(
         root,
-        enforce_publication_runtime=_dataset_spec is None,
+        enforce_publication_runtime=deep and _dataset_spec is None,
     )
     if (
         deep
@@ -748,7 +753,9 @@ def _validated_run_manifest(
         contract = (
             "publication runtime" if enforce_publication_runtime and is_official else "runtime"
         )
-        raise F3ResultValidationError(f"run manifest {contract} identity is invalid") from error
+        raise F3ResultValidationError(
+            f"run manifest {contract} identity is invalid: {error}"
+        ) from error
     return manifest
 
 
@@ -762,7 +769,7 @@ def _validate_current_publication_runtime(root: Path) -> None:
         current = validate_publication_runtime_identity(numerical_runtime_identity())
     except ValueError as error:
         raise F3ResultValidationError(
-            "deep validation publication runtime contract mismatch"
+            f"deep validation publication runtime contract mismatch: {error}"
         ) from error
     if current != normalized_recorded:
         raise F3ResultValidationError(
@@ -973,6 +980,15 @@ def _validate_cells_and_stages(
                 root / "stages" / "scanner" / cell.stages.scanner / "report.json",
                 "scanner report",
             )
+            scanner_settings = validated[("scanner", cell.stages.scanner)]
+            if (
+                dataset["dataset_id"] == F3_DATASET_ID
+                and scanner_settings.get("scanner_stage_implementation_identity")
+                != canonical_scanner_implementation_identity()
+            ):
+                raise F3ResultValidationError(
+                    "official scanner stage implementation identity mismatch"
+                )
             _validate_scanner_report_contract(
                 scanner_report,
                 fingerprint=cell.stages.scanner,
@@ -980,27 +996,14 @@ def _validate_cells_and_stages(
                 shape=result.volume_shape,
                 input_identity=dict(input_file) if input_file is not None else None,
                 config=scanner_config,
-                settings=validated[("scanner", cell.stages.scanner)],
+                settings=scanner_settings,
             )
             validated_scanner_reports.add(cell.stages.scanner)
         if cell.skinning_enabled and cell.stages.skinning not in parsed_skins:
             try:
-                scanner_settings = validated[("scanner", cell.stages.scanner)]
-                angle_range = _object(
-                    scanner_settings["angle_range"],
-                    f"{cell.label} scanner angle range",
-                )
                 parsed_skins[cell.stages.skinning] = parse_skins_json(
                     root / "stages" / "skinning" / cell.stages.skinning / "skins.json",
                     result.volume_shape,
-                    strike_range=(
-                        angle_range["phi_min"],
-                        angle_range["phi_max"],
-                    ),
-                    dip_range=(
-                        angle_range["theta_min"],
-                        angle_range["theta_max"],
-                    ),
                 )
             except (KeyError, TypeError, SkinArtifactValidationError) as error:
                 raise F3ResultValidationError(f"invalid skin artifact schema: {error}") from error
@@ -1026,6 +1029,9 @@ def _validate_cells_and_stages(
             root,
             cell,
             result.volume_shape,
+            skinning_stage_settings=(
+                validated[("skinning", cell.stages.skinning)] if cell.skinning_enabled else None
+            ),
         )
     by_label = {cell.label: cell for cell in result.cells}
     for left, right in (("RL-REF", "RL-QUAL"), ("Q-REF", "Q-QUAL")):
@@ -1080,6 +1086,8 @@ def _validate_cell_stage_reports(
     root: Path,
     cell: F3CellReference,
     shape: tuple[int, int, int],
+    *,
+    skinning_stage_settings: Mapping[str, Any] | None,
 ) -> None:
     contracts = (
         (
@@ -1126,6 +1134,36 @@ def _validate_cell_stage_reports(
             if name in {"resolved_config", "resolved_stage_settings"}:
                 raise F3ResultValidationError(f"{kind} report {name} mismatch")
             raise F3ResultValidationError(f"{kind} report source identity mismatch")
+        if kind == "skinning":
+            if skinning_stage_settings is None:
+                raise F3ResultValidationError("skinning stage settings are missing")
+            if report.get("resolved_stage_settings") != dict(skinning_stage_settings):
+                raise F3ResultValidationError("skinning report resolved_stage_settings mismatch")
+            diagnostics = _object(report.get("diagnostics"), "skinning report diagnostics")
+            fallback_used = diagnostics.get("fallback_used")
+            if not isinstance(fallback_used, bool):
+                raise F3ResultValidationError("skinning report fallback_used must be bool")
+            try:
+                expected_provenance = resolve_final_skin_cell_value_provenance(
+                    _object(
+                        cell.resolved_config["skinning"],
+                        f"{cell.label} skinning config",
+                    ),
+                    _object(
+                        cell.resolved_config["variant"],
+                        f"{cell.label} variant config",
+                    ),
+                    fallback_used=fallback_used,
+                    resolved_stage_settings=skinning_stage_settings,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise F3ResultValidationError(
+                    "skinning report cell provenance cannot be resolved"
+                ) from error
+            if report.get("final_cell_value_provenance") != expected_provenance:
+                raise F3ResultValidationError(
+                    "skinning report final cell value provenance mismatch"
+                )
 
 
 def _validate_scanner_report_contract(
@@ -1164,16 +1202,24 @@ def _validate_scanner_report_contract(
     if report["effective_remove_edge_effects"] is not config.effective_remove_edge_effects:
         raise F3ResultValidationError("scanner report effective edge removal mismatch")
 
+    try:
+        sampling_evidence = validate_scanner_sampling_evidence(
+            _object(report["sampling_evidence"], "scanner sampling evidence"),
+            config,
+            backend,
+            expected_implementation_identity=settings.get("scanner_stage_implementation_identity"),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise F3ResultValidationError(f"scanner sampling evidence invalid: {error}") from error
+    if settings.get("sampling_evidence") != sampling_evidence:
+        raise F3ResultValidationError("scanner sampling evidence settings mismatch")
+
     sampling_count = _object(report["sampling_count"], "scanner sampling_count")
     if set(sampling_count) != {"strike", "dip", "orientations"}:
         raise F3ResultValidationError("scanner sampling_count field set mismatch")
     sampling = _integer_mapping(sampling_count, "scanner sampling_count")
-    if (
-        sampling["strike"] <= 0
-        or sampling["dip"] <= 0
-        or sampling["orientations"] != sampling["strike"] * sampling["dip"]
-    ):
-        raise F3ResultValidationError("scanner sampling_count relation mismatch")
+    if sampling != sampling_count_from_evidence(sampling_evidence):
+        raise F3ResultValidationError("scanner sampling_count evidence mismatch")
 
     expected_raw = {"ft", "pt", "tt"}
     if backend == "quality":
@@ -1385,6 +1431,7 @@ def _validate_stage_resolved_settings(
                 scanner_config,
                 shape,
                 implementation_identity=settings.get("scanner_stage_implementation_identity"),
+                sampling_evidence=settings.get("sampling_evidence"),
             )
         else:
             current_identity = settings.get("workflow_runner_identity")
@@ -2292,12 +2339,6 @@ def _deep_validate_scanner_stages(
             config = F3ScannerConfig(
                 **dict(_object(plan[scanner_name], f"run plan {scanner_name}"))
             )
-            scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
-            expected_sampling = scanner_sampling_count(
-                scanner,
-                config,
-                backend,
-            )
         except (KeyError, TypeError, ValueError) as error:
             raise F3ResultValidationError(
                 "deep scanner sampling contract cannot be derived"
@@ -2305,8 +2346,27 @@ def _deep_validate_scanner_stages(
 
         stage_path = root / "stages" / "scanner" / fingerprint
         report = _read_json_object(stage_path / "report.json", "scanner report")
-        if report["sampling_count"] != expected_sampling:
-            raise F3ResultValidationError("deep scanner sampling_count mismatch")
+        persisted_sampling = report["sampling_evidence"]
+        persisted_identity = persisted_sampling["scanner_stage_implementation_identity"]
+        try:
+            canonical_identity = canonical_scanner_implementation_identity()
+            if persisted_identity == canonical_identity:
+                scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
+                expected_sampling = scanner_sampling_evidence(
+                    scanner,
+                    config,
+                    backend,
+                    implementation_identity=canonical_identity,
+                    require_full_protocol=False,
+                )
+                if persisted_sampling != expected_sampling:
+                    raise F3ResultValidationError("deep scanner sampling evidence mismatch")
+        except F3ResultValidationError:
+            raise
+        except (KeyError, TypeError, ValueError) as error:
+            raise F3ResultValidationError(
+                "deep scanner sampling contract cannot be derived"
+            ) from error
 
         groups = (
             ("raw", ("ft", "pt", "tt", *(("confidence",) if backend == "quality" else ()))),
@@ -2429,15 +2489,25 @@ def _deep_validate_skin_artifacts(
                     f"{cell.label} variant config",
                 ),
                 fallback_used=fallback_used,
+                resolved_stage_settings=_object(
+                    skinning_report["resolved_stage_settings"],
+                    f"{cell.label} skinning stage settings",
+                ),
             )
-            _validate_skin_parent_samples(
-                root,
-                parsed,
-                result.volume_shape,
-                parent_contract.likelihood,
-                parent_contract.strike,
-                parent_contract.dip,
-            )
+            recorded_provenance = skinning_report.get("final_cell_value_provenance")
+            if recorded_provenance != parent_contract.provenance:
+                raise SkinArtifactValidationError(
+                    "skinning report final cell value provenance mismatch"
+                )
+            if parent_contract.provenance != "primary_reskinned":
+                _validate_skin_parent_samples(
+                    root,
+                    parsed,
+                    result.volume_shape,
+                    parent_contract.likelihood,
+                    parent_contract.strike,
+                    parent_contract.dip,
+                )
             _recompute_skin_artifacts(
                 root,
                 cell,
@@ -2446,6 +2516,8 @@ def _deep_validate_skin_artifacts(
                 skinning_config,
                 fallback_used,
                 parent_contract.scanner_target,
+                recorded_provenance,
+                diagnostics,
             )
         except (KeyError, OSError, TypeError, ValueError) as error:
             raise F3ResultValidationError(
@@ -2488,6 +2560,8 @@ def _recompute_skin_artifacts(
     skinning_config: Mapping[str, Any],
     fallback_used: bool,
     scanner_target: tuple[str, str, str] | None,
+    recorded_provenance: Any,
+    recorded_diagnostics: Mapping[str, Any],
 ) -> None:
     voting = ("voting", cell.stages.voting)
     thinning = ("thinning", cell.stages.thinning)
@@ -2570,6 +2644,31 @@ def _recompute_skin_artifacts(
             if recomputed.diagnostics.get("fallback_used") is not fallback_used:
                 raise SkinArtifactValidationError(
                     "recomputed fallback state does not match skinning report"
+                )
+            recomputed_provenance = resolve_final_skin_cell_value_provenance(
+                skinning_config,
+                _object(
+                    cell.resolved_config["variant"],
+                    f"{cell.label} variant config",
+                ),
+                fallback_used=bool(recomputed.diagnostics["fallback_used"]),
+            )
+            if recomputed_provenance != recorded_provenance:
+                raise SkinArtifactValidationError(
+                    "recomputed final cell value provenance does not match skinning report"
+                )
+            normalized_recomputed_diagnostics = json.loads(
+                canonical_json_bytes(dict(recomputed.diagnostics))
+            )
+            if normalized_recomputed_diagnostics != dict(recorded_diagnostics):
+                differing_fields = sorted(
+                    name
+                    for name in (set(normalized_recomputed_diagnostics) | set(recorded_diagnostics))
+                    if normalized_recomputed_diagnostics.get(name) != recorded_diagnostics.get(name)
+                )
+                raise SkinArtifactValidationError(
+                    "recomputed skinning diagnostics do not match skinning report: "
+                    + ", ".join(differing_fields)
                 )
             recomputed_payload = canonical_skins_payload(recomputed.skins)
         finally:

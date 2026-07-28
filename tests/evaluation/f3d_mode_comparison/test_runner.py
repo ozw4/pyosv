@@ -84,7 +84,7 @@ def _workspace(path: Path) -> F3RunWorkspace:
     computation = {
         "artifact_schema_version": 1,
         "stage_contract_version": 1,
-        "fingerprint_contract_version": 3,
+        "fingerprint_contract_version": 4,
         "plan": {"name": "runner-fixture"},
         "dataset_identity": source.identity.computation_identity,
         "implementation_identity": {"name": "test"},
@@ -153,10 +153,21 @@ def _scanner_stage(
 ) -> F3ScannerStageResult:
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
     config = plan.scanner_config_for(backend)  # type: ignore[arg-type]
+    sampling_evidence = (
+        scanner_module.scanner_sampling_evidence(
+            scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
+            config,
+            backend,  # type: ignore[arg-type]
+            implementation_identity=implementation_identity,
+        )
+        if implementation_identity is not None
+        else None
+    )
     settings = scanner_stage_resolved_settings(
         config,
         shape,
         implementation_identity=implementation_identity,
+        sampling_evidence=sampling_evidence,
     )
     artifacts = scanner_stage_artifacts(shape, backend)  # type: ignore[arg-type]
     fingerprint = stage_fingerprint(
@@ -180,10 +191,9 @@ def _scanner_stage(
         },
         "resolved_config": asdict(config),
         "resolved_stage_settings": settings,
-        "sampling_count": scanner_module.scanner_sampling_count(
-            scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
-            config,
-            backend,  # type: ignore[arg-type]
+        "sampling_evidence": settings["sampling_evidence"],
+        "sampling_count": scanner_module.sampling_count_from_evidence(
+            settings["sampling_evidence"]
         ),
         "requested_remove_edge_effects": config.remove_edge_effects,
         "effective_remove_edge_effects": config.effective_remove_edge_effects,

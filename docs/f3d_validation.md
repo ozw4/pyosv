@@ -105,6 +105,8 @@ OPENBLAS_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 \
 NUMEXPR_NUM_THREADS=1 \
 PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
@@ -119,11 +121,14 @@ Without `--resume`, the output path must not exist. An interrupted run has no
 root `completion.json`; resume accepts it only when the immutable manifest,
 dataset identity, implementation identity, numerical runtime identity, resolved
 plan, and resulting run fingerprint match exactly. The runtime identity records
-the requested acceleration mode, effective Numba path and version, platform,
-allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
+the requested acceleration mode, effective Numba JIT state and version,
+platform, allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
 BLAS/LAPACK build digest. Valid content-addressed stages are reused and missing
-stages are computed. A complete bundle is accepted by `--resume` only after
-strict validation and is not recomputed:
+stages are computed. The publication validator rejects an available Numba
+runtime with JIT disabled and requires `NUMBA_NUM_THREADS=1` when that variable
+is set. `PYOSV_ACCEL=auto` remains valid when Numba is unavailable. A complete
+bundle is accepted by `--resume` only after strict validation and is not
+recomputed:
 
 ```bash
 python -m pyosv.cli.f3d_mode_comparison \
@@ -172,24 +177,45 @@ OMP_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 \
 NUMEXPR_NUM_THREADS=1 \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
 PYOSV_ACCEL=auto \
 PYOSV_RUN_F3D_MODE_COMPARISON=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
-PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_v2 \
+PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_v3 \
 PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE=1 \
 python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 ```
 
+The official gate command above explicitly sets `PYOSV_ACCEL=auto` and verifies
+that the resulting effective acceleration state is `numba_jit_enabled`; a
+`python_only` run is not an official F3 result.
+
 Normal CLI unit tests stub orchestration and do not require F3 files or
 full-volume computation.
 
-The publication contract currently records runtime identity schema 2,
-fingerprint contract 3, scanner stage contract 4, skin artifact semantic
-contract 2, and metric schema 2. A validated bundle provides PR4 with validated
-DAT volumes, the validated skin mask, exactly recomputed skin cells and
-attributes, metric-schema-2 rows, and runtime/resource diagnostics. Validation
-does not establish cryptographic authenticity, independent geological truth,
-or bitwise reproducibility across arbitrary hardware.
+The publication contract currently records runtime identity schema 3,
+fingerprint contract 4, scanner stage contract 5, skin artifact semantic
+contract 3, and metric schema 2. Skin reports record whether final cell values
+come from primary nearest samples, primary reskinning, or the connected-component
+fallback. Deep validation applies parent-volume nearest-sample checks only to
+the applicable paths; reskinned cells are instead checked authoritatively by the
+exact skin-only rerun. A validated bundle provides PR4 with the validated DAT
+volumes and scanner sampling evidence, the validated skin mask, exact-recomputed
+reskin and connected-component-fallback cell payloads, metric-schema-2 rows,
+and runtime/resource diagnostics. Validation does not establish cryptographic
+authenticity, independent geological truth, or bitwise reproducibility across
+arbitrary hardware.
+
+Scanner stage contract 5 records sampling evidence from the same scanner
+instance that produces each volume. The bounded strike and dip grids are stored
+as float32 values with exact bit-pattern SHA-256 digests, counts, effective
+refinement, and sampling-helper implementation identities. The legacy
+`sampling_count` view is derived from that evidence. Official CLI stages
+explicitly require the canonical scanner implementation identity, and deep
+validation re-derives its sampling evidence from the resolved scanner config
+without running scanning or thinning. Injected fixture scanners retain their
+own implementation-bound evidence and are not treated as canonical stages.
 
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)

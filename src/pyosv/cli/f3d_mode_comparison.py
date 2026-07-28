@@ -17,6 +17,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3VolumeSource,
     PeakRSSRecorder,
     build_f3d_mode_comparison_plan,
+    canonical_scanner_implementation_identity,
     ensure_output_not_in_data_root,
     extract_f3d_diagnostics,
     extract_f3d_metrics,
@@ -165,6 +166,7 @@ def run_experiment(
                 workspace,
                 source,
                 plan,
+                implementation_identity=canonical_scanner_implementation_identity(),
                 rss_recorder=rss,
             )
             cell_result = run_f3d_mode_comparison(
@@ -237,7 +239,7 @@ def _recorded_runtime_identity(bundle: Path) -> dict[str, object]:
     try:
         return validate_numerical_runtime_identity(runtime)
     except ValueError as error:
-        raise ValueError("bundle run manifest has invalid runtime identity") from error
+        raise ValueError(f"bundle run manifest has invalid runtime identity: {error}") from error
 
 
 def main(argv: Sequence[str] | None = None) -> int:

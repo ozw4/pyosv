@@ -188,6 +188,22 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
         "after",
     ]
     assert all(":compute_or_load_validation:" in row.point for row in recorder.snapshots)
+    assert first["reference-like"].report["sampling_count"] == {
+        "strike": 2,
+        "dip": 2,
+        "orientations": 4,
+    }
+    assert first["quality"].report["sampling_count"] == {
+        "strike": 3,
+        "dip": 3,
+        "orientations": 9,
+    }
+    for stage in first.values():
+        evidence = stage.report["sampling_evidence"]
+        assert stage.report["sampling_count"] == scanner_module.sampling_count_from_evidence(
+            evidence
+        )
+        assert stage.report["resolved_stage_settings"]["sampling_evidence"] == evidence
 
     reuse_source = _Source(tmp_path / "other-data", values)
     reuse_calls = _calls()
@@ -202,7 +218,12 @@ def test_runner_reads_once_shares_immutable_input_and_reuses(tmp_path: Path) -> 
     )
     assert all(stage.reused for stage in reused.values())
     assert reuse_source.read_count == 0
-    assert reuse_calls == _calls()
+    assert reuse_calls == {
+        "construction": 2,
+        "reference_scan": 0,
+        "quality_scan": 0,
+        "thin": 0,
+    }
     assert len(reuse_recorder.snapshots) == 4
 
 
@@ -252,6 +273,181 @@ def test_runner_passes_effective_controls_to_both_scanner_backends(tmp_path: Pat
         "refinement_factor": config.refinement_factor,
         "return_confidence": True,
     }
+
+
+def test_sampling_is_observed_on_the_scanner_instance_that_scans(tmp_path: Path) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    calls = _calls()
+    observed: list[tuple[str, int]] = []
+
+    class IdentityScanner(_Scanner):
+        def scan(self, *args: object, **kwargs: object):
+            observed.append(("scan", id(self)))
+            return super().scan(*args, **kwargs)
+
+        def scan_quality(self, *args: object, **kwargs: object):
+            observed.append(("scan_quality", id(self)))
+            return super().scan_quality(*args, **kwargs)
+
+        def reference_like_strike_sampling(self, *args: object) -> np.ndarray:
+            observed.append(("reference_sampling", id(self)))
+            return super().reference_like_strike_sampling(*args)
+
+        def refined_reference_like_strike_sampling(
+            self, *args: object, **kwargs: object
+        ) -> np.ndarray:
+            observed.append(("quality_sampling", id(self)))
+            return super().refined_reference_like_strike_sampling(*args, **kwargs)
+
+    instances: list[IdentityScanner] = []
+
+    def factory(sigma1: float, sigma2: float) -> IdentityScanner:
+        del sigma1, sigma2
+        instance = IdentityScanner(calls)
+        instances.append(instance)
+        return instance
+
+    run_scanner_stages(
+        _workspace(tmp_path / "run", source),
+        source,  # type: ignore[arg-type]
+        build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
+        scanner_factory=factory,
+        implementation_identity=_IMPLEMENTATION,
+    )
+
+    assert observed == [
+        ("reference_sampling", id(instances[0])),
+        ("scan", id(instances[0])),
+        ("quality_sampling", id(instances[1])),
+        ("scan_quality", id(instances[1])),
+    ]
+
+
+@pytest.mark.parametrize(
+    "sampling",
+    [
+        np.asarray([0.0], dtype=np.float64),
+        np.asarray([0.0, np.nan], dtype=np.float32),
+        np.asarray([20.0, 0.0], dtype=np.float32),
+        np.asarray([0.0, 0.0], dtype=np.float32),
+    ],
+    ids=("non-float32", "nonfinite", "unsorted", "duplicate"),
+)
+def test_invalid_sampling_is_rejected_before_scan(
+    tmp_path: Path,
+    sampling: np.ndarray,
+) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    calls = _calls()
+
+    class InvalidSamplingScanner(_Scanner):
+        def reference_like_strike_sampling(self, *args: object) -> np.ndarray:
+            del args
+            return sampling
+
+    with pytest.raises((TypeError, ValueError), match="sampling"):
+        run_scanner_stages(
+            _workspace(tmp_path / "run", source),
+            source,  # type: ignore[arg-type]
+            build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
+            scanner_factory=lambda sigma1, sigma2: InvalidSamplingScanner(calls),
+            implementation_identity=_IMPLEMENTATION,
+        )
+    assert calls["reference_scan"] == 0
+    assert source.read_count == 0
+
+
+def test_missing_sampling_helper_is_rejected_before_scan(tmp_path: Path) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    calls = _calls()
+
+    def factory(sigma1: float, sigma2: float) -> _Scanner:
+        del sigma1, sigma2
+        scanner = _Scanner(calls)
+        scanner.reference_like_strike_sampling = None  # type: ignore[method-assign]
+        return scanner
+
+    with pytest.raises(TypeError, match="reference_like_strike_sampling"):
+        run_scanner_stages(
+            _workspace(tmp_path / "run", source),
+            source,  # type: ignore[arg-type]
+            build_f3d_mode_comparison_plan(F3ModeComparisonConfig()),
+            scanner_factory=factory,  # type: ignore[arg-type]
+            implementation_identity=_IMPLEMENTATION,
+        )
+    assert calls["reference_scan"] == 0
+    assert source.read_count == 0
+
+
+def test_sampling_evidence_schema_rejects_inconsistent_metadata() -> None:
+    config = F3ScannerConfig()
+    evidence = scanner_module.scanner_sampling_evidence(
+        scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
+        config,
+        "reference-like",
+    )
+    cases: list[tuple[dict[str, object], str]] = []
+    for field, replacement, message in (
+        ("backend", "quality", "backend mismatch"),
+        ("refinement_factor", 2, "refinement factor mismatch"),
+        ("dtype", "float64", "dtype mismatch"),
+        (
+            "orientation_count",
+            int(evidence["orientation_count"]) + 1,
+            "orientation count mismatch",
+        ),
+    ):
+        changed = json.loads(json.dumps(evidence))
+        changed[field] = replacement
+        cases.append((changed, message))
+    changed = json.loads(json.dumps(evidence))
+    changed["strike"]["sha256"] = "0" * 64
+    cases.append((changed, "digest mismatch"))
+    changed = json.loads(json.dumps(evidence))
+    del changed["sampling_source_implementation_identity"]["strike"]["module"]
+    cases.append((changed, "implementation identity field set mismatch"))
+
+    for changed, message in cases:
+        with pytest.raises(ValueError, match=message):
+            scanner_module.validate_scanner_sampling_evidence(
+                changed,
+                config,
+                "reference-like",
+            )
+
+
+def test_sampling_evidence_rejects_unbounded_axis_before_array_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = F3ScannerConfig()
+    evidence = scanner_module.scanner_sampling_evidence(
+        scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
+        config,
+        "reference-like",
+    )
+    count = scanner_module._MAX_SAMPLING_AXIS_COUNT + 1
+    changed = json.loads(json.dumps(evidence))
+    changed["strike"] = {
+        "count": count,
+        "values": [float(value) for value in np.linspace(0.0, 360.0, count)],
+        "sha256": "0" * 64,
+    }
+    changed["orientation_count"] = count * int(changed["dip"]["count"])
+    monkeypatch.setattr(
+        scanner_module.np,
+        "asarray",
+        lambda *args, **kwargs: pytest.fail("oversized evidence reached array conversion"),
+    )
+
+    with pytest.raises(ValueError, match="sampling evidence count must be at most"):
+        scanner_module.validate_scanner_sampling_evidence(
+            changed,
+            config,
+            "reference-like",
+        )
 
 
 def test_array_summary_uses_and_records_nonzero_epsilon() -> None:
@@ -341,7 +537,7 @@ def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
     assert resumed["reference-like"].reused is True
     assert resumed["quality"].reused is False
     assert resumed_source.read_count == 1
-    assert resumed_calls["construction"] == 1
+    assert resumed_calls["construction"] == 2
     assert resumed_calls["reference_scan"] == 0
     assert resumed_calls["quality_scan"] == 1
     assert resumed_calls["thin"] == 1
@@ -498,14 +694,12 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
         workspace,
         source.identity.file_for("input"),
         config,
-        implementation_identity=_IMPLEMENTATION,
     )
     assert (
         scanner_stage_fingerprint(
             workspace,
             source.identity.file_for("input"),
             replace(config, sigma1=9.0),
-            implementation_identity=_IMPLEMENTATION,
         )
         != baseline
     )
@@ -514,7 +708,6 @@ def test_fingerprint_tracks_config_and_input_content(tmp_path: Path) -> None:
             _workspace(tmp_path / "changed-run", changed_source),
             changed_source.identity.file_for("input"),
             config,
-            implementation_identity=_IMPLEMENTATION,
         )
         != baseline
     )
@@ -542,7 +735,6 @@ def test_fingerprint_tracks_each_common_scanner_control(
         workspace,
         source.identity.file_for("input"),
         F3ScannerConfig(),
-        implementation_identity=_IMPLEMENTATION,
     )
 
     assert (
@@ -550,10 +742,32 @@ def test_fingerprint_tracks_each_common_scanner_control(
             workspace,
             source.identity.file_for("input"),
             replace(F3ScannerConfig(), **{field: value}),
-            implementation_identity=_IMPLEMENTATION,
         )
         != baseline
     )
+
+
+def test_noncanonical_settings_and_fingerprint_require_actual_sampling_evidence(
+    tmp_path: Path,
+) -> None:
+    values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    source = _Source(tmp_path / "data", values)
+    workspace = _workspace(tmp_path / "run", source)
+    config = F3ScannerConfig()
+
+    with pytest.raises(ValueError, match="sampling_evidence is required"):
+        scanner_module.scanner_stage_resolved_settings(
+            config,
+            values.shape,
+            implementation_identity=_IMPLEMENTATION,
+        )
+    with pytest.raises(ValueError, match="sampling_evidence is required"):
+        scanner_stage_fingerprint(
+            workspace,
+            source.identity.file_for("input"),
+            config,
+            implementation_identity=_IMPLEMENTATION,
+        )
 
 
 def test_injected_scanner_factory_has_distinct_stage_identity(tmp_path: Path) -> None:

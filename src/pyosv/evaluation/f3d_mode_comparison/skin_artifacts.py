@@ -46,6 +46,10 @@ _INTEGER_TOPOLOGY_FIELDS = frozenset(
 _DAT_DTYPE = np.dtype(">f4")
 _MASK_SLAB_VOXELS = 1_000_000
 _INDEX_CHUNK_SIZE = 100_000
+F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 3
+PRIMARY_NEAREST_SAMPLE = "primary_nearest_sample"
+PRIMARY_RESKINNED = "primary_reskinned"
+CONNECTED_COMPONENT_FALLBACK = "connected_component_fallback"
 
 
 class SkinArtifactValidationError(ValueError):
@@ -71,6 +75,7 @@ class SkinCellRecord:
 class SkinParentVolumeContract:
     """Persisted parent volumes that define final skin cell values."""
 
+    provenance: str
     likelihood: tuple[str, str, str]
     strike: tuple[str, str, str]
     dip: tuple[str, str, str]
@@ -138,9 +143,16 @@ def resolve_skin_parent_volume_contract(
     resolved_variant: Mapping[str, Any],
     *,
     fallback_used: bool,
+    resolved_stage_settings: Mapping[str, Any] | None = None,
 ) -> SkinParentVolumeContract:
     """Purely resolve final cell sources from recorded stage and skin settings."""
 
+    provenance = resolve_final_skin_cell_value_provenance(
+        resolved_skinning,
+        resolved_variant,
+        fallback_used=fallback_used,
+        resolved_stage_settings=resolved_stage_settings,
+    )
     if not isinstance(fallback_used, bool):
         raise TypeError("fallback_used must be bool")
     try:
@@ -181,6 +193,7 @@ def resolve_skin_parent_volume_contract(
         }
         likelihood = ("thinning", thinning, "fvt.dat")
     return SkinParentVolumeContract(
+        provenance=provenance,
         likelihood=likelihood,
         strike=("voting", voting, "vp.dat"),
         dip=("voting", voting, "vt.dat"),
@@ -188,18 +201,94 @@ def resolve_skin_parent_volume_contract(
     )
 
 
+def resolve_final_skin_cell_value_provenance(
+    resolved_skinning: Mapping[str, Any],
+    resolved_variant: Mapping[str, Any],
+    *,
+    fallback_used: bool,
+    resolved_stage_settings: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve the final cell-value path from the complete final-phase contract."""
+
+    if not isinstance(fallback_used, bool):
+        raise TypeError("fallback_used must be bool")
+    if not isinstance(resolved_skinning, Mapping) or not isinstance(resolved_variant, Mapping):
+        raise SkinArtifactValidationError("skin provenance contract is incomplete")
+    try:
+        enabled = resolved_skinning["enabled"]
+        method = resolved_skinning["method"]
+        reskin = resolved_skinning["reskin"]
+        growth_source = resolved_skinning["growth_source"]
+        fallback_enabled = resolved_skinning["boundary_skinner_fallback"]
+        fallback_policy = resolved_skinning["boundary_skinner_fallback_policy"]
+        variant_name = resolved_variant["name"]
+        post_thinning_policy = resolved_variant["post_thinning_policy"]
+        variant_skinning = resolved_variant["skinning"]
+    except KeyError as error:
+        raise SkinArtifactValidationError("skin provenance contract is incomplete") from error
+    if enabled is not True:
+        raise SkinArtifactValidationError("skin provenance requires enabled skinning")
+    if not isinstance(reskin, bool) or not isinstance(fallback_enabled, bool):
+        raise SkinArtifactValidationError("skin provenance boolean setting is invalid")
+    if method not in {"reference", "quality", "connected_component"}:
+        raise SkinArtifactValidationError("skin method is invalid")
+    if growth_source not in {"pre_thin", "thinned"}:
+        raise SkinArtifactValidationError("skin growth_source is invalid")
+    if not isinstance(fallback_policy, str) or not fallback_policy:
+        raise SkinArtifactValidationError("skin fallback policy is invalid")
+    if not isinstance(variant_name, str) or not variant_name:
+        raise SkinArtifactValidationError("skin variant name is invalid")
+    if not isinstance(post_thinning_policy, str) or not post_thinning_policy:
+        raise SkinArtifactValidationError("skin post-thinning policy is invalid")
+    if not isinstance(variant_skinning, Mapping):
+        raise SkinArtifactValidationError("skin variant patch is invalid")
+    for name, resolved_value in (
+        ("method", method),
+        ("growth_source", growth_source),
+        ("boundary_skinner_fallback", fallback_enabled),
+        ("boundary_skinner_fallback_policy", fallback_policy),
+    ):
+        patched_value = variant_skinning.get(name)
+        if patched_value is not None and patched_value != resolved_value:
+            raise SkinArtifactValidationError(
+                f"skin variant {name} conflicts with resolved settings"
+            )
+    if fallback_used and not fallback_enabled:
+        raise SkinArtifactValidationError("skin fallback state conflicts with resolved settings")
+
+    if resolved_stage_settings is not None:
+        if not isinstance(resolved_stage_settings, Mapping):
+            raise SkinArtifactValidationError("skinning stage settings must be an object")
+        if (
+            resolved_stage_settings.get("enabled") is not True
+            or resolved_stage_settings.get("resolved_skinner_config") != dict(resolved_skinning)
+            or resolved_stage_settings.get("growth_source") != growth_source
+            or resolved_stage_settings.get("fallback_policy")
+            != {
+                "enabled": fallback_enabled,
+                "policy": fallback_policy,
+            }
+            or resolved_stage_settings.get("skin_artifact_semantic_contract_version")
+            != F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        ):
+            raise SkinArtifactValidationError(
+                "skinning stage settings conflict with provenance inputs"
+            )
+
+    if fallback_used:
+        return CONNECTED_COMPONENT_FALLBACK
+    if reskin and method != "connected_component":
+        return PRIMARY_RESKINNED
+    return PRIMARY_NEAREST_SAMPLE
+
+
 def parse_skins_json(
     path: str | Path,
     shape: tuple[int, int, int],
-    *,
-    strike_range: tuple[float, float] = (0.0, 360.0),
-    dip_range: tuple[float, float] = (65.0, 80.0),
 ) -> ParsedSkinArtifacts:
     """Parse one canonical ``skins.json`` and validate its low-cost schema."""
 
     volume_shape = _volume_shape(shape)
-    strike_bounds = _scalar_range(strike_range, "strike_range")
-    dip_bounds = _scalar_range(dip_range, "dip_range")
     artifact_path = Path(path)
     payload = _read_json_object(artifact_path, "skins.json")
     if set(payload) != _ROOT_FIELDS:
@@ -246,8 +335,6 @@ def parse_skins_json(
                 indices,
                 scalars,
                 volume_shape,
-                strike_bounds,
-                dip_bounds,
             )
             canonical_key = (indices[2], indices[1], indices[0])
             if previous_key is not None and canonical_key < previous_key:
@@ -465,22 +552,10 @@ def _validate_bounds(
         raise SkinArtifactValidationError("skins.json cell index is out of bounds")
 
 
-def _scalar_range(value: tuple[float, float], context: str) -> tuple[float, float]:
-    if not isinstance(value, tuple) or len(value) != 2:
-        raise TypeError(f"{context} must contain exactly two finite scalars")
-    lower = _finite_scalar(value[0], context)
-    upper = _finite_scalar(value[1], context)
-    if upper < lower:
-        raise SkinArtifactValidationError(f"{context} upper bound must not be less than lower")
-    return lower, upper
-
-
 def _validate_cell_values(
     indices: tuple[int, int, int],
     scalars: Mapping[str, float],
     shape: tuple[int, int, int],
-    strike_range: tuple[float, float],
-    dip_range: tuple[float, float],
 ) -> None:
     n3, n2, n1 = shape
     coordinates = (scalars["x1"], scalars["x2"], scalars["x3"])
@@ -498,19 +573,25 @@ def _validate_cell_values(
             )
     if not 0.0 <= scalars["fl"] <= 1.0:
         raise SkinArtifactValidationError("skins.json cell fl is outside [0, 1]")
-    if not strike_range[0] <= scalars["fp"] <= strike_range[1]:
-        raise SkinArtifactValidationError("skins.json cell fp is outside scanner strike range")
-    if not dip_range[0] <= scalars["ft"] <= dip_range[1]:
-        raise SkinArtifactValidationError("skins.json cell ft is outside scanner dip range")
+    if not 0.0 <= scalars["fp"] < 360.0:
+        raise SkinArtifactValidationError(
+            "skins.json cell fp is outside canonical strike orientation domain"
+        )
+    if not 0.0 <= scalars["ft"] <= 90.0:
+        raise SkinArtifactValidationError(
+            "skins.json cell ft is outside canonical dip orientation domain"
+        )
 
 
 __all__ = [
     "ParsedSkinArtifacts",
+    "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
     "SkinArtifactValidationError",
     "SkinCellRecord",
     "SkinParentVolumeContract",
     "canonical_skins_payload",
     "parse_skins_json",
+    "resolve_final_skin_cell_value_provenance",
     "resolve_skin_parent_volume_contract",
     "validate_skin_artifact_semantics",
 ]

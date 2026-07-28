@@ -58,13 +58,16 @@ from .scanner import (
     scanner_stage_artifacts,
     scanner_stage_resolved_settings,
 )
-from .skin_artifacts import canonical_skins_payload
+from .skin_artifacts import (
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+    canonical_skins_payload,
+    resolve_final_skin_cell_value_provenance,
+)
 
 F3_CELL_RUNNER_CONTRACT_VERSION = 1
 F3_VOTING_STAGE_IMPLEMENTATION = "pyosv-f3-voting-stage-v1"
 F3_THINNING_STAGE_IMPLEMENTATION = "pyosv-f3-thinning-stage-v1"
 F3_SKINNING_STAGE_IMPLEMENTATION = "pyosv-f3-skinning-stage-v1"
-F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 2
 F3_CELL_REFERENCE_SCHEMA_VERSION = 1
 
 _DAT_DTYPE = np.dtype(">f4")
@@ -979,11 +982,18 @@ def _persist_or_reuse_cell_stages(
             fallback_used = result.diagnostics.skinning.get("fallback_used")
             if not isinstance(fallback_used, bool):
                 raise ValueError("workflow skinning fallback_used diagnostic must be bool")
+            final_cell_value_provenance = resolve_final_skin_cell_value_provenance(
+                execution.resolved_config["skinning"],
+                execution.resolved_config["variant"],
+                fallback_used=fallback_used,
+                resolved_stage_settings=execution.skinning_settings,
+            )
             skin_report = {
                 "fingerprint": execution.stages.skinning,
                 "thinning_stage_fingerprint": execution.stages.thinning,
                 "shape": list(shape),
                 "enabled": True,
+                "final_cell_value_provenance": final_cell_value_provenance,
                 "diagnostics": dict(result.diagnostics.skinning),
                 "topology": skin_topology_metrics(
                     skins,
@@ -1302,6 +1312,7 @@ def _validate_scanner_stage(
             plan.scanner_config_for(stage.backend),
             stage.shape,
             implementation_identity=implementation_identity,
+            sampling_evidence=settings.get("sampling_evidence"),
         )
         computation = stage_computation_identity(
             "scanner",

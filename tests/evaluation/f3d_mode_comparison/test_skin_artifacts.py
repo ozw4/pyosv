@@ -13,6 +13,7 @@ from pyosv.evaluation.f3d_mode_comparison.skin_artifacts import (
     SkinArtifactValidationError,
     canonical_skins_payload,
     parse_skins_json,
+    resolve_final_skin_cell_value_provenance,
     resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
 )
@@ -60,6 +61,31 @@ def _single_cell_payload(cell: dict[str, Any]) -> dict[str, Any]:
         "skinning_enabled": True,
         "skin_count": 1,
         "skins": [{"skin_index": 0, "cell_count": 1, "cells": [cell]}],
+    }
+
+
+def _resolved_skinning(
+    *,
+    growth_source: str = "thinned",
+    method: str = "reference",
+    reskin: bool = False,
+    fallback_enabled: bool = False,
+) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "method": method,
+        "reskin": reskin,
+        "growth_source": growth_source,
+        "boundary_skinner_fallback": fallback_enabled,
+        "boundary_skinner_fallback_policy": "empty_primary",
+    }
+
+
+def _resolved_variant(post_thinning_policy: str = "none") -> dict[str, Any]:
+    return {
+        "name": "f3-canonical",
+        "post_thinning_policy": post_thinning_policy,
+        "skinning": {},
     }
 
 
@@ -216,11 +242,11 @@ def test_parent_likelihood_uses_resolved_execution_contract(
 ) -> None:
     contract = resolve_skin_parent_volume_contract(
         {"scanner": "scan", "voting": "vote", "thinning": "thin"},
-        {
-            "growth_source": growth_source,
-            "boundary_skinner_fallback": fallback_used,
-        },
-        {"post_thinning_policy": post_thinning_policy},
+        _resolved_skinning(
+            growth_source=growth_source,
+            fallback_enabled=fallback_used,
+        ),
+        _resolved_variant(post_thinning_policy),
         fallback_used=fallback_used,
     )
 
@@ -231,13 +257,48 @@ def test_parent_volume_contract_rejects_unknown_post_thinning_policy() -> None:
     with pytest.raises(SkinArtifactValidationError, match="post-thinning"):
         resolve_skin_parent_volume_contract(
             {"scanner": "scan", "voting": "vote", "thinning": "thin"},
-            {
-                "growth_source": "thinned",
-                "boundary_skinner_fallback": False,
-            },
-            {"post_thinning_policy": "unknown"},
+            _resolved_skinning(),
+            _resolved_variant("unknown"),
             fallback_used=False,
         )
+
+
+@pytest.mark.parametrize(
+    ("reskin", "fallback_used", "expected"),
+    (
+        (False, False, "primary_nearest_sample"),
+        (True, False, "primary_reskinned"),
+        (False, True, "connected_component_fallback"),
+        (True, True, "connected_component_fallback"),
+    ),
+)
+def test_final_cell_value_provenance_follows_final_phase_contract(
+    reskin: bool,
+    fallback_used: bool,
+    expected: str,
+) -> None:
+    assert (
+        resolve_final_skin_cell_value_provenance(
+            _resolved_skinning(
+                reskin=reskin,
+                fallback_enabled=fallback_used,
+            ),
+            _resolved_variant(),
+            fallback_used=fallback_used,
+        )
+        == expected
+    )
+
+
+def test_connected_component_primary_ignores_reskin_setting_for_provenance() -> None:
+    assert (
+        resolve_final_skin_cell_value_provenance(
+            _resolved_skinning(method="connected_component", reskin=True),
+            _resolved_variant(),
+            fallback_used=False,
+        )
+        == "primary_nearest_sample"
+    )
 
 
 @pytest.mark.parametrize(
@@ -273,11 +334,11 @@ def test_cell_coordinates_use_java_rounding_and_half_open_volume_bounds(
     ("field", "value", "message"),
     (
         ("fl", 2.0, "fl"),
-        ("fp", 60.0, "strike"),
-        ("ft", 81.0, "dip"),
+        ("fp", 360.0, "strike"),
+        ("ft", 91.0, "dip"),
     ),
 )
-def test_cell_attributes_respect_resolved_ranges(
+def test_cell_attributes_respect_final_cell_domains(
     tmp_path: Path,
     field: str,
     value: float,
@@ -289,12 +350,19 @@ def test_cell_attributes_respect_resolved_ranges(
     _write_json(path, _single_cell_payload(cell))
 
     with pytest.raises(SkinArtifactValidationError, match=message):
-        parse_skins_json(
-            path,
-            _SHAPE,
-            strike_range=(20.0, 50.0),
-            dip_range=(65.0, 80.0),
-        )
+        parse_skins_json(path, _SHAPE)
+
+
+def test_cell_orientation_is_not_limited_to_scanner_search_range(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "skins.json"
+    cell = _cell(0, 0, 0)
+    cell["fp"] = 200.0
+    cell["ft"] = 20.0
+    _write_json(path, _single_cell_payload(cell))
+
+    assert parse_skins_json(path, _SHAPE).cell_count == 1
 
 
 @pytest.mark.parametrize("level", ("root", "skin", "cell"))
