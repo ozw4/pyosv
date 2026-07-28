@@ -521,19 +521,22 @@ def test_runtime_identity_changes_reject_resume_without_workspace_writes(
 
 
 @pytest.mark.parametrize(
-    ("mode", "disable_jit", "expected"),
+    ("mode", "numba_kind", "disable_jit", "expected"),
     (
         (
             "auto",
+            "available",
             "0",
             {
                 "available": True,
                 "jit": {"status": "enabled", "enabled": True},
                 "state": "numba_jit_enabled",
+                "publication_accepted": True,
             },
         ),
         (
             "auto",
+            "available",
             "1",
             {
                 "available": True,
@@ -543,7 +546,19 @@ def test_runtime_identity_changes_reject_resume_without_workspace_writes(
             },
         ),
         (
+            "auto",
+            "unavailable",
+            "0",
+            {
+                "available": False,
+                "jit": {"status": "not_applicable", "enabled": None},
+                "state": "python_only",
+                "publication_accepted": True,
+            },
+        ),
+        (
             "off",
+            "available",
             "0",
             {
                 "available": False,
@@ -557,27 +572,48 @@ def test_runtime_identity_changes_reject_resume_without_workspace_writes(
 def test_fresh_process_runtime_identity_and_publication_preflight(
     tmp_path: Path,
     mode: str,
+    numba_kind: str,
     disable_jit: str,
     expected: dict[str, Any],
 ) -> None:
     fake_root = tmp_path / "fake-modules"
-    package = fake_root / "numba"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text(
+    fake_root.mkdir()
+    if numba_kind == "unavailable":
+        (fake_root / "numba.py").write_text(
+            "raise ImportError('Numba intentionally unavailable')\n",
+            encoding="utf-8",
+        )
+    else:
+        package = fake_root / "numba"
+        package.mkdir()
+        (package / "__init__.py").write_text(
+            textwrap.dedent(
+                """
+                import os
+                from types import SimpleNamespace
+
+                __version__ = "test-fresh-numba"
+                config = SimpleNamespace(
+                    DISABLE_JIT=int(os.environ.get("NUMBA_DISABLE_JIT") or "0")
+                )
+
+                def njit(*args, **kwargs):
+                    if len(args) == 1 and callable(args[0]) and not kwargs:
+                        return args[0]
+                    return lambda function: function
+                """
+            ),
+            encoding="utf-8",
+        )
+    (fake_root / "threadpoolctl.py").write_text(
         textwrap.dedent(
             """
-            import os
-            from types import SimpleNamespace
-
-            __version__ = "test-fresh-numba"
-            config = SimpleNamespace(
-                DISABLE_JIT=int(os.environ.get("NUMBA_DISABLE_JIT") or "0")
-            )
-
-            def njit(*args, **kwargs):
-                if len(args) == 1 and callable(args[0]) and not kwargs:
-                    return args[0]
-                return lambda function: function
+            def threadpool_info():
+                return [{
+                    "user_api": "blas",
+                    "internal_api": "test-blas",
+                    "num_threads": 1,
+                }]
             """
         ),
         encoding="utf-8",
@@ -622,7 +658,7 @@ def test_fresh_process_runtime_identity_and_publication_preflight(
                 except ValueError as error:
                     publication_error = str(error)
                 run_error = None
-                if identity["effective_acceleration_state"] != "numba_jit_enabled":
+                if publication_error is not None:
                     try:
                         run_experiment(
                             config=F3ModeComparisonConfig(),
@@ -658,7 +694,7 @@ def test_fresh_process_runtime_identity_and_publication_preflight(
     observed = json.loads(completed.stdout)
 
     assert {name: observed[name] for name in expected} == expected
-    if expected["state"] != "numba_jit_enabled":
+    if not expected["publication_accepted"]:
         assert observed["publication_error"].startswith("publication runtime contract violation:")
         assert observed["run_error"]["type"] == "ValueError"
         assert observed["run_error"]["message"].startswith(

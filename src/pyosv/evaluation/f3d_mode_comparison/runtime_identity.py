@@ -263,8 +263,8 @@ def validate_publication_runtime_identity(
     if normalized["pyosv_accel"] is None:
         errors.append("PYOSV_ACCEL must be explicitly set")
     acceleration_state = normalized["effective_acceleration_state"]
-    if acceleration_state == "python_only":
-        errors.append("effective acceleration state must be numba_jit_enabled")
+    if acceleration_state == "python_only" and normalized["requested_acceleration_mode"] != "auto":
+        errors.append("PYOSV_ACCEL must be auto when Numba is unavailable")
     elif acceleration_state == "numba_jit_disabled":
         errors.append("Numba JIT must be enabled when Numba is available")
     elif acceleration_state == "numba_jit_unknown":
