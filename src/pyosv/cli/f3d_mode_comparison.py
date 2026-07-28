@@ -237,7 +237,7 @@ def _recorded_runtime_identity(bundle: Path) -> dict[str, object]:
     try:
         return validate_numerical_runtime_identity(runtime)
     except ValueError as error:
-        raise ValueError("bundle run manifest has invalid runtime identity") from error
+        raise ValueError(f"bundle run manifest has invalid runtime identity: {error}") from error
 
 
 def main(argv: Sequence[str] | None = None) -> int:

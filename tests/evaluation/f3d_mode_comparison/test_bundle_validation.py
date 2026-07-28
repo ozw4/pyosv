@@ -113,7 +113,7 @@ def _complete_small_bundle(
     computation = {
         "artifact_schema_version": 1,
         "stage_contract_version": 1,
-        "fingerprint_contract_version": 3,
+        "fingerprint_contract_version": 4,
         "plan": plan_payload,
         "dataset_identity": source.identity.computation_identity,
         "implementation_identity": {"name": "test"},
@@ -1589,24 +1589,19 @@ def test_run_manifest_mismatch_is_rejected(tmp_path: Path) -> None:
         validate_completed_f3d_bundle(root)
 
 
-def test_shallow_validation_rejects_nonpublication_recorded_runtime(
+def test_shallow_validation_uses_only_recorded_runtime_internal_consistency(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _complete_small_bundle(tmp_path)
-    manifest_path = root / "run_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["runtime_identity"]["thread_environment"]["OMP_NUM_THREADS"] = None
-    computation = {name: manifest[name] for name in result_module._RUN_COMPUTATION_FIELDS}
-    manifest["run_fingerprint"] = canonical_fingerprint(computation)
-    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
     monkeypatch.setattr(result_module, "F3_DATASET_ID", "result-fixture")
+    monkeypatch.setattr(
+        result_module,
+        "numerical_runtime_identity",
+        lambda: pytest.fail("shallow validation must not inspect the current runtime"),
+    )
 
-    with pytest.raises(
-        F3ResultValidationError,
-        match="run manifest publication runtime identity",
-    ):
-        validate_completed_f3d_bundle(root)
+    assert validate_completed_f3d_bundle(root)
 
 
 def test_previous_fingerprint_contract_is_rejected_even_when_rehashed(
@@ -1615,7 +1610,7 @@ def test_previous_fingerprint_contract_is_rejected_even_when_rehashed(
     root = _complete_small_bundle(tmp_path)
     manifest_path = root / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["fingerprint_contract_version"] = 2
+    manifest["fingerprint_contract_version"] = 3
     computation = {name: manifest[name] for name in result_module._RUN_COMPUTATION_FIELDS}
     manifest["run_fingerprint"] = canonical_fingerprint(computation)
     manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")

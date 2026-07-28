@@ -4,8 +4,12 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
+import sys
+import textwrap
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -48,7 +52,7 @@ _IMPLEMENTATION = {
     },
 }
 _RUNTIME_IDENTITY = {
-    "runtime_identity_schema_version": 2,
+    "runtime_identity_schema_version": 3,
     "python_implementation": "CPython",
     "platform_system": "Linux",
     "platform_machine": "test-machine",
@@ -57,7 +61,11 @@ _RUNTIME_IDENTITY = {
     "pyosv_accel": "auto",
     "numba_available": True,
     "numba_version": "test-numba",
-    "effective_acceleration_state": "numba_enabled",
+    "numba_jit": {
+        "status": "enabled",
+        "enabled": True,
+    },
+    "effective_acceleration_state": "numba_jit_enabled",
     "thread_environment": {
         "OMP_NUM_THREADS": None,
         "OPENBLAS_NUM_THREADS": None,
@@ -275,6 +283,135 @@ def test_runtime_identity_normalizes_configured_acceleration_mode(
     assert numerical_runtime_identity()["pyosv_accel"] == mode
 
 
+@pytest.mark.parametrize(
+    ("mode", "numba_kind", "disable_jit", "expected_state", "expected_status"),
+    (
+        ("off", "available", "0", "python_only", "not_applicable"),
+        ("auto", "unavailable", None, "python_only", "not_applicable"),
+        ("auto", "available", "0", "numba_jit_enabled", "enabled"),
+        ("auto", "available", "1", "numba_jit_disabled", "disabled"),
+        ("required", "available", "0", "numba_jit_enabled", "enabled"),
+        ("required", "available", "1", "numba_jit_disabled", "disabled"),
+    ),
+)
+def test_fresh_process_runtime_identity_uses_effective_numba_jit_state(
+    tmp_path: Path,
+    mode: str,
+    numba_kind: str,
+    disable_jit: str | None,
+    expected_state: str,
+    expected_status: str,
+) -> None:
+    fake_root = tmp_path / "fake-modules"
+    fake_root.mkdir()
+    if numba_kind == "unavailable":
+        (fake_root / "numba.py").write_text(
+            "raise ImportError('Numba intentionally unavailable')\n",
+            encoding="utf-8",
+        )
+    else:
+        package = fake_root / "numba"
+        package.mkdir()
+        (package / "__init__.py").write_text(
+            textwrap.dedent(
+                """
+                import os
+                from types import SimpleNamespace
+
+                __version__ = "test-fresh-numba"
+                config = SimpleNamespace(
+                    DISABLE_JIT=int(os.environ.get("NUMBA_DISABLE_JIT") or "0")
+                )
+
+                def njit(*args, **kwargs):
+                    if len(args) == 1 and callable(args[0]) and not kwargs:
+                        return args[0]
+                    return lambda function: function
+                """
+            ),
+            encoding="utf-8",
+        )
+    source_root = Path(__file__).resolve().parents[3] / "src"
+    environment = os.environ.copy()
+    environment["PYOSV_ACCEL"] = mode
+    environment["PYTHONPATH"] = os.pathsep.join((str(fake_root), str(source_root)))
+    if disable_jit is None:
+        environment.pop("NUMBA_DISABLE_JIT", None)
+    else:
+        environment["NUMBA_DISABLE_JIT"] = disable_jit
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "from pyosv.evaluation.f3d_mode_comparison.runtime_identity "
+                "import numerical_runtime_identity; "
+                "identity = numerical_runtime_identity(); "
+                "print(json.dumps({"
+                "'available': identity['numba_available'], "
+                "'raw': identity['numba_environment']['NUMBA_DISABLE_JIT'], "
+                "'jit': identity['numba_jit'], "
+                "'state': identity['effective_acceleration_state']}))"
+            ),
+        ],
+        cwd=source_root.parent,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    identity = json.loads(completed.stdout)
+
+    expected_available = mode != "off" and numba_kind == "available"
+    assert identity == {
+        "available": expected_available,
+        "raw": disable_jit,
+        "jit": {
+            "status": expected_status,
+            "enabled": (
+                True
+                if expected_status == "enabled"
+                else False
+                if expected_status == "disabled"
+                else None
+            ),
+        },
+        "state": expected_state,
+    }
+
+
+def test_runtime_identity_records_unknown_when_numba_jit_config_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_identity_module._accel, "NUMBA_AVAILABLE", True)
+    monkeypatch.setitem(
+        sys.modules,
+        "numba",
+        SimpleNamespace(__version__="test-numba"),
+    )
+
+    identity = numerical_runtime_identity()
+
+    assert identity["numba_jit"] == {"status": "unknown", "enabled": None}
+    assert identity["effective_acceleration_state"] == "numba_jit_unknown"
+    with pytest.raises(ValueError, match="JIT state must be known"):
+        validate_publication_runtime_identity(
+            {
+                **identity,
+                "python_hash_seed": "0",
+                "pyosv_accel": identity["requested_acceleration_mode"],
+                "thread_environment": {
+                    **identity["thread_environment"],
+                    "OMP_NUM_THREADS": "1",
+                    "OPENBLAS_NUM_THREADS": "1",
+                    "MKL_NUM_THREADS": "1",
+                    "NUMEXPR_NUM_THREADS": "1",
+                },
+            }
+        )
+
+
 def _publication_runtime_identity() -> dict[str, object]:
     return {
         **_RUNTIME_IDENTITY,
@@ -293,6 +430,87 @@ def test_publication_runtime_identity_accepts_fixed_available_runtime() -> None:
     identity = _publication_runtime_identity()
 
     assert validate_publication_runtime_identity(identity) == identity
+
+
+def test_publication_runtime_identity_allows_auto_without_numba() -> None:
+    identity = {
+        **_publication_runtime_identity(),
+        "numba_available": False,
+        "numba_version": None,
+        "numba_jit": {
+            "status": "not_applicable",
+            "enabled": None,
+        },
+        "effective_acceleration_state": "python_only",
+    }
+
+    assert validate_publication_runtime_identity(identity) == identity
+
+
+@pytest.mark.parametrize("value", (None, "", "0"))
+def test_publication_runtime_identity_accepts_canonical_false_numba_disable_jit(
+    value: str | None,
+) -> None:
+    identity = _publication_runtime_identity()
+    identity["numba_environment"] = {
+        **identity["numba_environment"],
+        "NUMBA_DISABLE_JIT": value,
+        "NUMBA_NUM_THREADS": "1",
+    }
+
+    assert validate_publication_runtime_identity(identity) == identity
+
+
+@pytest.mark.parametrize("value", ("00", "false", "1"))
+def test_publication_runtime_identity_rejects_noncanonical_numba_disable_jit(
+    value: str,
+) -> None:
+    identity = _publication_runtime_identity()
+    identity["numba_environment"] = {
+        **identity["numba_environment"],
+        "NUMBA_DISABLE_JIT": value,
+    }
+    if value == "1":
+        identity["numba_jit"] = {"status": "disabled", "enabled": False}
+        identity["effective_acceleration_state"] = "numba_jit_disabled"
+
+    with pytest.raises(ValueError, match="Numba JIT|NUMBA_DISABLE_JIT"):
+        validate_publication_runtime_identity(identity)
+
+
+@pytest.mark.parametrize(("value", "accepted"), ((None, True), ("1", True), ("2", False)))
+def test_publication_runtime_identity_numba_thread_policy(
+    value: str | None,
+    accepted: bool,
+) -> None:
+    identity = _publication_runtime_identity()
+    identity["numba_environment"] = {
+        **identity["numba_environment"],
+        "NUMBA_NUM_THREADS": value,
+    }
+
+    if accepted:
+        assert validate_publication_runtime_identity(identity) == identity
+    else:
+        with pytest.raises(ValueError, match="NUMBA_NUM_THREADS"):
+            validate_publication_runtime_identity(identity)
+
+
+def test_jit_disabled_identity_is_valid_internally_but_not_for_publication() -> None:
+    identity = {
+        **_publication_runtime_identity(),
+        "numba_jit": {"status": "disabled", "enabled": False},
+        "effective_acceleration_state": "numba_jit_disabled",
+        "numba_environment": {
+            **_RUNTIME_IDENTITY["numba_environment"],
+            "NUMBA_DISABLE_JIT": "1",
+            "NUMBA_NUM_THREADS": "1",
+        },
+    }
+
+    assert validate_numerical_runtime_identity(identity) == identity
+    with pytest.raises(ValueError, match="Numba JIT"):
+        validate_publication_runtime_identity(identity)
 
 
 @pytest.mark.parametrize(
@@ -482,6 +700,10 @@ def test_numpy_build_digest_tracks_compiler_commands_and_arguments(
         {
             "numba_available": False,
             "numba_version": None,
+            "numba_jit": {
+                "status": "not_applicable",
+                "enabled": None,
+            },
             "effective_acceleration_state": "python_only",
         },
         {"numba_version": "other-numba"},
@@ -527,10 +749,15 @@ def test_numpy_build_digest_tracks_compiler_commands_and_arguments(
             }
         },
         {
+            "numba_jit": {
+                "status": "disabled",
+                "enabled": False,
+            },
+            "effective_acceleration_state": "numba_jit_disabled",
             "numba_environment": {
                 **_RUNTIME_IDENTITY["numba_environment"],
                 "NUMBA_DISABLE_JIT": "1",
-            }
+            },
         },
         {
             "numba_environment": {
@@ -581,9 +808,39 @@ def test_run_fingerprint_tracks_runtime_identity_fields(
         {},
         {**_RUNTIME_IDENTITY, "unknown": None},
         {**_RUNTIME_IDENTITY, "runtime_identity_schema_version": 1},
+        {**_RUNTIME_IDENTITY, "runtime_identity_schema_version": 2},
         {**_RUNTIME_IDENTITY, "runtime_identity_schema_version": True},
         {**_RUNTIME_IDENTITY, "numba_version": ""},
         {**_RUNTIME_IDENTITY, "numba_version": None},
+        {**_RUNTIME_IDENTITY, "effective_acceleration_state": "unknown"},
+        {
+            **_RUNTIME_IDENTITY,
+            "numba_jit": {"status": "unknown", "enabled": None},
+            "effective_acceleration_state": "numba_jit_enabled",
+        },
+        {
+            **_RUNTIME_IDENTITY,
+            "numba_jit": {"status": "enabled", "enabled": "true"},
+        },
+        {
+            **_RUNTIME_IDENTITY,
+            "numba_available": False,
+            "numba_version": None,
+        },
+        {
+            **_RUNTIME_IDENTITY,
+            "requested_acceleration_mode": "off",
+            "pyosv_accel": "off",
+        },
+        {
+            **_RUNTIME_IDENTITY,
+            "requested_acceleration_mode": "required",
+            "pyosv_accel": "required",
+            "numba_available": False,
+            "numba_version": None,
+            "numba_jit": {"status": "not_applicable", "enabled": None},
+            "effective_acceleration_state": "python_only",
+        },
         {**_RUNTIME_IDENTITY, "python_hash_seed": object()},
         {
             **_RUNTIME_IDENTITY,

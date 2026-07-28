@@ -49,7 +49,11 @@ def _fixed_runtime_identity() -> dict[str, Any]:
         "pyosv_accel": "auto",
         "numba_available": True,
         "numba_version": "test-numba",
-        "effective_acceleration_state": "numba_enabled",
+        "numba_jit": {
+            "status": "enabled",
+            "enabled": True,
+        },
+        "effective_acceleration_state": "numba_jit_enabled",
         "thread_environment": {
             "OMP_NUM_THREADS": "1",
             "OPENBLAS_NUM_THREADS": "1",
@@ -62,8 +66,8 @@ def _fixed_runtime_identity() -> dict[str, Any]:
         "python_hash_seed": "0",
         "numpy_disable_cpu_features": None,
         "numba_environment": {
-            "NUMBA_DISABLE_JIT": None,
-            "NUMBA_NUM_THREADS": None,
+            "NUMBA_DISABLE_JIT": "0",
+            "NUMBA_NUM_THREADS": "1",
             "NUMBA_THREADING_LAYER": None,
             "NUMBA_CPU_NAME": None,
             "NUMBA_CPU_FEATURES": None,
@@ -403,7 +407,7 @@ def test_rehashed_contract_tampering_is_rejected_without_validation_residue(
         else:
             path = root / "run_manifest.json"
             payload = json.loads(path.read_text(encoding="utf-8"))
-            payload["runtime_identity"]["runtime_identity_schema_version"] = 1
+            payload["runtime_identity"]["runtime_identity_schema_version"] = 2
             computation = {name: payload[name] for name in result_module._RUN_COMPUTATION_FIELDS}
             payload["run_fingerprint"] = canonical_fingerprint(computation)
             path.write_bytes(canonical_json_bytes(payload) + b"\n")
@@ -415,7 +419,7 @@ def test_rehashed_contract_tampering_is_rejected_without_validation_residue(
         before_validation = _tree_bytes(root)
         paths_before_validation = _tree_paths(root)
         expected_error = (
-            "run manifest runtime identity is invalid" if case == "runtime-schema" else None
+            "runtime identity schema version must equal 3" if case == "runtime-schema" else None
         )
         with pytest.raises((F3ResultValidationError, ValueError), match=expected_error):
             validate_completed_f3d_bundle(root, deep=True, _dataset_spec=fixture_spec)

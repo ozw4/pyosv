@@ -105,6 +105,8 @@ OPENBLAS_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 \
 NUMEXPR_NUM_THREADS=1 \
 PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
@@ -119,11 +121,14 @@ Without `--resume`, the output path must not exist. An interrupted run has no
 root `completion.json`; resume accepts it only when the immutable manifest,
 dataset identity, implementation identity, numerical runtime identity, resolved
 plan, and resulting run fingerprint match exactly. The runtime identity records
-the requested acceleration mode, effective Numba path and version, platform,
-allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
+the requested acceleration mode, effective Numba JIT state and version,
+platform, allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
 BLAS/LAPACK build digest. Valid content-addressed stages are reused and missing
-stages are computed. A complete bundle is accepted by `--resume` only after
-strict validation and is not recomputed:
+stages are computed. The publication validator rejects an available Numba
+runtime with JIT disabled and requires `NUMBA_NUM_THREADS=1` when that variable
+is set. `PYOSV_ACCEL=auto` remains valid when Numba is unavailable. A complete
+bundle is accepted by `--resume` only after strict validation and is not
+recomputed:
 
 ```bash
 python -m pyosv.cli.f3d_mode_comparison \
@@ -173,6 +178,8 @@ OPENBLAS_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 \
 NUMEXPR_NUM_THREADS=1 \
 PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
 PYOSV_RUN_F3D_MODE_COMPARISON=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_v2 \
@@ -183,8 +190,8 @@ python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 Normal CLI unit tests stub orchestration and do not require F3 files or
 full-volume computation.
 
-The publication contract currently records runtime identity schema 2,
-fingerprint contract 3, scanner stage contract 4, skin artifact semantic
+The publication contract currently records runtime identity schema 3,
+fingerprint contract 4, scanner stage contract 4, skin artifact semantic
 contract 3, and metric schema 2. Skin reports record whether final cell values
 come from primary nearest samples, primary reskinning, or the connected-component
 fallback. Deep validation applies parent-volume nearest-sample checks only to

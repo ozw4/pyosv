@@ -84,6 +84,12 @@ def test_official_f3_full_volume_mode_comparison() -> None:
         manifest["runtime_identity"]["runtime_identity_schema_version"]
         == F3_RUNTIME_IDENTITY_SCHEMA_VERSION
     )
+    assert manifest["runtime_identity"]["effective_acceleration_state"] in {
+        "python_only",
+        "numba_jit_enabled",
+    }
+    assert manifest["runtime_identity"]["numba_environment"]["NUMBA_DISABLE_JIT"] == "0"
+    assert manifest["runtime_identity"]["numba_environment"]["NUMBA_NUM_THREADS"] == "1"
     assert manifest["runtime_identity"]["numpy_runtime_cpu"]["status"] == "available"
     assert manifest["runtime_identity"]["numpy_runtime_blas"]["status"] == "available"
     assert manifest["runtime_identity"]["scipy_build"]["status"] == "available"

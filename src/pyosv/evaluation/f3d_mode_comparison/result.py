@@ -484,7 +484,7 @@ def validate_completed_f3d_bundle(
 
     manifest = _validated_run_manifest(
         root,
-        enforce_publication_runtime=_dataset_spec is None,
+        enforce_publication_runtime=deep and _dataset_spec is None,
     )
     _reject_crop_semantics(manifest)
     if completion["run_fingerprint"] != manifest["run_fingerprint"]:
@@ -522,7 +522,7 @@ def validate_f3d_mode_comparison_result(
     root = _workspace_path(workspace)
     manifest = _validated_run_manifest(
         root,
-        enforce_publication_runtime=_dataset_spec is None,
+        enforce_publication_runtime=deep and _dataset_spec is None,
     )
     if (
         deep
@@ -749,7 +749,9 @@ def _validated_run_manifest(
         contract = (
             "publication runtime" if enforce_publication_runtime and is_official else "runtime"
         )
-        raise F3ResultValidationError(f"run manifest {contract} identity is invalid") from error
+        raise F3ResultValidationError(
+            f"run manifest {contract} identity is invalid: {error}"
+        ) from error
     return manifest
 
 
@@ -763,7 +765,7 @@ def _validate_current_publication_runtime(root: Path) -> None:
         current = validate_publication_runtime_identity(numerical_runtime_identity())
     except ValueError as error:
         raise F3ResultValidationError(
-            "deep validation publication runtime contract mismatch"
+            f"deep validation publication runtime contract mismatch: {error}"
         ) from error
     if current != normalized_recorded:
         raise F3ResultValidationError(

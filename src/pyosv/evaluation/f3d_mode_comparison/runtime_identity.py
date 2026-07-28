@@ -16,7 +16,7 @@ import numpy as np
 
 from pyosv import _accel
 
-F3_RUNTIME_IDENTITY_SCHEMA_VERSION = 2
+F3_RUNTIME_IDENTITY_SCHEMA_VERSION = 3
 
 THREAD_ENVIRONMENT_VARIABLES = (
     "OMP_NUM_THREADS",
@@ -45,6 +45,7 @@ _RUNTIME_IDENTITY_FIELDS = {
     "pyosv_accel",
     "numba_available",
     "numba_version",
+    "numba_jit",
     "effective_acceleration_state",
     "thread_environment",
     "python_hash_seed",
@@ -57,7 +58,13 @@ _RUNTIME_IDENTITY_FIELDS = {
     "scipy_build",
 }
 _ACCELERATION_MODES = {"auto", "off", "required"}
-_ACCELERATION_STATES = {"numba_enabled", "python_only"}
+_ACCELERATION_STATES = {
+    "python_only",
+    "numba_jit_enabled",
+    "numba_jit_disabled",
+    "numba_jit_unknown",
+}
+_NUMBA_JIT_STATUSES = {"not_applicable", "enabled", "disabled", "unknown"}
 _AVAILABILITY_STATUSES = {"available", "not_available"}
 _RUNTIME_LIBRARY_FIELDS = {
     "implementation",
@@ -80,14 +87,11 @@ def numerical_runtime_identity() -> dict[str, Any]:
 
     numba_available = bool(_accel.NUMBA_AVAILABLE)
     raw_pyosv_accel = os.environ.get("PYOSV_ACCEL")
+    numba_jit = _numba_jit_identity(numba_available)
     numba_version: str | None = None
     if numba_available:
-        try:
-            import numba
-
-            candidate = getattr(numba, "__version__", None)
-        except ImportError:
-            candidate = None
+        numba = sys.modules.get("numba")
+        candidate = getattr(numba, "__version__", None)
         if isinstance(candidate, str) and candidate:
             numba_version = candidate
 
@@ -104,7 +108,8 @@ def numerical_runtime_identity() -> dict[str, Any]:
             ),
             "numba_available": numba_available,
             "numba_version": numba_version,
-            "effective_acceleration_state": ("numba_enabled" if numba_available else "python_only"),
+            "numba_jit": numba_jit,
+            "effective_acceleration_state": _effective_acceleration_state(numba_jit),
             "thread_environment": {
                 name: os.environ.get(name) for name in THREAD_ENVIRONMENT_VARIABLES
             },
@@ -179,16 +184,26 @@ def validate_numerical_runtime_identity(
         raise ValueError("runtime identity unavailable Numba must have a null version")
     normalized["numba_version"] = numba_version
 
+    numba_jit = _validate_numba_jit_identity(identity["numba_jit"])
+    if numba_available and numba_jit["status"] == "not_applicable":
+        raise ValueError("runtime identity available Numba must have an applicable JIT status")
+    if not numba_available and numba_jit["status"] != "not_applicable":
+        raise ValueError("runtime identity unavailable Numba must have a non-applicable JIT status")
+    normalized["numba_jit"] = numba_jit
+
     acceleration_state = identity["effective_acceleration_state"]
     if not isinstance(acceleration_state, str) or acceleration_state not in _ACCELERATION_STATES:
         raise ValueError(
-            "runtime identity effective_acceleration_state must be numba_enabled or python_only"
+            "runtime identity effective_acceleration_state must be python_only, "
+            "numba_jit_enabled, numba_jit_disabled, or numba_jit_unknown"
         )
-    expected_state = "numba_enabled" if numba_available else "python_only"
+    expected_state = _effective_acceleration_state(numba_jit)
     if acceleration_state != expected_state:
-        raise ValueError("runtime identity acceleration state does not match numba availability")
+        raise ValueError("runtime identity acceleration state does not match Numba JIT status")
     if requested_mode == "off" and numba_available:
         raise ValueError("runtime identity acceleration mode off cannot enable Numba")
+    if requested_mode == "required" and not numba_available:
+        raise ValueError("runtime identity acceleration mode required must have Numba available")
     normalized["effective_acceleration_state"] = acceleration_state
 
     normalized["thread_environment"] = _validate_environment(
@@ -208,6 +223,10 @@ def validate_numerical_runtime_identity(
         identity["numba_environment"],
         NUMBA_ENVIRONMENT_VARIABLES,
         "numba_environment",
+    )
+    _validate_numba_disable_jit_relation(
+        normalized["numba_environment"]["NUMBA_DISABLE_JIT"],
+        numba_jit,
     )
     normalized["openblas_coretype"] = _optional_string(
         identity["openblas_coretype"],
@@ -243,6 +262,16 @@ def validate_publication_runtime_identity(
             errors.append(f"{name} must equal 1")
     if normalized["pyosv_accel"] is None:
         errors.append("PYOSV_ACCEL must be explicitly set")
+    acceleration_state = normalized["effective_acceleration_state"]
+    if acceleration_state == "numba_jit_disabled":
+        errors.append("Numba JIT must be enabled when Numba is available")
+    elif acceleration_state == "numba_jit_unknown":
+        errors.append("Numba JIT state must be known")
+    if normalized["numba_environment"]["NUMBA_DISABLE_JIT"] not in {None, "", "0"}:
+        errors.append("NUMBA_DISABLE_JIT must be unset, empty, or equal 0")
+    numba_threads = normalized["numba_environment"]["NUMBA_NUM_THREADS"]
+    if numba_threads is not None and numba_threads != "1":
+        errors.append("NUMBA_NUM_THREADS must equal 1 when set")
     for field in ("numpy_runtime_cpu", "numpy_runtime_blas", "scipy_build"):
         if normalized[field]["status"] != "available":
             errors.append(f"{field} must be available")
@@ -254,6 +283,72 @@ def validate_publication_runtime_identity(
     if errors:
         raise ValueError("publication runtime contract violation: " + "; ".join(errors))
     return normalized
+
+
+def _numba_jit_identity(numba_available: bool) -> dict[str, Any]:
+    """Read effective Numba JIT state without importing another module."""
+
+    if not numba_available:
+        return {"status": "not_applicable", "enabled": None}
+    try:
+        numba = sys.modules.get("numba")
+        config = getattr(numba, "config")
+        disable_jit = getattr(config, "DISABLE_JIT")
+    except Exception:
+        return {"status": "unknown", "enabled": None}
+    if type(disable_jit) not in {bool, int}:
+        return {"status": "unknown", "enabled": None}
+    enabled = not bool(disable_jit)
+    return {
+        "status": "enabled" if enabled else "disabled",
+        "enabled": enabled,
+    }
+
+
+def _validate_numba_jit_identity(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {"status", "enabled"}:
+        raise ValueError("runtime identity numba_jit field set mismatch")
+    status = value["status"]
+    enabled = value["enabled"]
+    if not isinstance(status, str) or status not in _NUMBA_JIT_STATUSES:
+        raise ValueError(
+            "runtime identity numba_jit status must be not_applicable, "
+            "enabled, disabled, or unknown"
+        )
+    expected_enabled = {
+        "not_applicable": None,
+        "enabled": True,
+        "disabled": False,
+        "unknown": None,
+    }[status]
+    if enabled is not expected_enabled:
+        raise ValueError("runtime identity numba_jit enabled does not match status")
+    return {"status": status, "enabled": enabled}
+
+
+def _effective_acceleration_state(numba_jit: Mapping[str, Any]) -> str:
+    return {
+        "not_applicable": "python_only",
+        "enabled": "numba_jit_enabled",
+        "disabled": "numba_jit_disabled",
+        "unknown": "numba_jit_unknown",
+    }[numba_jit["status"]]
+
+
+def _validate_numba_disable_jit_relation(
+    raw_value: str | None,
+    numba_jit: Mapping[str, Any],
+) -> None:
+    if numba_jit["status"] not in {"enabled", "disabled"} or raw_value in {None, ""}:
+        return
+    try:
+        disabled_by_environment = bool(int(raw_value, 10))
+    except ValueError:
+        return
+    if disabled_by_environment is numba_jit["enabled"]:
+        raise ValueError(
+            "runtime identity NUMBA_DISABLE_JIT does not match effective Numba JIT status"
+        )
 
 
 def _numpy_build_identity() -> dict[str, str | None]:
