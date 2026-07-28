@@ -185,7 +185,11 @@ full-volume computation.
 
 The publication contract currently records runtime identity schema 2,
 fingerprint contract 3, scanner stage contract 4, skin artifact semantic
-contract 2, and metric schema 2. A validated bundle provides PR4 with validated
+contract 3, and metric schema 2. Skin reports record whether final cell values
+come from primary nearest samples, primary reskinning, or the connected-component
+fallback. Deep validation applies parent-volume nearest-sample checks only to
+the applicable paths; reskinned cells are instead checked authoritatively by the
+exact skin-only rerun. A validated bundle provides PR4 with validated
 DAT volumes, the validated skin mask, exactly recomputed skin cells and
 attributes, metric-schema-2 rows, and runtime/resource diagnostics. Validation
 does not establish cryptographic authenticity, independent geological truth,

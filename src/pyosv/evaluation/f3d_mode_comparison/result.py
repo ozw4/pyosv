@@ -94,6 +94,7 @@ from .skin_artifacts import (
     SkinArtifactValidationError,
     canonical_skins_payload,
     parse_skins_json,
+    resolve_final_skin_cell_value_provenance,
     resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
 )
@@ -985,22 +986,9 @@ def _validate_cells_and_stages(
             validated_scanner_reports.add(cell.stages.scanner)
         if cell.skinning_enabled and cell.stages.skinning not in parsed_skins:
             try:
-                scanner_settings = validated[("scanner", cell.stages.scanner)]
-                angle_range = _object(
-                    scanner_settings["angle_range"],
-                    f"{cell.label} scanner angle range",
-                )
                 parsed_skins[cell.stages.skinning] = parse_skins_json(
                     root / "stages" / "skinning" / cell.stages.skinning / "skins.json",
                     result.volume_shape,
-                    strike_range=(
-                        angle_range["phi_min"],
-                        angle_range["phi_max"],
-                    ),
-                    dip_range=(
-                        angle_range["theta_min"],
-                        angle_range["theta_max"],
-                    ),
                 )
             except (KeyError, TypeError, SkinArtifactValidationError) as error:
                 raise F3ResultValidationError(f"invalid skin artifact schema: {error}") from error
@@ -1026,6 +1014,9 @@ def _validate_cells_and_stages(
             root,
             cell,
             result.volume_shape,
+            skinning_stage_settings=(
+                validated[("skinning", cell.stages.skinning)] if cell.skinning_enabled else None
+            ),
         )
     by_label = {cell.label: cell for cell in result.cells}
     for left, right in (("RL-REF", "RL-QUAL"), ("Q-REF", "Q-QUAL")):
@@ -1080,6 +1071,8 @@ def _validate_cell_stage_reports(
     root: Path,
     cell: F3CellReference,
     shape: tuple[int, int, int],
+    *,
+    skinning_stage_settings: Mapping[str, Any] | None,
 ) -> None:
     contracts = (
         (
@@ -1126,6 +1119,36 @@ def _validate_cell_stage_reports(
             if name in {"resolved_config", "resolved_stage_settings"}:
                 raise F3ResultValidationError(f"{kind} report {name} mismatch")
             raise F3ResultValidationError(f"{kind} report source identity mismatch")
+        if kind == "skinning":
+            if skinning_stage_settings is None:
+                raise F3ResultValidationError("skinning stage settings are missing")
+            if report.get("resolved_stage_settings") != dict(skinning_stage_settings):
+                raise F3ResultValidationError("skinning report resolved_stage_settings mismatch")
+            diagnostics = _object(report.get("diagnostics"), "skinning report diagnostics")
+            fallback_used = diagnostics.get("fallback_used")
+            if not isinstance(fallback_used, bool):
+                raise F3ResultValidationError("skinning report fallback_used must be bool")
+            try:
+                expected_provenance = resolve_final_skin_cell_value_provenance(
+                    _object(
+                        cell.resolved_config["skinning"],
+                        f"{cell.label} skinning config",
+                    ),
+                    _object(
+                        cell.resolved_config["variant"],
+                        f"{cell.label} variant config",
+                    ),
+                    fallback_used=fallback_used,
+                    resolved_stage_settings=skinning_stage_settings,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise F3ResultValidationError(
+                    "skinning report cell provenance cannot be resolved"
+                ) from error
+            if report.get("final_cell_value_provenance") != expected_provenance:
+                raise F3ResultValidationError(
+                    "skinning report final cell value provenance mismatch"
+                )
 
 
 def _validate_scanner_report_contract(
@@ -2429,15 +2452,25 @@ def _deep_validate_skin_artifacts(
                     f"{cell.label} variant config",
                 ),
                 fallback_used=fallback_used,
+                resolved_stage_settings=_object(
+                    skinning_report["resolved_stage_settings"],
+                    f"{cell.label} skinning stage settings",
+                ),
             )
-            _validate_skin_parent_samples(
-                root,
-                parsed,
-                result.volume_shape,
-                parent_contract.likelihood,
-                parent_contract.strike,
-                parent_contract.dip,
-            )
+            recorded_provenance = skinning_report.get("final_cell_value_provenance")
+            if recorded_provenance != parent_contract.provenance:
+                raise SkinArtifactValidationError(
+                    "skinning report final cell value provenance mismatch"
+                )
+            if parent_contract.provenance != "primary_reskinned":
+                _validate_skin_parent_samples(
+                    root,
+                    parsed,
+                    result.volume_shape,
+                    parent_contract.likelihood,
+                    parent_contract.strike,
+                    parent_contract.dip,
+                )
             _recompute_skin_artifacts(
                 root,
                 cell,
@@ -2446,6 +2479,8 @@ def _deep_validate_skin_artifacts(
                 skinning_config,
                 fallback_used,
                 parent_contract.scanner_target,
+                recorded_provenance,
+                diagnostics,
             )
         except (KeyError, OSError, TypeError, ValueError) as error:
             raise F3ResultValidationError(
@@ -2488,6 +2523,8 @@ def _recompute_skin_artifacts(
     skinning_config: Mapping[str, Any],
     fallback_used: bool,
     scanner_target: tuple[str, str, str] | None,
+    recorded_provenance: Any,
+    recorded_diagnostics: Mapping[str, Any],
 ) -> None:
     voting = ("voting", cell.stages.voting)
     thinning = ("thinning", cell.stages.thinning)
@@ -2570,6 +2607,31 @@ def _recompute_skin_artifacts(
             if recomputed.diagnostics.get("fallback_used") is not fallback_used:
                 raise SkinArtifactValidationError(
                     "recomputed fallback state does not match skinning report"
+                )
+            recomputed_provenance = resolve_final_skin_cell_value_provenance(
+                skinning_config,
+                _object(
+                    cell.resolved_config["variant"],
+                    f"{cell.label} variant config",
+                ),
+                fallback_used=bool(recomputed.diagnostics["fallback_used"]),
+            )
+            if recomputed_provenance != recorded_provenance:
+                raise SkinArtifactValidationError(
+                    "recomputed final cell value provenance does not match skinning report"
+                )
+            normalized_recomputed_diagnostics = json.loads(
+                canonical_json_bytes(dict(recomputed.diagnostics))
+            )
+            if normalized_recomputed_diagnostics != dict(recorded_diagnostics):
+                differing_fields = sorted(
+                    name
+                    for name in (set(normalized_recomputed_diagnostics) | set(recorded_diagnostics))
+                    if normalized_recomputed_diagnostics.get(name) != recorded_diagnostics.get(name)
+                )
+                raise SkinArtifactValidationError(
+                    "recomputed skinning diagnostics do not match skinning report: "
+                    + ", ".join(differing_fields)
                 )
             recomputed_payload = canonical_skins_payload(recomputed.skins)
         finally:

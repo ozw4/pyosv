@@ -329,7 +329,11 @@ existing operational validation paths.
   voting, and thinning parents. The rerun exactly checks every final
   cell's subvoxel geometry, voxel index, likelihood, strike, dip, ordering, and
   duplicate occurrence against `skins.json`, while retaining the mask and
-  topology cross-checks. It therefore requires the current fixed publication
+  topology cross-checks. The recorded final-cell provenance distinguishes
+  primary nearest samples, reskinned primary cells, and connected-component
+  fallback cells. Parent nearest-sample checks apply to the first and third;
+  exact skin-only replay is authoritative for reskinned values. It therefore
+  requires the current fixed publication
   runtime to match the manifest. This establishes internal numerical
   consistency, not artifact authenticity or geological truth. Shallow
   `--validate-only` validates only the recorded contract and does not impose

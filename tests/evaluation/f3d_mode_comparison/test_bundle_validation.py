@@ -71,12 +71,12 @@ def _small_official_contract(monkeypatch: pytest.MonkeyPatch) -> None:
 def _complete_small_bundle(
     tmp_path: Path,
     *,
+    shape: tuple[int, int, int] = (3, 4, 5),
     skinning_enabled: bool = False,
     pretty: bool = False,
     config: F3ModeComparisonConfig | None = None,
     workflow_runner: Callable[..., Any] | None = None,
 ) -> Path:
-    shape = (3, 4, 5)
     roles = (
         ("input", "ep.dat"),
         ("reference_fault_likelihood", "fl.dat"),
@@ -153,7 +153,7 @@ def _complete_small_bundle(
         workspace,
         plan,
         scanners,
-        scanner_loader=lambda stage: _LoadedScanner(stage, []),
+        scanner_loader=_load_persisted_scanner_fixture,
         **runner_kwargs,
     )
     metrics = extract_f3d_metrics(source, cell_result.cells, slab_depth=1)
@@ -212,6 +212,19 @@ def _complete_small_bundle(
     return root
 
 
+def _load_persisted_scanner_fixture(stage: Any) -> _LoadedScanner:
+    loaded = _LoadedScanner(stage, [])
+    for name in ("ft", "pt", "tt"):
+        setattr(
+            loaded,
+            name,
+            np.fromfile(stage.path / f"{name}.dat", dtype=">f4")
+            .astype(np.float32)
+            .reshape(stage.shape),
+        )
+    return loaded
+
+
 def _boundary_skin_config() -> F3ModeComparisonConfig:
     return F3ModeComparisonConfig(
         skinning_enabled=True,
@@ -255,6 +268,60 @@ def _controlled_boundary_skin_workflow(**kwargs: Any) -> Any:
         skinning_settings=kwargs["skinning_settings"],
         variant_spec=kwargs["variant_spec"],
         scanner_target_positive_mask=kwargs["scanner_target_positive_mask"],
+        boundary_fallback_runner=kwargs["boundary_fallback_runner"],
+    )
+    return replace(
+        base,
+        fv=fv,
+        fvt=fvt,
+        vp=vp,
+        vt=vt,
+        skin=skin,
+        diagnostics=replace(base.diagnostics, skinning=skin.diagnostics),
+    )
+
+
+def _reskinned_primary_config() -> F3ModeComparisonConfig:
+    return F3ModeComparisonConfig(
+        skinning_enabled=True,
+        boundary_diagnostic_margin=0,
+        skinning_template=SyntheticSkinningConfig(
+            min_likelihood=0.5,
+            min_skin_size=1,
+            d=1,
+            ru=5,
+            rv=6,
+            rw=6,
+            max_steps=6,
+            reskin=True,
+            accepted_occupancy_radius=0,
+            small_skin_size=1,
+            boundary_skinner_fallback=False,
+        ),
+        skinner_method_explicit=True,
+        skinner_min_likelihood_explicit=True,
+        skinner_growth_source_explicit=True,
+        skinner_accepted_occupancy_radius_explicit=True,
+        skinner_boundary_fallback_explicit=True,
+    )
+
+
+def _controlled_reskinned_primary_workflow(**kwargs: Any) -> Any:
+    base = runner_module.execute_workflow3d(**kwargs)
+    shape = base.fv.shape
+    fv = np.zeros(shape, dtype=np.float32)
+    fv[3:10, 6, 3:10] = np.float32(0.9)
+    fvt = fv.copy()
+    vp = np.zeros(shape, dtype=np.float32)
+    vt = np.full(shape, np.float32(90.0), dtype=np.float32)
+    skin = execute_skinning_phase3d(
+        fv=fv,
+        fvt=fvt,
+        vp=vp,
+        vt=vt,
+        skinning_settings=kwargs["skinning_settings"],
+        variant_spec=kwargs["variant_spec"],
+        scanner_target_positive_mask=None,
         boundary_fallback_runner=kwargs["boundary_fallback_runner"],
     )
     return replace(
@@ -620,6 +687,68 @@ def test_deep_validation_exactly_reexecutes_boundary_fallback(
 
     assert validate_completed_f3d_bundle(root, deep=True)
     assert fallback_calls == len(fingerprints)
+
+
+def test_reskinned_primary_cells_use_exact_replay_instead_of_parent_samples(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shape = (13, 13, 13)
+    monkeypatch.setattr(
+        result_module,
+        "OFFICIAL_F3_DATASET_SPEC",
+        F3DatasetSpec(
+            dataset_id="result-fixture",
+            shape=shape,
+            files=(
+                ("input", "ep.dat"),
+                ("reference_fault_likelihood", "fl.dat"),
+                ("reference_fault_votes", "fv.dat"),
+                ("reference_thinned_fault_votes", "fvt.dat"),
+            ),
+            expected_bytes=int(np.prod(shape)) * np.dtype(">f4").itemsize,
+        ),
+    )
+    root = _complete_small_bundle(
+        tmp_path,
+        shape=shape,
+        config=_reskinned_primary_config(),
+        workflow_runner=_controlled_reskinned_primary_workflow,
+    )
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+    payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+    cells = [cell for skin in payload["skins"] for cell in skin["cells"]]
+    voting = root / "stages" / "voting" / loaded.cells[0].stages.voting
+    vp = np.fromfile(voting / "vp.dat", dtype=">f4").reshape(shape)
+    vt = np.fromfile(voting / "vt.dat", dtype=">f4").reshape(shape)
+
+    assert report["final_cell_value_provenance"] == "primary_reskinned"
+    assert any(skin["cell_count"] > 1 for skin in payload["skins"])
+    assert any(
+        np.float32(cell["fp"]) != vp[cell["i3"], cell["i2"], cell["i1"]]
+        or np.float32(cell["ft"]) != vt[cell["i3"], cell["i2"], cell["i1"]]
+        for cell in cells
+    )
+    assert validate_completed_f3d_bundle(root)
+    assert validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_rehashed_recorded_skin_provenance_tamper_is_rejected(
+    tmp_path: Path,
+) -> None:
+    root = _complete_small_bundle(tmp_path, skinning_enabled=True)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    report_path = stage / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["final_cell_value_provenance"] = "primary_nearest_sample"
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    _rehash_stage_artifact(root, stage, "report.json")
+
+    with pytest.raises(F3ResultValidationError, match="provenance mismatch"):
+        validate_completed_f3d_bundle(root)
 
 
 @pytest.mark.parametrize(
@@ -1742,6 +1871,7 @@ def test_skin_recomputation_stages_one_read_only_parent_map_at_a_time(
         experimental=False,
     )
     cell = SimpleNamespace(
+        label="fixture",
         stages=SimpleNamespace(voting="voting-stage", thinning="thinning-stage"),
         resolved_config={"variant": asdict(variant)},
     )
@@ -1820,6 +1950,8 @@ def test_skin_recomputation_stages_one_read_only_parent_map_at_a_time(
         skinning_config,
         False,
         scanner_source,
+        "primary_reskinned",
+        {"fallback_used": False},
     )
 
     assert len(opened) == 5
