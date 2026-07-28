@@ -13,6 +13,11 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from pyosv._orient3d.sampling import (
+    _reference_like_dip_sampling,
+    _reference_like_strike_sampling,
+    _refined_reference_like_sampling,
+)
 from pyosv.candidate_volume import NONZERO_EPSILON, nonzero_count
 from pyosv.orient3d import FaultOrientScanner3
 
@@ -666,7 +671,6 @@ def scanner_sampling_evidence(
         dip = scanner.reference_like_dip_sampling(config.theta_min, config.theta_max)
         strike_helper = scanner.reference_like_strike_sampling
         dip_helper = scanner.reference_like_dip_sampling
-        refinement_factor = 1
     else:
         strike = scanner.refined_reference_like_strike_sampling(
             config.phi_min,
@@ -680,32 +684,61 @@ def scanner_sampling_evidence(
         )
         strike_helper = scanner.refined_reference_like_strike_sampling
         dip_helper = scanner.refined_reference_like_dip_sampling
-        refinement_factor = config.refinement_factor
 
     implementation = (
         _scanner_instance_implementation_identity(scanner)
         if implementation_identity is None
         else _normalized_implementation_identity(implementation_identity)
     )
+    return _sampling_evidence_from_axes(
+        strike=strike,
+        dip=dip,
+        config=config,
+        backend=backend,
+        implementation_identity=implementation,
+        strike_helper=strike_helper,
+        dip_helper=dip_helper,
+    )
+
+
+def _sampling_evidence_from_axes(
+    *,
+    strike: object,
+    dip: object,
+    config: F3ScannerConfig,
+    backend: F3ScannerBackend,
+    implementation_identity: Mapping[str, Any] | str,
+    strike_helper: Callable[..., Any],
+    dip_helper: Callable[..., Any],
+) -> dict[str, Any]:
+    strike_evidence = _sampling_axis_evidence(strike, "strike")
+    dip_evidence = _sampling_axis_evidence(dip, "dip")
     evidence = {
         "backend": backend,
-        "refinement_factor": refinement_factor,
+        "refinement_factor": 1 if backend == "reference-like" else config.refinement_factor,
         "dtype": np.dtype(np.float32).name,
-        "strike": _sampling_axis_evidence(strike, "strike"),
-        "dip": _sampling_axis_evidence(dip, "dip"),
-        "orientation_count": int(len(strike) * len(dip)),
-        "scanner_stage_implementation_identity": implementation,
+        "strike": strike_evidence,
+        "dip": dip_evidence,
+        "orientation_count": strike_evidence["count"] * dip_evidence["count"],
+        "scanner_stage_implementation_identity": implementation_identity,
         "sampling_source_implementation_identity": {
-            "strike": _callable_implementation_identity(strike_helper),
-            "dip": _callable_implementation_identity(dip_helper),
+            "strike": _sampling_helper_implementation_identity(strike_helper),
+            "dip": _sampling_helper_implementation_identity(dip_helper),
         },
     }
     return validate_scanner_sampling_evidence(
         evidence,
         config,
         backend,
-        expected_implementation_identity=implementation,
+        expected_implementation_identity=implementation_identity,
     )
+
+
+def _sampling_helper_implementation_identity(
+    helper: Callable[..., Any],
+) -> dict[str, str]:
+    underlying = getattr(helper, "__func__", helper)
+    return _callable_implementation_identity(underlying)
 
 
 def canonical_scanner_sampling_evidence(
@@ -716,13 +749,38 @@ def canonical_scanner_sampling_evidence(
 ) -> dict[str, Any]:
     """Derive canonical scanner sampling evidence without constructing a scanner."""
 
+    if not isinstance(config, F3ScannerConfig):
+        raise TypeError("config must be an F3ScannerConfig")
+    _validate_backend(backend)
+    if backend != config.backend:
+        raise ValueError("sampling backend must match config.backend")
+
     implementation = _normalized_implementation_identity(implementation_identity)
-    return scanner_sampling_evidence(
-        FaultOrientScanner3,  # type: ignore[arg-type]
-        config,
-        backend,
+    if backend == "reference-like":
+        strike = _reference_like_strike_sampling(config.phi_min, config.phi_max)
+        dip = _reference_like_dip_sampling(config.theta_min, config.theta_max)
+        strike_helper = FaultOrientScanner3.reference_like_strike_sampling
+        dip_helper = FaultOrientScanner3.reference_like_dip_sampling
+    else:
+        strike = _refined_reference_like_sampling(
+            _reference_like_strike_sampling(config.phi_min, config.phi_max),
+            refinement_factor=config.refinement_factor,
+        )
+        dip = _refined_reference_like_sampling(
+            _reference_like_dip_sampling(config.theta_min, config.theta_max),
+            refinement_factor=config.refinement_factor,
+        )
+        strike_helper = FaultOrientScanner3.refined_reference_like_strike_sampling
+        dip_helper = FaultOrientScanner3.refined_reference_like_dip_sampling
+
+    return _sampling_evidence_from_axes(
+        strike=strike,
+        dip=dip,
+        config=config,
+        backend=backend,
         implementation_identity=implementation,
-        require_full_protocol=False,
+        strike_helper=strike_helper,
+        dip_helper=dip_helper,
     )
 
 

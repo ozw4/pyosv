@@ -225,6 +225,49 @@ def test_refined_reference_like_sampling_factor_two_includes_midpoints() -> None
     assert refined_thetas[-1] <= np.float32(60.0)
 
 
+def test_refined_reference_like_sampling_dispatches_to_base_sampling_overrides() -> None:
+    class OverrideScanner(FaultOrientScanner3):
+        def reference_like_strike_sampling(
+            self,
+            phi_min: float,
+            phi_max: float,
+        ) -> np.ndarray:
+            del phi_min, phi_max
+            return np.asarray([10.0, 30.0], dtype=np.float32)
+
+        def reference_like_dip_sampling(
+            self,
+            theta_min: float,
+            theta_max: float,
+        ) -> np.ndarray:
+            del theta_min, theta_max
+            return np.asarray([5.0, 15.0], dtype=np.float32)
+
+    scanner = OverrideScanner(sigma1=2.0, sigma2=2.0)
+
+    strike = scanner.refined_reference_like_strike_sampling(
+        10.0,
+        30.0,
+        refinement_factor=2,
+    )
+    dip = scanner.refined_reference_like_dip_sampling(
+        5.0,
+        15.0,
+        refinement_factor=2,
+    )
+
+    np.testing.assert_array_equal(
+        strike,
+        np.asarray([10.0, 20.0, 30.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        dip,
+        np.asarray([5.0, 10.0, 15.0], dtype=np.float32),
+    )
+    assert strike.dtype == np.float32
+    assert dip.dtype == np.float32
+
+
 @pytest.mark.parametrize("refinement_factor", [0, 5, 1.5, True])
 def test_refined_reference_like_sampling_rejects_invalid_refinement_factor(
     refinement_factor: object,
@@ -768,6 +811,64 @@ def test_scan_quality_factor_one_matches_reference_like() -> None:
 
     for reference_array, quality_array in zip(reference_like, quality):
         np.testing.assert_array_equal(reference_array, quality_array)
+
+
+def test_scan_quality_uses_sampling_derived_from_base_overrides() -> None:
+    observed: dict[str, np.ndarray] = {}
+
+    class OverrideScanner(FaultOrientScanner3):
+        def reference_like_strike_sampling(
+            self,
+            phi_min: float,
+            phi_max: float,
+        ) -> np.ndarray:
+            del phi_min, phi_max
+            return np.asarray([10.0, 30.0], dtype=np.float32)
+
+        def reference_like_dip_sampling(
+            self,
+            theta_min: float,
+            theta_max: float,
+        ) -> np.ndarray:
+            del theta_min, theta_max
+            return np.asarray([5.0, 15.0], dtype=np.float32)
+
+        def _scan_reference_like_samples_with_confidence(
+            self,
+            phi_sampling: np.ndarray,
+            theta_sampling: np.ndarray,
+            g: np.ndarray,
+            **kwargs: object,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            del self, kwargs
+            observed["strike"] = phi_sampling
+            observed["dip"] = theta_sampling
+            zeros = np.zeros_like(g, dtype=np.float32)
+            return zeros, zeros.copy(), zeros.copy()
+
+    scanner = OverrideScanner(sigma1=2.0, sigma2=2.0)
+    image = np.zeros((1, 2, 3), dtype=np.float32)
+
+    result = scanner.scan_quality(
+        10.0,
+        30.0,
+        5.0,
+        15.0,
+        image,
+        refinement_factor=2,
+    )
+
+    np.testing.assert_array_equal(
+        observed["strike"],
+        np.asarray([10.0, 20.0, 30.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        observed["dip"],
+        np.asarray([5.0, 10.0, 15.0], dtype=np.float32),
+    )
+    assert observed["strike"].dtype == np.float32
+    assert observed["dip"].dtype == np.float32
+    assert len(result) == 3
 
 
 def test_scan_quality_can_return_confidence() -> None:

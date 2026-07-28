@@ -495,6 +495,54 @@ def test_sampling_evidence_schema_rejects_inconsistent_metadata() -> None:
             )
 
 
+def test_custom_quality_sampling_evidence_refines_base_sampling_overrides() -> None:
+    class OverrideScanner(scanner_module.FaultOrientScanner3):
+        def reference_like_strike_sampling(
+            self,
+            phi_min: float,
+            phi_max: float,
+        ) -> np.ndarray:
+            del phi_min, phi_max
+            return np.asarray([10.0, 30.0], dtype=np.float32)
+
+        def reference_like_dip_sampling(
+            self,
+            theta_min: float,
+            theta_max: float,
+        ) -> np.ndarray:
+            del theta_min, theta_max
+            return np.asarray([5.0, 15.0], dtype=np.float32)
+
+    config = F3ScannerConfig(
+        backend="quality",
+        phi_min=10.0,
+        phi_max=30.0,
+        theta_min=5.0,
+        theta_max=15.0,
+        refinement_factor=2,
+    )
+    scanner = OverrideScanner(config.sigma1, config.sigma2)
+
+    evidence = scanner_module.scanner_sampling_evidence(
+        scanner,
+        config,
+        "quality",
+        implementation_identity="override-scanner-v1",
+    )
+
+    assert evidence["strike"] == {
+        "count": 3,
+        "values": [10.0, 20.0, 30.0],
+        "sha256": "ee0053802d7a5ad4b883a2e76a4532e5a14f60b6e177f580886a3b5b82bce78e",
+    }
+    assert evidence["dip"] == {
+        "count": 3,
+        "values": [5.0, 10.0, 15.0],
+        "sha256": "99085118d3e0932714335323186e03ad02e25491ede3effe730f3784c980fa63",
+    }
+    assert evidence["orientation_count"] == 9
+
+
 @pytest.mark.parametrize("backend", scanner_module.F3_SCANNER_BACKEND_ORDER)
 def test_canonical_pure_sampling_evidence_matches_scanner_instance(backend: str) -> None:
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
@@ -514,6 +562,98 @@ def test_canonical_pure_sampling_evidence_matches_scanner_instance(backend: str)
     )
 
     assert pure == actual
+    method_prefix = "reference_like" if backend == "reference-like" else "refined_reference_like"
+    expected_source_identity = {
+        axis: scanner_module._callable_implementation_identity(
+            getattr(
+                scanner_module.FaultOrientScanner3,
+                f"{method_prefix}_{axis}_sampling",
+            )
+        )
+        for axis in ("strike", "dip")
+    }
+    assert pure["sampling_source_implementation_identity"] == expected_source_identity
+
+
+@pytest.mark.parametrize("backend", scanner_module.F3_SCANNER_BACKEND_ORDER)
+def test_canonical_sampling_evidence_does_not_construct_scanner(
+    backend: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    config = plan.scanner_config_for(backend)  # type: ignore[arg-type]
+
+    def unexpected_init(self: object, sigma1: float, sigma2: float) -> None:
+        del self, sigma1, sigma2
+        pytest.fail("canonical sampling evidence constructed a scanner")
+
+    monkeypatch.setattr(scanner_module.FaultOrientScanner3, "__init__", unexpected_init)
+
+    evidence = scanner_module.canonical_scanner_sampling_evidence(
+        config,
+        backend,  # type: ignore[arg-type]
+    )
+
+    assert evidence["backend"] == backend
+    assert evidence["orientation_count"] > 0
+
+
+@pytest.mark.parametrize(
+    (
+        "backend",
+        "expected_strike",
+        "expected_strike_digest",
+        "expected_dip",
+        "expected_dip_digest",
+        "expected_orientation_count",
+    ),
+    [
+        (
+            "reference-like",
+            np.arange(0.0, 360.0, 20.0, dtype=np.float32),
+            "419c4d690a321eea983df4752e0cd2cd16f82381d8b92e4bcbbe968b3429dcb2",
+            np.asarray([65.0, 70.0, 75.0, 80.0], dtype=np.float32),
+            "9765dfab55e5734d0894f0d47def4fb8f3b73b1a84dea3abe6e7f4fc5bf07a8a",
+            72,
+        ),
+        (
+            "quality",
+            np.arange(0.0, 350.0, 10.0, dtype=np.float32),
+            "eaf420b2430f02dc4edbe71dfc6bd7da5758023513e5b292fb6e3a6cc028f50b",
+            np.asarray([65.0, 67.5, 70.0, 72.5, 75.0, 77.5, 80.0], dtype=np.float32),
+            "9b6e883df9cdd42f7ef1479dd890c0063ad9325305f75aeaabd76e58f03943e0",
+            245,
+        ),
+    ],
+)
+def test_canonical_sampling_axes_remain_numerically_stable(
+    backend: str,
+    expected_strike: np.ndarray,
+    expected_strike_digest: str,
+    expected_dip: np.ndarray,
+    expected_dip_digest: str,
+    expected_orientation_count: int,
+) -> None:
+    plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
+    config = plan.scanner_config_for(backend)  # type: ignore[arg-type]
+
+    evidence = scanner_module.canonical_scanner_sampling_evidence(
+        config,
+        backend,  # type: ignore[arg-type]
+    )
+
+    for axis, expected, expected_digest in (
+        ("strike", expected_strike, expected_strike_digest),
+        ("dip", expected_dip, expected_dip_digest),
+    ):
+        axis_evidence = evidence[axis]
+        actual = np.asarray(axis_evidence["values"], dtype=np.float32)
+        np.testing.assert_array_equal(actual, expected)
+        assert actual.dtype == np.float32
+        assert np.all(np.diff(actual) > np.float32(0.0))
+        assert axis_evidence["count"] == expected.size
+        assert axis_evidence["sha256"] == expected_digest
+    assert evidence["orientation_count"] == expected_orientation_count
 
 
 def test_actual_sampling_mismatch_is_rejected_before_source_read_or_scan(
@@ -622,7 +762,11 @@ def test_runner_rejects_input_not_bound_to_workspace_before_compute(tmp_path: Pa
     assert not any((workspace.path / "stages" / "scanner").iterdir())
 
 
-def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
+@pytest.mark.parametrize("missing_backend", scanner_module.F3_SCANNER_BACKEND_ORDER)
+def test_reverse_order_and_one_backend_resume(
+    tmp_path: Path,
+    missing_backend: str,
+) -> None:
     values = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     plan = build_f3d_mode_comparison_plan(F3ModeComparisonConfig())
     source = _Source(tmp_path / "data", values)
@@ -656,7 +800,7 @@ def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
                 forward[backend].path / filename
             ).read_bytes()
 
-    shutil.rmtree(first["quality"].path)
+    shutil.rmtree(first[missing_backend].path)
 
     resumed_source = _Source(tmp_path / "resumed-data", values)
     resumed_calls = _calls()
@@ -668,12 +812,12 @@ def test_reverse_order_and_one_backend_resume(tmp_path: Path) -> None:
         implementation_identity=_IMPLEMENTATION,
         sampling_evidence_by_backend=_sampling_contract(plan),
     )
-    assert resumed["reference-like"].reused is True
-    assert resumed["quality"].reused is False
+    for backend in scanner_module.F3_SCANNER_BACKEND_ORDER:
+        assert resumed[backend].reused is (backend != missing_backend)
     assert resumed_source.read_count == 1
     assert resumed_calls["construction"] == 1
-    assert resumed_calls["reference_scan"] == 0
-    assert resumed_calls["quality_scan"] == 1
+    assert resumed_calls["reference_scan"] == (missing_backend == "reference-like")
+    assert resumed_calls["quality_scan"] == (missing_backend == "quality")
     assert resumed_calls["thin"] == 1
 
 
