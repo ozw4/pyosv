@@ -177,15 +177,19 @@ OMP_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 \
 NUMEXPR_NUM_THREADS=1 \
-PYOSV_ACCEL=auto \
 NUMBA_DISABLE_JIT=0 \
 NUMBA_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
 PYOSV_RUN_F3D_MODE_COMPARISON=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
-PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_v2 \
+PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_v3 \
 PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE=1 \
 python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 ```
+
+The official gate command above explicitly sets `PYOSV_ACCEL=auto` and verifies
+that the resulting effective acceleration state is `numba_jit_enabled`; a
+`python_only` run is not an official F3 result.
 
 Normal CLI unit tests stub orchestration and do not require F3 files or
 full-volume computation.
@@ -196,11 +200,12 @@ contract 3, and metric schema 2. Skin reports record whether final cell values
 come from primary nearest samples, primary reskinning, or the connected-component
 fallback. Deep validation applies parent-volume nearest-sample checks only to
 the applicable paths; reskinned cells are instead checked authoritatively by the
-exact skin-only rerun. A validated bundle provides PR4 with validated
-DAT volumes, the validated skin mask, exactly recomputed skin cells and
-attributes, metric-schema-2 rows, and runtime/resource diagnostics. Validation
-does not establish cryptographic authenticity, independent geological truth,
-or bitwise reproducibility across arbitrary hardware.
+exact skin-only rerun. A validated bundle provides PR4 with the validated DAT
+volumes and scanner sampling evidence, the validated skin mask, exact-recomputed
+reskin and connected-component-fallback cell payloads, metric-schema-2 rows,
+and runtime/resource diagnostics. Validation does not establish cryptographic
+authenticity, independent geological truth, or bitwise reproducibility across
+arbitrary hardware.
 
 Scanner stage contract 5 records sampling evidence from the same scanner
 instance that produces each volume. The bounded strike and dip grids are stored

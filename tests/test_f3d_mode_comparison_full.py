@@ -20,6 +20,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     validate_completed_f3d_bundle,
     validate_publication_runtime_identity,
 )
+from pyosv.evaluation.f3d_mode_comparison.scanner import sampling_count_from_evidence
 
 
 def _required_environment() -> tuple[Path, Path]:
@@ -48,6 +49,8 @@ def _required_environment() -> tuple[Path, Path]:
 def test_official_f3_full_volume_mode_comparison() -> None:
     data_root, output_root = _required_environment()
     runtime_identity = validate_publication_runtime_identity(numerical_runtime_identity())
+    assert runtime_identity["effective_acceleration_state"] == "numba_jit_enabled"
+    assert runtime_identity["numba_jit"]["enabled"] is True
     deep = os.environ.get("PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE") == "1"
     arguments = [
         "--data-root",
@@ -84,10 +87,8 @@ def test_official_f3_full_volume_mode_comparison() -> None:
         manifest["runtime_identity"]["runtime_identity_schema_version"]
         == F3_RUNTIME_IDENTITY_SCHEMA_VERSION
     )
-    assert manifest["runtime_identity"]["effective_acceleration_state"] in {
-        "python_only",
-        "numba_jit_enabled",
-    }
+    assert manifest["runtime_identity"]["effective_acceleration_state"] == "numba_jit_enabled"
+    assert manifest["runtime_identity"]["numba_jit"]["enabled"] is True
     assert manifest["runtime_identity"]["numba_environment"]["NUMBA_DISABLE_JIT"] == "0"
     assert manifest["runtime_identity"]["numba_environment"]["NUMBA_NUM_THREADS"] == "1"
     assert manifest["runtime_identity"]["numpy_runtime_cpu"]["status"] == "available"
@@ -112,6 +113,17 @@ def test_official_f3_full_volume_mode_comparison() -> None:
             (output_root / "stages" / "scanner" / fingerprint / "report.json").read_text()
         )
         assert report["scanner_stage_contract_version"] == F3_SCANNER_STAGE_CONTRACT_VERSION
+        evidence = report["sampling_evidence"]
+        assert evidence == report["resolved_stage_settings"]["sampling_evidence"]
+        assert report["sampling_count"] == sampling_count_from_evidence(evidence)
+        assert (
+            evidence["scanner_stage_implementation_identity"]
+            == (report["resolved_stage_settings"]["scanner_stage_implementation_identity"])
+        )
+        assert set(evidence["sampling_source_implementation_identity"]) == {
+            "strike",
+            "dip",
+        }
     for cell in result.cells:
         manifest_path = (
             output_root / "stages" / "skinning" / cell.stages.skinning / "stage_manifest.json"

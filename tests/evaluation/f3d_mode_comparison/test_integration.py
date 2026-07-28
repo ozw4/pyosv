@@ -114,19 +114,22 @@ class _DeterministicScanner:
         return ft, pt, tt
 
 
-def _fixture_spec() -> F3DatasetSpec:
+def _fixture_spec(shape: tuple[int, int, int] = _SHAPE) -> F3DatasetSpec:
     return F3DatasetSpec(
         dataset_id="small-external-style-fixture",
-        shape=_SHAPE,
+        shape=shape,
         files=_ROLES,
-        expected_bytes=int(np.prod(_SHAPE)) * np.dtype(">f4").itemsize,
+        expected_bytes=int(np.prod(shape)) * np.dtype(">f4").itemsize,
     )
 
 
-def _write_fixture(root: Path) -> F3DatasetSpec:
+def _write_fixture(
+    root: Path,
+    shape: tuple[int, int, int] = _SHAPE,
+) -> F3DatasetSpec:
     root.mkdir()
-    spec = _fixture_spec()
-    base = np.linspace(0.05, 1.0, int(np.prod(_SHAPE)), dtype=np.float32).reshape(_SHAPE)
+    spec = _fixture_spec(shape)
+    base = np.linspace(0.05, 1.0, int(np.prod(shape)), dtype=np.float32).reshape(shape)
     for offset, (_, filename) in enumerate(_ROLES):
         values = np.clip(base + np.float32(offset * 0.01), 0.0, 1.0)
         values.astype(">f4").tofile(root / filename)
@@ -164,6 +167,7 @@ def _run_fixture(
     scanner_implementation_identity: str = "small-fixture-scanner-v1",
     workflow_implementation_identity: str = "small-fixture-workflow-v1",
     scanner_factory: Any = None,
+    workflow_runner: Any = None,
 ) -> F3ModeComparisonResult:
     plan = _fixture_plan(spec, plan_config)
     with F3VolumeSource(data_root, spec=spec) as source:
@@ -198,8 +202,11 @@ def _run_fixture(
             rss_recorder=rss,
         )
 
-        def workflow_runner(**kwargs: Any) -> Any:
+        def counted_workflow_runner(**kwargs: Any) -> Any:
             calls["workflow callback"] += 1
+            if workflow_runner is not None:
+                return workflow_runner(**kwargs)
+
             from pyosv.evaluation.workflow3d import execute_workflow3d
 
             return execute_workflow3d(**kwargs)
@@ -208,7 +215,7 @@ def _run_fixture(
             workspace,
             plan,
             scanners,
-            workflow_runner=workflow_runner,
+            workflow_runner=counted_workflow_runner,
             workflow_implementation_identity=workflow_implementation_identity,
             rss_recorder=rss,
         )
