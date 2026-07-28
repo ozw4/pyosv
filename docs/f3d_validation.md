@@ -211,15 +211,21 @@ and runtime/resource diagnostics. Validation does not establish cryptographic
 authenticity, independent geological truth, or bitwise reproducibility across
 arbitrary hardware.
 
-Scanner stage contract 5 records sampling evidence from the same scanner
-instance that produces each volume. The bounded strike and dip grids are stored
-as float32 values with exact bit-pattern SHA-256 digests, counts, effective
-refinement, and sampling-helper implementation identities. The legacy
-`sampling_count` view is derived from that evidence. Official CLI stages
-explicitly require the canonical scanner implementation identity, and deep
-validation re-derives its sampling evidence from the resolved scanner config
-without running scanning or thinning. Injected fixture scanners retain their
-own implementation-bound evidence and are not treated as canonical stages.
+Scanner stage contract 5 records precomputed sampling evidence and verifies it
+exactly against the scanner instance before that instance produces a volume.
+The bounded strike and dip grids are stored as float32 values with exact
+bit-pattern SHA-256 digests, counts, effective refinement, and sampling-helper
+implementation identities. The legacy `sampling_count` view is derived from
+that evidence. Official CLI stages explicitly require the canonical scanner
+implementation identity and derive canonical sampling evidence without
+constructing a scanner. Consequently, an all-reuse run performs no scanner
+construction, instance sampling, source-volume read, scan, or thinning. A
+custom scanner factory must supply validated evidence for both backends; a
+computed stage checks the actual instance against that declared contract before
+reading the source volume or scanning. Deep validation also re-derives
+canonical evidence without constructing a scanner. Injected fixture scanners
+retain their own implementation-bound evidence and are not treated as canonical
+stages.
 
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)

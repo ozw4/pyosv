@@ -19,7 +19,6 @@ import numpy as np
 
 from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
 from pyosv.experimental.boundary_skinning import apply_boundary_skinner_fallback
-from pyosv.orient3d import FaultOrientScanner3
 
 from .artifacts import (
     F3_ARTIFACT_SCHEMA_VERSION,
@@ -85,8 +84,8 @@ from .runner import (
 from .scanner import (
     F3_SCANNER_STAGE_CONTRACT_VERSION,
     canonical_scanner_implementation_identity,
+    canonical_scanner_sampling_evidence,
     scanner_array_summary,
-    scanner_sampling_evidence,
     sampling_count_from_evidence,
     scanner_stage_artifacts,
     scanner_stage_resolved_settings,
@@ -2349,13 +2348,10 @@ def _deep_validate_scanner_stages(
         try:
             canonical_identity = canonical_scanner_implementation_identity()
             if persisted_identity == canonical_identity:
-                scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
-                expected_sampling = scanner_sampling_evidence(
-                    scanner,
+                expected_sampling = canonical_scanner_sampling_evidence(
                     config,
                     backend,
                     implementation_identity=canonical_identity,
-                    require_full_protocol=False,
                 )
                 if persisted_sampling != expected_sampling:
                     raise F3ResultValidationError("deep scanner sampling evidence mismatch")

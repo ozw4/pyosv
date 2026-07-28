@@ -19,7 +19,6 @@ import pytest
 import pyosv._skinner.growth as skinner_growth_module
 import pyosv.evaluation.f3d_mode_comparison.result as result_module
 import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
-import pyosv.evaluation.f3d_mode_comparison.scanner as scanner_module
 import pyosv.evaluation.workflow3d as workflow3d_module
 from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetSpec,
@@ -307,21 +306,6 @@ def test_publication_contract_v3_small_fixture_end_to_end(
     monkeypatch.setattr(result_module, "scanner_array_summary", tracked_summary)
     monkeypatch.setattr(result_module, "execute_skinning_phase3d", tracked_skinning)
     monkeypatch.setattr(result_module, "compute_reference_metric_rows", tracked_reference_metrics)
-    monkeypatch.setattr(
-        result_module.FaultOrientScanner3,
-        "scan",
-        unexpected_upstream_compute("scanner"),
-    )
-    monkeypatch.setattr(
-        result_module.FaultOrientScanner3,
-        "scan_quality",
-        unexpected_upstream_compute("scanner"),
-    )
-    monkeypatch.setattr(
-        result_module.FaultOrientScanner3,
-        "thin",
-        unexpected_upstream_compute("scanner thinning"),
-    )
     monkeypatch.setattr(
         workflow3d_module.OptimalSurfaceVoter,
         "apply_voting_from_seeds",
@@ -726,19 +710,17 @@ def test_canonical_scanner_sampling_tamper_reaches_deep_rederivation(
     scanner_fingerprints = {cell.stages.scanner for cell in loaded.cells}
     fingerprint_by_backend = {cell.backend: cell.stages.scanner for cell in loaded.cells}
     sampling_rederivations: Counter[str] = Counter()
-    original_sampling = result_module.scanner_sampling_evidence
+    original_sampling = result_module.canonical_scanner_sampling_evidence
 
     def tracked_sampling(
-        scanner: Any,
         config: Any,
         backend: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
         sampling_rederivations[fingerprint_by_backend[backend]] += 1
-        return original_sampling(scanner, config, backend, **kwargs)
+        return original_sampling(config, backend, **kwargs)
 
-    monkeypatch.setattr(result_module, "scanner_sampling_evidence", tracked_sampling)
-    monkeypatch.setattr(scanner_module, "scanner_sampling_evidence", tracked_sampling)
+    monkeypatch.setattr(result_module, "canonical_scanner_sampling_evidence", tracked_sampling)
     assert validate_completed_f3d_bundle(root, deep=True, _dataset_spec=fixture_spec)
     assert sampling_rederivations == Counter(
         {fingerprint: 1 for fingerprint in scanner_fingerprints}

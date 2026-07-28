@@ -42,6 +42,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     prepare_run_workspace,
     run_f3d_mode_comparison_cells,
     run_scanner_stages,
+    scanner_sampling_evidence,
     validate_completed_f3d_bundle,
 )
 
@@ -193,12 +194,23 @@ def _run_fixture(
                 sigma1, sigma2, calls
             )
         )
+        sampling_provider = _DeterministicScanner(0.0, 0.0, Counter())
+        sampling_evidence_by_backend = {
+            backend: scanner_sampling_evidence(
+                sampling_provider,
+                plan.scanner_config_for(backend),
+                backend,
+                implementation_identity=scanner_implementation_identity,
+            )
+            for backend in ("reference-like", "quality")
+        }
         scanners = run_scanner_stages(
             workspace,
             source,
             plan,
             scanner_factory=resolved_scanner_factory,
             implementation_identity=scanner_implementation_identity,
+            sampling_evidence_by_backend=sampling_evidence_by_backend,
             rss_recorder=rss,
         )
 

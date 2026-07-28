@@ -536,23 +536,10 @@ def test_deep_scanner_validation_is_unique_and_sampling_only(
     root = _complete_small_bundle(tmp_path)
     loaded = load_f3d_mode_comparison_result(root)
     manifest = json.loads((root / "run_manifest.json").read_text(encoding="utf-8"))
-    original_scanner = result_module.FaultOrientScanner3
     original_summary = result_module.scanner_array_summary
     original_memmap = result_module.np.memmap
-    constructions = 0
     summary_calls = 0
     mappings: list[Any] = []
-
-    class SamplingOnlyScanner:
-        def __init__(self, sigma1: float, sigma2: float) -> None:
-            nonlocal constructions
-            constructions += 1
-            self._scanner = original_scanner(sigma1, sigma2)
-
-        def __getattr__(self, name: str) -> Any:
-            if name in {"scan", "scan_quality", "thin"}:
-                raise AssertionError(f"deep scanner validation called {name}")
-            return getattr(self._scanner, name)
 
     def tracked_summary(array: np.ndarray) -> dict[str, Any]:
         nonlocal summary_calls
@@ -564,12 +551,10 @@ def test_deep_scanner_validation_is_unique_and_sampling_only(
         mappings.append(array._mmap)
         return array
 
-    monkeypatch.setattr(result_module, "FaultOrientScanner3", SamplingOnlyScanner)
     monkeypatch.setattr(result_module, "scanner_array_summary", tracked_summary)
     monkeypatch.setattr(result_module.np, "memmap", tracked_memmap)
 
     result_module._deep_validate_scanner_stages(root, loaded, manifest["plan"])
-    assert constructions == 2
     assert summary_calls == 13
     assert len(mappings) == 13
     assert all(mapping.closed for mapping in mappings)
