@@ -222,7 +222,10 @@ constructing a scanner. Consequently, an all-reuse run performs no scanner
 construction, instance sampling, source-volume read, scan, or thinning. A
 custom scanner factory must supply validated evidence for both backends; a
 computed stage checks the actual instance against that declared contract before
-reading the source volume or scanning. Deep validation also re-derives
+reading the source volume or scanning. When only one scanner stage is missing,
+resume constructs and computes only that backend; the independently complete
+backend is validated and reused without constructing its scanner. Deep
+validation also re-derives
 canonical evidence without constructing a scanner. Injected fixture scanners
 retain their own implementation-bound evidence and are not treated as canonical
 stages.
