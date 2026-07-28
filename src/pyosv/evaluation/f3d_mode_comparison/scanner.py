@@ -31,8 +31,8 @@ from .config import F3ScannerConfig
 from .data import F3FileIdentity, F3VolumeSource
 from .models import F3ModeComparisonPlan, F3ScannerBackend
 
-F3_SCANNER_STAGE_CONTRACT_VERSION = 4
-F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v4"
+F3_SCANNER_STAGE_CONTRACT_VERSION = 5
+F3_SCANNER_STAGE_IMPLEMENTATION = "pyosv-f3-scanner-stage-v5"
 F3_SCANNER_BACKEND_ORDER: tuple[F3ScannerBackend, ...] = (
     "reference-like",
     "quality",
@@ -42,7 +42,26 @@ _UNIT_RANGE_NAMES = {"ft", "fet", "confidence"}
 _DAT_DTYPE = np.dtype(">f4")
 _WRITE_SLAB_COUNT = 1
 
-ScannerFactory = Callable[[float, float], FaultOrientScanner3]
+
+class ScannerProtocol(Protocol):
+    """Operations required from an F3 scanner implementation."""
+
+    def scan(self, *args: Any, **kwargs: Any) -> tuple[np.ndarray, ...]: ...
+
+    def scan_quality(self, *args: Any, **kwargs: Any) -> tuple[np.ndarray, ...]: ...
+
+    def thin(self, *args: Any, **kwargs: Any) -> tuple[np.ndarray, ...]: ...
+
+    def reference_like_strike_sampling(self, *args: Any, **kwargs: Any) -> np.ndarray: ...
+
+    def reference_like_dip_sampling(self, *args: Any, **kwargs: Any) -> np.ndarray: ...
+
+    def refined_reference_like_strike_sampling(self, *args: Any, **kwargs: Any) -> np.ndarray: ...
+
+    def refined_reference_like_dip_sampling(self, *args: Any, **kwargs: Any) -> np.ndarray: ...
+
+
+ScannerFactory = Callable[[float, float], ScannerProtocol]
 
 
 class _StageRSSRecorder(Protocol):
@@ -153,6 +172,7 @@ def scanner_stage_resolved_settings(
     shape: tuple[int, int, int],
     *,
     implementation_identity: Mapping[str, Any] | str | None = None,
+    sampling_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return every scanner-stage control used by its cache fingerprint."""
 
@@ -160,6 +180,21 @@ def scanner_stage_resolved_settings(
         raise TypeError("config must be an F3ScannerConfig")
     valid_shape = _validated_shape(shape)
     implementation = _normalized_implementation_identity(implementation_identity)
+    evidence = (
+        scanner_sampling_evidence(
+            FaultOrientScanner3(config.sigma1, config.sigma2),
+            config,
+            config.backend,
+            implementation_identity=implementation,
+        )
+        if sampling_evidence is None
+        else validate_scanner_sampling_evidence(
+            sampling_evidence,
+            config,
+            config.backend,
+            expected_implementation_identity=implementation,
+        )
+    )
     return {
         "scanner_stage_contract_version": F3_SCANNER_STAGE_CONTRACT_VERSION,
         "scanner_stage_implementation_identity": implementation,
@@ -181,6 +216,7 @@ def scanner_stage_resolved_settings(
         "smoothing_sigma": config.smoothing_sigma,
         "normalize": config.normalize,
         "dtype": config.dtype,
+        "sampling_evidence": evidence,
         "scanner_thinning": {
             "mode": config.scanner_thin_mode,
             "reference_sigma": config.reference_thin_sigma,
@@ -190,12 +226,19 @@ def scanner_stage_resolved_settings(
     }
 
 
+def canonical_scanner_implementation_identity() -> Mapping[str, Any] | str:
+    """Return the implementation identity required by official F3 scanner stages."""
+
+    return _normalized_implementation_identity(None)
+
+
 def scanner_stage_fingerprint(
     workspace: F3RunWorkspace,
     input_identity: F3FileIdentity,
     config: F3ScannerConfig,
     *,
     implementation_identity: Mapping[str, Any] | str | None = None,
+    sampling_evidence: Mapping[str, Any] | None = None,
 ) -> str:
     """Build the exact fingerprint for one scanner backend stage."""
 
@@ -204,6 +247,7 @@ def scanner_stage_fingerprint(
         config,
         input_identity.shape,
         implementation_identity=implementation_identity,
+        sampling_evidence=sampling_evidence,
     )
     return stage_fingerprint(
         "scanner",
@@ -269,10 +313,18 @@ def run_scanner_stages(
     try:
         for backend in order:
             config = plan.scanner_config_for(backend)
+            scanner = scanner_factory(config.sigma1, config.sigma2)
+            sampling_evidence = scanner_sampling_evidence(
+                scanner,
+                config,
+                backend,
+                implementation_identity=resolved_implementation_identity,
+            )
             settings = scanner_stage_resolved_settings(
                 config,
                 input_identity.shape,
                 implementation_identity=resolved_implementation_identity,
+                sampling_evidence=sampling_evidence,
             )
             artifacts = scanner_stage_artifacts(input_identity.shape, backend)
             fingerprint = scanner_stage_fingerprint(
@@ -280,6 +332,7 @@ def run_scanner_stages(
                 input_identity,
                 config,
                 implementation_identity=resolved_implementation_identity,
+                sampling_evidence=sampling_evidence,
             )
 
             def writer(
@@ -298,7 +351,8 @@ def run_scanner_stages(
                     fingerprint=fingerprint,
                     input_identity=input_identity,
                     scanner_input=immutable_input(),
-                    scanner_factory=scanner_factory,
+                    scanner=scanner,
+                    sampling_evidence=sampling_evidence,
                 )
 
             if rss_recorder is not None:
@@ -403,9 +457,9 @@ def _write_scanner_stage(
     fingerprint: str,
     input_identity: F3FileIdentity,
     scanner_input: np.ndarray,
-    scanner_factory: ScannerFactory,
+    scanner: ScannerProtocol,
+    sampling_evidence: Mapping[str, Any],
 ) -> None:
-    scanner = scanner_factory(config.sigma1, config.sigma2)
     confidence: np.ndarray | None = None
     if backend == "reference-like":
         ft, pt, tt = scanner.scan(
@@ -470,11 +524,8 @@ def _write_scanner_stage(
         "input_fingerprint": input_identity.computation_identity,
         "resolved_config": asdict(config),
         "resolved_stage_settings": dict(settings),
-        "sampling_count": scanner_sampling_count(
-            FaultOrientScanner3(config.sigma1, config.sigma2),
-            config,
-            backend,
-        ),
+        "sampling_evidence": dict(sampling_evidence),
+        "sampling_count": sampling_count_from_evidence(sampling_evidence),
         "requested_remove_edge_effects": config.remove_edge_effects,
         "effective_remove_edge_effects": config.effective_remove_edge_effects,
         "raw": {name: scanner_array_summary(values) for name, values in raw.items()},
@@ -545,16 +596,42 @@ def _validate_angle_range(
         raise ValueError(f"{name} must be within the configured angle range")
 
 
-def scanner_sampling_count(
-    scanner: FaultOrientScanner3,
+def scanner_sampling_evidence(
+    scanner: ScannerProtocol,
     config: F3ScannerConfig,
     backend: F3ScannerBackend,
-) -> dict[str, int]:
-    """Return the canonical scanner sampling counts without scanning a volume."""
+    *,
+    implementation_identity: Mapping[str, Any] | str | None = None,
+    require_full_protocol: bool = True,
+) -> dict[str, Any]:
+    """Return validated sampling evidence from the scanner that will scan."""
+
+    if not isinstance(config, F3ScannerConfig):
+        raise TypeError("config must be an F3ScannerConfig")
+    _validate_backend(backend)
+    if backend != config.backend:
+        raise ValueError("sampling backend must match config.backend")
+    sampling_helpers = (
+        "reference_like_strike_sampling",
+        "reference_like_dip_sampling",
+        "refined_reference_like_strike_sampling",
+        "refined_reference_like_dip_sampling",
+    )
+    required = (
+        ("scan", "scan_quality", "thin", *sampling_helpers)
+        if require_full_protocol
+        else sampling_helpers
+    )
+    for name in required:
+        if not callable(getattr(scanner, name, None)):
+            raise TypeError(f"scanner must provide callable {name}")
 
     if backend == "reference-like":
         strike = scanner.reference_like_strike_sampling(config.phi_min, config.phi_max)
         dip = scanner.reference_like_dip_sampling(config.theta_min, config.theta_max)
+        strike_helper = scanner.reference_like_strike_sampling
+        dip_helper = scanner.reference_like_dip_sampling
+        refinement_factor = 1
     else:
         strike = scanner.refined_reference_like_strike_sampling(
             config.phi_min,
@@ -566,11 +643,215 @@ def scanner_sampling_count(
             config.theta_max,
             refinement_factor=config.refinement_factor,
         )
-    return {
-        "strike": int(len(strike)),
-        "dip": int(len(dip)),
-        "orientations": int(len(strike) * len(dip)),
+        strike_helper = scanner.refined_reference_like_strike_sampling
+        dip_helper = scanner.refined_reference_like_dip_sampling
+        refinement_factor = config.refinement_factor
+
+    implementation = (
+        _scanner_instance_implementation_identity(scanner)
+        if implementation_identity is None
+        else _normalized_implementation_identity(implementation_identity)
+    )
+    evidence = {
+        "backend": backend,
+        "refinement_factor": refinement_factor,
+        "dtype": np.dtype(np.float32).name,
+        "strike": _sampling_axis_evidence(strike, "strike"),
+        "dip": _sampling_axis_evidence(dip, "dip"),
+        "orientation_count": int(len(strike) * len(dip)),
+        "scanner_stage_implementation_identity": implementation,
+        "sampling_source_implementation_identity": {
+            "strike": _callable_implementation_identity(strike_helper),
+            "dip": _callable_implementation_identity(dip_helper),
+        },
     }
+    return validate_scanner_sampling_evidence(
+        evidence,
+        config,
+        backend,
+        expected_implementation_identity=implementation,
+    )
+
+
+def validate_scanner_sampling_evidence(
+    value: Mapping[str, Any],
+    config: F3ScannerConfig,
+    backend: F3ScannerBackend,
+    *,
+    expected_implementation_identity: Mapping[str, Any] | str | None = None,
+) -> dict[str, Any]:
+    """Validate and normalize persisted scanner sampling evidence."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("sampling evidence must be a mapping")
+    if not isinstance(config, F3ScannerConfig):
+        raise TypeError("config must be an F3ScannerConfig")
+    _validate_backend(backend)
+    if backend != config.backend:
+        raise ValueError("sampling backend must match config.backend")
+    expected_fields = {
+        "backend",
+        "refinement_factor",
+        "dtype",
+        "strike",
+        "dip",
+        "orientation_count",
+        "scanner_stage_implementation_identity",
+        "sampling_source_implementation_identity",
+    }
+    if set(value) != expected_fields:
+        raise ValueError("sampling evidence field set mismatch")
+    if value["backend"] != backend:
+        raise ValueError("sampling evidence backend mismatch")
+    expected_refinement = 1 if backend == "reference-like" else config.refinement_factor
+    if value["refinement_factor"] != expected_refinement:
+        raise ValueError("sampling evidence refinement factor mismatch")
+    if value["dtype"] != np.dtype(np.float32).name:
+        raise ValueError("sampling evidence dtype mismatch")
+
+    strike = _validate_sampling_axis(value["strike"], "strike")
+    dip = _validate_sampling_axis(value["dip"], "dip")
+    _validate_sampling_bounds(strike, "strike", config.phi_min, config.phi_max)
+    _validate_sampling_bounds(dip, "dip", config.theta_min, config.theta_max)
+    orientation_count = value["orientation_count"]
+    if (
+        isinstance(orientation_count, bool)
+        or not isinstance(orientation_count, int)
+        or orientation_count != strike["count"] * dip["count"]
+    ):
+        raise ValueError("sampling evidence orientation count mismatch")
+
+    stage_identity = value["scanner_stage_implementation_identity"]
+    if not isinstance(stage_identity, (str, Mapping)):
+        raise ValueError("sampling evidence stage implementation identity is invalid")
+    if expected_implementation_identity is not None:
+        expected_identity = _normalized_implementation_identity(expected_implementation_identity)
+        if stage_identity != expected_identity:
+            raise ValueError("sampling evidence stage implementation identity mismatch")
+
+    source_identity = value["sampling_source_implementation_identity"]
+    if not isinstance(source_identity, Mapping) or set(source_identity) != {"strike", "dip"}:
+        raise ValueError("sampling source implementation identity field set mismatch")
+    normalized_source = {
+        name: _validate_sampling_helper_identity(source_identity[name], name)
+        for name in ("strike", "dip")
+    }
+    return {
+        "backend": backend,
+        "refinement_factor": expected_refinement,
+        "dtype": np.dtype(np.float32).name,
+        "strike": strike,
+        "dip": dip,
+        "orientation_count": orientation_count,
+        "scanner_stage_implementation_identity": (
+            dict(stage_identity) if isinstance(stage_identity, Mapping) else stage_identity
+        ),
+        "sampling_source_implementation_identity": normalized_source,
+    }
+
+
+def sampling_count_from_evidence(value: Mapping[str, Any]) -> dict[str, int]:
+    """Derive the legacy sampling-count view from validated evidence."""
+
+    strike = value["strike"]
+    dip = value["dip"]
+    return {
+        "strike": int(strike["count"]),
+        "dip": int(dip["count"]),
+        "orientations": int(value["orientation_count"]),
+    }
+
+
+def scanner_sampling_count(
+    scanner: ScannerProtocol,
+    config: F3ScannerConfig,
+    backend: F3ScannerBackend,
+) -> dict[str, int]:
+    """Return scanner sampling counts derived from canonical evidence."""
+
+    return sampling_count_from_evidence(scanner_sampling_evidence(scanner, config, backend))
+
+
+def _sampling_axis_evidence(value: object, name: str) -> dict[str, Any]:
+    if not isinstance(value, np.ndarray):
+        raise ValueError(f"{name} sampling must be a NumPy array")
+    if value.dtype != np.dtype(np.float32):
+        raise ValueError(f"{name} sampling dtype must be float32")
+    if value.ndim != 1 or value.size < 1:
+        raise ValueError(f"{name} sampling must be a non-empty 1D array")
+    if not np.all(np.isfinite(value)):
+        raise ValueError(f"{name} sampling must contain only finite values")
+    if value.size > 1 and not np.all(np.diff(value) > np.float32(0.0)):
+        raise ValueError(f"{name} sampling must be strictly increasing")
+    canonical = np.asarray(value, dtype="<f4")
+    return {
+        "count": int(canonical.size),
+        "values": [float(item) for item in canonical],
+        "sha256": hashlib.sha256(canonical.tobytes(order="C")).hexdigest(),
+    }
+
+
+def _validate_sampling_axis(value: object, name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {"count", "values", "sha256"}:
+        raise ValueError(f"{name} sampling evidence field set mismatch")
+    count = value["count"]
+    values = value["values"]
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError(f"{name} sampling evidence count is invalid")
+    if (
+        not isinstance(values, list)
+        or len(values) != count
+        or any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in values)
+    ):
+        raise ValueError(f"{name} sampling evidence values are invalid")
+    array = np.asarray(values, dtype=np.float32)
+    expected = _sampling_axis_evidence(array, name)
+    if value["sha256"] != expected["sha256"]:
+        raise ValueError(f"{name} sampling evidence digest mismatch")
+    return expected
+
+
+def _validate_sampling_helper_identity(value: object, name: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{name} sampling implementation identity must be a mapping")
+    required = {"module", "qualname"}
+    allowed = required | {
+        "code_sha256",
+        "immutable_closure_sha256",
+        "source_sha256",
+    }
+    if not required <= set(value) or not set(value) <= allowed:
+        raise ValueError(f"{name} sampling implementation identity field set mismatch")
+    normalized: dict[str, str] = {}
+    for field, item in value.items():
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{name} sampling implementation identity is invalid")
+        if field.endswith("sha256") and (
+            len(item) != 64 or any(character not in "0123456789abcdef" for character in item)
+        ):
+            raise ValueError(f"{name} sampling implementation digest is invalid")
+        normalized[field] = item
+    return normalized
+
+
+def _validate_sampling_bounds(
+    axis: Mapping[str, Any],
+    name: str,
+    minimum: float,
+    maximum: float,
+) -> None:
+    tolerance = (
+        8.0
+        * float(np.finfo(np.float32).eps)
+        * max(
+            1.0,
+            abs(minimum),
+            abs(maximum),
+        )
+    )
+    values = axis["values"]
+    if values[0] < minimum - tolerance or values[-1] > maximum + tolerance:
+        raise ValueError(f"{name} sampling must be within the configured angle range")
 
 
 def scanner_array_summary(array: np.ndarray) -> dict[str, Any]:
@@ -710,6 +991,17 @@ def _scanner_implementation_identity(
         "name": F3_SCANNER_STAGE_IMPLEMENTATION,
         "algorithm": _normalized_implementation_identity(None),
         "scanner_factory": _callable_implementation_identity(scanner_factory),
+    }
+
+
+def _scanner_instance_implementation_identity(
+    scanner: ScannerProtocol,
+) -> Mapping[str, Any] | str:
+    if type(scanner) is FaultOrientScanner3:
+        return _normalized_implementation_identity(None)
+    return {
+        "name": F3_SCANNER_STAGE_IMPLEMENTATION,
+        "scanner_class": _callable_implementation_identity(type(scanner)),
     }
 
 

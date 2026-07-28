@@ -84,10 +84,13 @@ from .runner import (
 )
 from .scanner import (
     F3_SCANNER_STAGE_CONTRACT_VERSION,
+    canonical_scanner_implementation_identity,
     scanner_array_summary,
-    scanner_sampling_count,
+    scanner_sampling_evidence,
+    sampling_count_from_evidence,
     scanner_stage_artifacts,
     scanner_stage_resolved_settings,
+    validate_scanner_sampling_evidence,
 )
 from .skin_artifacts import (
     ParsedSkinArtifacts,
@@ -173,6 +176,7 @@ _SCANNER_REPORT_FIELDS = {
     "input_fingerprint",
     "resolved_config",
     "resolved_stage_settings",
+    "sampling_evidence",
     "sampling_count",
     "requested_remove_edge_effects",
     "effective_remove_edge_effects",
@@ -976,6 +980,15 @@ def _validate_cells_and_stages(
                 root / "stages" / "scanner" / cell.stages.scanner / "report.json",
                 "scanner report",
             )
+            scanner_settings = validated[("scanner", cell.stages.scanner)]
+            if (
+                dataset["dataset_id"] == F3_DATASET_ID
+                and scanner_settings.get("scanner_stage_implementation_identity")
+                != canonical_scanner_implementation_identity()
+            ):
+                raise F3ResultValidationError(
+                    "official scanner stage implementation identity mismatch"
+                )
             _validate_scanner_report_contract(
                 scanner_report,
                 fingerprint=cell.stages.scanner,
@@ -983,7 +996,7 @@ def _validate_cells_and_stages(
                 shape=result.volume_shape,
                 input_identity=dict(input_file) if input_file is not None else None,
                 config=scanner_config,
-                settings=validated[("scanner", cell.stages.scanner)],
+                settings=scanner_settings,
             )
             validated_scanner_reports.add(cell.stages.scanner)
         if cell.skinning_enabled and cell.stages.skinning not in parsed_skins:
@@ -1189,16 +1202,24 @@ def _validate_scanner_report_contract(
     if report["effective_remove_edge_effects"] is not config.effective_remove_edge_effects:
         raise F3ResultValidationError("scanner report effective edge removal mismatch")
 
+    try:
+        sampling_evidence = validate_scanner_sampling_evidence(
+            _object(report["sampling_evidence"], "scanner sampling evidence"),
+            config,
+            backend,
+            expected_implementation_identity=settings.get("scanner_stage_implementation_identity"),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise F3ResultValidationError(f"scanner sampling evidence invalid: {error}") from error
+    if settings.get("sampling_evidence") != sampling_evidence:
+        raise F3ResultValidationError("scanner sampling evidence settings mismatch")
+
     sampling_count = _object(report["sampling_count"], "scanner sampling_count")
     if set(sampling_count) != {"strike", "dip", "orientations"}:
         raise F3ResultValidationError("scanner sampling_count field set mismatch")
     sampling = _integer_mapping(sampling_count, "scanner sampling_count")
-    if (
-        sampling["strike"] <= 0
-        or sampling["dip"] <= 0
-        or sampling["orientations"] != sampling["strike"] * sampling["dip"]
-    ):
-        raise F3ResultValidationError("scanner sampling_count relation mismatch")
+    if sampling != sampling_count_from_evidence(sampling_evidence):
+        raise F3ResultValidationError("scanner sampling_count evidence mismatch")
 
     expected_raw = {"ft", "pt", "tt"}
     if backend == "quality":
@@ -1410,6 +1431,7 @@ def _validate_stage_resolved_settings(
                 scanner_config,
                 shape,
                 implementation_identity=settings.get("scanner_stage_implementation_identity"),
+                sampling_evidence=settings.get("sampling_evidence"),
             )
         else:
             current_identity = settings.get("workflow_runner_identity")
@@ -2317,12 +2339,6 @@ def _deep_validate_scanner_stages(
             config = F3ScannerConfig(
                 **dict(_object(plan[scanner_name], f"run plan {scanner_name}"))
             )
-            scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
-            expected_sampling = scanner_sampling_count(
-                scanner,
-                config,
-                backend,
-            )
         except (KeyError, TypeError, ValueError) as error:
             raise F3ResultValidationError(
                 "deep scanner sampling contract cannot be derived"
@@ -2330,8 +2346,31 @@ def _deep_validate_scanner_stages(
 
         stage_path = root / "stages" / "scanner" / fingerprint
         report = _read_json_object(stage_path / "report.json", "scanner report")
-        if report["sampling_count"] != expected_sampling:
-            raise F3ResultValidationError("deep scanner sampling_count mismatch")
+        persisted_sampling = report["sampling_evidence"]
+        persisted_identity = persisted_sampling["scanner_stage_implementation_identity"]
+        try:
+            canonical_settings = scanner_stage_resolved_settings(
+                config,
+                result.volume_shape,
+            )
+            canonical_identity = canonical_settings["scanner_stage_implementation_identity"]
+            if persisted_identity == canonical_identity:
+                scanner = FaultOrientScanner3(config.sigma1, config.sigma2)
+                expected_sampling = scanner_sampling_evidence(
+                    scanner,
+                    config,
+                    backend,
+                    implementation_identity=canonical_identity,
+                    require_full_protocol=False,
+                )
+                if persisted_sampling != expected_sampling:
+                    raise F3ResultValidationError("deep scanner sampling evidence mismatch")
+        except F3ResultValidationError:
+            raise
+        except (KeyError, TypeError, ValueError) as error:
+            raise F3ResultValidationError(
+                "deep scanner sampling contract cannot be derived"
+            ) from error
 
         groups = (
             ("raw", ("ft", "pt", "tt", *(("confidence",) if backend == "quality" else ()))),

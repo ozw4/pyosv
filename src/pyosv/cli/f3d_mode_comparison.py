@@ -17,6 +17,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3VolumeSource,
     PeakRSSRecorder,
     build_f3d_mode_comparison_plan,
+    canonical_scanner_implementation_identity,
     ensure_output_not_in_data_root,
     extract_f3d_diagnostics,
     extract_f3d_metrics,
@@ -165,6 +166,7 @@ def run_experiment(
                 workspace,
                 source,
                 plan,
+                implementation_identity=canonical_scanner_implementation_identity(),
                 rss_recorder=rss,
             )
             cell_result = run_f3d_mode_comparison(

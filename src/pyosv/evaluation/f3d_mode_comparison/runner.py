@@ -1312,6 +1312,7 @@ def _validate_scanner_stage(
             plan.scanner_config_for(stage.backend),
             stage.shape,
             implementation_identity=implementation_identity,
+            sampling_evidence=settings.get("sampling_evidence"),
         )
         computation = stage_computation_identity(
             "scanner",

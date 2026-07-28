@@ -303,6 +303,26 @@ def test_small_external_style_fixture_end_to_end_and_complete_resume(
     assert calls["metric callback"] == 1
     assert io_calls == Counter({"identity hash": 4, "native read:input": 1})
     assert len({cell.stages.scanner for cell in first.cells}) == 2
+    scanner_reports = {
+        cell.backend: json.loads(
+            (output_root / "stages" / "scanner" / cell.stages.scanner / "report.json").read_text()
+        )
+        for cell in first.cells
+    }
+    assert scanner_reports["reference-like"]["sampling_count"] == {
+        "strike": 1,
+        "dip": 1,
+        "orientations": 1,
+    }
+    assert scanner_reports["quality"]["sampling_count"] == {
+        "strike": 2,
+        "dip": 2,
+        "orientations": 4,
+    }
+    assert all(
+        report["sampling_evidence"] == report["resolved_stage_settings"]["sampling_evidence"]
+        for report in scanner_reports.values()
+    )
     assert len({cell.stages.voting for cell in first.cells}) == 2
     assert len({cell.stages.thinning for cell in first.cells}) == 4
     assert len({cell.stages.skinning for cell in first.cells}) == 4

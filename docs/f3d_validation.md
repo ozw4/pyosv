@@ -191,7 +191,7 @@ Normal CLI unit tests stub orchestration and do not require F3 files or
 full-volume computation.
 
 The publication contract currently records runtime identity schema 3,
-fingerprint contract 4, scanner stage contract 4, skin artifact semantic
+fingerprint contract 4, scanner stage contract 5, skin artifact semantic
 contract 3, and metric schema 2. Skin reports record whether final cell values
 come from primary nearest samples, primary reskinning, or the connected-component
 fallback. Deep validation applies parent-volume nearest-sample checks only to
@@ -201,6 +201,16 @@ DAT volumes, the validated skin mask, exactly recomputed skin cells and
 attributes, metric-schema-2 rows, and runtime/resource diagnostics. Validation
 does not establish cryptographic authenticity, independent geological truth,
 or bitwise reproducibility across arbitrary hardware.
+
+Scanner stage contract 5 records sampling evidence from the same scanner
+instance that produces each volume. The bounded strike and dip grids are stored
+as float32 values with exact bit-pattern SHA-256 digests, counts, effective
+refinement, and sampling-helper implementation identities. The legacy
+`sampling_count` view is derived from that evidence. Official CLI stages
+explicitly require the canonical scanner implementation identity, and deep
+validation re-derives its sampling evidence from the resolved scanner config
+without running scanning or thinning. Injected fixture scanners retain their
+own implementation-bound evidence and are not treated as canonical stages.
 
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)

@@ -180,10 +180,9 @@ def _scanner_stage(
         },
         "resolved_config": asdict(config),
         "resolved_stage_settings": settings,
-        "sampling_count": scanner_module.scanner_sampling_count(
-            scanner_module.FaultOrientScanner3(config.sigma1, config.sigma2),
-            config,
-            backend,  # type: ignore[arg-type]
+        "sampling_evidence": settings["sampling_evidence"],
+        "sampling_count": scanner_module.sampling_count_from_evidence(
+            settings["sampling_evidence"]
         ),
         "requested_remove_edge_effects": config.remove_edge_effects,
         "effective_remove_edge_effects": config.effective_remove_edge_effects,

@@ -502,9 +502,8 @@ def test_deep_validation_recomputes_scanner_summary_and_sampling_count(
     report_path.write_bytes(canonical_json_bytes(report) + b"\n")
     _rehash_stage_artifact(root, stages["reference-like"], "report.json")
 
-    assert validate_completed_f3d_bundle(root)
-    with pytest.raises(F3ResultValidationError, match="deep scanner sampling_count mismatch"):
-        validate_completed_f3d_bundle(root, deep=True)
+    with pytest.raises(F3ResultValidationError, match="sampling_count evidence mismatch"):
+        validate_completed_f3d_bundle(root)
 
 
 def test_deep_scanner_validation_rejects_rehashed_trailing_dat_bytes(
