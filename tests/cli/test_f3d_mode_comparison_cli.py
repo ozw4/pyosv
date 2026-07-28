@@ -347,6 +347,38 @@ def test_complete_resume_validates_without_compute(
     assert seen == [(output, True)]
 
 
+def test_complete_resume_validation_precedes_dataset_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "run"
+    output.mkdir()
+    (output / "completion.json").write_text("{}\n", encoding="utf-8")
+
+    def reject_recorded_runtime(*args: object, **kwargs: object) -> None:
+        raise ValueError("recorded runtime rejected")
+
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_completed_f3d_bundle",
+        reject_recorded_runtime,
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "F3VolumeSource",
+        lambda root: pytest.fail("complete resume validation must precede dataset open"),
+    )
+
+    with pytest.raises(ValueError, match="recorded runtime rejected"):
+        f3d_mode_comparison.run_experiment(
+            config=F3ModeComparisonConfig(),
+            data_root=tmp_path / "data",
+            output_dir=output,
+            resume=True,
+            deep=False,
+        )
+
+
 def test_publication_runtime_failure_precedes_dataset_open_and_stage_selection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -474,7 +506,7 @@ def test_requested_deep_validation_is_part_of_atomic_finalization(
             resume=True,
             deep=True,
             pretty=True,
-            _enforce_publication_runtime=False,
+            _skip_current_publication_runtime_policy_for_testing=True,
         )
 
     assert not (output / "completion.json").exists()

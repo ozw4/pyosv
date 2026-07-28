@@ -126,9 +126,13 @@ platform, allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
 BLAS/LAPACK build digest. Valid content-addressed stages are reused and missing
 stages are computed. The publication validator rejects an available Numba
 runtime with JIT disabled and requires `NUMBA_NUM_THREADS=1` when that variable
-is set. `PYOSV_ACCEL=auto` remains valid when Numba is unavailable. A complete
-bundle is accepted by `--resume` only after strict validation and is not
-recomputed:
+is set. `PYOSV_ACCEL=auto` remains valid when Numba is unavailable. Shallow
+validation always applies the publication runtime policy to the identity
+recorded by an official bundle, but does not inspect or compare the current
+process identity. Deep validation and resume computation for missing stages
+require the current identity to satisfy the publication policy and exactly
+match the recorded identity. A complete bundle is accepted by `--resume` only
+after strict validation and is not recomputed:
 
 ```bash
 python -m pyosv.cli.f3d_mode_comparison \
