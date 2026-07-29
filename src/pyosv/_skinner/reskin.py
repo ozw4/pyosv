@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import heapq
 from typing import Literal
 
 import numpy as np
 
 from pyosv._skinner.models import (
+    _ReskinContext,
     _SkinCell,
     link_above_below,
     link_left_right,
@@ -18,14 +20,20 @@ from pyosv.geometry import strike_and_dip_from_local_surface_derivatives
 from pyosv.skin import FaultSkin
 
 RESKIN_POLICY_EXISTING_CELLS_V1 = "existing_cells_v1"
-ReskinPolicy = Literal["existing_cells_v1"]
+RESKIN_POLICY_REFERENCE_DENSE_V1 = "reference_dense_v1"
+ReskinPolicy = Literal["existing_cells_v1", "reference_dense_v1"]
 
 
 def _validate_reskin_policy(policy: object) -> ReskinPolicy:
-    if not isinstance(policy, str) or policy != RESKIN_POLICY_EXISTING_CELLS_V1:
-        raise ValueError("reskin_policy must be 'existing_cells_v1'")
+    if not isinstance(policy, str) or policy not in {
+        RESKIN_POLICY_EXISTING_CELLS_V1,
+        RESKIN_POLICY_REFERENCE_DENSE_V1,
+    }:
+        raise ValueError(
+            "reskin_policy must be 'existing_cells_v1' or 'reference_dense_v1'",
+        )
 
-    return RESKIN_POLICY_EXISTING_CELLS_V1
+    return policy
 
 
 def _reskin_reference(skin: FaultSkin, *, smoothing_sigma: float = 1.0) -> FaultSkin:
@@ -111,6 +119,297 @@ def _reskin_existing_cells_v1(
     _link_public_surface_cells(public_cells)
     ordered_keys = sorted(public_cells, key=lambda key: order_by_key[key])
     return FaultSkin.from_cells(public_cells[key] for key in ordered_keys)
+
+
+def _reskin_reference_dense_v1(
+    skin: FaultSkin,
+    *,
+    context: _ReskinContext,
+) -> FaultSkin:
+    """Regrow a smoothed seed-local surface into missing local grid positions."""
+
+    if not isinstance(skin, FaultSkin):
+        raise TypeError("skin must be a FaultSkin")
+
+    cells = list(skin)
+    if len(cells) <= 1:
+        return FaultSkin.from_cells(cells)
+
+    observed = _dense_observed_cells(context.accepted_cells)
+    if not observed:
+        return FaultSkin()
+
+    v_min = min(key[0] for key in observed)
+    v_max = max(key[0] for key in observed)
+    w_min = min(key[1] for key in observed)
+    w_max = max(key[1] for key in observed)
+    shape = (w_max - w_min + 1, v_max - v_min + 1)
+    observed_u = np.zeros(shape, dtype=np.float32)
+    observed_likelihood = np.zeros(shape, dtype=np.float32)
+    weights = np.zeros(shape, dtype=np.float32)
+
+    for (iv, iw), (_, cell) in observed.items():
+        row, col = iw - w_min, iv - v_min
+        likelihood = np.float32(cell.fl)
+        observed_u[row, col] = np.float32(cell.x1)
+        observed_likelihood[row, col] = likelihood
+        weights[row, col] = np.float32(max(float(likelihood), 0.0) ** 2)
+
+    numerator = smooth2d(observed_u * weights, (4.0, 4.0))
+    denominator = smooth2d(weights, (4.0, 4.0))
+    smoothed_u = np.zeros(shape, dtype=np.float32)
+    valid_surface = denominator > np.float32(1.0e-6)
+    np.divide(numerator, denominator, out=smoothed_u, where=valid_surface)
+    support = smooth2d(observed_likelihood, (8.0, 8.0)).astype(
+        np.float32,
+        copy=False,
+    )
+
+    center_u, center_v, center_w, normal, dip, strike = _dense_basis(context)
+    seed_key = (center_v, center_w)
+    if seed_key not in observed:
+        return FaultSkin.from_cells(cells)
+
+    accepted_keys = _dense_regrow_keys(
+        seed_key=seed_key,
+        bounds=(v_min, v_max, w_min, w_max),
+        smoothed_u=smoothed_u,
+        valid_surface=valid_surface,
+        support=support,
+        offsets=(v_min, w_min),
+        context=context,
+        centers=(center_u, center_v, center_w),
+        basis=(normal, dip, strike),
+    )
+    candidates: dict[
+        tuple[int, int],
+        tuple[tuple[float, float, float], tuple[int, int, int]],
+    ] = {}
+    for key in accepted_keys:
+        world = _dense_world(
+            key,
+            smoothed_u,
+            offsets=(v_min, w_min),
+            origin=context.origin,
+            centers=(center_u, center_v, center_w),
+            basis=(normal, dip, strike),
+        )
+        candidates[key] = (world, _rounded_world_index(world))
+
+    winners: dict[tuple[int, int, int], tuple[int, int]] = {}
+    for key in accepted_keys:
+        world_index = candidates[key][1]
+        current = winners.get(world_index)
+        if current is None or _dense_duplicate_priority(
+            key,
+            observed,
+            support,
+            offsets=(v_min, w_min),
+        ) < _dense_duplicate_priority(
+            current,
+            observed,
+            support,
+            offsets=(v_min, w_min),
+        ):
+            winners[world_index] = key
+
+    kept_keys = [key for key in accepted_keys if winners[candidates[key][1]] == key]
+    public_cells: dict[tuple[int, int], FaultCell] = {}
+    for iv, iw in kept_keys:
+        row, col = iw - w_min, iv - v_min
+        world, (i1, i2, i3) = candidates[(iv, iw)]
+        fp, ft = _local_surface_strike_and_dip(
+            normal,
+            dip,
+            strike,
+            smoothed_u,
+            row,
+            col,
+        )
+        fl = float(context.fv[i3, i2, i1])
+        public_cells[(iv, iw)] = FaultCell(*world, fl, fp, ft)
+
+    _link_public_surface_cells(public_cells)
+    return FaultSkin.from_cells(public_cells[key] for key in kept_keys)
+
+
+def _dense_observed_cells(
+    accepted_cells: tuple[_SkinCell, ...],
+) -> dict[tuple[int, int], tuple[int, _SkinCell]]:
+    """Choose one observed cell per local key by likelihood, then grow order."""
+
+    observed: dict[tuple[int, int], tuple[int, _SkinCell]] = {}
+    for order, cell in enumerate(accepted_cells):
+        key = (cell.i2, cell.i3)
+        current = observed.get(key)
+        if current is None or cell.fl > current[1].fl:
+            observed[key] = (order, cell)
+    return observed
+
+
+def _dense_basis(
+    context: _ReskinContext,
+) -> tuple[int, int, int, np.ndarray, np.ndarray, np.ndarray]:
+    transform = context.transform_map
+    center_u = transform.us.shape[1] // 2
+    center_v = transform.vs.shape[1] // 2
+    center_w = transform.ws.shape[1] // 2
+    normal = transform.us[:, center_u + 1].astype(np.float32, copy=False)
+    dip = transform.vs[:, center_v + 1].astype(np.float32, copy=False)
+    strike = transform.ws[:, center_w + 1].astype(np.float32, copy=False)
+    return center_u, center_v, center_w, normal, dip, strike
+
+
+def _dense_regrow_keys(
+    *,
+    seed_key: tuple[int, int],
+    bounds: tuple[int, int, int, int],
+    smoothed_u: np.ndarray,
+    valid_surface: np.ndarray,
+    support: np.ndarray,
+    offsets: tuple[int, int],
+    context: _ReskinContext,
+    centers: tuple[int, int, int],
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> list[tuple[int, int]]:
+    """Traverse eligible local keys in deterministic support priority."""
+
+    accepted = [seed_key]
+    queued = {seed_key}
+    queue: list[tuple[float, int, int]] = []
+
+    def enqueue_neighbors(current: tuple[int, int]) -> None:
+        iv, iw = current
+        current_u = float(smoothed_u[iw - offsets[1], iv - offsets[0]])
+        for candidate in ((iv - 1, iw), (iv + 1, iw), (iv, iw - 1), (iv, iw + 1)):
+            if candidate in queued:
+                continue
+            if not _dense_candidate_is_eligible(
+                candidate,
+                current_u=current_u,
+                bounds=bounds,
+                smoothed_u=smoothed_u,
+                valid_surface=valid_surface,
+                support=support,
+                offsets=offsets,
+                context=context,
+                centers=centers,
+                basis=basis,
+            ):
+                continue
+            queued.add(candidate)
+            candidate_support = float(
+                support[candidate[1] - offsets[1], candidate[0] - offsets[0]],
+            )
+            heapq.heappush(queue, (-candidate_support, candidate[1], candidate[0]))
+
+    enqueue_neighbors(seed_key)
+    while queue:
+        _, iw, iv = heapq.heappop(queue)
+        key = (iv, iw)
+        accepted.append(key)
+        enqueue_neighbors(key)
+    return accepted
+
+
+def _dense_candidate_is_eligible(
+    key: tuple[int, int],
+    *,
+    current_u: float,
+    bounds: tuple[int, int, int, int],
+    smoothed_u: np.ndarray,
+    valid_surface: np.ndarray,
+    support: np.ndarray,
+    offsets: tuple[int, int],
+    context: _ReskinContext,
+    centers: tuple[int, int, int],
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> bool:
+    iv, iw = key
+    v_min, v_max, w_min, w_max = bounds
+    if not (v_min <= iv <= v_max and w_min <= iw <= w_max):
+        return False
+    row, col = iw - offsets[1], iv - offsets[0]
+    if not valid_surface[row, col] or not float(support[row, col]) > 0.2:
+        return False
+    if not abs(float(smoothed_u[row, col]) - current_u) < 5.0:
+        return False
+
+    world = _dense_world(
+        key,
+        smoothed_u,
+        offsets=offsets,
+        origin=context.origin,
+        centers=centers,
+        basis=basis,
+    )
+    if not _dense_world_is_in_volume(world, context.volume_shape):
+        return False
+    i1, i2, i3 = _rounded_world_index(world)
+    if context.valid_mask is not None and not bool(context.valid_mask[i3, i2, i1]):
+        return False
+    return context.collision_grid is None or not context.collision_grid.any_in_box(
+        i1,
+        i2,
+        i3,
+        2,
+        2,
+        2,
+    )
+
+
+def _dense_world(
+    key: tuple[int, int],
+    surface: np.ndarray,
+    *,
+    offsets: tuple[int, int],
+    origin: tuple[float, float, float],
+    centers: tuple[int, int, int],
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[float, float, float]:
+    iv, iw = key
+    row, col = iw - offsets[1], iv - offsets[0]
+    center_u, center_v, center_w = centers
+    normal, dip, strike = basis
+    u = np.float32(surface[row, col] - center_u)
+    v = np.float32(iv - center_v)
+    w = np.float32(iw - center_w)
+    world = np.asarray(origin, dtype=np.float32) + u * normal + v * dip + w * strike
+    return float(world[0]), float(world[1]), float(world[2])
+
+
+def _dense_world_is_in_volume(
+    world: tuple[float, float, float],
+    shape: tuple[int, int, int],
+) -> bool:
+    if not np.isfinite(world).all():
+        return False
+    n3, n2, n1 = shape
+    x1, x2, x3 = world
+    if not (0.0 <= x1 <= n1 - 1 and 0.0 <= x2 <= n2 - 1 and 0.0 <= x3 <= n3 - 1):
+        return False
+    i1, i2, i3 = _rounded_world_index(world)
+    return 0 <= i1 < n1 and 0 <= i2 < n2 and 0 <= i3 < n3
+
+
+def _rounded_world_index(world: tuple[float, float, float]) -> tuple[int, int, int]:
+    return _java_round(world[0]), _java_round(world[1]), _java_round(world[2])
+
+
+def _dense_duplicate_priority(
+    key: tuple[int, int],
+    observed: dict[tuple[int, int], tuple[int, _SkinCell]],
+    support: np.ndarray,
+    *,
+    offsets: tuple[int, int],
+) -> tuple[int, float, int, int]:
+    iv, iw = key
+    return (
+        -int(key in observed),
+        -float(support[iw - offsets[1], iv - offsets[0]]),
+        iw,
+        iv,
+    )
 
 
 def _highest_likelihood_cell(cells: list[FaultCell]) -> FaultCell:

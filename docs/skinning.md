@@ -83,16 +83,22 @@ original conjugate-gradient smoother. Returned `FaultCell` objects expose these
 links as `ca`/`cb` for above/below and `cl`/`cr` for left/right neighbors. Pass
 `reskin=False` to `find_skins` or `find_skin` to keep the grow-only result.
 The keyword-only `reskin_policy` selects the versioned implementation used
-when `reskin=True`; its current and default value is
-`"existing_cells_v1"`, which smooths and relinks only cells already accepted
-during growth. The policy is validated even when reskinning is disabled or the
-connected-component backend is selected.
+when `reskin=True`. Its default value remains `"existing_cells_v1"`, which
+smooths and relinks only cells already accepted during growth. Explicit
+`"reference_dense_v1"` uses the original grow seed coordinates to smooth the
+cropped local surface and regenerate supported missing `(v, w)` cells for the
+`reference` and `quality` methods. Dense cells use the original growth volume
+sample at their final Java-rounded world position for `fl`; the smoothed
+support value is only the dense-growth acceptance signal, so final `fl` may be
+below the original grow threshold. The policy is validated even when
+reskinning is disabled or the connected-component backend is selected; the
+connected-component backend does not apply either reference reskin policy.
 
 Both methods also accept a keyword-only `valid_mask`. When supplied, it must be
 a three-dimensional boolean NumPy array with the same shape as `fv`. The
-current `existing_cells_v1` policy retains this mask for future policy use but
-does not apply it to growth or reskinning, so supplying a mask does not change
-current numerical results.
+`existing_cells_v1` retains this mask without applying it, so supplying a mask
+does not change that policy's numerical results. `reference_dense_v1` treats
+false mask voxels as hard barriers while rebuilding the dense local surface.
 
 `FaultSkinner.find_skin(seed, fv, vp, vt, ...)` grows one reference-like
 `FaultSkin` from a seed and applies the same reskin phase by default. The

@@ -717,7 +717,7 @@ def test_explicit_existing_cells_policy_matches_omitted_policy() -> None:
     ]
 
 
-@pytest.mark.parametrize("policy", ["", "reference_dense_v1", 1, None])
+@pytest.mark.parametrize("policy", ["", "reference_dense_v2", 1, None])
 def test_reskin_policy_rejects_invalid_values_across_public_entry_points(
     policy: object,
 ) -> None:

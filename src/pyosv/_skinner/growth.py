@@ -26,7 +26,9 @@ from pyosv._skinner.models import (
 from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.reskin import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
+    RESKIN_POLICY_REFERENCE_DENSE_V1,
     ReskinPolicy,
+    _reskin_reference_dense_v1,
     _reskin_reference,
     _validate_reskin_policy,
 )
@@ -354,8 +356,12 @@ def _apply_reskin_policy(
         # boundary preserves it for policies that need local growth state.
         del context
         return _reskin_reference(skin)
+    if policy == RESKIN_POLICY_REFERENCE_DENSE_V1:
+        return _reskin_reference_dense_v1(skin, context=context)
 
-    raise ValueError("reskin_policy must be 'existing_cells_v1'")
+    raise ValueError(
+        "reskin_policy must be 'existing_cells_v1' or 'reference_dense_v1'",
+    )
 
 
 def _grow_reference_direction(
