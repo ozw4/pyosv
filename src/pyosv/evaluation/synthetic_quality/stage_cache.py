@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import numpy as np
 
-from pyosv.cells import FaultCell
+from pyosv.cells import FaultCell, FaultCellGeneration
 from pyosv.skin import FaultSkin
 
 if TYPE_CHECKING:
@@ -326,6 +326,8 @@ class _FaultCellSnapshot:
     fl: float
     fp: float
     ft: float
+    generation: FaultCellGeneration
+    reskin_support: float | None
     ca: int | None
     cb: int | None
     cl: int | None
@@ -381,6 +383,8 @@ class PrimarySkinningStageResult:
                 fl=float(cell.fl),
                 fp=float(cell.fp),
                 ft=float(cell.ft),
+                generation=cell.generation,
+                reskin_support=cell.reskin_support,
                 ca=link_index(cell.ca),
                 cb=link_index(cell.cb),
                 cl=link_index(cell.cl),
@@ -398,7 +402,17 @@ class PrimarySkinningStageResult:
 
     def clone(self) -> tuple[list[FaultSkin], dict[str, Any]]:
         cells = [
-            FaultCell(item.x1, item.x2, item.x3, item.fl, item.fp, item.ft) for item in self.cells
+            FaultCell(
+                item.x1,
+                item.x2,
+                item.x3,
+                item.fl,
+                item.fp,
+                item.ft,
+                generation=item.generation,
+                reskin_support=item.reskin_support,
+            )
+            for item in self.cells
         ]
         for cell, item in zip(cells, self.cells):
             for name in ("ca", "cb", "cl", "cr"):

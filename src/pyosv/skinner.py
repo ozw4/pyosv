@@ -53,6 +53,7 @@ from pyosv._skinner.reference import (
 from pyosv._skinner.reskin import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
+    ReskinDiagnostics,
     ReskinPolicy,
     _dense_basis as _dense_basis,
     _dense_candidate_is_eligible as _dense_candidate_is_eligible,
@@ -106,6 +107,7 @@ __all__ = [
     "FaultSkinner",
     "RESKIN_POLICY_EXISTING_CELLS_V1",
     "RESKIN_POLICY_REFERENCE_DENSE_V1",
+    "ReskinDiagnostics",
     "ReskinPolicy",
     "find_connected_component_skins",
     "find_skins",

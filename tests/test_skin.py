@@ -3,7 +3,14 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
-from pyosv.cells import FaultCell
+from pyosv.cells import (
+    FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED,
+    FAULT_CELL_GENERATION_GROWN,
+    FaultCell,
+)
 from pyosv.skin import FaultSkin
 
 
@@ -80,3 +87,79 @@ def test_fault_skin_does_not_mutate_fault_cells() -> None:
     assert next(iter(skin)) is cell
     with pytest.raises(FrozenInstanceError):
         cell.fl = 0.1
+
+
+def test_fault_cell_six_positional_constructor_defaults_to_grown_generation() -> None:
+    cell = FaultCell(1.0, 2.0, 3.0, 0.8, 20.0, 60.0)
+
+    assert cell.generation == FAULT_CELL_GENERATION_GROWN
+    assert cell.reskin_support is None
+
+
+@pytest.mark.parametrize(
+    ("generation", "support"),
+    (
+        (FAULT_CELL_GENERATION_GROWN, None),
+        (FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED, None),
+        (FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED, 0.25),
+        (FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED, 1.0),
+        (FAULT_CELL_GENERATION_CONNECTED_COMPONENT, None),
+    ),
+)
+def test_fault_cell_accepts_all_generation_contract_values(
+    generation: str,
+    support: float | None,
+) -> None:
+    cell = FaultCell(
+        1,
+        2,
+        3,
+        0.8,
+        20,
+        60,
+        generation=generation,  # type: ignore[arg-type]
+        reskin_support=support,
+    )
+
+    assert cell.generation == generation
+    assert cell.reskin_support == support
+
+
+@pytest.mark.parametrize("generation", ("", "unknown", 1, None))
+def test_fault_cell_rejects_invalid_generation(generation: object) -> None:
+    with pytest.raises(ValueError, match="generation"):
+        FaultCell(1, 2, 3, 0.8, 20, 60, generation=generation)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "support",
+    (None, np.nan, np.inf, -np.inf, True, -0.01, 1.01, "0.5"),
+)
+def test_fault_cell_rejects_invalid_dense_reskin_support(support: object) -> None:
+    with pytest.raises(ValueError, match="reskin_support"):
+        FaultCell(
+            1,
+            2,
+            3,
+            0.8,
+            20,
+            60,
+            generation=FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+            reskin_support=support,  # type: ignore[arg-type]
+        )
+
+
+def test_fault_cell_metadata_does_not_change_geometric_equality() -> None:
+    grown = FaultCell(1, 2, 3, 0.8, 20, 60)
+    dense = FaultCell(
+        1,
+        2,
+        3,
+        0.8,
+        20,
+        60,
+        generation=FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+        reskin_support=0.4,
+    )
+
+    assert grown == dense

@@ -27,6 +27,7 @@ from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.reskin import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
+    ReskinDiagnostics,
     ReskinPolicy,
     _reskin_reference_dense_v1,
     _reskin_reference,
@@ -174,6 +175,7 @@ def _grow_reference_skin(
     reskin: bool = True,
     reskin_policy: ReskinPolicy | str = RESKIN_POLICY_EXISTING_CELLS_V1,
     valid_mask: np.ndarray | None = None,
+    _reskin_diagnostics: ReskinDiagnostics | None = None,
 ) -> FaultSkin:
     """Grow one skin in a seed-local fault-coordinate grid."""
 
@@ -216,6 +218,7 @@ def _grow_reference_skin(
         reskin=should_reskin,
         reskin_policy=policy,
         valid_mask=validated_valid_mask,
+        _reskin_diagnostics=_reskin_diagnostics,
     )
 
 
@@ -236,6 +239,7 @@ def _grow_reference_skin_validated(
     reskin: bool,
     reskin_policy: ReskinPolicy = RESKIN_POLICY_EXISTING_CELLS_V1,
     valid_mask: np.ndarray | None = None,
+    _reskin_diagnostics: ReskinDiagnostics | None = None,
 ) -> FaultSkin:
     """Grow from normalized inputs and native-float32, finite, matching 3D volumes."""
 
@@ -325,8 +329,14 @@ def _grow_reference_skin_validated(
         for cell in accepted
     )
     if not should_reskin:
+        if _reskin_diagnostics is not None:
+            _reskin_diagnostics["processed_skin_count"] = 1
+            _reskin_diagnostics["input_cell_count"] = len(grown_skin)
+            _reskin_diagnostics["output_cell_count"] = len(grown_skin)
         return grown_skin
     if not grown_skin:
+        if _reskin_diagnostics is not None:
+            _reskin_diagnostics["processed_skin_count"] = 1
         return grown_skin
 
     context = _ReskinContext(
@@ -340,7 +350,12 @@ def _grow_reference_skin_validated(
         du=max_delta_u,
         valid_mask=valid_mask,
     )
-    return _apply_reskin_policy(grown_skin, policy=reskin_policy, context=context)
+    return _apply_reskin_policy(
+        grown_skin,
+        policy=reskin_policy,
+        context=context,
+        _diagnostics=_reskin_diagnostics,
+    )
 
 
 def _apply_reskin_policy(
@@ -348,6 +363,7 @@ def _apply_reskin_policy(
     *,
     policy: ReskinPolicy,
     context: _ReskinContext,
+    _diagnostics: ReskinDiagnostics | None = None,
 ) -> FaultSkin:
     """Dispatch a grown skin through its validated versioned policy."""
 
@@ -355,9 +371,13 @@ def _apply_reskin_policy(
         # This policy intentionally does not consume grow context. The explicit
         # boundary preserves it for policies that need local growth state.
         del context
-        return _reskin_reference(skin)
+        return _reskin_reference(skin, _diagnostics=_diagnostics)
     if policy == RESKIN_POLICY_REFERENCE_DENSE_V1:
-        return _reskin_reference_dense_v1(skin, context=context)
+        return _reskin_reference_dense_v1(
+            skin,
+            context=context,
+            _diagnostics=_diagnostics,
+        )
 
     raise ValueError(
         "reskin_policy must be 'existing_cells_v1' or 'reference_dense_v1'",

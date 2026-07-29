@@ -94,6 +94,32 @@ below the original grow threshold. The policy is validated even when
 reskinning is disabled or the connected-component backend is selected; the
 connected-component backend does not apply either reference reskin policy.
 
+Each `FaultCell` has stable, in-memory provenance in `generation`:
+`"grown"` for grow-only cells, `"existing_cells_reskinned"` for multi-cell
+`existing_cells_v1` output, `"dense_reskin_observed"` and
+`"dense_reskin_generated"` for observed and newly filled dense local keys, and
+`"connected_component"` for fallback cells. Empty and single-cell reskin fast
+paths retain the original generation because no cell was rebuilt. Dense output
+also stores its finite `[0, 1]` smoothing support in `reskin_support`; other
+generations use `None`. `reskin_support` is the dense acceptance signal and is
+independent of the final growth-volume sample in `fl`. These fields are
+preserved by in-memory stage-cache snapshots and clones; the canonical
+`skins.json` v1 writer remains unchanged and does not serialize them.
+
+`find_skins` and `find_skin` accept a separate mutable
+`reskin_diagnostics` mapping. It is cleared at the start and reports the
+selected policy, whether reskinning was applied, processed/input/output cell
+counts, observed/generated/dropped counts, projected local duplicates,
+candidate local keys, rejection counts, and the maximum generated-key
+Chebyshev distance from an observed local key. Multi-skin calls sum counts and
+take the maximum distance. Dense-v1 candidate rejection uses the fixed order
+support or invalid surface, local-u continuity, volume bounds, `valid_mask`,
+prior-skin occupancy, then rounded world-index duplicate removal. Local-u
+rejections contribute to the candidate count but have no dedicated aggregate
+field. A local key is counted in at most one reported rejection category.
+This sink is intentionally isolated from the legacy `diagnostics` mapping;
+the legacy key set and meanings do not include reskin details.
+
 Both methods also accept a keyword-only `valid_mask`. When supplied, it must be
 a three-dimensional boolean NumPy array with the same shape as `fv`. The
 `existing_cells_v1` retains this mask without applying it, so supplying a mask

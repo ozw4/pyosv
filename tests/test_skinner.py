@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 
 import pyosv._skinner.growth as growth_module
-from pyosv.cells import FaultCell
+from pyosv.cells import (
+    FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+    FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED,
+    FAULT_CELL_GENERATION_GROWN,
+    FaultCell,
+)
 from pyosv.skin import FaultSkin
 from pyosv.skinner import (
     ConnectedComponentSkinner,
@@ -812,6 +817,11 @@ def test_find_connected_component_skins_groups_only_sparse_positive_samples() ->
         [(0, 0, 0), (1, 0, 0)],
         [(3, 2, 1)],
     ]
+    assert all(
+        cell.generation == FAULT_CELL_GENERATION_CONNECTED_COMPONENT
+        for skin in skins
+        for cell in skin
+    )
 
 
 def test_find_connected_component_skins_returns_separated_planar_patches_as_two_skins() -> None:
@@ -893,16 +903,22 @@ def test_fault_skinner_matches_connected_component_fallback() -> None:
         vt,
         min_likelihood=0.5,
     )
+    reskin_diagnostics: dict[str, object] = {"stale": True}
     default = FaultSkinner(method="connected_component", connectivity="edge").find_skins(
         fv,
         vp,
         vt,
         min_likelihood=0.5,
+        reskin_diagnostics=reskin_diagnostics,
     )
 
     assert [[cell.index for cell in skin] for skin in default] == [
         [cell.index for cell in skin] for skin in fallback
     ]
+    assert reskin_diagnostics["reskin_applied"] is False
+    assert reskin_diagnostics["processed_skin_count"] == len(default)
+    assert reskin_diagnostics["generated_cell_count"] == 0
+    assert "stale" not in reskin_diagnostics
 
 
 def test_find_skins_filters_small_components_and_orders_remaining_skins() -> None:
@@ -1446,6 +1462,9 @@ def test_reskin_reference_smooths_synthetic_noisy_plane_surface() -> None:
 
     after_variance = np.var([cell.x1 for cell in reskinned])
     assert len(reskinned) == len(cells)
+    assert all(
+        cell.generation == FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED for cell in reskinned
+    )
     assert after_variance < before_variance
     assert np.std([cell.ft for cell in reskinned]) < 5.0
 
@@ -1478,3 +1497,4 @@ def test_reskin_reference_handles_empty_and_single_cell_skins() -> None:
 
     assert len(reskinned) == 1
     assert reskinned.cells[0] == cell
+    assert reskinned.cells[0].generation == FAULT_CELL_GENERATION_GROWN
