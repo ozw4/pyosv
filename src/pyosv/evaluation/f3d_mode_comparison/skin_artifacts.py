@@ -540,6 +540,7 @@ def validate_skin_generation_provenance(
     provenance: str,
     *,
     semantic_contract_version: int,
+    reskin_diagnostics: Mapping[str, Any] | None = None,
 ) -> None:
     """Cross-check v2 cell generations against the resolved final phase."""
 
@@ -579,6 +580,72 @@ def validate_skin_generation_provenance(
         raise SkinArtifactValidationError(
             "skins.json cell generation conflicts with final provenance"
         )
+    if reskin_diagnostics is None:
+        return
+    if provenance not in {
+        PRIMARY_EXISTING_CELLS_RESKINNED,
+        PRIMARY_DENSE_RESKINNED,
+    }:
+        raise SkinArtifactValidationError(
+            "reskin diagnostics conflict with final provenance"
+        )
+    if not isinstance(reskin_diagnostics, Mapping):
+        raise SkinArtifactValidationError("reskin diagnostics must be an object")
+
+    expected_policy = (
+        RESKIN_POLICY_EXISTING_CELLS_V1
+        if provenance == PRIMARY_EXISTING_CELLS_RESKINNED
+        else RESKIN_POLICY_REFERENCE_DENSE_V1
+    )
+    if reskin_diagnostics.get("reskin_policy") != expected_policy:
+        raise SkinArtifactValidationError(
+            "reskin diagnostics policy conflicts with final provenance"
+        )
+    if any(
+        cell.generation == FAULT_CELL_GENERATION_GROWN
+        for skin in parsed.skins
+        if len(skin) > 1
+        for cell in skin
+    ):
+        raise SkinArtifactValidationError(
+            "multi-cell reskinned skin cannot retain grown cell generation"
+        )
+    reskin_applied = reskin_diagnostics.get("reskin_applied")
+    if not isinstance(reskin_applied, bool):
+        raise SkinArtifactValidationError("reskin diagnostics reskin_applied must be bool")
+    policy_generations = (
+        {FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED}
+        if provenance == PRIMARY_EXISTING_CELLS_RESKINNED
+        else _DENSE_GENERATIONS
+    )
+    if reskin_applied != bool(generations & policy_generations):
+        raise SkinArtifactValidationError(
+            "reskin diagnostics reskin_applied does not match skins.json generations"
+        )
+
+    generated_count = sum(
+        cell.generation == FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED
+        for skin in parsed.skins
+        for cell in skin
+    )
+    expected_counts = {
+        "output_cell_count": parsed.cell_count,
+        "observed_output_cell_count": parsed.cell_count - generated_count,
+        "generated_cell_count": generated_count,
+    }
+    for name, expected in expected_counts.items():
+        actual = _integer(
+            reskin_diagnostics.get(name),
+            f"reskin diagnostics {name}",
+        )
+        if actual < 0:
+            raise SkinArtifactValidationError(
+                f"reskin diagnostics {name} must be non-negative"
+            )
+        if actual != expected:
+            raise SkinArtifactValidationError(
+                f"reskin diagnostics {name} does not match skins.json generations"
+            )
 
 
 def _validate_skin_mask(

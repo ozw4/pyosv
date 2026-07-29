@@ -147,11 +147,14 @@ from .resources import (
 )
 from .reskin_policy_comparison import (
     F3_RESKIN_POLICY_COMPARISON_CELL,
+    F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
+    F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION,
     F3_RESKIN_POLICY_COMPARISON_DIR,
     F3_RESKIN_POLICY_COMPARISON_FILES,
     F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
     compare_reskin_policies_from_bundle,
     compare_reskin_policies_from_parent,
+    validate_f3_reskin_policy_comparison,
     write_f3_reskin_policy_comparison,
 )
 from .runtime_identity import (
@@ -229,6 +232,8 @@ __all__ = [
     "F3_RESOURCE_SCHEMA_VERSION",
     "F3_RESKIN_POLICY_COMPARISON_FILES",
     "F3_RESKIN_POLICY_COMPARISON_CELL",
+    "F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE",
+    "F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION",
     "F3_RESKIN_POLICY_COMPARISON_DIR",
     "F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION",
     "compare_reskin_policies_from_bundle",
@@ -302,6 +307,7 @@ __all__ = [
     "compute_voxelwise_contrast_summaries",
     "compare_reskin_policies_from_parent",
     "write_f3_reskin_policy_comparison",
+    "validate_f3_reskin_policy_comparison",
     "ensure_output_not_in_data_root",
     "extract_f3d_diagnostics",
     "extract_f3d_mode_diagnostics",

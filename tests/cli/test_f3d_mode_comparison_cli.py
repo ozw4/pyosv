@@ -232,6 +232,49 @@ def test_main_runs_fixed_reskin_pair_from_completed_bundle(
     assert compared == [output]
 
 
+@pytest.mark.parametrize("resume", [False, True], ids=("fresh", "resume"))
+def test_main_propagates_deep_validation_to_reskin_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resume: bool,
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "run"
+    data.mkdir()
+    if resume:
+        output.mkdir()
+    compared: list[tuple[Path, dict[str, bool]]] = []
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "run_experiment",
+        lambda **kwargs: output,
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "compare_reskin_policies_from_bundle",
+        lambda bundle, **kwargs: compared.append((bundle, kwargs)),
+    )
+    arguments = [
+        "--data-root",
+        str(data),
+        "--output-dir",
+        str(output),
+        "--compare-reskin-policies",
+        "existing_cells_v1,reference_dense_v1",
+        "--deep-validate",
+    ]
+    if resume:
+        arguments.append("--resume")
+
+    assert f3d_mode_comparison.main(arguments) == 0
+    assert compared == [
+        (
+            output,
+            {"deep": True, **({"resume": True} if resume else {})},
+        )
+    ]
+
+
 def test_resume_recovers_recorded_dense_reskin_policy(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

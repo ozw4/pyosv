@@ -469,6 +469,43 @@ def test_contract4_generation_validation_is_method_specific(
             )
 
 
+def test_contract4_dense_generation_must_match_reskin_diagnostics() -> None:
+    parsed = ParsedSkinArtifacts(
+        skins=(
+            (
+                SkinCellRecord(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0,
+                    0,
+                    0,
+                    0.8,
+                    25.0,
+                    70.0,
+                    "grown",
+                    None,
+                ),
+            ),
+        ),
+        format_version=2,
+    )
+
+    with pytest.raises(SkinArtifactValidationError, match="does not match skins.json generations"):
+        validate_skin_generation_provenance(
+            parsed,
+            "primary_dense_reskinned",
+            semantic_contract_version=4,
+            reskin_diagnostics={
+                "reskin_policy": "reference_dense_v1",
+                "reskin_applied": True,
+                "output_cell_count": 1,
+                "observed_output_cell_count": 0,
+                "generated_cell_count": 1,
+            },
+        )
+
+
 @pytest.mark.parametrize(
     ("policy", "expected"),
     (

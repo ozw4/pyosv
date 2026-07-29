@@ -29,9 +29,18 @@ from pyosv.synthetic_metrics import (
     surface_comparison_metrics,
 )
 
-from .skin_artifacts import canonical_skins_payload
+from .artifacts import artifact_file_metadata, atomic_write_artifact, canonical_json_bytes
+from .skin_artifacts import (
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+    PRIMARY_DENSE_RESKINNED,
+    PRIMARY_EXISTING_CELLS_RESKINNED,
+    canonical_skins_payload,
+    parse_skins_json,
+    validate_skin_generation_provenance,
+)
 
 F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 1
+F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION = 1
 F3_RESKIN_POLICY_COMPARISON_FILES = (
     "reskin_policy_comparison.json",
     "reskin_policy_metrics.csv",
@@ -39,8 +48,17 @@ F3_RESKIN_POLICY_COMPARISON_FILES = (
     "existing_cells_v1_skins.json",
     "reference_dense_v1_skins.json",
 )
+F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE = "complete.json"
 F3_RESKIN_POLICY_COMPARISON_DIR = "reskin_policy_comparison"
 F3_RESKIN_POLICY_COMPARISON_CELL = "Q-QUAL"
+_CONTRAST_FIELDS = (
+    "generated_cell_count_delta",
+    "output_cell_count_delta",
+    "small_skin_cell_fraction_delta",
+    "parent_ridge_buffered_precision_delta",
+    "parent_ridge_buffered_recall_delta",
+    "parent_ridge_symmetric_chamfer_mean_delta",
+)
 
 
 def compare_reskin_policies_from_parent(
@@ -206,14 +224,252 @@ def compare_reskin_policies_from_bundle(
     bundle: str | Path,
     *,
     output_dir: str | Path | None = None,
+    resume: bool = False,
+    deep: bool = False,
 ) -> tuple[Path, Path, Path, Path, Path]:
-    """Run the fixed skin-only pair from the canonical Q-QUAL parent artifacts."""
+    """Run or reuse the fixed skin-only pair from canonical Q-QUAL parents."""
 
     # Keep result loading local: package __init__ imports this module before result.py.
     from .result import load_f3d_mode_comparison_result
 
+    if not isinstance(resume, bool) or not isinstance(deep, bool):
+        raise TypeError("resume and deep must be bool")
     root = Path(bundle)
     result = load_f3d_mode_comparison_result(root, deep=False)
+    destination = (
+        Path(output_dir) if output_dir is not None else root / F3_RESKIN_POLICY_COMPARISON_DIR
+    )
+    completion_path = destination / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    if completion_path.is_file() and not completion_path.is_symlink():
+        if not resume:
+            raise FileExistsError(f"completed F3 reskin policy comparison exists: {destination}")
+        return validate_f3_reskin_policy_comparison(
+            root,
+            output_dir=destination,
+            deep=deep,
+            result=result,
+        )
+    if destination.exists() and (
+        not destination.is_dir() or destination.is_symlink()
+    ):
+        raise ValueError("reskin policy comparison output must be a directory")
+    if resume and destination.is_dir():
+        for item in destination.glob(".complete.json.tmp-*"):
+            if item.is_file() and not item.is_symlink():
+                item.unlink()
+    if destination.is_dir() and any(destination.iterdir()):
+        if not resume:
+            raise FileExistsError(f"reskin policy comparison output exists: {destination}")
+        allowed_partial_files = {
+            *F3_RESKIN_POLICY_COMPARISON_FILES,
+            F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
+        }
+        for item in destination.iterdir():
+            if (
+                item.name not in allowed_partial_files
+                or not item.is_file()
+                or item.is_symlink()
+            ):
+                raise ValueError("incomplete reskin policy comparison file set is invalid")
+
+    report, cell, shape = _comparison_report_from_bundle(root, result)
+    paths = write_f3_reskin_policy_comparison(report, destination)
+    completion = {
+        "completion_schema_version": F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION,
+        "comparison_schema_version": F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
+        "status": "complete",
+        "source_cell": F3_RESKIN_POLICY_COMPARISON_CELL,
+        "upstream_parent_stage_fingerprints": {
+            "voting": cell.stages.voting,
+            "thinning": cell.stages.thinning,
+        },
+        "artifact_files": {
+            path.name: artifact_file_metadata(path)
+            for path in paths
+        },
+    }
+    atomic_write_artifact(
+        completion_path,
+        canonical_json_bytes(completion) + b"\n",
+        temporary_prefix=".complete.json.tmp-",
+    )
+    try:
+        return validate_f3_reskin_policy_comparison(
+            root,
+            output_dir=destination,
+            deep=deep,
+            result=result,
+            _shape=shape,
+        )
+    except BaseException:
+        completion_path.unlink(missing_ok=True)
+        raise
+
+
+def validate_f3_reskin_policy_comparison(
+    bundle: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    deep: bool = False,
+    result: Any | None = None,
+    _shape: tuple[int, int, int] | None = None,
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Validate completion and optionally exact-replay both skin artifacts."""
+
+    if not isinstance(deep, bool):
+        raise TypeError("deep must be bool")
+    root = Path(bundle)
+    destination = (
+        Path(output_dir) if output_dir is not None else root / F3_RESKIN_POLICY_COMPARISON_DIR
+    )
+    if not destination.is_dir() or destination.is_symlink():
+        raise ValueError("reskin policy comparison directory is invalid")
+    expected_entries = {
+        *F3_RESKIN_POLICY_COMPARISON_FILES,
+        F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
+    }
+    if {item.name for item in destination.iterdir()} != expected_entries:
+        raise ValueError("reskin policy comparison file set mismatch")
+
+    completion_path = destination / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    completion = _read_json_object(completion_path, "reskin policy comparison completion")
+    expected_completion_fields = {
+        "completion_schema_version",
+        "comparison_schema_version",
+        "status",
+        "source_cell",
+        "upstream_parent_stage_fingerprints",
+        "artifact_files",
+    }
+    if set(completion) != expected_completion_fields:
+        raise ValueError("reskin policy comparison completion field set mismatch")
+    if (
+        completion["completion_schema_version"]
+        != F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION
+    ):
+        raise ValueError("unsupported reskin policy comparison completion schema")
+    if completion["comparison_schema_version"] != F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION:
+        raise ValueError("reskin policy comparison schema mismatch")
+    if completion["status"] != "complete":
+        raise ValueError("reskin policy comparison status must be 'complete'")
+    if completion["source_cell"] != F3_RESKIN_POLICY_COMPARISON_CELL:
+        raise ValueError("reskin policy comparison source cell mismatch")
+
+    if result is None:
+        from .result import load_f3d_mode_comparison_result
+
+        result = load_f3d_mode_comparison_result(root, deep=False)
+    cell, _ = _comparison_cell_and_config(result)
+    expected_parent_stages = {
+        "voting": cell.stages.voting,
+        "thinning": cell.stages.thinning,
+    }
+    if completion["upstream_parent_stage_fingerprints"] != expected_parent_stages:
+        raise ValueError("reskin policy comparison parent stage mismatch")
+
+    paths = tuple(
+        destination / filename for filename in F3_RESKIN_POLICY_COMPARISON_FILES
+    )
+    metadata = completion["artifact_files"]
+    if not isinstance(metadata, Mapping) or set(metadata) != set(
+        F3_RESKIN_POLICY_COMPARISON_FILES
+    ):
+        raise ValueError("reskin policy comparison artifact metadata mismatch")
+    for path in paths:
+        if artifact_file_metadata(path) != metadata[path.name]:
+            raise ValueError(
+                f"reskin policy comparison artifact hash or size mismatch: {path.name}"
+            )
+
+    report = _read_json_object(paths[0], "reskin policy comparison report")
+    expected_report_fields = {
+        "schema_version",
+        "baseline",
+        "candidate",
+        "upstream_parent_fingerprint",
+        "upstream_parent_fingerprint_identical",
+        "policies",
+        "contrast",
+        "source_cell",
+        "upstream_parent_stage_fingerprints",
+    }
+    if set(report) != expected_report_fields:
+        raise ValueError("reskin policy comparison report field set mismatch")
+    if report["schema_version"] != F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION:
+        raise ValueError("reskin policy comparison report schema mismatch")
+    if (
+        report["baseline"] != RESKIN_POLICY_EXISTING_CELLS_V1
+        or report["candidate"] != RESKIN_POLICY_REFERENCE_DENSE_V1
+    ):
+        raise ValueError("reskin policy comparison pair mismatch")
+    if report["source_cell"] != F3_RESKIN_POLICY_COMPARISON_CELL:
+        raise ValueError("reskin policy comparison report source cell mismatch")
+    if report["upstream_parent_stage_fingerprints"] != expected_parent_stages:
+        raise ValueError("reskin policy comparison report parent stage mismatch")
+    if report["upstream_parent_fingerprint_identical"] is not True:
+        raise ValueError("reskin policy comparison parent fingerprint differs")
+    contrast = report.get("contrast")
+    if not isinstance(contrast, Mapping) or set(contrast) != set(_CONTRAST_FIELDS):
+        raise ValueError("reskin policy comparison contrast field set mismatch")
+
+    policies = report.get("policies")
+    if not isinstance(policies, Mapping) or set(policies) != {
+        RESKIN_POLICY_EXISTING_CELLS_V1,
+        RESKIN_POLICY_REFERENCE_DENSE_V1,
+    }:
+        raise ValueError("reskin policy comparison policies mismatch")
+    shape = _shape
+    if shape is None:
+        voting_path = root / "stages" / "voting" / cell.stages.voting
+        shape = _stage_shape(voting_path / "report.json")
+    for policy, path, provenance in (
+        (
+            RESKIN_POLICY_EXISTING_CELLS_V1,
+            paths[3],
+            PRIMARY_EXISTING_CELLS_RESKINNED,
+        ),
+        (
+            RESKIN_POLICY_REFERENCE_DENSE_V1,
+            paths[4],
+            PRIMARY_DENSE_RESKINNED,
+        ),
+    ):
+        item = policies[policy]
+        if not isinstance(item, Mapping):
+            raise ValueError("reskin policy comparison policy payload must be an object")
+        if item.get("reskin_policy") != policy:
+            raise ValueError("reskin policy comparison policy identity mismatch")
+        if item.get("parent_fingerprint") != report["upstream_parent_fingerprint"]:
+            raise ValueError("reskin policy comparison parent fingerprint mismatch")
+        canonical_artifact = item.get("canonical_skin_artifact")
+        if canonical_artifact != _read_json_object(path, f"{policy} canonical skins"):
+            raise ValueError("reskin policy comparison canonical skin artifact mismatch")
+        parsed = parse_skins_json(path, shape)
+        diagnostics = item.get("diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            raise ValueError("reskin policy comparison diagnostics must be an object")
+        validate_skin_generation_provenance(
+            parsed,
+            provenance,
+            semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+            reskin_diagnostics=diagnostics.get("reskin"),
+        )
+
+    if paths[1].read_text(encoding="utf-8") != _comparison_csv(report):
+        raise ValueError("reskin policy comparison CSV does not match report")
+    if paths[2].read_text(encoding="utf-8") != _comparison_markdown(report):
+        raise ValueError("reskin policy comparison Markdown does not match report")
+
+    if deep:
+        recomputed, _, _ = _comparison_report_from_bundle(root, result)
+        if canonical_json_bytes(recomputed) != canonical_json_bytes(report):
+            raise ValueError(
+                "reskin policy comparison does not exactly match skin-only recomputation"
+            )
+    return paths
+
+
+def _comparison_cell_and_config(result: Any) -> tuple[Any, SyntheticSkinningConfig]:
     cell = next(
         (item for item in result.cells if item.label == F3_RESKIN_POLICY_COMPARISON_CELL),
         None,
@@ -233,7 +489,14 @@ def compare_reskin_policies_from_bundle(
         raise ValueError(
             "canonical Q-QUAL skinning config must use method='quality' and reskin=True"
         )
+    return cell, config
 
+
+def _comparison_report_from_bundle(
+    root: Path,
+    result: Any,
+) -> tuple[dict[str, Any], Any, tuple[int, int, int]]:
+    cell, config = _comparison_cell_and_config(result)
     voting_path = root / "stages" / "voting" / cell.stages.voting
     thinning_path = root / "stages" / "thinning" / cell.stages.thinning
     shape = _stage_shape(voting_path / "report.json")
@@ -265,10 +528,7 @@ def compare_reskin_policies_from_bundle(
         "voting": cell.stages.voting,
         "thinning": cell.stages.thinning,
     }
-    destination = (
-        Path(output_dir) if output_dir is not None else root / F3_RESKIN_POLICY_COMPARISON_DIR
-    )
-    return write_f3_reskin_policy_comparison(report, destination)
+    return report, cell, shape
 
 
 def _comparison_csv(report: Mapping[str, Any]) -> str:
@@ -301,7 +561,8 @@ def _comparison_csv(report: Mapping[str, Any]) -> str:
             ),
         )
         for group, metrics in metric_groups:
-            for metric, value in metrics.items():
+            for metric in sorted(metrics):
+                value = metrics[metric]
                 if isinstance(value, (str, Mapping, list, tuple)):
                     continue
                 writer.writerow(
@@ -322,7 +583,8 @@ def _comparison_csv(report: Mapping[str, Any]) -> str:
                         ),
                     }
                 )
-    for metric, value in report["contrast"].items():
+    for metric in _CONTRAST_FIELDS:
+        value = report["contrast"][metric]
         writer.writerow(
             {
                 "schema_version": report["schema_version"],
@@ -422,6 +684,35 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _read_json_object(path: Path, context: str) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"{context} must be a regular non-symlink file")
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=_raise_nonfinite_json,
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"{context} is not strict JSON") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    return value
+
+
+def _raise_nonfinite_json(token: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {token}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for name, item in pairs:
+        if name in value:
+            raise ValueError(f"duplicate JSON key: {name}")
+        value[name] = item
+    return value
+
+
 def _validated_parent_arrays(**arrays: np.ndarray) -> dict[str, np.ndarray]:
     validated: dict[str, np.ndarray] = {}
     shape: tuple[int, ...] | None = None
@@ -488,11 +779,14 @@ def _open_parent_dat(path: Path, shape: tuple[int, int, int]) -> np.memmap:
 
 
 __all__ = [
+    "F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE",
+    "F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION",
     "F3_RESKIN_POLICY_COMPARISON_FILES",
     "F3_RESKIN_POLICY_COMPARISON_CELL",
     "F3_RESKIN_POLICY_COMPARISON_DIR",
     "F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION",
     "compare_reskin_policies_from_bundle",
     "compare_reskin_policies_from_parent",
+    "validate_f3_reskin_policy_comparison",
     "write_f3_reskin_policy_comparison",
 ]

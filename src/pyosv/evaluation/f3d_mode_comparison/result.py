@@ -1060,6 +1060,18 @@ def _validate_cells_and_stages(
                     semantic_contract_version=int(
                         skinning_settings["skin_artifact_semantic_contract_version"]
                     ),
+                    reskin_diagnostics=(
+                        _object(
+                            diagnostics.get("reskin"),
+                            "skinning report reskin diagnostics",
+                        )
+                        if provenance
+                        in {
+                            PRIMARY_EXISTING_CELLS_RESKINNED,
+                            PRIMARY_DENSE_RESKINNED,
+                        }
+                        else None
+                    ),
                 )
             except (KeyError, TypeError, ValueError) as error:
                 raise F3ResultValidationError(

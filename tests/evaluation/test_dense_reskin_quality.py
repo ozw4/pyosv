@@ -18,8 +18,10 @@ from pyosv.evaluation.dense_reskin_quality import (
     write_dense_reskin_evidence,
 )
 from pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison import (
+    F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
     compare_reskin_policies_from_bundle,
     compare_reskin_policies_from_parent,
+    validate_f3_reskin_policy_comparison,
     write_f3_reskin_policy_comparison,
 )
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
@@ -791,3 +793,14 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         "thinning": thinning_fingerprint,
     }
     assert paths[0].parent == tmp_path / "reskin_policy_comparison"
+    comparison_root = paths[0].parent
+    assert (comparison_root / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE).is_file()
+    snapshots = {path: path.read_bytes() for path in paths}
+
+    assert compare_reskin_policies_from_bundle(tmp_path, resume=True) == paths
+    assert {path: path.read_bytes() for path in paths} == snapshots
+    assert validate_f3_reskin_policy_comparison(tmp_path, deep=True) == paths
+
+    paths[4].write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="hash or size mismatch"):
+        compare_reskin_policies_from_bundle(tmp_path, resume=True)

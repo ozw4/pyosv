@@ -32,6 +32,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     run_f3d_mode_comparison,
     run_scanner_stages,
     validate_completed_f3d_bundle,
+    validate_f3_reskin_policy_comparison,
     validate_numerical_runtime_identity,
     validate_publication_runtime_identity,
 )
@@ -314,6 +315,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _recorded_data_root(requested_bundle),
             )
             validate_completed_f3d_bundle(bundle, deep=args.deep_validate)
+            if args.compare_reskin_policies:
+                validate_f3_reskin_policy_comparison(
+                    bundle,
+                    deep=args.deep_validate,
+                )
         else:
             data_root = resolve_f3d_data_root(args.data_root).resolve(strict=False)
             requested_output_exists = os.path.lexists(args.output_dir)
@@ -348,7 +354,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pretty=args.pretty,
             )
             if args.compare_reskin_policies:
-                compare_reskin_policies_from_bundle(bundle)
+                comparison_options: dict[str, bool] = {}
+                if args.resume:
+                    comparison_options["resume"] = True
+                if args.deep_validate:
+                    comparison_options["deep"] = True
+                compare_reskin_policies_from_bundle(bundle, **comparison_options)
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
