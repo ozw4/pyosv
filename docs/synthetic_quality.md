@@ -1195,6 +1195,7 @@ an active-pipeline alias; in `--input-mode both`, it is a `pipelines` map.
       "du": 5.0,
       "max_delta_strike": 30.0,
       "reskin": true,
+      "reskin_policy": "existing_cells_v1",
       "small_skin_size": 10
     }
   },
@@ -1545,7 +1546,11 @@ with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
 `--skinner-ru`, `--skinner-rv`, `--skinner-rw`, `--skinner-max-steps`,
 `--skinner-du`, `--skinner-max-delta-strike`, `--skinner-growth-source`,
 `--skinner-accepted-occupancy-radius`, `--skinner-boundary-fallback` /
-`--no-skinner-boundary-fallback`, `--no-skinner-reskin`, and `--small-skin-size`.
+`--no-skinner-boundary-fallback`, `--no-skinner-reskin`,
+`--skinner-reskin-policy`, and `--small-skin-size`. Policy
+`existing_cells_v1` smooths and relinks accepted cells, while
+`reference_dense_v1` can regenerate missing cells on smoothed local support;
+the selected policy is still validated and recorded when reskinning is off.
 When both boundary-fallback options are omitted, the quality workflow enables
 the fallback and the reference and diagnostic workflows preserve the configured
 value. An explicit negative option overrides the quality default. Reports keep

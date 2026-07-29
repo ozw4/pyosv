@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 ScalarStageSetting = str | int | float | bool
 DiagnosticItems = tuple[tuple[str, Any], ...]
-SCALAR_EVIDENCE_CONTRACT_VERSION = 5
+SCALAR_EVIDENCE_CONTRACT_VERSION = 6
 
 
 class ImmutableScalarMapping(dict[str, Any]):
@@ -268,6 +268,7 @@ class PrimarySkinningStageKey:
     du: float
     max_delta_strike: float
     reskin: bool
+    reskin_policy: str
     accepted_occupancy_radius: int | None
     small_skin_size: int
 

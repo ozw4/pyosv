@@ -321,6 +321,7 @@ def build_primary_skinning_stage_key(
         du=skinning_config.du,
         max_delta_strike=skinning_config.max_delta_strike,
         reskin=skinning_config.reskin,
+        reskin_policy=skinning_config.reskin_policy,
         accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
         small_skin_size=skinning_config.small_skin_size,
     )

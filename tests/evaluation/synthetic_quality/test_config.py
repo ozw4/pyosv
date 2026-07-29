@@ -55,6 +55,7 @@ def test_config_defaults() -> None:
         du=5.0,
         max_delta_strike=30.0,
         reskin=True,
+        reskin_policy="existing_cells_v1",
         accepted_occupancy_radius=None,
         small_skin_size=10,
         boundary_skinner_fallback=False,
@@ -116,6 +117,7 @@ def test_default_report_dicts() -> None:
         "du": 5.0,
         "max_delta_strike": 30.0,
         "reskin": True,
+        "reskin_policy": "existing_cells_v1",
         "accepted_occupancy_radius": None,
         "effective_accepted_occupancy_radius": 5,
         "small_skin_size": 10,
@@ -143,6 +145,7 @@ def test_scanner_config_rejects_invalid_values(kwargs: dict[str, object], messag
     [
         ({"min_likelihood": -0.1}, "skinner_min_likelihood must be non-negative"),
         ({"min_skin_size": 1.5}, "skinner_min_skin_size must be a non-negative integer"),
+        ({"reskin_policy": "unknown"}, "reskin_policy"),
         ({"ru": 1}, "skinner_ru must be at least 2"),
         ({"rv": 1}, "skinner_rv must be at least 2"),
     ],

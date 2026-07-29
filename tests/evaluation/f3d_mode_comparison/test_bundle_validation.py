@@ -712,7 +712,7 @@ def test_reskinned_primary_cells_use_exact_replay_instead_of_parent_samples(
     vp = np.fromfile(voting / "vp.dat", dtype=">f4").reshape(shape)
     vt = np.fromfile(voting / "vt.dat", dtype=">f4").reshape(shape)
 
-    assert report["final_cell_value_provenance"] == "primary_reskinned"
+    assert report["final_cell_value_provenance"] == "primary_existing_cells_reskinned"
     assert any(skin["cell_count"] > 1 for skin in payload["skins"])
     assert any(
         np.float32(cell["fp"]) != vp[cell["i3"], cell["i2"], cell["i1"]]
@@ -720,6 +720,54 @@ def test_reskinned_primary_cells_use_exact_replay_instead_of_parent_samples(
         for cell in cells
     )
     assert validate_completed_f3d_bundle(root)
+    assert validate_completed_f3d_bundle(root, deep=True)
+
+
+def test_dense_reskin_bundle_preserves_metadata_and_deep_replays(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shape = (13, 13, 13)
+    monkeypatch.setattr(
+        result_module,
+        "OFFICIAL_F3_DATASET_SPEC",
+        F3DatasetSpec(
+            dataset_id="result-fixture",
+            shape=shape,
+            files=(
+                ("input", "ep.dat"),
+                ("reference_fault_likelihood", "fl.dat"),
+                ("reference_fault_votes", "fv.dat"),
+                ("reference_thinned_fault_votes", "fvt.dat"),
+            ),
+            expected_bytes=int(np.prod(shape)) * np.dtype(">f4").itemsize,
+        ),
+    )
+    config = _reskinned_primary_config()
+    config = replace(
+        config,
+        skinning_template=replace(
+            config.skinning_template,
+            reskin_policy="reference_dense_v1",
+        ),
+    )
+    root = _complete_small_bundle(
+        tmp_path,
+        shape=shape,
+        config=config,
+        workflow_runner=_controlled_reskinned_primary_workflow,
+    )
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+    payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+    cells = [cell for skin in payload["skins"] for cell in skin["cells"]]
+
+    assert payload["format_version"] == 2
+    assert report["final_cell_value_provenance"] == "primary_dense_reskinned"
+    assert report["diagnostics"]["reskin"]["reskin_policy"] == "reference_dense_v1"
+    assert all(set(cell) >= {"generation", "reskin_support"} for cell in cells)
+    assert any(cell["generation"].startswith("dense_reskin_") for cell in cells)
     assert validate_completed_f3d_bundle(root, deep=True)
 
 

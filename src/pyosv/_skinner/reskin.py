@@ -28,6 +28,10 @@ from pyosv.skin import FaultSkin
 
 RESKIN_POLICY_EXISTING_CELLS_V1 = "existing_cells_v1"
 RESKIN_POLICY_REFERENCE_DENSE_V1 = "reference_dense_v1"
+RESKIN_POLICIES = (
+    RESKIN_POLICY_EXISTING_CELLS_V1,
+    RESKIN_POLICY_REFERENCE_DENSE_V1,
+)
 ReskinPolicy = Literal["existing_cells_v1", "reference_dense_v1"]
 
 
@@ -126,15 +130,18 @@ def _publish_reskin_diagnostics(
 
 
 def _validate_reskin_policy(policy: object) -> ReskinPolicy:
-    if not isinstance(policy, str) or policy not in {
-        RESKIN_POLICY_EXISTING_CELLS_V1,
-        RESKIN_POLICY_REFERENCE_DENSE_V1,
-    }:
+    if not isinstance(policy, str) or policy not in RESKIN_POLICIES:
         raise ValueError(
             "reskin_policy must be 'existing_cells_v1' or 'reference_dense_v1'",
         )
 
     return policy
+
+
+def validate_reskin_policy(policy: object) -> ReskinPolicy:
+    """Validate and normalize one public reskin-policy value."""
+
+    return _validate_reskin_policy(policy)
 
 
 def _reskin_reference(

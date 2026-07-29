@@ -12,11 +12,24 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.cells import (
+    FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED,
+    FAULT_CELL_GENERATION_GROWN,
+)
+from pyosv.skinner import (
+    RESKIN_POLICY_EXISTING_CELLS_V1,
+    RESKIN_POLICY_REFERENCE_DENSE_V1,
+    validate_reskin_policy,
+)
 from pyosv.synthetic_metrics import skin_topology_metrics
 
 _ROOT_FIELDS = {"format_version", "skinning_enabled", "skin_count", "skins"}
 _SKIN_FIELDS = {"skin_index", "cell_count", "cells"}
-_CELL_FIELDS = {"x1", "x2", "x3", "i1", "i2", "i3", "fl", "fp", "ft"}
+_CELL_FIELDS_V1 = {"x1", "x2", "x3", "i1", "i2", "i3", "fl", "fp", "ft"}
+_CELL_FIELDS_V2 = {*_CELL_FIELDS_V1, "generation", "reskin_support"}
 _INDEX_FIELDS = ("i1", "i2", "i3")
 _SCALAR_FIELDS = ("x1", "x2", "x3", "fl", "fp", "ft")
 _TOPOLOGY_FIELDS = (
@@ -46,10 +59,24 @@ _INTEGER_TOPOLOGY_FIELDS = frozenset(
 _DAT_DTYPE = np.dtype(">f4")
 _MASK_SLAB_VOXELS = 1_000_000
 _INDEX_CHUNK_SIZE = 100_000
-F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 3
+F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 4
+F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 3
 PRIMARY_NEAREST_SAMPLE = "primary_nearest_sample"
 PRIMARY_RESKINNED = "primary_reskinned"
+PRIMARY_EXISTING_CELLS_RESKINNED = "primary_existing_cells_reskinned"
+PRIMARY_DENSE_RESKINNED = "primary_dense_reskinned"
 CONNECTED_COMPONENT_FALLBACK = "connected_component_fallback"
+_CELL_GENERATIONS = {
+    FAULT_CELL_GENERATION_GROWN,
+    FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+    FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+}
+_DENSE_GENERATIONS = {
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+}
 
 
 class SkinArtifactValidationError(ValueError):
@@ -69,6 +96,8 @@ class SkinCellRecord:
     fl: float
     fp: float
     ft: float
+    generation: str | None = None
+    reskin_support: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +116,7 @@ class ParsedSkinArtifacts:
     """Canonical skins with duplicate voxel occurrences preserved."""
 
     skins: tuple[tuple[SkinCellRecord, ...], ...]
+    format_version: int = 1
 
     @property
     def cell_count(self) -> int:
@@ -104,10 +134,24 @@ class ParsedSkinArtifacts:
 def canonical_skins_payload(
     skins: Sequence[Any],
 ) -> dict[str, Any]:
-    """Serialize skins with the one canonical field and cell ordering."""
+    """Serialize skins with the canonical format-version-2 contract."""
 
-    def cell_payload(cell: Any) -> dict[str, int | float]:
-        return {
+    return _canonical_skins_payload_for_format(skins, format_version=2)
+
+
+def _canonical_skins_payload_for_format(
+    skins: Sequence[Any],
+    *,
+    format_version: int,
+) -> dict[str, Any]:
+    """Serialize current v2 or historical v1 payloads for exact validation."""
+
+    materialized = tuple(tuple(skin) for skin in skins)
+    if isinstance(format_version, bool) or format_version not in {1, 2}:
+        raise ValueError("format_version must be 1 or 2")
+
+    def cell_payload(cell: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "x1": float(cell.x1),
             "x2": float(cell.x2),
             "x3": float(cell.x3),
@@ -118,9 +162,16 @@ def canonical_skins_payload(
             "fp": float(cell.fp),
             "ft": float(cell.ft),
         }
+        if format_version == 2:
+            generation = getattr(cell, "generation", None)
+            support = getattr(cell, "reskin_support", None)
+            _validate_generation_support(generation, support)
+            payload["generation"] = generation
+            payload["reskin_support"] = None if support is None else float(support)
+        return payload
 
     serialized = []
-    for skin_index, skin in enumerate(skins):
+    for skin_index, skin in enumerate(materialized):
         cells = sorted(skin, key=lambda cell: (cell.i3, cell.i2, cell.i1))
         serialized.append(
             {
@@ -130,7 +181,7 @@ def canonical_skins_payload(
             }
         )
     return {
-        "format_version": 1,
+        "format_version": format_version,
         "skinning_enabled": True,
         "skin_count": len(serialized),
         "skins": serialized,
@@ -242,11 +293,23 @@ def resolve_final_skin_cell_value_provenance(
         raise SkinArtifactValidationError("skin post-thinning policy is invalid")
     if not isinstance(variant_skinning, Mapping):
         raise SkinArtifactValidationError("skin variant patch is invalid")
+    semantic_contract_version = _semantic_contract_version(
+        resolved_skinning,
+        resolved_stage_settings,
+    )
+    if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        try:
+            reskin_policy = validate_reskin_policy(resolved_skinning["reskin_policy"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise SkinArtifactValidationError("skin reskin_policy is invalid") from error
+    else:
+        reskin_policy = RESKIN_POLICY_EXISTING_CELLS_V1
     for name, resolved_value in (
         ("method", method),
         ("growth_source", growth_source),
         ("boundary_skinner_fallback", fallback_enabled),
         ("boundary_skinner_fallback_policy", fallback_policy),
+        ("reskin_policy", reskin_policy),
     ):
         patched_value = variant_skinning.get(name)
         if patched_value is not None and patched_value != resolved_value:
@@ -269,7 +332,7 @@ def resolve_final_skin_cell_value_provenance(
                 "policy": fallback_policy,
             }
             or resolved_stage_settings.get("skin_artifact_semantic_contract_version")
-            != F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+            != semantic_contract_version
         ):
             raise SkinArtifactValidationError(
                 "skinning stage settings conflict with provenance inputs"
@@ -278,8 +341,32 @@ def resolve_final_skin_cell_value_provenance(
     if fallback_used:
         return CONNECTED_COMPONENT_FALLBACK
     if reskin and method != "connected_component":
-        return PRIMARY_RESKINNED
+        if semantic_contract_version == F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+            return PRIMARY_RESKINNED
+        if reskin_policy == RESKIN_POLICY_REFERENCE_DENSE_V1:
+            return PRIMARY_DENSE_RESKINNED
+        return PRIMARY_EXISTING_CELLS_RESKINNED
     return PRIMARY_NEAREST_SAMPLE
+
+
+def _semantic_contract_version(
+    resolved_skinning: Mapping[str, Any],
+    resolved_stage_settings: Mapping[str, Any] | None,
+) -> int:
+    if resolved_stage_settings is None:
+        version = (
+            F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+            if "reskin_policy" in resolved_skinning
+            else F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        )
+    else:
+        version = resolved_stage_settings.get("skin_artifact_semantic_contract_version")
+    if isinstance(version, bool) or version not in {
+        F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+    }:
+        raise SkinArtifactValidationError("skin artifact semantic contract version is invalid")
+    return int(version)
 
 
 def parse_skins_json(
@@ -293,8 +380,10 @@ def parse_skins_json(
     payload = _read_json_object(artifact_path, "skins.json")
     if set(payload) != _ROOT_FIELDS:
         raise SkinArtifactValidationError("skins.json root field set mismatch")
-    if payload["format_version"] != 1 or isinstance(payload["format_version"], bool):
-        raise SkinArtifactValidationError("skins.json format_version must be 1")
+    format_version = payload["format_version"]
+    if isinstance(format_version, bool) or format_version not in {1, 2}:
+        raise SkinArtifactValidationError("skins.json format_version must be 1 or 2")
+    cell_fields = _CELL_FIELDS_V1 if format_version == 1 else _CELL_FIELDS_V2
     if payload["skinning_enabled"] is not True:
         raise SkinArtifactValidationError("skins.json skinning_enabled must be true")
     skins_value = payload["skins"]
@@ -321,7 +410,7 @@ def parse_skins_json(
         cells: list[SkinCellRecord] = []
         previous_key: tuple[int, int, int] | None = None
         for cell_value in cells_value:
-            if not isinstance(cell_value, dict) or set(cell_value) != _CELL_FIELDS:
+            if not isinstance(cell_value, dict) or set(cell_value) != cell_fields:
                 raise SkinArtifactValidationError("skins.json cell field set mismatch")
             indices = tuple(
                 _integer(cell_value[name], f"skins.json cell {name}") for name in _INDEX_FIELDS
@@ -336,6 +425,17 @@ def parse_skins_json(
                 scalars,
                 volume_shape,
             )
+            generation: str | None = None
+            reskin_support: float | None = None
+            if format_version == 2:
+                generation = cell_value["generation"]
+                support_value = cell_value["reskin_support"]
+                if support_value is not None:
+                    reskin_support = _finite_scalar(
+                        support_value,
+                        "skins.json cell reskin_support",
+                    )
+                _validate_generation_support(generation, reskin_support)
             canonical_key = (indices[2], indices[1], indices[0])
             if previous_key is not None and canonical_key < previous_key:
                 raise SkinArtifactValidationError("skins.json cell order is not canonical")
@@ -351,17 +451,39 @@ def parse_skins_json(
                     fl=scalars["fl"],
                     fp=scalars["fp"],
                     ft=scalars["ft"],
+                    generation=generation,
+                    reskin_support=reskin_support,
                 )
             )
         parsed_skins.append(tuple(cells))
-    parsed = ParsedSkinArtifacts(tuple(parsed_skins))
+    parsed = ParsedSkinArtifacts(tuple(parsed_skins), format_version=format_version)
     if _canonical_json_bytes(payload) != _canonical_json_bytes(
-        canonical_skins_payload(parsed.skins)
+        _canonical_skins_payload_for_format(
+            parsed.skins,
+            format_version=format_version,
+        )
     ):
         raise SkinArtifactValidationError(
             "skins.json values do not match the canonical skin serializer"
         )
     return parsed
+
+
+def _validate_generation_support(generation: Any, support: Any) -> None:
+    if not isinstance(generation, str) or generation not in _CELL_GENERATIONS:
+        raise SkinArtifactValidationError("skins.json cell generation is invalid")
+    if generation in _DENSE_GENERATIONS:
+        if (
+            isinstance(support, (bool, np.bool_))
+            or not isinstance(support, (int, float, np.integer, np.floating))
+            or not math.isfinite(float(support))
+            or not 0.0 <= float(support) <= 1.0
+        ):
+            raise SkinArtifactValidationError(
+                "skins.json dense cell reskin_support must be finite and in [0, 1]"
+            )
+    elif support is not None:
+        raise SkinArtifactValidationError("skins.json non-dense cell reskin_support must be null")
 
 
 def validate_skin_artifact_semantics(
@@ -405,6 +527,50 @@ def validate_skin_artifact_semantics(
             raise SkinArtifactValidationError(f"skinning report topology mismatch: {name}")
     _validate_final_diagnostic_mapping(report.get("diagnostics"), topology)
     return skin_data
+
+
+def validate_skin_generation_provenance(
+    parsed: ParsedSkinArtifacts,
+    provenance: str,
+    *,
+    semantic_contract_version: int,
+) -> None:
+    """Cross-check v2 cell generations against the resolved final phase."""
+
+    if semantic_contract_version == F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        if parsed.format_version != 1:
+            raise SkinArtifactValidationError("contract 3 requires skins.json format version 1")
+        return
+    if semantic_contract_version != F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        raise SkinArtifactValidationError("skin artifact semantic contract version is invalid")
+    if parsed.format_version != 2:
+        raise SkinArtifactValidationError("contract 4 requires skins.json format version 2")
+
+    generations = {cell.generation for skin in parsed.skins for cell in skin}
+    allowed = {
+        PRIMARY_NEAREST_SAMPLE: {
+            FAULT_CELL_GENERATION_GROWN,
+            FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+        },
+        PRIMARY_EXISTING_CELLS_RESKINNED: {
+            FAULT_CELL_GENERATION_GROWN,
+            FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED,
+        },
+        PRIMARY_DENSE_RESKINNED: {
+            FAULT_CELL_GENERATION_GROWN,
+            FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+            FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+        },
+        CONNECTED_COMPONENT_FALLBACK: {
+            FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+        },
+    }.get(provenance)
+    if allowed is None:
+        raise SkinArtifactValidationError("skin cell provenance is invalid")
+    if not generations.issubset(allowed):
+        raise SkinArtifactValidationError(
+            "skins.json cell generation conflicts with final provenance"
+        )
 
 
 def _validate_skin_mask(

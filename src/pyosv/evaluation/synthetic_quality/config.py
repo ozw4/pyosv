@@ -8,6 +8,10 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.skinner import (
+    RESKIN_POLICY_EXISTING_CELLS_V1,
+    validate_reskin_policy,
+)
 from pyosv.synthetic3d import SyntheticScannerInputConfig
 
 from .scanner import SCANNER_BACKENDS
@@ -218,6 +222,7 @@ class SyntheticSkinningConfig:
     du: float = 5.0
     max_delta_strike: float = 30.0
     reskin: bool = True
+    reskin_policy: str = RESKIN_POLICY_EXISTING_CELLS_V1
     accepted_occupancy_radius: int | None = None
     small_skin_size: int = 10
     boundary_skinner_fallback: bool = False
@@ -228,6 +233,11 @@ class SyntheticSkinningConfig:
             raise ValueError("enabled must be a bool")
         if not isinstance(self.reskin, bool):
             raise ValueError("reskin must be a bool")
+        object.__setattr__(
+            self,
+            "reskin_policy",
+            validate_reskin_policy(self.reskin_policy),
+        )
         if not isinstance(self.boundary_skinner_fallback, bool):
             raise ValueError("boundary_skinner_fallback must be a bool")
         if self.boundary_skinner_fallback_policy not in BOUNDARY_SKINNER_FALLBACK_POLICIES:
@@ -275,6 +285,7 @@ class SyntheticSkinningConfig:
             "du": float(self.du),
             "max_delta_strike": float(self.max_delta_strike),
             "reskin": self.reskin,
+            "reskin_policy": self.reskin_policy,
             "accepted_occupancy_radius": (
                 None
                 if self.accepted_occupancy_radius is None

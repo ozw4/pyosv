@@ -31,6 +31,7 @@ class SkinningPatch:
     growth_source: str | None = None
     boundary_skinner_fallback: bool | None = None
     boundary_skinner_fallback_policy: str | None = None
+    reskin_policy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +207,7 @@ def effective_skinning_config(
         "growth_source",
         "boundary_skinner_fallback",
         "boundary_skinner_fallback_policy",
+        "reskin_policy",
     ):
         value = getattr(patch, field)
         if value is not None:

@@ -171,7 +171,7 @@ def test_official_small_fixture_first_run_shallow_deep_and_complete_resume(
         F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
         F3_SCANNER_STAGE_CONTRACT_VERSION,
         F3_METRIC_SCHEMA_VERSION,
-    ) == (3, 4, 3, 5, 2)
+    ) == (3, 4, 4, 5, 2)
 
     monkeypatch.setattr(
         result_module,

@@ -69,6 +69,7 @@ BASE_SKINNING = {
     "du": 5.0,
     "max_delta_strike": 30.0,
     "reskin": True,
+    "reskin_policy": "existing_cells_v1",
     "accepted_occupancy_radius": None,
     "effective_accepted_occupancy_radius": 5,
     "small_skin_size": 10,

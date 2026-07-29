@@ -51,6 +51,7 @@ from pyosv._skinner.reference import (
     find_skins,
 )
 from pyosv._skinner.reskin import (
+    RESKIN_POLICIES,
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
     ReskinDiagnostics,
@@ -74,6 +75,7 @@ from pyosv._skinner.reskin import (
     _reskin_existing_cells_v1 as _reskin_existing_cells_v1,
     _smooth_weighted_surface as _smooth_weighted_surface,
     _surface_derivative as _surface_derivative,
+    validate_reskin_policy,
 )
 from pyosv._skinner.seeds import (
     _adaptive_skin_likelihood_threshold as _adaptive_skin_likelihood_threshold,
@@ -105,10 +107,12 @@ from pyosv._skinner.validation import (
 __all__ = [
     "ConnectedComponentSkinner",
     "FaultSkinner",
+    "RESKIN_POLICIES",
     "RESKIN_POLICY_EXISTING_CELLS_V1",
     "RESKIN_POLICY_REFERENCE_DENSE_V1",
     "ReskinDiagnostics",
     "ReskinPolicy",
     "find_connected_component_skins",
     "find_skins",
+    "validate_reskin_policy",
 ]

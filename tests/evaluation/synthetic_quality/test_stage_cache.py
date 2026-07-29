@@ -626,6 +626,7 @@ def test_fallback_only_variants_share_primary_skinning(
         {"min_likelihood": 0.4},
         {"min_skin_size": 2},
         {"reskin": False},
+        {"reskin_policy": "reference_dense_v1"},
     ),
 )
 def test_primary_skinning_key_distinguishes_growth_settings(changed: dict[str, object]) -> None:

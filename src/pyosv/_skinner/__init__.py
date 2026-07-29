@@ -16,13 +16,16 @@ from pyosv._skinner.models import (
 )
 from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.reskin import (
+    RESKIN_POLICIES,
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
     ReskinPolicy,
+    validate_reskin_policy,
 )
 
 __all__ = [
     "ConnectedComponentSkinner",
+    "RESKIN_POLICIES",
     "RESKIN_POLICY_EXISTING_CELLS_V1",
     "RESKIN_POLICY_REFERENCE_DENSE_V1",
     "ReskinPolicy",
@@ -36,4 +39,5 @@ __all__ = [
     "find_connected_component_skins",
     "link_above_below",
     "link_left_right",
+    "validate_reskin_policy",
 ]

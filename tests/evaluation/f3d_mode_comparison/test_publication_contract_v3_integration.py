@@ -191,7 +191,7 @@ def test_publication_contract_v3_small_fixture_end_to_end(
         F3_FINGERPRINT_CONTRACT_VERSION,
         F3_SCANNER_STAGE_CONTRACT_VERSION,
         F3_METRIC_SCHEMA_VERSION,
-    ) == (3, 3, 4, 5, 2)
+    ) == (4, 3, 4, 5, 2)
     assert reskin_transitions
     assert any(
         len(before) == len(after)
@@ -240,12 +240,15 @@ def test_publication_contract_v3_small_fixture_end_to_end(
                 encoding="utf-8"
             )
         )
-        assert stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"] == 3
+        assert stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"] == 4
         stage = output_root / "stages" / "skinning" / fingerprint
         report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
         payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
         cells = [item for skin in payload["skins"] for item in skin["cells"]]
-        assert report["final_cell_value_provenance"] == "primary_reskinned"
+        assert payload["format_version"] == 2
+        assert report["final_cell_value_provenance"] == "primary_existing_cells_reskinned"
+        assert all(item["generation"] == "existing_cells_reskinned" for item in cells)
+        assert all(item["reskin_support"] is None for item in cells)
         assert any(skin["cell_count"] > 1 for skin in payload["skins"])
         cell = next(item for item in first.cells if item.stages.skinning == fingerprint)
         voting = output_root / "stages" / "voting" / cell.stages.voting
@@ -778,7 +781,7 @@ def test_rehashed_reskinned_cell_tampering_is_rejected(
         loaded = load_f3d_mode_comparison_result(root, _dataset_spec=fixture_spec)
         stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
         report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
-        assert report["final_cell_value_provenance"] == "primary_reskinned"
+        assert report["final_cell_value_provenance"] == "primary_existing_cells_reskinned"
 
         path = stage / "skins.json"
         payload = json.loads(path.read_text(encoding="utf-8"))

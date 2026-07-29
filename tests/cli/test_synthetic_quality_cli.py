@@ -87,6 +87,32 @@ def test_boundary_fallback_cli_rejects_positive_and_negative_options(
         )
 
 
+def test_reskin_policy_cli_uses_core_choices(tmp_path: Path) -> None:
+    parser = synthetic_quality.build_parser()
+
+    default = parser.parse_args(["--output-dir", str(tmp_path)])
+    dense = parser.parse_args(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--skinner-reskin-policy",
+            "reference_dense_v1",
+        ]
+    )
+
+    assert default.skinner_reskin_policy == "existing_cells_v1"
+    assert dense.skinner_reskin_policy == "reference_dense_v1"
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "--output-dir",
+                str(tmp_path),
+                "--skinner-reskin-policy",
+                "unknown",
+            ]
+        )
+
+
 def test_domain_report_apis_are_exported_from_package() -> None:
     assert callable(build_report)
     assert callable(run_case)

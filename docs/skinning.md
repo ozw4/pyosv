@@ -111,7 +111,10 @@ also stores its finite `[0, 1]` smoothing support in `reskin_support`; other
 generations use `None`. `reskin_support` is the dense acceptance signal and is
 independent of the final growth-volume sample in `fl`. These fields are
 preserved by in-memory stage-cache snapshots and clones; the canonical
-`skins.json` v1 writer remains unchanged and does not serialize them.
+F3 `skins.json` v2 writer serializes both fields on every cell. Dense
+generations require a finite `[0, 1]` `reskin_support`; other generations use
+JSON `null`. The F3 reader continues to accept strict historical v1 payloads,
+where both values are explicitly unknown at the artifact layer.
 
 `find_skins` and `find_skin` accept a separate mutable
 `reskin_diagnostics` mapping. It is cleared at the start and reports the
@@ -128,6 +131,9 @@ This sink is intentionally isolated from the legacy `diagnostics` mapping;
 the legacy key set and meanings do not include reskin details. The two
 arguments must therefore be distinct mutable mappings; passing the same
 mapping as both sinks is rejected before either mapping is changed.
+Evaluation runners publish this dedicated evidence under the nested
+`diagnostics.reskin` namespace so it remains scalar-only and cache-safe without
+changing the core legacy diagnostic keys.
 
 Both methods also accept a keyword-only `valid_mask`. When supplied, it must be
 a three-dimensional boolean NumPy array with the same shape as `fv`. The

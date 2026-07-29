@@ -322,16 +322,20 @@ existing operational validation paths.
   requires a new output path; exact resume reuses only matching validated
   stages, and a valid complete bundle is validated without recomputation.
   Root completion is published only after the fixed reports and referenced
-  stages pass semantic validation. `--deep-validate` recomputes every scanner
+  stages pass semantic validation. `--skinner-reskin-policy` selects
+  `existing_cells_v1` or `reference_dense_v1`; resume recovers the recorded
+  policy when the option is omitted. `--deep-validate` recomputes every scanner
   array summary from its persisted DAT artifact, re-derives scanner sampling
   counts from the resolved configuration, recomputes full-volume metric
   evidence, and reruns only the final skinning phase from the persisted scanner,
   voting, and thinning parents. The rerun exactly checks every final
   cell's subvoxel geometry, voxel index, likelihood, strike, dip, ordering, and
   duplicate occurrence against `skins.json`, while retaining the mask and
-  topology cross-checks. The recorded final-cell provenance distinguishes
-  primary nearest samples, reskinned primary cells, and connected-component
-  fallback cells. Parent nearest-sample checks apply to the first and third;
+  topology cross-checks. Format-version-2 cell comparison includes generation
+  and dense reskin support. The recorded final-cell provenance distinguishes
+  primary nearest samples, existing-cell reskinning, dense reskinning, and
+  connected-component fallback cells. Parent nearest-sample checks apply to
+  the first and fallback paths;
   exact skin-only replay is authoritative for reskinned values. It therefore
   requires the current fixed publication
   runtime to match the manifest. This establishes internal numerical

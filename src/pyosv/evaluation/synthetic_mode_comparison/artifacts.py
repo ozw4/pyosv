@@ -306,6 +306,7 @@ _SKINNING_CONFIG_REPORT_SCHEMA = {
             "growth_source",
             "seed_planarity_source",
             "boundary_skinner_fallback_policy",
+            "reskin_policy",
         ),
         "string",
     ),
@@ -341,6 +342,29 @@ _PRIMARY_SKINNER_DIAGNOSTIC_FIELDS = {
     "seed_min_ep": "closed_unit_interval_number",
     "seed_threshold": "nonnegative_number",
     "grow_threshold": "nonnegative_number",
+}
+_RESKIN_DIAGNOSTIC_REPORT_SCHEMA = {
+    "reskin_policy": "string",
+    "reskin_applied": "boolean",
+    **dict.fromkeys(
+        (
+            "processed_skin_count",
+            "input_cell_count",
+            "output_cell_count",
+            "observed_output_cell_count",
+            "generated_cell_count",
+            "dropped_input_cell_count",
+            "projected_local_duplicate_count",
+            "candidate_local_key_count",
+            "rejected_support_count",
+            "rejected_invalid_mask_count",
+            "rejected_prior_skin_collision_count",
+            "rejected_out_of_bounds_count",
+            "rejected_duplicate_world_index_count",
+            "max_generated_chebyshev_distance_from_observed",
+        ),
+        "nonnegative_integer",
+    ),
 }
 _SKINNING_DIAGNOSTIC_REPORT_SCHEMA = {
     **dict.fromkeys(
@@ -777,6 +801,10 @@ def _load_bundle_objects(
             4: (
                 "unsupported scalar evidence contract version 4: legacy schema-v3 bundle "
                 "does not persist component incidence or bind it to trial truth and skin overlap"
+            ),
+            5: (
+                "unsupported scalar evidence contract version 5: legacy schema-v3 bundle "
+                "does not record the resolved reskin policy"
             ),
         },
     )
@@ -1298,6 +1326,8 @@ def _load_downstream_sections(
         _load_skinning_diagnostics(
             skinning["diagnostics"],
             method=skinning_config["method"],
+            reskin=skinning_config["reskin"],
+            reskin_policy=skinning_config["reskin_policy"],
             context=f"{skinning_context}.diagnostics",
         )
 
@@ -1689,17 +1719,33 @@ def _load_scanner_evidence_quality_report(
     return payload
 
 
-def _load_skinning_diagnostics(value: Any, *, method: str, context: str) -> dict[str, Any]:
+def _load_skinning_diagnostics(
+    value: Any,
+    *,
+    method: str,
+    reskin: bool,
+    reskin_policy: str,
+    context: str,
+) -> dict[str, Any]:
     schema = dict(_SKINNING_DIAGNOSTIC_REPORT_SCHEMA)
     if method != "connected_component":
         schema.update(_PRIMARY_SKINNER_DIAGNOSTIC_FIELDS)
-    payload = _object(value, {*schema, "fallback_v5_guardrail"}, context)
+    payload = _object(value, {*schema, "fallback_v5_guardrail", "reskin"}, context)
     _load_scalar_report_fields(payload, schema, context)
     _load_scalar_report_object(
         payload["fallback_v5_guardrail"],
         _GUARDRAIL_REPORT_SCHEMA,
         f"{context}.fallback_v5_guardrail",
     )
+    reskin_diagnostics = _load_scalar_report_object(
+        payload["reskin"],
+        _RESKIN_DIAGNOSTIC_REPORT_SCHEMA,
+        f"{context}.reskin",
+    )
+    if reskin_diagnostics["reskin_policy"] != reskin_policy:
+        raise ValueError(f"{context}.reskin policy does not match config")
+    if (not reskin or method == "connected_component") and reskin_diagnostics["reskin_applied"]:
+        raise ValueError(f"{context}.reskin applied state conflicts with config")
     return payload
 
 

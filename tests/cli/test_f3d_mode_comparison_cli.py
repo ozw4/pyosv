@@ -57,6 +57,7 @@ def test_parser_defaults_and_global_overrides(tmp_path: Path) -> None:
     assert defaults.deep_validate is False
     assert defaults.pretty is False
     assert defaults.no_skinning is False
+    assert defaults.skinner_reskin_policy is None
     assert defaults.boundary_margin == 16
 
     overrides = parser.parse_args(
@@ -69,6 +70,8 @@ def test_parser_defaults_and_global_overrides(tmp_path: Path) -> None:
             "--deep-validate",
             "--pretty",
             "--no-skinning",
+            "--skinner-reskin-policy",
+            "reference_dense_v1",
             "--boundary-margin",
             "7",
         ]
@@ -77,6 +80,7 @@ def test_parser_defaults_and_global_overrides(tmp_path: Path) -> None:
     assert overrides.deep_validate is True
     assert overrides.pretty is True
     assert overrides.no_skinning is True
+    assert overrides.skinner_reskin_policy == "reference_dense_v1"
     assert overrides.boundary_margin == 7
 
 
@@ -140,7 +144,88 @@ def test_main_passes_complete_run_contract(
     config = received["config"]
     assert isinstance(config, F3ModeComparisonConfig)
     assert config.skinning_enabled is False
+    assert config.skinning_template.reskin_policy == "existing_cells_v1"
     assert config.boundary_diagnostic_margin == 9
+
+
+def test_main_forwards_explicit_dense_reskin_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "run"
+    data.mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "run_experiment",
+        lambda **kwargs: captured.update(kwargs) or output,
+    )
+
+    assert (
+        f3d_mode_comparison.main(
+            [
+                "--data-root",
+                str(data),
+                "--output-dir",
+                str(output),
+                "--skinner-reskin-policy",
+                "reference_dense_v1",
+            ]
+        )
+        == 0
+    )
+
+    config = captured["config"]
+    assert isinstance(config, F3ModeComparisonConfig)
+    assert config.skinning_template.reskin_policy == "reference_dense_v1"
+
+
+def test_resume_recovers_recorded_dense_reskin_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "run"
+    data.mkdir()
+    output.mkdir()
+    (output / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "plan": {
+                    "reference_workflow_settings": {
+                        "skinning_config": {
+                            "reskin_policy": "reference_dense_v1",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "run_experiment",
+        lambda **kwargs: captured.update(kwargs) or output,
+    )
+
+    assert (
+        f3d_mode_comparison.main(
+            [
+                "--data-root",
+                str(data),
+                "--output-dir",
+                str(output),
+                "--resume",
+            ]
+        )
+        == 0
+    )
+
+    config = captured["config"]
+    assert isinstance(config, F3ModeComparisonConfig)
+    assert config.skinning_template.reskin_policy == "reference_dense_v1"
 
 
 @pytest.mark.parametrize("deep", [False, True], ids=("shallow", "deep"))

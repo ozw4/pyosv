@@ -197,7 +197,19 @@ def test_duplicate_cells_are_retained_and_cross_file_validation_passes(
 
 
 def test_canonical_serializer_preserves_cell_attributes() -> None:
-    cell = SkinCellRecord(0.5, 0.0, 0.0, 1, 0, 0, 0.1, 10.0, 65.0)
+    cell = SkinCellRecord(
+        0.5,
+        0.0,
+        0.0,
+        1,
+        0,
+        0,
+        0.1,
+        10.0,
+        65.0,
+        "grown",
+        None,
+    )
 
     payload = canonical_skins_payload(((cell,),))
 
@@ -206,7 +218,97 @@ def test_canonical_serializer_preserves_cell_attributes() -> None:
         "x1": 0.5,
         "fp": 10.0,
         "ft": 65.0,
+        "generation": "grown",
+        "reskin_support": None,
     }
+    assert payload["format_version"] == 2
+
+
+def test_canonical_v2_round_trip_preserves_generation_and_support(tmp_path: Path) -> None:
+    cells = (
+        SkinCellRecord(
+            0.0,
+            0.0,
+            0.0,
+            0,
+            0,
+            0,
+            0.8,
+            25.0,
+            70.0,
+            "dense_reskin_observed",
+            0.75,
+        ),
+        SkinCellRecord(
+            1.0,
+            0.0,
+            0.0,
+            1,
+            0,
+            0,
+            0.7,
+            25.0,
+            70.0,
+            "dense_reskin_generated",
+            0.5,
+        ),
+    )
+    payload = canonical_skins_payload((cells,))
+    path = tmp_path / "skins.json"
+    _write_json(path, payload)
+
+    parsed = parse_skins_json(path, _SHAPE)
+
+    assert payload["format_version"] == 2
+    assert parsed.format_version == 2
+    assert [cell.generation for cell in parsed.skins[0]] == [
+        "dense_reskin_observed",
+        "dense_reskin_generated",
+    ]
+    assert [cell.reskin_support for cell in parsed.skins[0]] == [0.75, 0.5]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("generation", "unknown"),
+        ("reskin_support", None),
+        ("reskin_support", -0.1),
+        ("reskin_support", 1.1),
+    ),
+)
+def test_v2_parser_rejects_invalid_dense_metadata(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    cell = {
+        **_cell(0, 0, 0),
+        "generation": "dense_reskin_generated",
+        "reskin_support": 0.5,
+    }
+    cell[field] = value
+    payload = {
+        "format_version": 2,
+        "skinning_enabled": True,
+        "skin_count": 1,
+        "skins": [{"skin_index": 0, "cell_count": 1, "cells": [cell]}],
+    }
+    path = tmp_path / "skins.json"
+    _write_json(path, payload)
+
+    with pytest.raises(SkinArtifactValidationError):
+        parse_skins_json(path, _SHAPE)
+
+
+def test_v2_parser_rejects_versioned_field_set_mismatch(tmp_path: Path) -> None:
+    payload = _single_cell_payload(_cell(0, 0, 0))
+    payload["format_version"] = 2
+    path = tmp_path / "skins.json"
+    _write_json(path, payload)
+
+    with pytest.raises(SkinArtifactValidationError, match="field set"):
+        parse_skins_json(path, _SHAPE)
 
 
 @pytest.mark.parametrize(
@@ -298,6 +400,32 @@ def test_connected_component_primary_ignores_reskin_setting_for_provenance() -> 
             fallback_used=False,
         )
         == "primary_nearest_sample"
+    )
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    (
+        ("existing_cells_v1", "primary_existing_cells_reskinned"),
+        ("reference_dense_v1", "primary_dense_reskinned"),
+    ),
+)
+def test_contract4_provenance_distinguishes_reskin_policy(
+    policy: str,
+    expected: str,
+) -> None:
+    skinning = {
+        **_resolved_skinning(reskin=True),
+        "reskin_policy": policy,
+    }
+
+    assert (
+        resolve_final_skin_cell_value_provenance(
+            skinning,
+            _resolved_variant(),
+            fallback_used=False,
+        )
+        == expected
     )
 
 

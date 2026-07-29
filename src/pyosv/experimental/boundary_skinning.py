@@ -54,7 +54,8 @@ def find_synthetic_skins(
         kwargs["min_likelihood"] = skinning_config.min_likelihood
     skinner = FaultSkinner(**kwargs)
     grow_volume = fvt if skinning_config.growth_source == "thinned" else fv
-    return skinner.find_skins(
+    reskin_diagnostics: dict[str, object] = {}
+    skins = skinner.find_skins(
         grow_volume,
         vp,
         vt,
@@ -71,9 +72,15 @@ def find_synthetic_skins(
         du=skinning_config.du,
         max_delta_strike=skinning_config.max_delta_strike,
         reskin=skinning_config.reskin,
+        reskin_policy=skinning_config.reskin_policy,
+        valid_mask=None,
         accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
         diagnostics=diagnostics,
+        reskin_diagnostics=reskin_diagnostics,
     )
+    if diagnostics is not None:
+        diagnostics["reskin"] = reskin_diagnostics
+    return skins
 
 
 def positive_mask_components(

@@ -71,7 +71,6 @@ from .resources import (
 )
 from .runner import (
     F3_CELL_RUNNER_CONTRACT_VERSION,
-    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     F3_SKINNING_STAGE_IMPLEMENTATION,
     F3_THINNING_STAGE_IMPLEMENTATION,
     F3_VOTING_STAGE_IMPLEMENTATION,
@@ -92,13 +91,18 @@ from .scanner import (
     validate_scanner_sampling_evidence,
 )
 from .skin_artifacts import (
+    F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+    PRIMARY_DENSE_RESKINNED,
+    PRIMARY_EXISTING_CELLS_RESKINNED,
     ParsedSkinArtifacts,
     SkinArtifactValidationError,
-    canonical_skins_payload,
+    _canonical_skins_payload_for_format,
     parse_skins_json,
     resolve_final_skin_cell_value_provenance,
     resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
+    validate_skin_generation_provenance,
 )
 from .runtime_identity import (
     numerical_runtime_identity,
@@ -1030,6 +1034,37 @@ def _validate_cells_and_stages(
                 validated[("skinning", cell.stages.skinning)] if cell.skinning_enabled else None
             ),
         )
+        if cell.skinning_enabled:
+            skinning_settings = validated[("skinning", cell.stages.skinning)]
+            skinning_report = _read_json_object(
+                root / "stages" / "skinning" / cell.stages.skinning / "report.json",
+                "skinning report",
+            )
+            diagnostics = _object(
+                skinning_report.get("diagnostics"),
+                "skinning report diagnostics",
+            )
+            fallback_used = diagnostics.get("fallback_used")
+            if not isinstance(fallback_used, bool):
+                raise F3ResultValidationError("skinning report fallback_used must be bool")
+            try:
+                provenance = resolve_final_skin_cell_value_provenance(
+                    _object(cell.resolved_config["skinning"], "cell skinning config"),
+                    _object(cell.resolved_config["variant"], "cell variant config"),
+                    fallback_used=fallback_used,
+                    resolved_stage_settings=skinning_settings,
+                )
+                validate_skin_generation_provenance(
+                    parsed_skins[cell.stages.skinning],
+                    provenance,
+                    semantic_contract_version=int(
+                        skinning_settings["skin_artifact_semantic_contract_version"]
+                    ),
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise F3ResultValidationError(
+                    f"invalid skin generation provenance: {error}"
+                ) from error
     by_label = {cell.label: cell for cell in result.cells}
     for left, right in (("RL-REF", "RL-QUAL"), ("Q-REF", "Q-QUAL")):
         if by_label[left].stages.scanner != by_label[right].stages.scanner:
@@ -1062,14 +1097,16 @@ def _resolved_cell_contract(plan_value: Any, workflow: str) -> tuple[dict[str, A
             final_normalization_smoothing=voting["final_normalization_smoothing"],
         )
         skinning_enabled = _boolean(plan["skinning_enabled"], "run plan skinning_enabled")
+        skinning = dict(_object(workflow_settings["skinning_config"], "workflow skinning config"))
+        variant = asdict(VariantSpec("f3-canonical", experimental=False))
+        if "reskin_policy" not in skinning:
+            variant["skinning"].pop("reskin_policy")
         expected = {
             "workflow_mode": workflow,
             "voting": dict(_object(workflow_settings["voting_config"], "workflow voting config")),
             "voting_controls": asdict(controls),
-            "skinning": dict(
-                _object(workflow_settings["skinning_config"], "workflow skinning config")
-            ),
-            "variant": asdict(VariantSpec("f3-canonical", experimental=False)),
+            "skinning": skinning,
+            "variant": variant,
         }
     except (KeyError, TypeError, ValueError) as error:
         raise F3ResultValidationError("run plan cannot resolve canonical cell settings") from error
@@ -1518,6 +1555,11 @@ def _canonical_skinning_stage_settings(
     workflow_identity: Any,
 ) -> dict[str, Any]:
     skinning = dict(_object(resolved_config["skinning"], "cell skinning config"))
+    semantic_contract_version = (
+        F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        if "reskin_policy" in skinning
+        else F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+    )
     settings = {
         "cell_runner_contract_version": F3_CELL_RUNNER_CONTRACT_VERSION,
         "implementation_contract": F3_SKINNING_STAGE_IMPLEMENTATION,
@@ -1532,9 +1574,7 @@ def _canonical_skinning_stage_settings(
         "primary_skinner_identity": ("pyosv.experimental.boundary_skinning.find_synthetic_skins"),
     }
     if skinning["enabled"]:
-        settings["skin_artifact_semantic_contract_version"] = (
-            F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
-        )
+        settings["skin_artifact_semantic_contract_version"] = semantic_contract_version
     normalized = json.loads(canonical_json_bytes(settings))
     if not isinstance(normalized, dict):
         raise AssertionError("skinning stage settings must be an object")
@@ -2493,7 +2533,11 @@ def _deep_validate_skin_artifacts(
                 raise SkinArtifactValidationError(
                     "skinning report final cell value provenance mismatch"
                 )
-            if parent_contract.provenance != "primary_reskinned":
+            if parent_contract.provenance not in {
+                "primary_reskinned",
+                PRIMARY_EXISTING_CELLS_RESKINNED,
+                PRIMARY_DENSE_RESKINNED,
+            }:
                 _validate_skin_parent_samples(
                     root,
                     parsed,
@@ -2512,6 +2556,12 @@ def _deep_validate_skin_artifacts(
                 parent_contract.scanner_target,
                 recorded_provenance,
                 diagnostics,
+                semantic_contract_version=int(
+                    _object(
+                        skinning_report["resolved_stage_settings"],
+                        f"{cell.label} skinning stage settings",
+                    )["skin_artifact_semantic_contract_version"]
+                ),
             )
         except (KeyError, OSError, TypeError, ValueError) as error:
             raise F3ResultValidationError(
@@ -2556,7 +2606,14 @@ def _recompute_skin_artifacts(
     scanner_target: tuple[str, str, str] | None,
     recorded_provenance: Any,
     recorded_diagnostics: Mapping[str, Any],
+    semantic_contract_version: int | None = None,
 ) -> None:
+    if semantic_contract_version is None:
+        semantic_contract_version = (
+            F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+            if parsed.format_version == 1
+            else F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        )
     voting = ("voting", cell.stages.voting)
     thinning = ("thinning", cell.stages.thinning)
     sources = (
@@ -2639,8 +2696,11 @@ def _recompute_skin_artifacts(
                 raise SkinArtifactValidationError(
                     "recomputed fallback state does not match skinning report"
                 )
+            provenance_skinning_config = dict(skinning_config)
+            if semantic_contract_version == F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+                provenance_skinning_config.pop("reskin_policy", None)
             recomputed_provenance = resolve_final_skin_cell_value_provenance(
-                skinning_config,
+                provenance_skinning_config,
                 _object(
                     cell.resolved_config["variant"],
                     f"{cell.label} variant config",
@@ -2654,6 +2714,8 @@ def _recompute_skin_artifacts(
             normalized_recomputed_diagnostics = json.loads(
                 canonical_json_bytes(dict(recomputed.diagnostics))
             )
+            if semantic_contract_version == F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+                normalized_recomputed_diagnostics.pop("reskin", None)
             if normalized_recomputed_diagnostics != dict(recorded_diagnostics):
                 differing_fields = sorted(
                     name
@@ -2664,13 +2726,19 @@ def _recompute_skin_artifacts(
                     "recomputed skinning diagnostics do not match skinning report: "
                     + ", ".join(differing_fields)
                 )
-            recomputed_payload = canonical_skins_payload(recomputed.skins)
+            recomputed_payload = _canonical_skins_payload_for_format(
+                recomputed.skins,
+                format_version=parsed.format_version,
+            )
         finally:
             scanner_mask_bits = None
             parent_views.clear()
             recomputed = None
             _close_memmap(backing)
-    if recomputed_payload != canonical_skins_payload(parsed.skins):
+    if recomputed_payload != _canonical_skins_payload_for_format(
+        parsed.skins,
+        format_version=parsed.format_version,
+    ):
         raise SkinArtifactValidationError(
             "skins.json does not exactly match skin-only recomputation"
         )

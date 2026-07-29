@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from pyosv.skinner import RESKIN_POLICIES, RESKIN_POLICY_EXISTING_CELLS_V1
 from pyosv.experimental.boundary_seed_selection import select_boundary_seed_retention_v1
 from pyosv.experimental.boundary_thinning import (
     apply_boundary_edge_thin_v1,
@@ -496,6 +497,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-skinner-reskin",
         action="store_true",
         help="Disable reference-like reskin smoothing/reorientation.",
+    )
+    parser.add_argument(
+        "--skinner-reskin-policy",
+        choices=RESKIN_POLICIES,
+        default=RESKIN_POLICY_EXISTING_CELLS_V1,
+        help=(
+            "Reskin policy: existing_cells_v1 smooths/relinks current cells; "
+            "reference_dense_v1 regenerates missing cells on smoothed local support. "
+            "Not applied with --no-skinner-reskin."
+        ),
     )
     boundary_fallback_group = parser.add_mutually_exclusive_group()
     boundary_fallback_group.add_argument(
@@ -1290,6 +1301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 du=args.skinner_du,
                 max_delta_strike=args.skinner_max_delta_strike,
                 reskin=not args.no_skinner_reskin,
+                reskin_policy=args.skinner_reskin_policy,
                 accepted_occupancy_radius=args.skinner_accepted_occupancy_radius,
                 small_skin_size=args.small_skin_size,
                 boundary_skinner_fallback=(

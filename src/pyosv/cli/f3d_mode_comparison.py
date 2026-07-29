@@ -9,6 +9,8 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from pyosv.skinner import RESKIN_POLICIES, RESKIN_POLICY_EXISTING_CELLS_V1
+from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
 from pyosv.evaluation.f3d_mode_comparison.artifacts import RUN_MANIFEST_FILE
 from pyosv.evaluation.f3d_mode_comparison import (
     RUN_COMPLETION_FILE,
@@ -109,6 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-skinning",
         action="store_true",
         help="Disable skinning identically in all four canonical cells.",
+    )
+    parser.add_argument(
+        "--skinner-reskin-policy",
+        choices=RESKIN_POLICIES,
+        default=None,
+        help=(
+            "Reskin policy: existing_cells_v1 smooths/relinks current cells; "
+            "reference_dense_v1 regenerates missing cells on smoothed local support. "
+            "The policy is recorded but not run when reskinning is disabled."
+        ),
     )
     parser.add_argument(
         "--boundary-margin",
@@ -250,6 +262,25 @@ def _recorded_runtime_identity(bundle: Path) -> dict[str, object]:
         raise ValueError(f"bundle run manifest has invalid runtime identity: {error}") from error
 
 
+def _recorded_reskin_policy(bundle: Path) -> str:
+    manifest = json.loads((bundle / RUN_MANIFEST_FILE).read_text(encoding="utf-8"))
+    if not isinstance(manifest, Mapping):
+        raise ValueError("bundle run manifest must contain an object")
+    plan = manifest.get("plan")
+    if not isinstance(plan, Mapping):
+        raise ValueError("bundle run manifest has no plan")
+    workflow = plan.get("reference_workflow_settings")
+    if not isinstance(workflow, Mapping):
+        raise ValueError("bundle run manifest has no reference workflow settings")
+    skinning = workflow.get("skinning_config")
+    if not isinstance(skinning, Mapping):
+        raise ValueError("bundle run manifest has no skinning config")
+    policy = skinning.get("reskin_policy", RESKIN_POLICY_EXISTING_CELLS_V1)
+    if policy not in RESKIN_POLICIES:
+        raise ValueError("bundle run manifest has invalid reskin policy")
+    return str(policy)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Execute, resume, or validate a canonical F3 comparison."""
 
@@ -277,7 +308,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise FileExistsError(f"run workspace already exists: {output_dir}")
             if args.resume and not output_exists:
                 raise FileNotFoundError(f"run workspace does not exist: {output_dir}")
+            reskin_policy = args.skinner_reskin_policy
+            if reskin_policy is None:
+                reskin_policy = (
+                    _recorded_reskin_policy(output_dir)
+                    if args.resume and (output_dir / RUN_MANIFEST_FILE).is_file()
+                    else RESKIN_POLICY_EXISTING_CELLS_V1
+                )
             config = F3ModeComparisonConfig(
+                skinning_template=SyntheticSkinningConfig(
+                    reskin_policy=reskin_policy,
+                ),
                 skinning_enabled=not args.no_skinning,
                 boundary_diagnostic_margin=args.boundary_margin,
             )

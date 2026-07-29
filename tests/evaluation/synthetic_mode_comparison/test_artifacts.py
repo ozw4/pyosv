@@ -464,7 +464,7 @@ def test_writer_creates_complete_valid_bundle_with_stable_headers(tmp_path: Path
 
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifact_schema_version"] == artifacts.ARTIFACT_SCHEMA_VERSION == 3
-    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 5
+    assert manifest["scalar_evidence_contract_version"] == SCALAR_EVIDENCE_CONTRACT_VERSION == 6
     assert manifest["runtime_contract_version"] == RUNTIME_CONTRACT_VERSION == 4
     assert manifest["input_config"]["case_set"] is None
     assert manifest["input_config"]["case_ids"] == ["single_vertical_plane"]
