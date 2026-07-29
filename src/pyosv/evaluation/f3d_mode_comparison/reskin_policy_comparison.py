@@ -15,7 +15,8 @@ import numpy as np
 
 from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
-from pyosv.experimental.boundary_skinning import find_synthetic_skins
+from pyosv.evaluation.synthetic_quality.variants import VariantSpec
+from pyosv.evaluation.workflow3d import execute_skinning_phase3d
 from pyosv.skinner import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
@@ -31,9 +32,11 @@ from pyosv.synthetic_metrics import (
 
 from .artifacts import artifact_file_metadata, atomic_write_artifact, canonical_json_bytes
 from .skin_artifacts import (
+    CONNECTED_COMPONENT_FALLBACK,
     F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     PRIMARY_DENSE_RESKINNED,
     PRIMARY_EXISTING_CELLS_RESKINNED,
+    ParsedSkinArtifacts,
     canonical_skins_payload,
     parse_skins_json,
     validate_skin_generation_provenance,
@@ -51,6 +54,7 @@ F3_RESKIN_POLICY_COMPARISON_FILES = (
 F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE = "complete.json"
 F3_RESKIN_POLICY_COMPARISON_DIR = "reskin_policy_comparison"
 F3_RESKIN_POLICY_COMPARISON_CELL = "Q-QUAL"
+_F3_CANONICAL_VARIANT = VariantSpec("f3-canonical", experimental=False)
 _CONTRAST_FIELDS = (
     "generated_cell_count_delta",
     "output_cell_count_delta",
@@ -68,6 +72,8 @@ def compare_reskin_policies_from_parent(
     vp: np.ndarray,
     vt: np.ndarray,
     skinning_config: SyntheticSkinningConfig,
+    variant_spec: VariantSpec = _F3_CANONICAL_VARIANT,
+    scanner_target_positive_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Branch only skinning policy while retaining one exact parent fingerprint."""
 
@@ -80,6 +86,8 @@ def compare_reskin_policies_from_parent(
         raise ValueError("skinning_config.method must be 'quality'")
     if not skinning_config.reskin:
         raise ValueError("skinning_config.reskin must be true")
+    if not isinstance(variant_spec, VariantSpec):
+        raise ValueError("variant_spec must be a VariantSpec")
 
     parent_fingerprint = _parent_fingerprint(arrays)
     parent_ridge = positive_candidate_mask(
@@ -92,16 +100,18 @@ def compare_reskin_policies_from_parent(
         RESKIN_POLICY_EXISTING_CELLS_V1,
         RESKIN_POLICY_REFERENCE_DENSE_V1,
     ):
-        diagnostics: dict[str, Any] = {}
-        skins = find_synthetic_skins(
-            arrays["fv"],
-            arrays["fvt"],
-            arrays["vp"],
-            arrays["vt"],
-            skinning_config=replace(skinning_config, reskin_policy=policy),
-            diagnostics=diagnostics,
+        skinning_result = execute_skinning_phase3d(
+            fv=arrays["fv"],
+            fvt=arrays["fvt"],
+            vp=arrays["vp"],
+            vt=arrays["vt"],
+            skinning_settings=replace(skinning_config, reskin_policy=policy),
+            variant_spec=variant_spec,
+            scanner_target_positive_mask=scanner_target_positive_mask,
         )
-        reskin_diagnostics = diagnostics["reskin"]
+        skins = list(skinning_result.skins)
+        diagnostics = _mutable_scalar_evidence(skinning_result.diagnostics)
+        reskin_diagnostics = _final_reskin_diagnostics(diagnostics)
         skin_mask = skin_mask_from_skins(skins, arrays["fv"].shape)
         skin_masks[policy] = skin_mask
         policies[policy] = {
@@ -145,32 +155,7 @@ def compare_reskin_policies_from_parent(
             baseline["parent_fingerprint"] == candidate["parent_fingerprint"]
         ),
         "policies": policies,
-        "contrast": {
-            "generated_cell_count_delta": (
-                candidate["generation"]["reskin_generated_cell_count"]
-                - baseline["generation"]["reskin_generated_cell_count"]
-            ),
-            "output_cell_count_delta": (
-                candidate["generation"]["reskin_output_cell_count"]
-                - baseline["generation"]["reskin_output_cell_count"]
-            ),
-            "small_skin_cell_fraction_delta": (
-                candidate["skin_topology"]["small_skin_cell_fraction"]
-                - baseline["skin_topology"]["small_skin_cell_fraction"]
-            ),
-            "parent_ridge_buffered_precision_delta": (
-                candidate["parent_ridge_surface"]["overlap"]["buffered_precision"]
-                - baseline["parent_ridge_surface"]["overlap"]["buffered_precision"]
-            ),
-            "parent_ridge_buffered_recall_delta": (
-                candidate["parent_ridge_surface"]["overlap"]["buffered_recall"]
-                - baseline["parent_ridge_surface"]["overlap"]["buffered_recall"]
-            ),
-            "parent_ridge_symmetric_chamfer_mean_delta": (
-                candidate["parent_ridge_surface"]["surface_distance"]["symmetric_chamfer_mean"]
-                - baseline["parent_ridge_surface"]["surface_distance"]["symmetric_chamfer_mean"]
-            ),
-        },
+        "contrast": _comparison_contrast(policies),
     }
 
 
@@ -350,7 +335,7 @@ def validate_f3_reskin_policy_comparison(
         from .result import load_f3d_mode_comparison_result
 
         result = load_f3d_mode_comparison_result(root, deep=False)
-    cell, _ = _comparison_cell_and_config(result)
+    cell, config = _comparison_cell_and_config(result)
     expected_parent_stages = {
         "voting": cell.stages.voting,
         "thinning": cell.stages.thinning,
@@ -435,13 +420,24 @@ def validate_f3_reskin_policy_comparison(
         diagnostics = item.get("diagnostics")
         if not isinstance(diagnostics, Mapping):
             raise ValueError("reskin policy comparison diagnostics must be an object")
+        _validate_reported_policy_metrics(
+            item,
+            parsed,
+            shape=shape,
+            small_skin_size=config.small_skin_size,
+        )
+        fallback_used = diagnostics.get("fallback_used")
+        if not isinstance(fallback_used, bool):
+            raise ValueError("reskin policy comparison fallback_used must be a bool")
         validate_skin_generation_provenance(
             parsed,
-            provenance,
+            CONNECTED_COMPONENT_FALLBACK if fallback_used else provenance,
             semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
-            reskin_diagnostics=diagnostics.get("reskin"),
+            reskin_diagnostics=_final_reskin_diagnostics(diagnostics),
         )
 
+    if dict(contrast) != _comparison_contrast(policies):
+        raise ValueError("reskin policy comparison contrast metrics mismatch")
     if paths[1].read_text(encoding="utf-8") != _comparison_csv(report):
         raise ValueError("reskin policy comparison CSV does not match report")
     if paths[2].read_text(encoding="utf-8") != _comparison_markdown(report):
@@ -516,6 +512,181 @@ def _comparison_report_from_bundle(
         "thinning": cell.stages.thinning,
     }
     return report, cell, shape
+
+
+def _comparison_contrast(policies: Mapping[str, Any]) -> dict[str, float | int]:
+    baseline = policies[RESKIN_POLICY_EXISTING_CELLS_V1]
+    candidate = policies[RESKIN_POLICY_REFERENCE_DENSE_V1]
+    return {
+        "generated_cell_count_delta": (
+            candidate["generation"]["reskin_generated_cell_count"]
+            - baseline["generation"]["reskin_generated_cell_count"]
+        ),
+        "output_cell_count_delta": (
+            candidate["generation"]["reskin_output_cell_count"]
+            - baseline["generation"]["reskin_output_cell_count"]
+        ),
+        "small_skin_cell_fraction_delta": (
+            candidate["skin_topology"]["small_skin_cell_fraction"]
+            - baseline["skin_topology"]["small_skin_cell_fraction"]
+        ),
+        "parent_ridge_buffered_precision_delta": (
+            candidate["parent_ridge_surface"]["overlap"]["buffered_precision"]
+            - baseline["parent_ridge_surface"]["overlap"]["buffered_precision"]
+        ),
+        "parent_ridge_buffered_recall_delta": (
+            candidate["parent_ridge_surface"]["overlap"]["buffered_recall"]
+            - baseline["parent_ridge_surface"]["overlap"]["buffered_recall"]
+        ),
+        "parent_ridge_symmetric_chamfer_mean_delta": (
+            candidate["parent_ridge_surface"]["surface_distance"]["symmetric_chamfer_mean"]
+            - baseline["parent_ridge_surface"]["surface_distance"]["symmetric_chamfer_mean"]
+        ),
+    }
+
+
+def _validate_reported_policy_metrics(
+    item: Mapping[str, Any],
+    parsed: ParsedSkinArtifacts,
+    *,
+    shape: tuple[int, int, int],
+    small_skin_size: int,
+) -> None:
+    expected_fields = {
+        "reskin_policy",
+        "parent_fingerprint",
+        "canonical_skin_artifact",
+        "generation",
+        "link_topology",
+        "skin_topology",
+        "parent_ridge_surface",
+        "duplicate_rounded_cell_index_count",
+        "diagnostics",
+    }
+    if set(item) != expected_fields:
+        raise ValueError("reskin policy comparison policy field set mismatch")
+    diagnostics = item["diagnostics"]
+    expected_generation = reskin_generation_metrics(
+        parsed.skins,
+        diagnostics=_final_reskin_diagnostics(diagnostics),
+    )
+    if item["generation"] != expected_generation:
+        raise ValueError("reskin policy comparison generation metrics mismatch")
+
+    expected_topology = skin_topology_metrics(
+        parsed.skins,
+        shape,
+        small_skin_size=small_skin_size,
+    )
+    if item["skin_topology"] != expected_topology:
+        raise ValueError("reskin policy comparison skin topology metrics mismatch")
+    expected_duplicates = rounded_duplicate_cell_count(parsed.skins)
+    if item["duplicate_rounded_cell_index_count"] != expected_duplicates:
+        raise ValueError("reskin policy comparison duplicate count mismatch")
+
+    fallback_used = diagnostics.get("fallback_used")
+    if not isinstance(fallback_used, bool):
+        raise ValueError("reskin policy comparison fallback_used must be a bool")
+    expected_count_fields = (
+        {
+            "fallback_skin_count": expected_topology["skin_count"],
+            "fallback_cell_count": expected_topology["cell_count"],
+        }
+        if fallback_used
+        else {
+            "skin_primary_count": expected_topology["skin_count"],
+            "skin_primary_cell_count": expected_topology["cell_count"],
+        }
+    )
+    for name, expected in expected_count_fields.items():
+        if diagnostics.get(name) != expected:
+            raise ValueError(f"reskin policy comparison diagnostics mismatch: {name}")
+
+    links = item.get("link_topology")
+    expected_link_fields = {
+        "reciprocal_link_violation_count",
+        "cross_skin_link_count",
+        "self_link_count",
+        "linked_component_count",
+        "isolated_cell_count",
+        "quad_closure_candidate_count",
+        "quad_closure_match_count",
+        "quad_closure_mismatch_count",
+    }
+    if not isinstance(links, Mapping) or set(links) != expected_link_fields:
+        raise ValueError("reskin policy comparison link topology field set mismatch")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in links.values()):
+        raise ValueError("reskin policy comparison link topology counts must be non-negative integers")
+    if any(
+        links[name] != 0
+        for name in (
+            "reciprocal_link_violation_count",
+            "cross_skin_link_count",
+            "self_link_count",
+        )
+    ):
+        raise ValueError("reskin policy comparison link topology contains a safety violation")
+    if links["quad_closure_candidate_count"] != (
+        links["quad_closure_match_count"] + links["quad_closure_mismatch_count"]
+    ):
+        raise ValueError("reskin policy comparison quad closure counts mismatch")
+    expected_linked_components = (
+        expected_topology["cell_count"] if fallback_used else expected_topology["skin_count"]
+    )
+    expected_isolated = (
+        expected_topology["cell_count"]
+        if fallback_used
+        else sum(len(skin) == 1 for skin in parsed.skins)
+    )
+    if links["linked_component_count"] != expected_linked_components:
+        raise ValueError("reskin policy comparison linked component count mismatch")
+    if links["isolated_cell_count"] != expected_isolated:
+        raise ValueError("reskin policy comparison isolated cell count mismatch")
+
+    surface = item.get("parent_ridge_surface")
+    if not isinstance(surface, Mapping) or set(surface) != {
+        "reference",
+        "positive_epsilon",
+        "ridge_voxel_count",
+        "overlap",
+        "surface_distance",
+    }:
+        raise ValueError("reskin policy comparison parent ridge surface field set mismatch")
+    if surface["reference"] != "shared_parent_fvt_positive":
+        raise ValueError("reskin policy comparison parent ridge reference mismatch")
+    if surface["positive_epsilon"] != NONZERO_EPSILON:
+        raise ValueError("reskin policy comparison parent ridge epsilon mismatch")
+    ridge_count = surface["ridge_voxel_count"]
+    if isinstance(ridge_count, bool) or not isinstance(ridge_count, int) or ridge_count < 0:
+        raise ValueError("reskin policy comparison ridge voxel count is invalid")
+    for name in ("overlap", "surface_distance"):
+        metrics = surface[name]
+        if not isinstance(metrics, Mapping):
+            raise ValueError(f"reskin policy comparison {name} must be an object")
+        if metrics.get("candidate_count") != expected_topology["unique_cell_count"]:
+            raise ValueError(f"reskin policy comparison {name} candidate count mismatch")
+        if metrics.get("truth_count") != ridge_count:
+            raise ValueError(f"reskin policy comparison {name} truth count mismatch")
+
+
+def _final_reskin_diagnostics(diagnostics: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    fallback_used = diagnostics.get("fallback_used")
+    if not isinstance(fallback_used, bool):
+        raise ValueError("reskin policy comparison fallback_used must be a bool")
+    if fallback_used:
+        return None
+    reskin = diagnostics.get("reskin")
+    if not isinstance(reskin, Mapping):
+        raise ValueError("reskin policy comparison reskin diagnostics must be an object")
+    return reskin
+
+
+def _mutable_scalar_evidence(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {name: _mutable_scalar_evidence(item) for name, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mutable_scalar_evidence(item) for item in value]
+    return value
 
 
 def _comparison_csv(report: Mapping[str, Any]) -> str:

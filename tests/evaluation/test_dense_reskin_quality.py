@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import pyosv.evaluation.dense_reskin_quality as dense_reskin_quality
+import pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison as reskin_policy_comparison
 import pyosv.evaluation.f3d_mode_comparison.result as f3_result_module
 import pyosv.synthetic_metrics as synthetic_metrics
 from pyosv.cells import FaultCell
@@ -24,7 +25,10 @@ from pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison import (
     validate_f3_reskin_policy_comparison,
     write_f3_reskin_policy_comparison,
 )
-from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
+from pyosv.evaluation.synthetic_quality import (
+    SyntheticSkinningConfig,
+    resolve_workflow_settings,
+)
 from pyosv.skin import FaultSkin
 from pyosv.synthetic_metrics import reskin_generation_metrics, skin_link_topology_metrics
 
@@ -738,19 +742,15 @@ def test_f3_pair_writes_json_csv_markdown_and_canonical_skins(tmp_path) -> None:
 def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> None:
     shape = (15, 15, 15)
     fv = np.zeros(shape, dtype=np.float32)
+    fvt = np.zeros(shape, dtype=np.float32)
     vp = np.zeros(shape, dtype=np.float32)
     vt = np.full(shape, 90.0, dtype=np.float32)
-    fv[6:9, 7, 6:9] = 0.9
-    config = SyntheticSkinningConfig(
-        method="quality",
-        growth_source="pre_thin",
-        min_likelihood=0.5,
-        min_skin_size=1,
-        ru=3,
-        rv=5,
-        rw=5,
-        reskin=True,
-    )
+    fvt[6:9, 7, 6:9] = 0.9
+    config = resolve_workflow_settings(
+        workflow_mode="quality",
+        skinning_config=SyntheticSkinningConfig(min_skin_size=1, reskin=True),
+    ).skinning_config
+    assert config.boundary_skinner_fallback is True
     voting_fingerprint = "a" * 64
     thinning_fingerprint = "b" * 64
     voting = tmp_path / "stages" / "voting" / voting_fingerprint
@@ -761,7 +761,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         (voting / "fv.dat", fv),
         (voting / "vp.dat", vp),
         (voting / "vt.dat", vt),
-        (thinning / "fvt.dat", fv),
+        (thinning / "fvt.dat", fvt),
     ):
         np.asarray(values, dtype=">f4").tofile(path)
     report = json.dumps({"shape": list(shape)})
@@ -792,14 +792,101 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         "voting": voting_fingerprint,
         "thinning": thinning_fingerprint,
     }
+    for policy in ("existing_cells_v1", "reference_dense_v1"):
+        policy_payload = payload["policies"][policy]
+        assert policy_payload["diagnostics"]["fallback_enabled"] is True
+        assert policy_payload["diagnostics"]["fallback_used"] is True
+        assert policy_payload["generation"]["reskin_output_cell_count"] == 9
+        assert {
+            cell["generation"]
+            for skin in policy_payload["canonical_skin_artifact"]["skins"]
+            for cell in skin["cells"]
+        } == {"connected_component"}
     assert paths[0].parent == tmp_path / "reskin_policy_comparison"
     comparison_root = paths[0].parent
-    assert (comparison_root / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE).is_file()
+    completion_path = comparison_root / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    assert completion_path.is_file()
     snapshots = {path: path.read_bytes() for path in paths}
+    completion_snapshot = completion_path.read_bytes()
 
     assert compare_reskin_policies_from_bundle(tmp_path, resume=True) == paths
     assert {path: path.read_bytes() for path in paths} == snapshots
     assert validate_f3_reskin_policy_comparison(tmp_path, deep=True) == paths
+
+    tamper_cases = (
+        (
+            lambda report: report["policies"]["existing_cells_v1"]["generation"].__setitem__(
+                "reskin_output_cell_count",
+                report["policies"]["existing_cells_v1"]["generation"][
+                    "reskin_output_cell_count"
+                ]
+                + 1,
+            ),
+            "generation metrics mismatch",
+        ),
+        (
+            lambda report: report["policies"]["existing_cells_v1"]["skin_topology"].__setitem__(
+                "cell_count",
+                report["policies"]["existing_cells_v1"]["skin_topology"]["cell_count"] + 1,
+            ),
+            "skin topology metrics mismatch",
+        ),
+        (
+            lambda report: report["policies"]["existing_cells_v1"].__setitem__(
+                "duplicate_rounded_cell_index_count",
+                report["policies"]["existing_cells_v1"][
+                    "duplicate_rounded_cell_index_count"
+                ]
+                + 1,
+            ),
+            "duplicate count mismatch",
+        ),
+        (
+            lambda report: report["policies"]["existing_cells_v1"]["link_topology"].__setitem__(
+                "linked_component_count",
+                report["policies"]["existing_cells_v1"]["link_topology"][
+                    "linked_component_count"
+                ]
+                + 1,
+            ),
+            "linked component count mismatch",
+        ),
+        (
+            lambda report: report["contrast"].__setitem__(
+                "generated_cell_count_delta",
+                report["contrast"]["generated_cell_count_delta"] + 1,
+            ),
+            "contrast metrics mismatch",
+        ),
+    )
+    for tamper, expected_error in tamper_cases:
+        report_payload = json.loads(snapshots[paths[0]])
+        tamper(report_payload)
+        paths[0].write_text(
+            reskin_policy_comparison._canonical_json(report_payload) + "\n",
+            encoding="utf-8",
+        )
+        paths[1].write_text(
+            reskin_policy_comparison._comparison_csv(report_payload),
+            encoding="utf-8",
+        )
+        paths[2].write_text(
+            reskin_policy_comparison._comparison_markdown(report_payload),
+            encoding="utf-8",
+        )
+        completion = json.loads(completion_snapshot)
+        completion["artifact_files"] = {
+            path.name: reskin_policy_comparison.artifact_file_metadata(path) for path in paths
+        }
+        completion_path.write_text(
+            reskin_policy_comparison._canonical_json(completion) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=expected_error):
+            validate_f3_reskin_policy_comparison(tmp_path)
+        for path, content in snapshots.items():
+            path.write_bytes(content)
+        completion_path.write_bytes(completion_snapshot)
 
     paths[4].write_text("{}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="hash or size mismatch"):

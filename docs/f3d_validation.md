@@ -951,7 +951,8 @@ ridge mask from the shared parent `fvt`, using the existing buffered surface
 overlap and surface-distance metrics. Parent FVT is comparison evidence, not
 independent geological truth. Use
 `SyntheticSkinningConfig(method="quality", reskin=True)` with all other
-skinning controls fixed.
+skinning controls fixed. The complete resolved skinning configuration is
+executed for each branch, including its boundary-skinner fallback policy.
 
 Persist the returned report with
 `write_f3_reskin_policy_comparison(report, output_dir)`. The versioned
@@ -963,6 +964,7 @@ reskin_policy_metrics.csv
 reskin_policy_comparison.md
 existing_cells_v1_skins.json
 reference_dense_v1_skins.json
+complete.json
 ```
 
 The CSV is long-form and retains explicit zero-denominator status for
@@ -985,7 +987,7 @@ python -m pyosv.cli.f3d_mode_comparison \
 The CLI completes the canonical F3 run, then reads the `Q-QUAL` cell's exact
 voting and thinning artifacts and branches only the reskin policy.
 The comparison option does not override the canonical run's reskin setting.
-It writes the five dedicated files above under
+It writes the six dedicated files above under
 `outputs/3d/f3d/dense_reskin_candidate/reskin_policy_comparison/`. The JSON
 records both upstream stage fingerprints as well as the shared array-content
 fingerprint. To regenerate the evidence from an already complete matching
