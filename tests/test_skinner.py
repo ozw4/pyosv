@@ -3,11 +3,13 @@ import math
 import numpy as np
 import pytest
 
+import pyosv._skinner.growth as growth_module
 from pyosv.cells import FaultCell
 from pyosv.skin import FaultSkin
 from pyosv.skinner import (
     ConnectedComponentSkinner,
     FaultSkinner,
+    RESKIN_POLICY_EXISTING_CELLS_V1,
     _adaptive_skin_likelihood_threshold,
     _candidate_slice_above_below,
     _candidate_slice_left_right,
@@ -673,6 +675,128 @@ def test_module_level_find_skins_uses_reference_backend_by_default() -> None:
     ]
 
 
+def _skin_signature(skin: FaultSkin) -> list[tuple[object, ...]]:
+    def linked_index(cell: FaultCell | None) -> tuple[int, int, int] | None:
+        return None if cell is None else cell.index
+
+    return [
+        (
+            cell.x1,
+            cell.x2,
+            cell.x3,
+            cell.fl,
+            cell.fp,
+            cell.ft,
+            linked_index(cell.ca),
+            linked_index(cell.cb),
+            linked_index(cell.cl),
+            linked_index(cell.cr),
+        )
+        for cell in skin
+    ]
+
+
+def test_explicit_existing_cells_policy_matches_omitted_policy() -> None:
+    fv = np.zeros((9, 9, 9), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:6, 4, 3:6] = 0.9
+    options = {"min_likelihood": 0.5, "ru": 3, "rv": 4, "rw": 4, "max_steps": 3}
+
+    implicit = FaultSkinner(min_skin_size=1).find_skins(fv, vp, vt, **options)
+    explicit = find_skins(
+        fv,
+        vp,
+        vt,
+        reskin_policy=RESKIN_POLICY_EXISTING_CELLS_V1,
+        **options,
+    )
+
+    assert [_skin_signature(skin) for skin in explicit] == [
+        _skin_signature(skin) for skin in implicit
+    ]
+
+
+@pytest.mark.parametrize("policy", ["", "reference_dense_v1", 1, None])
+def test_reskin_policy_rejects_invalid_values_across_public_entry_points(
+    policy: object,
+) -> None:
+    fv = np.zeros((5, 5, 5), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.zeros_like(fv)
+    seed = FaultCell(2.0, 2.0, 2.0, 0.9, 0.0, 90.0)
+
+    with pytest.raises(ValueError, match="reskin_policy"):
+        FaultSkinner().find_skins(
+            fv,
+            vp,
+            vt,
+            reskin=False,
+            reskin_policy=policy,  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="reskin_policy"):
+        FaultSkinner().find_skin(
+            seed,
+            fv,
+            vp,
+            vt,
+            reskin=False,
+            reskin_policy=policy,  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="reskin_policy"):
+        find_skins(
+            fv,
+            vp,
+            vt,
+            reskin=False,
+            reskin_policy=policy,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "valid_mask",
+    [
+        [[[True]]],
+        np.ones((3, 3), dtype=np.bool_),
+        np.ones((3, 3, 2), dtype=np.bool_),
+        np.ones((3, 3, 3), dtype=np.uint8),
+    ],
+)
+def test_valid_mask_rejects_nonarray_rank_shape_and_dtype(valid_mask: object) -> None:
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="valid_mask"):
+        FaultSkinner(method="connected_component").find_skins(
+            fv,
+            fv,
+            fv,
+            valid_mask=valid_mask,  # type: ignore[arg-type]
+        )
+
+
+def test_connected_component_validated_policy_and_mask_do_not_change_result() -> None:
+    fv = np.zeros((2, 2, 2), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[0, 0, 0] = 0.8
+    fv[1, 1, 1] = 0.9
+    skinner = FaultSkinner(method="connected_component")
+
+    expected = skinner.find_skins(fv, vp, vt, min_likelihood=0.5)
+    actual = skinner.find_skins(
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        reskin_policy=RESKIN_POLICY_EXISTING_CELLS_V1,
+        valid_mask=np.zeros_like(fv, dtype=np.bool_),
+    )
+
+    assert [_skin_signature(skin) for skin in actual] == [
+        _skin_signature(skin) for skin in expected
+    ]
+
+
 def test_find_connected_component_skins_groups_only_sparse_positive_samples() -> None:
     fv = np.zeros((2, 3, 4), dtype=np.float32)
     vp = np.full_like(fv, 25.0)
@@ -1209,6 +1333,96 @@ def test_reference_like_find_skin_reskin_false_preserves_grow_indices() -> None:
     assert set(map(tuple, skin.indices())) == {
         (i1, 6, i3) for i1 in range(3, 10) for i3 in range(3, 10)
     }
+
+
+def test_reskin_false_does_not_call_policy_dispatcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fv = np.zeros((7, 7, 7), dtype=np.float32)
+    fv[3, 3, 3] = 0.9
+    seed = FaultCell(3.0, 3.0, 3.0, 0.9, 0.0, 90.0)
+
+    def fail_dispatch(*args: object, **kwargs: object) -> FaultSkin:
+        raise AssertionError("reskin policy dispatcher must not be called")
+
+    monkeypatch.setattr(growth_module, "_apply_reskin_policy", fail_dispatch)
+
+    skin = FaultSkinner().find_skin(
+        seed,
+        fv,
+        np.zeros_like(fv),
+        np.full_like(fv, 90.0),
+        min_likelihood=0.5,
+        ru=2,
+        rv=2,
+        rw=2,
+        max_steps=0,
+        reskin=False,
+    )
+
+    assert [cell.index for cell in skin] == [(3, 3, 3)]
+
+
+def test_valid_mask_is_retained_in_reskin_context_without_changing_or_mutating_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fv = np.zeros((9, 9, 9), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[3:6, 4, 3:6] = 0.9
+    seed = FaultCell(4.0, 4.0, 4.0, 0.9, 0.0, 90.0)
+    valid_mask = np.zeros_like(fv, dtype=np.bool_)
+    fv_before = fv.copy()
+    vp_before = vp.copy()
+    vt_before = vt.copy()
+    valid_mask_before = valid_mask.copy()
+    contexts: list[object] = []
+    original_dispatch = growth_module._apply_reskin_policy
+
+    def track_dispatch(skin: FaultSkin, **kwargs: object) -> FaultSkin:
+        contexts.append(kwargs["context"])
+        return original_dispatch(skin, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(growth_module, "_apply_reskin_policy", track_dispatch)
+    skinner = FaultSkinner()
+    expected = skinner.find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=3,
+        rv=4,
+        rw=4,
+        max_steps=3,
+    )
+    actual = skinner.find_skin(
+        seed,
+        fv,
+        vp,
+        vt,
+        min_likelihood=0.5,
+        ru=3,
+        rv=4,
+        rw=4,
+        max_steps=3,
+        valid_mask=valid_mask,
+    )
+
+    assert _skin_signature(actual) == _skin_signature(expected)
+    context = contexts[-1]
+    assert context.seed.index == seed.index  # type: ignore[attr-defined]
+    assert context.origin == (seed.x1, seed.x2, seed.x3)  # type: ignore[attr-defined]
+    assert context.accepted_cells  # type: ignore[attr-defined]
+    assert context.fv is fv  # type: ignore[attr-defined]
+    assert context.volume_shape == fv.shape  # type: ignore[attr-defined]
+    assert context.collision_grid is None  # type: ignore[attr-defined]
+    assert context.du == 5.0  # type: ignore[attr-defined]
+    assert context.valid_mask is valid_mask  # type: ignore[attr-defined]
+    np.testing.assert_array_equal(fv, fv_before)
+    np.testing.assert_array_equal(vp, vp_before)
+    np.testing.assert_array_equal(vt, vt_before)
+    np.testing.assert_array_equal(valid_mask, valid_mask_before)
 
 
 def test_reskin_reference_smooths_synthetic_noisy_plane_surface() -> None:

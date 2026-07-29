@@ -82,6 +82,17 @@ practical approximation of the Java reference weighted smoothing phase, not the
 original conjugate-gradient smoother. Returned `FaultCell` objects expose these
 links as `ca`/`cb` for above/below and `cl`/`cr` for left/right neighbors. Pass
 `reskin=False` to `find_skins` or `find_skin` to keep the grow-only result.
+The keyword-only `reskin_policy` selects the versioned implementation used
+when `reskin=True`; its current and default value is
+`"existing_cells_v1"`, which smooths and relinks only cells already accepted
+during growth. The policy is validated even when reskinning is disabled or the
+connected-component backend is selected.
+
+Both methods also accept a keyword-only `valid_mask`. When supplied, it must be
+a three-dimensional boolean NumPy array with the same shape as `fv`. The
+current `existing_cells_v1` policy retains this mask for future policy use but
+does not apply it to growth or reskinning, so supplying a mask does not change
+current numerical results.
 
 `FaultSkinner.find_skin(seed, fv, vp, vt, ...)` grows one reference-like
 `FaultSkin` from a seed and applies the same reskin phase by default. The

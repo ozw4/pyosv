@@ -18,12 +18,18 @@ from pyosv._skinner.candidate_path import (
 )
 from pyosv._skinner.models import (
     _LocalTransformMap,
+    _ReskinContext,
     _SkinCell,
     link_above_below,
     link_left_right,
 )
 from pyosv._skinner.occupancy import _SkinOccupancyMask
-from pyosv._skinner.reskin import _reskin_reference
+from pyosv._skinner.reskin import (
+    RESKIN_POLICY_EXISTING_CELLS_V1,
+    ReskinPolicy,
+    _reskin_reference,
+    _validate_reskin_policy,
+)
 from pyosv._skinner.transforms import (
     _local_index_to_world,
     _sample_validated_volume_nearest_java_round,
@@ -36,6 +42,7 @@ from pyosv._skinner.validation import (
     _validate_matching_finite_arrays3_many,
     _validate_nonnegative_finite_float,
     _validate_nonnegative_int,
+    _validate_optional_valid_mask,
 )
 from pyosv.cells import FaultCell, _java_round
 from pyosv.skin import FaultSkin
@@ -163,10 +170,14 @@ def _grow_reference_skin(
     max_delta_strike: float = 30.0,
     collision_grid: _SkinOccupancyMask | None = None,
     reskin: bool = True,
+    reskin_policy: ReskinPolicy | str = RESKIN_POLICY_EXISTING_CELLS_V1,
+    valid_mask: np.ndarray | None = None,
 ) -> FaultSkin:
     """Grow one skin in a seed-local fault-coordinate grid."""
 
     should_reskin = _validate_bool(reskin, "reskin")
+    policy = _validate_reskin_policy(reskin_policy)
+    validated_valid_mask = _validate_optional_valid_mask(valid_mask, fv)
     seed_cell = _validate_seed_cell(seed)
     threshold = _validate_nonnegative_finite_float(fmin, "fmin")
     radius_u = _validate_nonnegative_int(ru, "ru")
@@ -201,6 +212,8 @@ def _grow_reference_skin(
         max_delta_strike=max_delta_fp,
         collision_grid=collision_grid,
         reskin=should_reskin,
+        reskin_policy=policy,
+        valid_mask=validated_valid_mask,
     )
 
 
@@ -219,6 +232,8 @@ def _grow_reference_skin_validated(
     max_delta_strike: float,
     collision_grid: _SkinOccupancyMask | None = None,
     reskin: bool,
+    reskin_policy: ReskinPolicy = RESKIN_POLICY_EXISTING_CELLS_V1,
+    valid_mask: np.ndarray | None = None,
 ) -> FaultSkin:
     """Grow from normalized inputs and native-float32, finite, matching 3D volumes."""
 
@@ -309,8 +324,38 @@ def _grow_reference_skin_validated(
     )
     if not should_reskin:
         return grown_skin
+    if not grown_skin:
+        return grown_skin
 
-    return _reskin_reference(grown_skin)
+    context = _ReskinContext(
+        seed=seed_cell,
+        origin=origin,
+        transform_map=transform_map,
+        accepted_cells=tuple(accepted),
+        fv=fv_array,
+        volume_shape=fv_array.shape,
+        collision_grid=collision_grid,
+        du=max_delta_u,
+        valid_mask=valid_mask,
+    )
+    return _apply_reskin_policy(grown_skin, policy=reskin_policy, context=context)
+
+
+def _apply_reskin_policy(
+    skin: FaultSkin,
+    *,
+    policy: ReskinPolicy,
+    context: _ReskinContext,
+) -> FaultSkin:
+    """Dispatch a grown skin through its validated versioned policy."""
+
+    if policy == RESKIN_POLICY_EXISTING_CELLS_V1:
+        # This policy intentionally does not consume grow context. The explicit
+        # boundary preserves it for policies that need local growth state.
+        del context
+        return _reskin_reference(skin)
+
+    raise ValueError("reskin_policy must be 'existing_cells_v1'")
 
 
 def _grow_reference_direction(

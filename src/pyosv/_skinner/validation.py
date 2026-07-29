@@ -39,6 +39,24 @@ def _validate_bool(value: bool, name: str) -> bool:
     return value
 
 
+def _validate_optional_valid_mask(
+    valid_mask: np.ndarray | None,
+    fv: np.ndarray,
+) -> np.ndarray | None:
+    if valid_mask is None:
+        return None
+    if not isinstance(valid_mask, np.ndarray):
+        raise ValueError("valid_mask must be a NumPy array or None")
+    if valid_mask.ndim != 3:
+        raise ValueError("valid_mask must be a 3D array")
+    if valid_mask.dtype != np.dtype(np.bool_):
+        raise ValueError("valid_mask must have dtype bool")
+    if valid_mask.shape != np.shape(fv):
+        raise ValueError("fv and valid_mask shapes must match")
+
+    return valid_mask
+
+
 def _validate_nonnegative_int(value: int, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a nonnegative integer")

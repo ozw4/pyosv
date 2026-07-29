@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 
 from pyosv._skinner.models import (
@@ -15,8 +17,28 @@ from pyosv.filters import smooth2d
 from pyosv.geometry import strike_and_dip_from_local_surface_derivatives
 from pyosv.skin import FaultSkin
 
+RESKIN_POLICY_EXISTING_CELLS_V1 = "existing_cells_v1"
+ReskinPolicy = Literal["existing_cells_v1"]
+
+
+def _validate_reskin_policy(policy: object) -> ReskinPolicy:
+    if not isinstance(policy, str) or policy != RESKIN_POLICY_EXISTING_CELLS_V1:
+        raise ValueError("reskin_policy must be 'existing_cells_v1'")
+
+    return RESKIN_POLICY_EXISTING_CELLS_V1
+
 
 def _reskin_reference(skin: FaultSkin, *, smoothing_sigma: float = 1.0) -> FaultSkin:
+    """Compatibility wrapper for the ``existing_cells_v1`` implementation."""
+
+    return _reskin_existing_cells_v1(skin, smoothing_sigma=smoothing_sigma)
+
+
+def _reskin_existing_cells_v1(
+    skin: FaultSkin,
+    *,
+    smoothing_sigma: float = 1.0,
+) -> FaultSkin:
     """Smooth and reorient a grown reference-like skin.
 
     This is an approximation of the reference weighted smoothing phase: cells
