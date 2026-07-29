@@ -21,6 +21,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
     PeakRSSRecorder,
     build_f3d_mode_comparison_plan,
     canonical_scanner_implementation_identity,
+    compare_reskin_policies_from_bundle,
     ensure_output_not_in_data_root,
     extract_f3d_diagnostics,
     extract_f3d_metrics,
@@ -56,6 +57,10 @@ class _ArgumentParser(argparse.ArgumentParser):
         parsed = super().parse_args(args, namespace)
         if parsed.validate_only and parsed.resume:
             self.error("--validate-only cannot be combined with --resume")
+        if parsed.validate_only and parsed.compare_reskin_policies:
+            self.error("--validate-only cannot be combined with --compare-reskin-policies")
+        if parsed.no_skinning and parsed.compare_reskin_policies:
+            self.error("--no-skinning cannot be combined with --compare-reskin-policies")
         return parsed
 
 
@@ -120,6 +125,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Reskin policy: existing_cells_v1 smooths/relinks current cells; "
             "reference_dense_v1 regenerates missing cells on smoothed local support. "
             "The policy is recorded but not run when reskinning is disabled."
+        ),
+    )
+    parser.add_argument(
+        "--compare-reskin-policies",
+        choices=("existing_cells_v1,reference_dense_v1",),
+        default=None,
+        metavar="BASELINE,CANDIDATE",
+        help=(
+            "After the canonical run, branch the Q-QUAL voting/thinning parent into "
+            "the fixed existing_cells_v1,reference_dense_v1 skin-only comparison."
         ),
     )
     parser.add_argument(
@@ -332,6 +347,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 deep=args.deep_validate,
                 pretty=args.pretty,
             )
+            if args.compare_reskin_policies:
+                compare_reskin_policies_from_bundle(bundle)
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

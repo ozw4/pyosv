@@ -1817,6 +1817,41 @@ truth-vs-skin overlays. Scanner mode also writes scanner input, `ft_scan`,
 case figures, scanner overlays, scanner input/attribute metrics, FVT metrics,
 and skin metrics.
 
+## Dense reskin promotion evidence
+
+The skin-phase-only acceptance set compares `quality + existing_cells_v1`
+against `quality + reference_dense_v1` from identical controlled parents. It
+contains the eight geometry cases required for dense reskin review, plus
+separate valid-mask and prior-occupancy barrier cases. The parallel and
+orientation-boundary cases pass both nearby surfaces through one shared
+skinning invocation. The valid-mask case is required to record at least one
+`rejected_invalid_mask` and no generated cell on the masked location. The
+prior-occupancy case similarly requires at least one
+`rejected_prior_skin_collision` and no generated cell on the occupied location.
+The volume-boundary case has a boundary-adjacent truth hole and a separate
+out-of-volume projection: it must recover the hole, record at least one
+`rejected_out_of_bounds`, and emit neither an out-of-volume cell nor a
+clamp-created boundary artifact.
+Run it without scanner or voting work:
+
+```bash
+PYTHONPATH=src python -m pyosv.evaluation.dense_reskin_quality \
+  --output-dir outputs/3d/synthetic_quality/dense_reskin_gate
+```
+
+The output directory contains the versioned
+`dense_reskin_promotion_gate.json`, `dense_reskin_case_metrics.csv`, and
+`dense_reskin_promotion_gate.md`. Empty generated-cell statistics remain JSON
+`null`/empty CSV fields with explicit status fields in JSON. The fixed
+practical limits are: no buffered-recall regression, no buffered-precision
+regression beyond `0.02`, no symmetric-Chamfer regression beyond `0.25` index
+unit, and no small-skin-cell-fraction increase beyond `0.05`. Practical
+aggregate quality and hard safety gates evaluate every acceptance case,
+including the prior-occupancy barrier case. The JSON records the complete
+aggregate case ID list. With the current controlled evidence, including that
+case exposes a buffered-recall regression and the promotion gate remains
+failed. This gate does not change a public default.
+
 ## Test Commands
 
 The focused validation command for the synthetic scanner-inclusive suite is:

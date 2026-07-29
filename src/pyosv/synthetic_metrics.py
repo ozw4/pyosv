@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 
+from pyosv.cells import FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED
+
 if TYPE_CHECKING:
     from pyosv.skin import FaultSkin
 
@@ -19,7 +21,11 @@ __all__ = [
     "component_aware_skin_topology_metrics",
     "edge_false_positive_ratio",
     "masked_orientation_error",
+    "reskin_generation_metrics",
+    "reskin_truth_correspondence_metrics",
+    "rounded_duplicate_cell_count",
     "skin_mask_from_skins",
+    "skin_link_topology_metrics",
     "skin_orientation_error",
     "skin_topology_metrics",
     "skin_truth_metrics",
@@ -579,6 +585,280 @@ def skin_truth_metrics(
             truth_fault_id,
         )
     return metrics
+
+
+def rounded_duplicate_cell_count(skins: Sequence[FaultSkin]) -> int:
+    """Count cells whose rounded ``(i1, i2, i3)`` index is already occupied."""
+
+    seen: set[tuple[int, int, int]] = set()
+    duplicates = 0
+    for skin in skins:
+        for cell in skin:
+            index = _cell_index_i123(cell)
+            if index in seen:
+                duplicates += 1
+            else:
+                seen.add(index)
+    return duplicates
+
+
+def reskin_generation_metrics(
+    skins: Sequence[FaultSkin],
+    *,
+    diagnostics: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize dense-reskin generation without ambiguous empty statistics."""
+
+    skin_list = list(skins)
+    cells = [cell for skin in skin_list for cell in skin]
+    generated = [
+        cell
+        for cell in cells
+        if getattr(cell, "generation", None) == FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED
+    ]
+    supports = [
+        float(support)
+        for cell in cells
+        if (support := getattr(cell, "reskin_support", None)) is not None
+    ]
+    generated_likelihoods = [float(cell.fl) for cell in generated]
+    if not all(np.isfinite(value) for value in (*supports, *generated_likelihoods)):
+        raise ValueError("reskin cell metrics require finite likelihood and support values")
+
+    detail = dict(diagnostics or {})
+    output_count = len(cells)
+    generated_count = len(generated)
+    input_count = _nonnegative_diagnostic_count(detail, "input_cell_count", output_count)
+    observed_count = _nonnegative_diagnostic_count(
+        detail,
+        "observed_output_cell_count",
+        output_count - generated_count,
+    )
+    reported_generated_count = _nonnegative_diagnostic_count(
+        detail,
+        "generated_cell_count",
+        generated_count,
+    )
+    if reported_generated_count != generated_count:
+        raise ValueError("reskin diagnostics generated_cell_count does not match skins")
+    reported_output_count = _nonnegative_diagnostic_count(
+        detail,
+        "output_cell_count",
+        output_count,
+    )
+    if reported_output_count != output_count:
+        raise ValueError("reskin diagnostics output_cell_count does not match skins")
+
+    support_summary = _nullable_summary(supports)
+    likelihood_summary = _nullable_summary(generated_likelihoods)
+    return {
+        "reskin_input_cell_count": input_count,
+        "reskin_output_cell_count": output_count,
+        "reskin_observed_output_cell_count": observed_count,
+        "reskin_generated_cell_count": generated_count,
+        "reskin_generated_cell_fraction": (
+            float(generated_count / output_count) if output_count else None
+        ),
+        "reskin_generated_cell_fraction_status": (
+            "defined" if output_count else "zero_output_cells"
+        ),
+        "reskin_dropped_input_cell_count": _nonnegative_diagnostic_count(
+            detail,
+            "dropped_input_cell_count",
+            max(0, input_count - observed_count),
+        ),
+        "reskin_projected_local_duplicate_count": _nonnegative_diagnostic_count(
+            detail,
+            "projected_local_duplicate_count",
+            0,
+        ),
+        "reskin_rejected_support_count": _nonnegative_diagnostic_count(
+            detail, "rejected_support_count", 0
+        ),
+        "reskin_rejected_invalid_mask_count": _nonnegative_diagnostic_count(
+            detail, "rejected_invalid_mask_count", 0
+        ),
+        "reskin_rejected_prior_skin_collision_count": _nonnegative_diagnostic_count(
+            detail, "rejected_prior_skin_collision_count", 0
+        ),
+        "reskin_rejected_out_of_bounds_count": _nonnegative_diagnostic_count(
+            detail, "rejected_out_of_bounds_count", 0
+        ),
+        "reskin_rejected_duplicate_world_index_count": _nonnegative_diagnostic_count(
+            detail, "rejected_duplicate_world_index_count", 0
+        ),
+        "reskin_max_generated_chebyshev_distance_from_observed": (
+            _nonnegative_diagnostic_count(
+                detail,
+                "max_generated_chebyshev_distance_from_observed",
+                0,
+            )
+        ),
+        "reskin_support_min": support_summary["min"],
+        "reskin_support_max": support_summary["max"],
+        "reskin_support_mean": support_summary["mean"],
+        "reskin_support_status": support_summary["status"],
+        "reskin_final_likelihood_min_for_generated": likelihood_summary["min"],
+        "reskin_final_likelihood_mean_for_generated": likelihood_summary["mean"],
+        "reskin_generated_likelihood_status": likelihood_summary["status"],
+    }
+
+
+def skin_link_topology_metrics(skins: Sequence[FaultSkin]) -> dict[str, int]:
+    """Measure public cell-link consistency without changing cells or skins."""
+
+    skin_list = list(skins)
+    cells = [cell for skin in skin_list for cell in skin]
+    owner: dict[int, int] = {}
+    for skin_index, skin in enumerate(skin_list):
+        for cell in skin:
+            owner[id(cell)] = skin_index
+
+    reciprocal = {"ca": "cb", "cb": "ca", "cl": "cr", "cr": "cl"}
+    reciprocal_violations = 0
+    cross_skin_links = 0
+    self_links = 0
+    adjacency: dict[int, set[int]] = {id(cell): set() for cell in cells}
+    isolated = 0
+    quad_candidates = 0
+    quad_matches = 0
+    quad_mismatches = 0
+
+    for cell in cells:
+        cell_id = id(cell)
+        links = []
+        for name, reverse_name in reciprocal.items():
+            linked = getattr(cell, name, None)
+            if linked is None:
+                continue
+            links.append(linked)
+            linked_id = id(linked)
+            if linked is cell:
+                self_links += 1
+            if linked_id in owner:
+                adjacency[cell_id].add(linked_id)
+                adjacency[linked_id].add(cell_id)
+                if owner[linked_id] != owner[cell_id]:
+                    cross_skin_links += 1
+            else:
+                cross_skin_links += 1
+            if getattr(linked, reverse_name, None) is not cell:
+                reciprocal_violations += 1
+        if not links:
+            isolated += 1
+
+        right = getattr(cell, "cr", None)
+        below = getattr(cell, "cb", None)
+        right_below = None if right is None else getattr(right, "cb", None)
+        below_right = None if below is None else getattr(below, "cr", None)
+        if right_below is not None and below_right is not None:
+            quad_candidates += 1
+            if right_below is below_right:
+                quad_matches += 1
+            else:
+                quad_mismatches += 1
+
+    component_count = 0
+    unvisited = set(adjacency)
+    while unvisited:
+        component_count += 1
+        stack = [unvisited.pop()]
+        while stack:
+            current = stack.pop()
+            neighbors = adjacency[current] & unvisited
+            unvisited.difference_update(neighbors)
+            stack.extend(neighbors)
+
+    return {
+        "reciprocal_link_violation_count": reciprocal_violations,
+        "cross_skin_link_count": cross_skin_links,
+        "self_link_count": self_links,
+        "linked_component_count": component_count,
+        "isolated_cell_count": isolated,
+        "quad_closure_candidate_count": quad_candidates,
+        "quad_closure_match_count": quad_matches,
+        "quad_closure_mismatch_count": quad_mismatches,
+    }
+
+
+def reskin_truth_correspondence_metrics(
+    skins: Sequence[FaultSkin],
+    *,
+    shape: tuple[int, int, int],
+    truth_surface_mask: np.ndarray,
+    truth_strike: np.ndarray,
+    truth_dip: np.ndarray,
+    buffer_radius: float = 1.0,
+    truth_hole_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Compose truth and generated-only correspondence metrics for reskin evidence."""
+
+    volume_shape = _validate_3d_shape(shape)
+    truth = _validate_mask_shape(truth_surface_mask, volume_shape, "truth_surface_mask")
+    candidate = skin_mask_from_skins(skins, volume_shape)
+    generated = np.zeros(volume_shape, dtype=bool)
+    for skin in skins:
+        for cell in skin:
+            if getattr(cell, "generation", None) == FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED:
+                index = _cell_index_i123(cell)
+                _validate_cell_bounds(index, volume_shape)
+                generated[index[2], index[1], index[0]] = True
+
+    overlap = buffered_surface_overlap(candidate, truth, radius=buffer_radius)
+    distance = surface_distance_metrics(candidate, truth)
+    orientation = skin_orientation_error(skins, truth_strike, truth_dip)
+    truth_buffer = _distance_buffer(
+        truth,
+        _validate_nonnegative_finite_scalar(buffer_radius, "buffer_radius"),
+    )
+    generated_count = int(np.count_nonzero(generated))
+    outside_count = int(np.count_nonzero(generated & ~truth_buffer))
+    holes_recovered = 0
+    truth_hole_count = 0
+    if truth_hole_mask is not None:
+        holes = _validate_mask_shape(truth_hole_mask, volume_shape, "truth_hole_mask")
+        truth_hole_count = int(np.count_nonzero(holes))
+        holes_recovered = int(np.count_nonzero(candidate & holes))
+    return {
+        "overlap": overlap,
+        "surface_distance": distance,
+        "orientation_error": orientation,
+        "truth_hole_count": truth_hole_count,
+        "truth_hole_recovered_count": holes_recovered,
+        "truth_buffer_outside_generated_cell_count": outside_count,
+        "truth_buffer_outside_generated_cell_fraction": (
+            float(outside_count / generated_count) if generated_count else None
+        ),
+        "truth_buffer_outside_generated_cell_fraction_status": (
+            "defined" if generated_count else "no_generated_cells"
+        ),
+    }
+
+
+def _nullable_summary(values: Sequence[float]) -> dict[str, float | str | None]:
+    if not values:
+        return {"min": None, "max": None, "mean": None, "status": "no_samples"}
+    samples = np.asarray(values, dtype=np.float64)
+    return {
+        "min": float(np.min(samples)),
+        "max": float(np.max(samples)),
+        "mean": float(np.mean(samples)),
+        "status": "defined",
+    }
+
+
+def _nonnegative_diagnostic_count(
+    diagnostics: Mapping[str, Any],
+    name: str,
+    default: int,
+) -> int:
+    value = diagnostics.get(name, default)
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"reskin diagnostics {name} must be a non-negative integer")
+    result = int(value)
+    if result < 0:
+        raise ValueError(f"reskin diagnostics {name} must be a non-negative integer")
+    return result
 
 
 def _validate_finite_array(values: np.ndarray, name: str) -> np.ndarray:

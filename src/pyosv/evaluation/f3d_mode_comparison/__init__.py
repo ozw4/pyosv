@@ -145,6 +145,15 @@ from .resources import (
     stage_resource_row,
     storage_report,
 )
+from .reskin_policy_comparison import (
+    F3_RESKIN_POLICY_COMPARISON_CELL,
+    F3_RESKIN_POLICY_COMPARISON_DIR,
+    F3_RESKIN_POLICY_COMPARISON_FILES,
+    F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
+    compare_reskin_policies_from_bundle,
+    compare_reskin_policies_from_parent,
+    write_f3_reskin_policy_comparison,
+)
 from .runtime_identity import (
     F3_RUNTIME_IDENTITY_SCHEMA_VERSION,
     NUMBA_ENVIRONMENT_VARIABLES,
@@ -218,6 +227,11 @@ __all__ = [
     "F3_REGION_SEMANTICS",
     "F3_RESOURCE_INTERPRETATION",
     "F3_RESOURCE_SCHEMA_VERSION",
+    "F3_RESKIN_POLICY_COMPARISON_FILES",
+    "F3_RESKIN_POLICY_COMPARISON_CELL",
+    "F3_RESKIN_POLICY_COMPARISON_DIR",
+    "F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION",
+    "compare_reskin_policies_from_bundle",
     "F3_RUNTIME_IDENTITY_SCHEMA_VERSION",
     "F3_BUFFERED_PERCENTILE",
     "F3_BUFFER_RADIUS",
@@ -286,6 +300,8 @@ __all__ = [
     "compute_reference_metric_rows",
     "compute_skin_metric_rows",
     "compute_voxelwise_contrast_summaries",
+    "compare_reskin_policies_from_parent",
+    "write_f3_reskin_policy_comparison",
     "ensure_output_not_in_data_root",
     "extract_f3d_diagnostics",
     "extract_f3d_mode_diagnostics",

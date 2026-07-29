@@ -939,6 +939,62 @@ If a large crop run is interrupted, rerun the command into a fresh output
 directory. The crop validation script does not currently reuse partial scanner
 or voting stages.
 
+## Dense reskin same-parent F3 evidence
+
+`compare_reskin_policies_from_parent()` in
+`pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison` accepts one
+immutable `fv/fvt/vp/vt` parent and branches only the skinning
+`reskin_policy`. Its report records one shared upstream SHA-256 fingerprint,
+both canonical skin artifacts, generation diagnostics, link topology, and
+skin topology. It also compares each policy's skin mask with the positive
+ridge mask from the shared parent `fvt`, using the existing buffered surface
+overlap and surface-distance metrics. Parent FVT is comparison evidence, not
+independent geological truth. Use
+`SyntheticSkinningConfig(method="quality", reskin=True)` with all other
+skinning controls fixed.
+
+Persist the returned report with
+`write_f3_reskin_policy_comparison(report, output_dir)`. The versioned
+dedicated artifact set is:
+
+```text
+reskin_policy_comparison.json
+reskin_policy_metrics.csv
+reskin_policy_comparison.md
+existing_cells_v1_skins.json
+reference_dense_v1_skins.json
+```
+
+The CSV is long-form and retains explicit zero-denominator status for
+generation fractions, support, and generated-likelihood summaries. The
+Markdown displays generation, support, parent-ridge correspondence, and link
+violations. This dedicated evidence does not add unversioned fields to the
+canonical F3 result bundle.
+
+The external full-volume F3 comparison was not run for the dense-reskin gate
+in this change. Run the reproducible same-parent comparison with:
+
+```bash
+python -m pyosv.cli.f3d_mode_comparison \
+  --data-root "$PYOSV_F3D_DATA_ROOT" \
+  --compare-reskin-policies existing_cells_v1,reference_dense_v1 \
+  --deep-validate \
+  --output-dir outputs/3d/f3d/dense_reskin_candidate
+```
+
+The CLI completes the canonical F3 run, then reads the `Q-QUAL` cell's exact
+voting and thinning artifacts and branches only the reskin policy.
+The comparison option does not override the canonical run's reskin setting.
+It writes the five dedicated files above under
+`outputs/3d/f3d/dense_reskin_candidate/reskin_policy_comparison/`. The JSON
+records both upstream stage fingerprints as well as the shared array-content
+fingerprint. To regenerate the evidence from an already complete matching
+bundle, rerun the same command with `--resume`.
+
+A real-data review must retain the returned report beside the two canonical
+artifacts and perform visual review. Synthetic gate success alone must not be
+described as F3 promotion or as a default change.
+
 ## Output Policy
 
 - Never write into `PYOSV_F3D_DATA_ROOT`.

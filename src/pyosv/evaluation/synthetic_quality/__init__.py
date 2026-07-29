@@ -27,6 +27,14 @@ def __getattr__(name: str) -> Any:
         from . import application
 
         return getattr(application, name)
+    if name in {
+        "build_dense_reskin_promotion_gate",
+        "controlled_dense_reskin_cases",
+        "write_dense_reskin_evidence",
+    }:
+        from .. import dense_reskin_quality
+
+        return getattr(dense_reskin_quality, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -44,6 +52,9 @@ __all__ = [
     "ThinningResult3D",
     "VotingResult3D",
     "build_report",
+    "build_dense_reskin_promotion_gate",
+    "controlled_dense_reskin_cases",
     "resolve_workflow_settings",
     "run_case",
+    "write_dense_reskin_evidence",
 ]
