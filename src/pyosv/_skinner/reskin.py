@@ -177,6 +177,7 @@ def _reskin_existing_cells_v1(
     if len(cells) <= 1:
         if _diagnostics is not None:
             _diagnostics["output_cell_count"] = len(cells)
+            _diagnostics["observed_output_cell_count"] = len(cells)
         return FaultSkin.from_cells(cells)
 
     seed = _highest_likelihood_cell(cells)
@@ -272,6 +273,7 @@ def _reskin_reference_dense_v1(
     if len(cells) <= 1:
         if _diagnostics is not None:
             _diagnostics["output_cell_count"] = len(cells)
+            _diagnostics["observed_output_cell_count"] = len(cells)
         return FaultSkin.from_cells(cells)
 
     observed = _dense_observed_cells(context.accepted_cells)

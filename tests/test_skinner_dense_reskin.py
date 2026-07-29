@@ -11,6 +11,7 @@ from pyosv.skinner import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
     _SkinOccupancyMask,
+    _reskin_reference,
     _reskin_reference_dense_v1,
     _update_transform_map,
 )
@@ -75,6 +76,75 @@ def _signature(skin: FaultSkin) -> list[tuple[object, ...]]:
         )
         for cell in skin
     ]
+
+
+def _rounded_duplicate_fixture(
+    *,
+    origin: tuple[float, float, float],
+    accepted: tuple[_SkinCell, ...],
+    v_scale: float,
+    w_scale: float = 1.0,
+) -> tuple[FaultSkin, _ReskinContext]:
+    seed = FaultCell(*origin, 0.9, 0.0, 90.0)
+    transform = _update_transform_map(
+        3,
+        4,
+        4,
+        seed.fault_normal(),
+        seed.fault_dip_vector(),
+        seed.fault_strike_vector(),
+    )
+    transform.vs[:] *= np.float32(v_scale)
+    transform.ws[:] *= np.float32(w_scale)
+    fv = np.ones((13, 13, 13), dtype=np.float32)
+    context = _ReskinContext(
+        seed=_SkinCell(seed.x1, seed.x2, seed.x3, seed.fl, seed.fp, seed.ft),
+        origin=origin,
+        transform_map=transform,
+        accepted_cells=accepted,
+        fv=fv,
+        volume_shape=fv.shape,
+        collision_grid=None,
+        du=5.0,
+        valid_mask=None,
+    )
+    skin = FaultSkin.from_cells(
+        FaultCell(float(index), 0.0, 0.0, cell.fl, cell.fp, cell.ft)
+        for index, cell in enumerate(accepted)
+    )
+    return skin, context
+
+
+def test_single_cell_reskin_diagnostics_count_cell_as_observed() -> None:
+    cell = FaultCell(6.0, 6.0, 6.0, 0.9, 0.0, 90.0)
+    skin = FaultSkin.from_cells((cell,))
+    _, context, _, _ = _dense_fixture()
+    existing_diagnostics = _empty_reskin_diagnostics(
+        RESKIN_POLICY_EXISTING_CELLS_V1,
+    )
+    dense_diagnostics = _empty_reskin_diagnostics(
+        RESKIN_POLICY_REFERENCE_DENSE_V1,
+    )
+
+    existing = _reskin_reference(
+        skin,
+        _diagnostics=existing_diagnostics,
+    )
+    dense = _reskin_reference_dense_v1(
+        skin,
+        context=context,
+        _diagnostics=dense_diagnostics,
+    )
+
+    assert existing.cells == dense.cells == [cell]
+    for diagnostics in (existing_diagnostics, dense_diagnostics):
+        assert diagnostics["reskin_applied"] is False
+        assert diagnostics["processed_skin_count"] == 1
+        assert diagnostics["input_cell_count"] == 1
+        assert diagnostics["output_cell_count"] == 1
+        assert diagnostics["observed_output_cell_count"] == 1
+        assert diagnostics["generated_cell_count"] == 0
+        assert diagnostics["dropped_input_cell_count"] == 0
 
 
 def test_reference_dense_v1_fills_missing_local_cell_and_rebuilds_links() -> None:
@@ -258,6 +328,43 @@ def test_reference_dense_v1_rounded_duplicate_prefers_observed_key() -> None:
     assert set(by_index) == {(6, 6, 6), (7, 6, 6)}
     assert np.isclose(by_index[(7, 6, 6)].x1, 6.7)
     assert diagnostics["rejected_duplicate_world_index_count"] == 1
+
+
+def test_reference_dense_v1_rounded_duplicate_prefers_higher_support() -> None:
+    skin, context = _rounded_duplicate_fixture(
+        origin=(6.2, 6.0, 6.0),
+        accepted=(
+            _SkinCell(3, 4, 4, 0.6, 0.0, 90.0),
+            _SkinCell(3, 5, 4, 0.9, 0.0, 90.0),
+        ),
+        v_scale=0.2,
+    )
+
+    dense = _reskin_reference_dense_v1(skin, context=context)
+
+    assert len(dense) == 1
+    assert dense.cells[0].index == (6, 6, 6)
+    assert np.isclose(dense.cells[0].x1, 6.4)
+
+
+def test_reference_dense_v1_rounded_duplicate_prefers_smaller_local_key() -> None:
+    skin, context = _rounded_duplicate_fixture(
+        origin=(6.2, 6.0, 6.2),
+        accepted=tuple(
+            _SkinCell(3, iv, iw, 0.9, 0.0, 90.0)
+            for iw in (3, 4)
+            for iv in (3, 4)
+        ),
+        v_scale=0.2,
+        w_scale=0.2,
+    )
+
+    dense = _reskin_reference_dense_v1(skin, context=context)
+
+    assert len(dense) == 1
+    assert dense.cells[0].index == (6, 6, 6)
+    assert np.isclose(dense.cells[0].x1, 6.0)
+    assert np.isclose(dense.cells[0].x3, 6.0)
 
 
 def test_reference_dense_v1_public_policy_fills_one_and_two_cell_gaps() -> None:
