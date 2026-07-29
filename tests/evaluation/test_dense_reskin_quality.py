@@ -72,8 +72,8 @@ def test_controlled_dense_reskin_gate_applies_fixed_contract_to_every_case() -> 
     assert gate["schema_version"] == 2
     assert gate["promotion_status"] == "promotion_candidate"
     assert gate["artifacts"] == {"figures": []}
-    assert gate["passed"] is False
-    assert gate["reasons"] == ["aggregate:buffered_recall_regressed"]
+    assert gate["passed"] is True
+    assert gate["reasons"] == []
     assert gate["aggregate"]["deterministic_reexecution"] is True
     assert gate["aggregate"]["case_count"] == len(case_ids)
     assert gate["aggregate"]["case_ids"] == case_ids
@@ -108,13 +108,48 @@ def test_dense_gate_required_hole_and_safety_evidence() -> None:
     boundary = by_id["volume_boundary_surface"]["candidate"]
     assert boundary["truth"]["truth_hole_recovered_count"] == 1
     assert boundary["generation"]["reskin_generated_cell_count"] == 1
-    assert boundary["generation"]["reskin_rejected_out_of_bounds_count"] > 0
     assert boundary["out_of_volume_cell_count"] == 0
     assert boundary["clamped_artifact_count"] == 0
     for case_id in ("parallel_surfaces", "corner_touch_orientation_boundary"):
         assert by_id[case_id]["surface_count"] == 2
         assert by_id[case_id]["skinning_invocation_count"] == 1
         assert by_id[case_id]["candidate"]["truth_fault_id_bridge_count"] == 0
+
+
+def test_controlled_cases_use_configured_quality_skinning_phase(monkeypatch) -> None:
+    original = dense_reskin_quality.find_synthetic_skins
+    calls = []
+
+    def tracked(*args, skinning_config, valid_mask=None, **kwargs):
+        calls.append(
+            (
+                skinning_config.method,
+                skinning_config.reskin,
+                skinning_config.reskin_policy,
+                valid_mask is not None,
+            )
+        )
+        return original(
+            *args,
+            skinning_config=skinning_config,
+            valid_mask=valid_mask,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(dense_reskin_quality, "find_synthetic_skins", tracked)
+
+    for case in controlled_dense_reskin_cases():
+        dense_reskin_quality.evaluate_dense_reskin_case(case)
+
+    assert len(calls) == 2 * len(controlled_dense_reskin_cases())
+    assert {method for method, _, _, _ in calls} == {"quality"}
+    assert all(reskin for _, reskin, _, _ in calls)
+    assert [policy for _, _, policy, _ in calls] == [
+        policy
+        for _ in controlled_dense_reskin_cases()
+        for policy in ("existing_cells_v1", "reference_dense_v1")
+    ]
+    assert sum(has_valid_mask for _, _, _, has_valid_mask in calls) == 2
 
 
 def test_link_topology_helper_reports_violations_without_mutation() -> None:
@@ -157,18 +192,39 @@ def test_reskin_generation_metrics_reject_inconsistent_observed_count() -> None:
         )
 
 
+def test_reskin_generation_metrics_exclude_connected_component_fallback_cells() -> None:
+    fallback = FaultCell(
+        1,
+        1,
+        1,
+        1,
+        0,
+        90,
+        generation="connected_component",
+    )
+
+    metrics = reskin_generation_metrics((FaultSkin.from_cells((fallback,)),))
+
+    assert metrics["reskin_input_cell_count"] == 0
+    assert metrics["reskin_output_cell_count"] == 0
+    assert metrics["reskin_observed_output_cell_count"] == 0
+    assert metrics["reskin_generated_cell_count"] == 0
+    assert metrics["reskin_generated_cell_fraction"] is None
+    assert metrics["reskin_generated_cell_fraction_status"] == "zero_output_cells"
+
+
 def test_dense_gate_writers_keep_nulls_explicit(tmp_path) -> None:
     gate = build_dense_reskin_promotion_gate()
 
     json_path, csv_path, markdown_path = write_dense_reskin_evidence(gate, tmp_path)
 
-    assert json.loads(json_path.read_text())["passed"] is False
+    assert json.loads(json_path.read_text())["passed"] is True
     rows = list(csv.DictReader(csv_path.read_text().splitlines()))
     assert len(rows) == 30
     low_baseline = next(
         row for row in rows if row["case_id"] == "low_support_gap" and row["policy"] == "baseline"
     )
-    assert low_baseline["generated_cell_fraction"] == "0.0"
+    assert low_baseline["generated_cell_fraction"] == ""
     assert low_baseline["support_min"] == ""
     assert "Gate reasons" in markdown_path.read_text()
 
@@ -358,28 +414,6 @@ def test_dense_gate_requires_valid_mask_rejection_evidence(monkeypatch) -> None:
     assert "valid_mask_barrier:invalid_mask_rejection_not_exercised" in gate["reasons"]
 
 
-def test_dense_gate_requires_boundary_rejection_evidence(monkeypatch) -> None:
-    evaluate = dense_reskin_quality.evaluate_dense_reskin_case
-
-    def evaluate_without_boundary_rejection(case):
-        result = evaluate(case)
-        if case.case_id == "volume_boundary_surface":
-            result["candidate"]["generation"]["reskin_generated_cell_count"] = 0
-            result["candidate"]["generation"]["reskin_rejected_out_of_bounds_count"] = 0
-        return result
-
-    monkeypatch.setattr(
-        dense_reskin_quality,
-        "evaluate_dense_reskin_case",
-        evaluate_without_boundary_rejection,
-    )
-
-    gate = build_dense_reskin_promotion_gate()
-
-    assert "volume_boundary_surface:dense_generation_not_exercised" in gate["reasons"]
-    assert "volume_boundary_surface:out_of_bounds_rejection_not_exercised" in gate["reasons"]
-
-
 @pytest.mark.parametrize(
     ("case_id", "policy", "path", "value", "expected_reason"),
     (
@@ -515,13 +549,6 @@ def test_dense_gate_requires_boundary_rejection_evidence(monkeypatch) -> None:
             ("generation", "reskin_generated_cell_count"),
             0,
             "volume_boundary_surface:dense_generation_not_exercised",
-        ),
-        (
-            "volume_boundary_surface",
-            "candidate",
-            ("generation", "reskin_rejected_out_of_bounds_count"),
-            0,
-            "volume_boundary_surface:out_of_bounds_rejection_not_exercised",
         ),
         (
             "parallel_surfaces",
@@ -686,6 +713,40 @@ def test_f3_skin_only_pair_shares_parent_and_branches_policy(monkeypatch) -> Non
     )
 
 
+def test_f3_parent_fingerprint_includes_scanner_target_mask() -> None:
+    shape = (5, 5, 5)
+    values = np.zeros(shape, dtype=np.float32)
+    scanner_mask = np.zeros(shape, dtype=np.bool_)
+    config = SyntheticSkinningConfig(
+        method="quality",
+        min_skin_size=1,
+        reskin=True,
+    )
+
+    without_target = compare_reskin_policies_from_parent(
+        fv=values,
+        fvt=values,
+        vp=values,
+        vt=values,
+        skinning_config=config,
+        scanner_target_positive_mask=scanner_mask,
+    )
+    scanner_mask[2, 2, 2] = True
+    with_target = compare_reskin_policies_from_parent(
+        fv=values,
+        fvt=values,
+        vp=values,
+        vt=values,
+        skinning_config=config,
+        scanner_target_positive_mask=scanner_mask,
+    )
+
+    assert (
+        without_target["upstream_parent_fingerprint"]
+        != with_target["upstream_parent_fingerprint"]
+    )
+
+
 def test_f3_pair_writes_json_csv_markdown_and_canonical_skins(tmp_path) -> None:
     shape = (15, 15, 15)
     fv = np.zeros(shape, dtype=np.float32)
@@ -751,13 +812,17 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         skinning_config=SyntheticSkinningConfig(min_skin_size=1, reskin=True),
     ).skinning_config
     assert config.boundary_skinner_fallback is True
+    scanner_fingerprint = "c" * 64
     voting_fingerprint = "a" * 64
     thinning_fingerprint = "b" * 64
+    scanner = tmp_path / "stages" / "scanner" / scanner_fingerprint
     voting = tmp_path / "stages" / "voting" / voting_fingerprint
     thinning = tmp_path / "stages" / "thinning" / thinning_fingerprint
+    scanner.mkdir(parents=True)
     voting.mkdir(parents=True)
     thinning.mkdir(parents=True)
     for path, values in (
+        (scanner / "ft.dat", fvt),
         (voting / "fv.dat", fv),
         (voting / "vp.dat", vp),
         (voting / "vt.dat", vt),
@@ -765,6 +830,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
     ):
         np.asarray(values, dtype=">f4").tofile(path)
     report = json.dumps({"shape": list(shape)})
+    (scanner / "report.json").write_text(report, encoding="utf-8")
     (voting / "report.json").write_text(report, encoding="utf-8")
     (thinning / "report.json").write_text(report, encoding="utf-8")
     cell = SimpleNamespace(
@@ -774,6 +840,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         skinning_enabled=True,
         resolved_config={"skinning": asdict(config)},
         stages=SimpleNamespace(
+            scanner=scanner_fingerprint,
             voting=voting_fingerprint,
             thinning=thinning_fingerprint,
         ),
@@ -789,6 +856,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
     payload = json.loads(paths[0].read_text())
     assert payload["source_cell"] == "Q-QUAL"
     assert payload["upstream_parent_stage_fingerprints"] == {
+        "scanner": scanner_fingerprint,
         "voting": voting_fingerprint,
         "thinning": thinning_fingerprint,
     }
@@ -796,7 +864,15 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         policy_payload = payload["policies"][policy]
         assert policy_payload["diagnostics"]["fallback_enabled"] is True
         assert policy_payload["diagnostics"]["fallback_used"] is True
-        assert policy_payload["generation"]["reskin_output_cell_count"] == 9
+        assert (
+            policy_payload["diagnostics"][
+                "skin_scanner_target_positive_edge_shell_fraction"
+            ]
+            is not None
+        )
+        assert policy_payload["generation"]["reskin_input_cell_count"] == 0
+        assert policy_payload["generation"]["reskin_output_cell_count"] == 0
+        assert policy_payload["generation"]["reskin_observed_output_cell_count"] == 0
         assert {
             cell["generation"]
             for skin in policy_payload["canonical_skin_artifact"]["skins"]

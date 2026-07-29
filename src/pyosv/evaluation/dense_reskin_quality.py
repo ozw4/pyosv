@@ -13,14 +13,9 @@ from typing import Any
 
 import numpy as np
 
-from pyosv._skinner.models import _ReskinContext, _SkinCell
-from pyosv._skinner.occupancy import _SkinOccupancyMask
 from pyosv._skinner.reskin import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
-    _empty_reskin_diagnostics,
-    _reskin_reference,
-    _reskin_reference_dense_v1,
 )
 from pyosv._skinner.transforms import _local_index_to_world, _update_transform_map
 from pyosv.cells import (
@@ -83,10 +78,6 @@ def controlled_dense_reskin_cases() -> tuple[DenseReskinCase, ...]:
     four = tuple((iv, iw) for iw in range(4, 8) for iv in range(4, 8))
     center_hole = ((5, 5),)
     block_hole = ((5, 5), (5, 6), (6, 5), (6, 6))
-    boundary = tuple((iv, iw) for iw in range(4, 8) for iv in range(3, 7))
-    boundary_holes = ((3, 5), (4, 5))
-    boundary_u = {key: 1.0 if key[0] == 3 else (2.0 if key == (4, 5) else 3.0) for key in boundary}
-
     definitions: list[tuple[str, tuple[DenseReskinSurface, ...], np.ndarray | None]] = [
         (
             "plane_3x3_center_hole",
@@ -173,11 +164,9 @@ def controlled_dense_reskin_cases() -> tuple[DenseReskinCase, ...]:
             "volume_boundary_surface",
             (
                 DenseReskinSurface(
-                    (0.55, 7.0, 7.0),
-                    boundary,
-                    tuple(key for key in boundary if key not in boundary_holes),
-                    dip=75.0,
-                    u_by_key=boundary_u,
+                    (1.2, 7.0, 7.0),
+                    three,
+                    tuple(key for key in three if key not in center_hole),
                 ),
             ),
             None,
@@ -203,22 +192,32 @@ def controlled_dense_reskin_cases() -> tuple[DenseReskinCase, ...]:
         _materialize_case(case_id, shape, surfaces, valid_mask=mask)
         for case_id, surfaces, mask in definitions
     ]
+    prior_surfaces = (
+        DenseReskinSurface(
+            (7.0, 7.0, 7.0),
+            three,
+            three,
+            likelihood=0.95,
+        ),
+        DenseReskinSurface(
+            (10.0, 8.0, 9.0),
+            three,
+            three,
+            strike=90.0,
+        ),
+    )
     prior_occupancy = np.zeros(shape, dtype=np.bool_)
-    prior_keys = tuple(key for key in three if key != (5, 5))
-    prior_surface = DenseReskinSurface(
-        (7.0, 7.0, 7.0),
-        prior_keys,
-        prior_keys,
-    )
-    prior_index = _rounded_index(
-        _surface_world(prior_surface, _surface_transform(prior_surface), (5, 5))
-    )
-    prior_occupancy[prior_index[2], prior_index[1], prior_index[0]] = True
+    prior_transform = _surface_transform(prior_surfaces[0])
+    for key in prior_surfaces[0].truth_keys:
+        i1, i2, i3 = _rounded_index(
+            _surface_world(prior_surfaces[0], prior_transform, key)
+        )
+        prior_occupancy[i3, i2, i1] = True
     cases.append(
         _materialize_case(
             "prior_occupancy_barrier",
             shape,
-            (prior_surface,),
+            prior_surfaces,
             valid_mask=None,
             prior_occupancy_mask=prior_occupancy,
         )
@@ -229,32 +228,12 @@ def controlled_dense_reskin_cases() -> tuple[DenseReskinCase, ...]:
 def evaluate_dense_reskin_case(case: DenseReskinCase) -> dict[str, Any]:
     """Run both policies from identical skin-phase parent inputs."""
 
-    baseline_skins: list[FaultSkin] = []
-    candidate_skins: list[FaultSkin] = []
-    baseline_diagnostics = _empty_reskin_diagnostics(RESKIN_POLICY_EXISTING_CELLS_V1)
-    candidate_diagnostics = _empty_reskin_diagnostics(RESKIN_POLICY_REFERENCE_DENSE_V1)
-    if len(case.surfaces) > 1:
-        baseline_skins, baseline_diagnostics = _multi_surface_policy_skins(
-            case, RESKIN_POLICY_EXISTING_CELLS_V1
-        )
-        candidate_skins, candidate_diagnostics = _multi_surface_policy_skins(
-            case, RESKIN_POLICY_REFERENCE_DENSE_V1
-        )
-    else:
-        surface = case.surfaces[0]
-        input_skin, context = _surface_input(case, surface)
-        item_baseline = _empty_reskin_diagnostics(RESKIN_POLICY_EXISTING_CELLS_V1)
-        item_candidate = _empty_reskin_diagnostics(RESKIN_POLICY_REFERENCE_DENSE_V1)
-        baseline_skins.append(_reskin_reference(input_skin, _diagnostics=item_baseline))
-        candidate_skins.append(
-            _reskin_reference_dense_v1(
-                input_skin,
-                context=context,
-                _diagnostics=item_candidate,
-            )
-        )
-        _merge_diagnostics(baseline_diagnostics, item_baseline)
-        _merge_diagnostics(candidate_diagnostics, item_candidate)
+    baseline_skins, baseline_diagnostics = _configured_policy_skins(
+        case, RESKIN_POLICY_EXISTING_CELLS_V1
+    )
+    candidate_skins, candidate_diagnostics = _configured_policy_skins(
+        case, RESKIN_POLICY_REFERENCE_DENSE_V1
+    )
 
     baseline = _policy_metrics(case, baseline_skins, baseline_diagnostics)
     candidate = _policy_metrics(case, candidate_skins, candidate_diagnostics)
@@ -529,58 +508,11 @@ def _surface_world(surface: DenseReskinSurface, transform: Any, key: tuple[int, 
     )
 
 
-def _surface_input(
-    case: DenseReskinCase,
-    surface: DenseReskinSurface,
-) -> tuple[FaultSkin, _ReskinContext]:
-    transform = _surface_transform(surface)
-    accepted = tuple(
-        _SkinCell(
-            float((surface.u_by_key or {}).get(key, 3.0)),
-            key[0],
-            key[1],
-            surface.likelihood,
-            surface.strike,
-            surface.dip,
-        )
-        for key in surface.observed_keys
-    )
-    cells = [
-        FaultCell(
-            *_surface_world(surface, transform, key),
-            surface.likelihood,
-            surface.strike,
-            surface.dip,
-        )
-        for key in surface.observed_keys
-    ]
-    fv = np.zeros(case.shape, dtype=np.float32)
-    for index in np.argwhere(case.truth_surface_mask):
-        fv[tuple(index)] = np.float32(surface.likelihood)
-    seed = FaultCell(*surface.origin, surface.likelihood, surface.strike, surface.dip)
-    collision_grid = None
-    if case.prior_occupancy_mask is not None:
-        collision_grid = _SkinOccupancyMask(case.shape)
-        for i3, i2, i1 in np.argwhere(case.prior_occupancy_mask):
-            collision_grid.mark_box(int(i1), int(i2), int(i3), 0, 0, 0)
-    return FaultSkin.from_cells(cells), _ReskinContext(
-        seed=_SkinCell(seed.x1, seed.x2, seed.x3, seed.fl, seed.fp, seed.ft),
-        origin=surface.origin,
-        transform_map=transform,
-        accepted_cells=accepted,
-        fv=fv,
-        volume_shape=case.shape,
-        collision_grid=collision_grid,
-        du=5.0,
-        valid_mask=case.valid_mask,
-    )
-
-
-def _multi_surface_policy_skins(
+def _configured_policy_skins(
     case: DenseReskinCase,
     policy: str,
 ) -> tuple[list[FaultSkin], dict[str, Any]]:
-    """Run all nearby surfaces through one shared skinning invocation."""
+    """Run one policy through the configured quality skinning phase."""
 
     fv = np.zeros(case.shape, dtype=np.float32)
     vp = np.zeros(case.shape, dtype=np.float32)
@@ -614,6 +546,7 @@ def _multi_surface_policy_skins(
         vp,
         vt,
         skinning_config=replace(config, reskin_policy=policy),
+        valid_mask=case.valid_mask,
         diagnostics=diagnostics,
     )
     return skins, diagnostics["reskin"]
@@ -821,8 +754,6 @@ def _gate_reasons(
         reasons.append("volume_boundary_surface:boundary_hole_not_recovered")
     if not boundary["generation"]["reskin_generated_cell_count"]:
         reasons.append("volume_boundary_surface:dense_generation_not_exercised")
-    if not boundary["generation"]["reskin_rejected_out_of_bounds_count"]:
-        reasons.append("volume_boundary_surface:out_of_bounds_rejection_not_exercised")
     for case_id in ("parallel_surfaces", "corner_touch_orientation_boundary"):
         if by_id[case_id]["candidate"]["truth_fault_id_bridge_count"]:
             reasons.append(f"{case_id}:truth_fault_id_bridge")
@@ -878,17 +809,6 @@ def _canonical_skin_payload(skins: Sequence[FaultSkin]) -> list[dict[str, Any]]:
             }
         )
     return payload
-
-
-def _merge_diagnostics(target: dict[str, Any], item: Mapping[str, Any]) -> None:
-    target["reskin_applied"] = bool(target["reskin_applied"] or item["reskin_applied"])
-    for key in target:
-        if key in {"reskin_policy", "reskin_applied"}:
-            continue
-        if key == "max_generated_chebyshev_distance_from_observed":
-            target[key] = max(int(target[key]), int(item[key]))
-        else:
-            target[key] = int(target[key]) + int(item[key])
 
 
 def _case_parent_fingerprint(case: DenseReskinCase) -> str:

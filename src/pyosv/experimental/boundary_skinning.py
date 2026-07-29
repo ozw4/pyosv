@@ -42,6 +42,7 @@ def find_synthetic_skins(
     vt: np.ndarray,
     *,
     skinning_config: SyntheticSkinningConfig,
+    valid_mask: np.ndarray | None = None,
     diagnostics: dict[str, Any] | None = None,
 ) -> list[Any]:
     """Run the configured primary skinner; input arrays are not mutated."""
@@ -73,7 +74,7 @@ def find_synthetic_skins(
         max_delta_strike=skinning_config.max_delta_strike,
         reskin=skinning_config.reskin,
         reskin_policy=skinning_config.reskin_policy,
-        valid_mask=None,
+        valid_mask=valid_mask,
         accepted_occupancy_radius=skinning_config.accepted_occupancy_radius,
         diagnostics=diagnostics,
         reskin_diagnostics=reskin_diagnostics,

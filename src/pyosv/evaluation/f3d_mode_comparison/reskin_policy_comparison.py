@@ -42,8 +42,8 @@ from .skin_artifacts import (
     validate_skin_generation_provenance,
 )
 
-F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 1
-F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION = 1
+F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 2
+F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION = 2
 F3_RESKIN_POLICY_COMPARISON_FILES = (
     "reskin_policy_comparison.json",
     "reskin_policy_metrics.csv",
@@ -89,7 +89,14 @@ def compare_reskin_policies_from_parent(
     if not isinstance(variant_spec, VariantSpec):
         raise ValueError("variant_spec must be a VariantSpec")
 
-    parent_fingerprint = _parent_fingerprint(arrays)
+    scanner_mask = _validated_parent_mask(
+        scanner_target_positive_mask,
+        shape=arrays["fv"].shape,
+    )
+    parent_fingerprint = _parent_fingerprint(
+        arrays,
+        scanner_target_positive_mask=scanner_mask,
+    )
     parent_ridge = positive_candidate_mask(
         arrays["fvt"],
         epsilon=NONZERO_EPSILON,
@@ -107,7 +114,7 @@ def compare_reskin_policies_from_parent(
             vt=arrays["vt"],
             skinning_settings=replace(skinning_config, reskin_policy=policy),
             variant_spec=variant_spec,
-            scanner_target_positive_mask=scanner_target_positive_mask,
+            scanner_target_positive_mask=scanner_mask,
         )
         skins = list(skinning_result.skins)
         diagnostics = _mutable_scalar_evidence(skinning_result.diagnostics)
@@ -259,6 +266,7 @@ def compare_reskin_policies_from_bundle(
         "status": "complete",
         "source_cell": F3_RESKIN_POLICY_COMPARISON_CELL,
         "upstream_parent_stage_fingerprints": {
+            "scanner": cell.stages.scanner,
             "voting": cell.stages.voting,
             "thinning": cell.stages.thinning,
         },
@@ -337,6 +345,7 @@ def validate_f3_reskin_policy_comparison(
         result = load_f3d_mode_comparison_result(root, deep=False)
     cell, config = _comparison_cell_and_config(result)
     expected_parent_stages = {
+        "scanner": cell.stages.scanner,
         "voting": cell.stages.voting,
         "thinning": cell.stages.thinning,
     }
@@ -480,9 +489,12 @@ def _comparison_report_from_bundle(
     result: Any,
 ) -> tuple[dict[str, Any], Any, tuple[int, int, int]]:
     cell, config = _comparison_cell_and_config(result)
+    scanner_path = root / "stages" / "scanner" / cell.stages.scanner
     voting_path = root / "stages" / "voting" / cell.stages.voting
     thinning_path = root / "stages" / "thinning" / cell.stages.thinning
     shape = _stage_shape(voting_path / "report.json")
+    if _stage_shape(scanner_path / "report.json") != shape:
+        raise ValueError("scanner and voting parent shapes do not match")
     if _stage_shape(thinning_path / "report.json") != shape:
         raise ValueError("voting and thinning parent shapes do not match")
 
@@ -491,16 +503,21 @@ def _comparison_report_from_bundle(
         _open_parent_dat(thinning_path / "fvt.dat", shape),
         _open_parent_dat(voting_path / "vp.dat", shape),
         _open_parent_dat(voting_path / "vt.dat", shape),
+        _open_parent_dat(scanner_path / "ft.dat", shape),
     )
     try:
+        scanner_target_positive_mask = positive_candidate_mask(arrays[4])
+        scanner_target_positive_mask.flags.writeable = False
         report = compare_reskin_policies_from_parent(
             fv=arrays[0],
             fvt=arrays[1],
             vp=arrays[2],
             vt=arrays[3],
             skinning_config=config,
+            scanner_target_positive_mask=scanner_target_positive_mask,
         )
     finally:
+        scanner_target_positive_mask = None
         for array in arrays:
             mapping = getattr(array, "_mmap", None)
             if mapping is not None and not mapping.closed:
@@ -508,6 +525,7 @@ def _comparison_report_from_bundle(
 
     report["source_cell"] = F3_RESKIN_POLICY_COMPARISON_CELL
     report["upstream_parent_stage_fingerprints"] = {
+        "scanner": cell.stages.scanner,
         "voting": cell.stages.voting,
         "thinning": cell.stages.thinning,
     }
@@ -898,7 +916,28 @@ def _validated_parent_arrays(**arrays: np.ndarray) -> dict[str, np.ndarray]:
     return validated
 
 
-def _parent_fingerprint(arrays: dict[str, np.ndarray]) -> str:
+def _validated_parent_mask(
+    mask: np.ndarray | None,
+    *,
+    shape: tuple[int, ...],
+) -> np.ndarray | None:
+    if mask is None:
+        return None
+    array = np.asarray(mask)
+    if array.dtype != np.dtype(np.bool_):
+        raise TypeError("scanner_target_positive_mask must have dtype bool")
+    if array.shape != shape:
+        raise ValueError(f"scanner_target_positive_mask shape must match {shape}")
+    view = array.view()
+    view.flags.writeable = False
+    return view
+
+
+def _parent_fingerprint(
+    arrays: dict[str, np.ndarray],
+    *,
+    scanner_target_positive_mask: np.ndarray | None,
+) -> str:
     digest = hashlib.sha256()
     for name in ("fv", "fvt", "vp", "vt"):
         array = arrays[name]
@@ -907,6 +946,20 @@ def _parent_fingerprint(arrays: dict[str, np.ndarray]) -> str:
         digest.update(array.dtype.str.encode("ascii"))
         for index in range(array.shape[0]):
             digest.update(np.ascontiguousarray(array[index]).tobytes())
+    digest.update(b"scanner_target_positive_mask")
+    if scanner_target_positive_mask is None:
+        digest.update(b"none")
+    else:
+        digest.update(
+            json.dumps(
+                scanner_target_positive_mask.shape,
+                separators=(",", ":"),
+            ).encode("ascii")
+        )
+        for index in range(scanner_target_positive_mask.shape[0]):
+            digest.update(
+                np.ascontiguousarray(scanner_target_positive_mask[index]).tobytes()
+            )
     return digest.hexdigest()
 
 

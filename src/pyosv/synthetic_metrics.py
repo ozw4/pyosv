@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 
-from pyosv.cells import FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED
+from pyosv.cells import (
+    FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+)
 
 if TYPE_CHECKING:
     from pyosv.skin import FaultSkin
@@ -686,7 +689,12 @@ def reskin_generation_metrics(
     """Summarize dense-reskin generation without ambiguous empty statistics."""
 
     skin_list = list(skins)
-    cells = [cell for skin in skin_list for cell in skin]
+    cells = [
+        cell
+        for skin in skin_list
+        for cell in skin
+        if getattr(cell, "generation", None) != FAULT_CELL_GENERATION_CONNECTED_COMPONENT
+    ]
     generated = [
         cell
         for cell in cells

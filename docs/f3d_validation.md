@@ -943,13 +943,14 @@ or voting stages.
 
 `compare_reskin_policies_from_parent()` in
 `pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison` accepts one
-immutable `fv/fvt/vp/vt` parent and branches only the skinning
-`reskin_policy`. Its report records one shared upstream SHA-256 fingerprint,
-both canonical skin artifacts, generation diagnostics, link topology, and
-skin topology. It also compares each policy's skin mask with the positive
-ridge mask from the shared parent `fvt`, using the existing buffered surface
-overlap and surface-distance metrics. Parent FVT is comparison evidence, not
-independent geological truth. Use
+immutable `fv/fvt/vp/vt` parent plus the scanner target mask used by boundary
+fallback, and branches only the skinning `reskin_policy`. Its report records
+one shared upstream SHA-256 fingerprint, both canonical skin artifacts,
+generation diagnostics, link topology, and skin topology. It also compares
+each policy's skin mask with the positive ridge mask from the shared parent
+`fvt`, using the existing buffered surface overlap and surface-distance
+metrics. Parent FVT is comparison evidence, not independent geological truth.
+Use
 `SyntheticSkinningConfig(method="quality", reskin=True)` with all other
 skinning controls fixed. The complete resolved skinning configuration is
 executed for each branch, including its boundary-skinner fallback policy.
@@ -966,6 +967,10 @@ existing_cells_v1_skins.json
 reference_dense_v1_skins.json
 complete.json
 ```
+
+Report and completion schema version 2 bind the scanner, voting, and thinning
+stage fingerprints and include the scanner target mask in the shared parent
+content fingerprint.
 
 The CSV is long-form and retains explicit zero-denominator status for
 generation fractions, support, and generated-likelihood summaries. The
@@ -985,11 +990,11 @@ python -m pyosv.cli.f3d_mode_comparison \
 ```
 
 The CLI completes the canonical F3 run, then reads the `Q-QUAL` cell's exact
-voting and thinning artifacts and branches only the reskin policy.
+scanner, voting, and thinning artifacts and branches only the reskin policy.
 The comparison option does not override the canonical run's reskin setting.
 It writes the six dedicated files above under
 `outputs/3d/f3d/dense_reskin_candidate/reskin_policy_comparison/`. The JSON
-records both upstream stage fingerprints as well as the shared array-content
+records all three upstream stage fingerprints as well as the shared parent-content
 fingerprint. To regenerate the evidence from an already complete matching
 bundle, rerun the same command with `--resume`.
 
