@@ -51,7 +51,11 @@ from pyosv.evaluation.reporting.csv_v1 import write_summary_csv
 from pyosv.evaluation.reporting.json_v1 import write_metrics_json
 from pyosv.synthetic3d import Synthetic3DCase
 from pyosv.synthetic3d import make_single_vertical_plane_case
-from pyosv.cells import FaultCell
+from pyosv.cells import (
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FaultCell,
+)
 from pyosv.skin import FaultSkin
 
 
@@ -698,8 +702,26 @@ def test_custom_post_thinning_target_bypasses_primary_skinning_cache(
 
 
 def test_primary_skinning_snapshot_clones_cells_links_skins_and_diagnostics() -> None:
-    above = FaultCell(1, 2, 3, 0.9, 20, 70)
-    below = FaultCell(1, 2, 4, 0.8, 21, 69)
+    above = FaultCell(
+        1,
+        2,
+        3,
+        0.9,
+        20,
+        70,
+        generation=FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+        reskin_support=0.7,
+    )
+    below = FaultCell(
+        1,
+        2,
+        4,
+        0.8,
+        21,
+        69,
+        generation=FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+        reskin_support=0.6,
+    )
     object.__setattr__(above, "cb", below)
     object.__setattr__(below, "ca", above)
     result = PrimarySkinningStageResult.from_skins(
@@ -717,6 +739,13 @@ def test_primary_skinning_snapshot_clones_cells_links_skins_and_diagnostics() ->
     assert len(second_cells) == 2
     assert second_cells[0].cb is second_cells[1]
     assert second_cells[1].ca is second_cells[0]
+    assert [cell.generation for cell in second_cells] == [
+        FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+        FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+    ]
+    assert [cell.reskin_support for cell in second_cells] == [0.7, 0.6]
+    assert first_skins[0].cells[0] is not second_cells[0]
+    assert first_skins[0].cells[1] is not second_cells[1]
     assert second_diagnostics == {"nested": ["clean"]}
 
 

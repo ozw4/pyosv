@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from typing import Literal
 
 import numpy as np
 
@@ -16,6 +17,31 @@ from pyosv.geometry import (
 
 def _java_round(value: float) -> int:
     return math.floor(float(value) + 0.5)
+
+
+FAULT_CELL_GENERATION_GROWN = "grown"
+FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED = "existing_cells_reskinned"
+FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED = "dense_reskin_observed"
+FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED = "dense_reskin_generated"
+FAULT_CELL_GENERATION_CONNECTED_COMPONENT = "connected_component"
+FaultCellGeneration = Literal[
+    "grown",
+    "existing_cells_reskinned",
+    "dense_reskin_observed",
+    "dense_reskin_generated",
+    "connected_component",
+]
+_FAULT_CELL_GENERATIONS = {
+    FAULT_CELL_GENERATION_GROWN,
+    FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+    FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
+}
+_DENSE_RESKIN_GENERATIONS = {
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -56,6 +82,12 @@ class FaultCell:
     fl: float
     fp: float
     ft: float
+    generation: FaultCellGeneration = field(
+        default=FAULT_CELL_GENERATION_GROWN,
+        compare=False,
+        kw_only=True,
+    )
+    reskin_support: float | None = field(default=None, compare=False, kw_only=True)
     ca: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
     cb: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
     cl: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
@@ -68,6 +100,28 @@ class FaultCell:
         object.__setattr__(self, "fl", float(self.fl))
         object.__setattr__(self, "fp", float(self.fp))
         object.__setattr__(self, "ft", float(self.ft))
+        if not isinstance(self.generation, str) or self.generation not in _FAULT_CELL_GENERATIONS:
+            raise ValueError(
+                "generation must be 'grown', 'existing_cells_reskinned', "
+                "'dense_reskin_observed', 'dense_reskin_generated', or "
+                "'connected_component'",
+            )
+        support = self.reskin_support
+        if self.generation in _DENSE_RESKIN_GENERATIONS:
+            if (
+                isinstance(support, (bool, np.bool_))
+                or not isinstance(support, (int, float, np.integer, np.floating))
+                or not math.isfinite(float(support))
+                or not 0.0 <= float(support) <= 1.0
+            ):
+                raise ValueError(
+                    "reskin_support must be a finite number in [0, 1] for dense reskin cells",
+                )
+            object.__setattr__(self, "reskin_support", float(support))
+        elif support is not None:
+            raise ValueError(
+                "reskin_support must be None unless generation is a dense reskin value"
+            )
 
     @property
     def i1(self) -> int:

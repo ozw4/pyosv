@@ -82,6 +82,58 @@ practical approximation of the Java reference weighted smoothing phase, not the
 original conjugate-gradient smoother. Returned `FaultCell` objects expose these
 links as `ca`/`cb` for above/below and `cl`/`cr` for left/right neighbors. Pass
 `reskin=False` to `find_skins` or `find_skin` to keep the grow-only result.
+The keyword-only `reskin_policy` selects the versioned implementation used
+when `reskin=True`. Its default value remains `"existing_cells_v1"`, which
+smooths and relinks only cells already accepted during growth. Explicit
+`"reference_dense_v1"` uses the original grow seed coordinates to smooth the
+cropped local surface and regenerate supported missing `(v, w)` cells for the
+`reference` and `quality` methods. Dense cells use the original growth volume
+sample at their final Java-rounded world position for `fl`; the smoothed
+support value is only the dense-growth acceptance signal, so final `fl` may be
+below the original grow threshold. The policy is validated even when
+reskinning is disabled or the connected-component backend is selected; the
+connected-component backend does not apply either reference reskin policy.
+
+The versioned `"reference_dense_v1"` numerical contract fixes surface
+smoothing sigma on `(w, v)` at `(4.0, 4.0)`, support smoothing sigma at
+`(8.0, 8.0)`, and the normalized-surface denominator epsilon at `1e-6`.
+Candidates require the strict tests `support > 0.2` and
+`abs(candidate_u - current_u) < 5.0`; these constants are part of the policy
+version rather than settings derived from the grow threshold.
+
+Each `FaultCell` has stable, in-memory provenance in `generation`:
+`"grown"` for grow-only cells, `"existing_cells_reskinned"` for multi-cell
+`existing_cells_v1` output, `"dense_reskin_observed"` and
+`"dense_reskin_generated"` for observed and newly filled dense local keys, and
+`"connected_component"` for fallback cells. Empty and single-cell reskin fast
+paths retain the original generation because no cell was rebuilt. Dense output
+also stores its finite `[0, 1]` smoothing support in `reskin_support`; other
+generations use `None`. `reskin_support` is the dense acceptance signal and is
+independent of the final growth-volume sample in `fl`. These fields are
+preserved by in-memory stage-cache snapshots and clones; the canonical
+`skins.json` v1 writer remains unchanged and does not serialize them.
+
+`find_skins` and `find_skin` accept a separate mutable
+`reskin_diagnostics` mapping. It is cleared at the start and reports the
+selected policy, whether reskinning was applied, processed/input/output cell
+counts, observed/generated/dropped counts, projected local duplicates,
+candidate local keys, rejection counts, and the maximum generated-key
+Chebyshev distance from an observed local key. Multi-skin calls sum counts and
+take the maximum distance. Dense-v1 candidate rejection uses the fixed order
+support or invalid surface, local-u continuity, volume bounds, `valid_mask`,
+prior-skin occupancy, then rounded world-index duplicate removal. Local-u
+rejections contribute to the candidate count but have no dedicated aggregate
+field. A local key is counted in at most one reported rejection category.
+This sink is intentionally isolated from the legacy `diagnostics` mapping;
+the legacy key set and meanings do not include reskin details. The two
+arguments must therefore be distinct mutable mappings; passing the same
+mapping as both sinks is rejected before either mapping is changed.
+
+Both methods also accept a keyword-only `valid_mask`. When supplied, it must be
+a three-dimensional boolean NumPy array with the same shape as `fv`. The
+`existing_cells_v1` retains this mask without applying it, so supplying a mask
+does not change that policy's numerical results. `reference_dense_v1` treats
+false mask voxels as hard barriers while rebuilding the dense local surface.
 
 `FaultSkinner.find_skin(seed, fv, vp, vt, ...)` grows one reference-like
 `FaultSkin` from a seed and applies the same reskin phase by default. The

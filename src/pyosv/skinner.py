@@ -33,6 +33,7 @@ from pyosv._skinner.growth import (
 )
 from pyosv._skinner.models import (
     _LocalTransformMap as _LocalTransformMap,
+    _ReskinContext as _ReskinContext,
     _SkinCell as _SkinCell,
     _validate_skin_cell as _validate_skin_cell,
     link_above_below as link_above_below,
@@ -50,6 +51,17 @@ from pyosv._skinner.reference import (
     find_skins,
 )
 from pyosv._skinner.reskin import (
+    RESKIN_POLICY_EXISTING_CELLS_V1,
+    RESKIN_POLICY_REFERENCE_DENSE_V1,
+    ReskinDiagnostics,
+    ReskinPolicy,
+    _dense_basis as _dense_basis,
+    _dense_candidate_is_eligible as _dense_candidate_is_eligible,
+    _dense_duplicate_priority as _dense_duplicate_priority,
+    _dense_observed_cells as _dense_observed_cells,
+    _dense_regrow_keys as _dense_regrow_keys,
+    _dense_world as _dense_world,
+    _dense_world_is_in_volume as _dense_world_is_in_volume,
     _highest_likelihood_cell as _highest_likelihood_cell,
     _link_fault_cells_above_below as _link_fault_cells_above_below,
     _link_fault_cells_left_right as _link_fault_cells_left_right,
@@ -58,6 +70,8 @@ from pyosv._skinner.reskin import (
     _local_surface_strike_and_dip as _local_surface_strike_and_dip,
     _project_cells_to_local_surface as _project_cells_to_local_surface,
     _reskin_reference as _reskin_reference,
+    _reskin_reference_dense_v1 as _reskin_reference_dense_v1,
+    _reskin_existing_cells_v1 as _reskin_existing_cells_v1,
     _smooth_weighted_surface as _smooth_weighted_surface,
     _surface_derivative as _surface_derivative,
 )
@@ -91,6 +105,10 @@ from pyosv._skinner.validation import (
 __all__ = [
     "ConnectedComponentSkinner",
     "FaultSkinner",
+    "RESKIN_POLICY_EXISTING_CELLS_V1",
+    "RESKIN_POLICY_REFERENCE_DENSE_V1",
+    "ReskinDiagnostics",
+    "ReskinPolicy",
     "find_connected_component_skins",
     "find_skins",
 ]

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from pyosv.cells import FaultCell, _java_round
+
+if TYPE_CHECKING:
+    from pyosv._skinner.occupancy import _SkinOccupancyMask
 
 
 @dataclass(slots=True, eq=False)
@@ -63,6 +67,21 @@ class _LocalTransformMap:
     us: np.ndarray
     vs: np.ndarray
     ws: np.ndarray
+
+
+@dataclass(slots=True, frozen=True)
+class _ReskinContext:
+    """Grow-time state available to versioned reskin policies."""
+
+    seed: _SkinCell
+    origin: tuple[float, float, float]
+    transform_map: _LocalTransformMap
+    accepted_cells: tuple[_SkinCell, ...]
+    fv: np.ndarray
+    volume_shape: tuple[int, int, int]
+    collision_grid: _SkinOccupancyMask | None
+    du: float
+    valid_mask: np.ndarray | None
 
 
 def _validate_skin_cell(cell: _SkinCell, name: str) -> None:

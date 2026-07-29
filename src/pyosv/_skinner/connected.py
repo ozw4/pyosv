@@ -11,7 +11,7 @@ from pyosv._skinner.validation import (
     _validate_nonnegative_finite_float,
     _validate_optional_nonnegative_int,
 )
-from pyosv.cells import FaultCell
+from pyosv.cells import FAULT_CELL_GENERATION_CONNECTED_COMPONENT, FaultCell
 from pyosv.skin import FaultSkin
 
 
@@ -61,6 +61,7 @@ class ConnectedComponentSkinner:
                     fv_array[i3, i2, i1],
                     vp_array[i3, i2, i1],
                     vt_array[i3, i2, i1],
+                    generation=FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
                 ),
             )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from typing import Any
 
 import numpy as np
@@ -12,6 +13,16 @@ from pyosv._skinner.connected import (
 )
 from pyosv._skinner.growth import _grow_reference_skin, _grow_reference_skin_validated
 from pyosv._skinner.occupancy import _SkinOccupancyMask
+from pyosv._skinner.reskin import (
+    RESKIN_POLICY_EXISTING_CELLS_V1,
+    ReskinDiagnostics,
+    ReskinPolicy,
+    _empty_reskin_diagnostics,
+    _merge_reskin_diagnostics,
+    _prepare_reskin_diagnostics_sink,
+    _publish_reskin_diagnostics,
+    _validate_reskin_policy,
+)
 from pyosv._skinner.seeds import (
     _adaptive_skin_likelihood_threshold,
     _find_reference_seeds,
@@ -25,6 +36,7 @@ from pyosv._skinner.validation import (
     _validate_nonnegative_finite_float,
     _validate_nonnegative_int,
     _validate_optional_nonnegative_int,
+    _validate_optional_valid_mask,
     _validate_unit_interval_float,
 )
 from pyosv.cells import FaultCell
@@ -33,6 +45,8 @@ from pyosv.skin import FaultSkin
 __all__ = [
     "ConnectedComponentSkinner",
     "FaultSkinner",
+    "RESKIN_POLICY_EXISTING_CELLS_V1",
+    "ReskinPolicy",
     "find_connected_component_skins",
     "find_skins",
 ]
@@ -161,12 +175,25 @@ class FaultSkinner:
         du: float = 5.0,
         max_delta_strike: float = 30.0,
         reskin: bool = True,
+        reskin_policy: ReskinPolicy | str = RESKIN_POLICY_EXISTING_CELLS_V1,
+        valid_mask: np.ndarray | None = None,
         accepted_occupancy_radius: int | None = None,
         diagnostics: dict[str, Any] | None = None,
+        reskin_diagnostics: MutableMapping[str, object] | None = None,
     ) -> list[FaultSkin]:
         """Find skins with the configured backend."""
 
+        if diagnostics is not None and diagnostics is reskin_diagnostics:
+            raise ValueError(
+                "diagnostics and reskin_diagnostics must be distinct mappings",
+            )
         should_reskin = _validate_bool(reskin, "reskin")
+        policy = _validate_reskin_policy(reskin_policy)
+        aggregate_reskin_diagnostics = _prepare_reskin_diagnostics_sink(
+            reskin_diagnostics,
+            policy,
+        )
+        validated_valid_mask = _validate_optional_valid_mask(valid_mask, fv)
         occupancy_radius = (
             5
             if accepted_occupancy_radius is None
@@ -176,7 +203,22 @@ class FaultSkinner:
             )
         )
         if self.method == "connected_component":
-            return self._fallback.find_skins(fv, vp, vt, min_likelihood=min_likelihood)
+            skins = self._fallback.find_skins(
+                fv,
+                vp,
+                vt,
+                min_likelihood=min_likelihood,
+            )
+            if aggregate_reskin_diagnostics is not None:
+                aggregate_reskin_diagnostics["processed_skin_count"] = len(skins)
+                cell_count = sum(len(skin) for skin in skins)
+                aggregate_reskin_diagnostics["input_cell_count"] = cell_count
+                aggregate_reskin_diagnostics["output_cell_count"] = cell_count
+            _publish_reskin_diagnostics(
+                reskin_diagnostics,
+                aggregate_reskin_diagnostics,
+            )
+            return skins
 
         seed_min_ep = _REFERENCE_SEED_MIN_EP
         effective_ep = fv if ep is None else ep
@@ -201,7 +243,7 @@ class FaultSkinner:
                 if min_likelihood is None
                 else _validate_nonnegative_finite_float(min_likelihood, "min_likelihood")
             )
-        return _find_reference_skins(
+        skins = _find_reference_skins(
             fv=fv,
             vp=vp,
             vt=vt,
@@ -221,9 +263,17 @@ class FaultSkinner:
             du=du,
             max_delta_strike=max_delta_strike,
             reskin=should_reskin,
+            reskin_policy=policy,
+            valid_mask=validated_valid_mask,
             accepted_occupancy_radius=occupancy_radius,
             diagnostics=diagnostics,
+            _reskin_diagnostics=aggregate_reskin_diagnostics,
         )
+        _publish_reskin_diagnostics(
+            reskin_diagnostics,
+            aggregate_reskin_diagnostics,
+        )
+        return skins
 
     def find_skin(
         self,
@@ -240,11 +290,19 @@ class FaultSkinner:
         du: float = 5.0,
         max_delta_strike: float = 30.0,
         reskin: bool = True,
+        reskin_policy: ReskinPolicy | str = RESKIN_POLICY_EXISTING_CELLS_V1,
+        valid_mask: np.ndarray | None = None,
+        reskin_diagnostics: MutableMapping[str, object] | None = None,
     ) -> FaultSkin:
         """Grow one reference-like skin from ``seed`` without changing defaults."""
 
+        policy = _validate_reskin_policy(reskin_policy)
+        aggregate_reskin_diagnostics = _prepare_reskin_diagnostics_sink(
+            reskin_diagnostics,
+            policy,
+        )
         threshold = self.min_likelihood if min_likelihood is None else min_likelihood
-        return _grow_reference_skin(
+        skin = _grow_reference_skin(
             seed,
             fv,
             vp,
@@ -257,7 +315,15 @@ class FaultSkinner:
             du=du,
             max_delta_strike=max_delta_strike,
             reskin=reskin,
+            reskin_policy=policy,
+            valid_mask=valid_mask,
+            _reskin_diagnostics=aggregate_reskin_diagnostics,
         )
+        _publish_reskin_diagnostics(
+            reskin_diagnostics,
+            aggregate_reskin_diagnostics,
+        )
+        return skin
 
 
 def find_skins(
@@ -278,8 +344,11 @@ def find_skins(
     du: float = 5.0,
     max_delta_strike: float = 30.0,
     reskin: bool = True,
+    reskin_policy: ReskinPolicy | str = RESKIN_POLICY_EXISTING_CELLS_V1,
+    valid_mask: np.ndarray | None = None,
     accepted_occupancy_radius: int | None = None,
     diagnostics: dict[str, Any] | None = None,
+    reskin_diagnostics: MutableMapping[str, object] | None = None,
 ) -> list[FaultSkin]:
     """Find reference-like skins from 3D voting outputs.
 
@@ -306,8 +375,11 @@ def find_skins(
         du=du,
         max_delta_strike=max_delta_strike,
         reskin=reskin,
+        reskin_policy=reskin_policy,
+        valid_mask=valid_mask,
         accepted_occupancy_radius=accepted_occupancy_radius,
         diagnostics=diagnostics,
+        reskin_diagnostics=reskin_diagnostics,
     )
 
 
@@ -330,12 +402,17 @@ def _find_reference_skins(
     du: float,
     max_delta_strike: float,
     reskin: bool,
+    reskin_policy: ReskinPolicy | str = RESKIN_POLICY_EXISTING_CELLS_V1,
+    valid_mask: np.ndarray | None = None,
     grow_fmin: float | None = None,
     seed_min_ep: float = _REFERENCE_SEED_MIN_EP,
     accepted_occupancy_radius: int = 5,
     diagnostics: dict[str, Any] | None = None,
+    _reskin_diagnostics: ReskinDiagnostics | None = None,
 ) -> list[FaultSkin]:
     should_reskin = _validate_bool(reskin, "reskin")
+    policy = _validate_reskin_policy(reskin_policy)
+    validated_valid_mask = _validate_optional_valid_mask(valid_mask, fv)
     seed_threshold = _validate_nonnegative_finite_float(fm, "fm")
     planarity_threshold = _validate_unit_interval_float(seed_min_ep, "seed_min_ep")
     grow_threshold = (
@@ -396,6 +473,9 @@ def _find_reference_skins(
             continue
 
         grow_attempt_count += 1
+        item_reskin_diagnostics = (
+            _empty_reskin_diagnostics(policy) if _reskin_diagnostics is not None else None
+        )
         skin = _grow_reference_skin_validated(
             seed,
             fv_array,
@@ -410,7 +490,15 @@ def _find_reference_skins(
             max_delta_strike=max_delta_fp,
             collision_grid=occupied,
             reskin=should_reskin,
+            reskin_policy=policy,
+            valid_mask=validated_valid_mask,
+            _reskin_diagnostics=item_reskin_diagnostics,
         )
+        if _reskin_diagnostics is not None and item_reskin_diagnostics is not None:
+            _merge_reskin_diagnostics(
+                _reskin_diagnostics,
+                item_reskin_diagnostics,
+            )
         skin_cell_count = len(skin)
         if skin_cell_count == 0:
             if skin_size is not None:
