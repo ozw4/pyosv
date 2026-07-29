@@ -350,11 +350,7 @@ def test_reference_dense_v1_rounded_duplicate_prefers_higher_support() -> None:
 def test_reference_dense_v1_rounded_duplicate_prefers_smaller_local_key() -> None:
     skin, context = _rounded_duplicate_fixture(
         origin=(6.2, 6.0, 6.2),
-        accepted=tuple(
-            _SkinCell(3, iv, iw, 0.9, 0.0, 90.0)
-            for iw in (3, 4)
-            for iv in (3, 4)
-        ),
+        accepted=tuple(_SkinCell(3, iv, iw, 0.9, 0.0, 90.0) for iw in (3, 4) for iv in (3, 4)),
         v_scale=0.2,
         w_scale=0.2,
     )
