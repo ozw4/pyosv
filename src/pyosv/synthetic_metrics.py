@@ -725,9 +725,7 @@ def reskin_generation_metrics(
     if reported_output_count != output_count:
         raise ValueError("reskin diagnostics output_cell_count does not match skins")
     if observed_count != output_count - generated_count:
-        raise ValueError(
-            "reskin diagnostics observed_output_cell_count does not match skins"
-        )
+        raise ValueError("reskin diagnostics observed_output_cell_count does not match skins")
 
     support_summary = _nullable_summary(supports)
     likelihood_summary = _nullable_summary(generated_likelihoods)

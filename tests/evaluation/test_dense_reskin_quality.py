@@ -47,11 +47,14 @@ def passing_gate_inputs():
             "small_skin_cell_fraction_delta": 0.05,
         }
     )
-    assert dense_reskin_quality._gate_reasons(
-        results,
-        aggregate,
-        deterministic=True,
-    ) == []
+    assert (
+        dense_reskin_quality._gate_reasons(
+            results,
+            aggregate,
+            deterministic=True,
+        )
+        == []
+    )
     return results, aggregate
 
 
@@ -467,11 +470,14 @@ def test_dense_aggregate_gate_passes_at_boundary_and_fails_beyond_it(
     if boundary == "baseline":
         boundary = aggregate["baseline_buffered_recall_mean"]
     aggregate[field] = boundary
-    assert dense_reskin_quality._gate_reasons(
-        results,
-        aggregate,
-        deterministic=True,
-    ) == []
+    assert (
+        dense_reskin_quality._gate_reasons(
+            results,
+            aggregate,
+            deterministic=True,
+        )
+        == []
+    )
 
     aggregate[field] = np.nextafter(boundary, failure_direction * np.inf)
     assert dense_reskin_quality._gate_reasons(
