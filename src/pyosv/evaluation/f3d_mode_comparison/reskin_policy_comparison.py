@@ -21,13 +21,12 @@ from pyosv.skinner import (
     RESKIN_POLICY_REFERENCE_DENSE_V1,
 )
 from pyosv.synthetic_metrics import (
-    buffered_surface_overlap,
     reskin_generation_metrics,
     rounded_duplicate_cell_count,
     skin_mask_from_skins,
     skin_link_topology_metrics,
     skin_topology_metrics,
-    surface_distance_metrics,
+    surface_comparison_metrics,
 )
 
 from .skin_artifacts import canonical_skins_payload
@@ -65,7 +64,12 @@ def compare_reskin_policies_from_parent(
         raise ValueError("skinning_config.reskin must be true")
 
     parent_fingerprint = _parent_fingerprint(arrays)
+    parent_ridge = positive_candidate_mask(
+        arrays["fvt"],
+        epsilon=NONZERO_EPSILON,
+    )
     policies: dict[str, Any] = {}
+    skin_masks: dict[str, np.ndarray] = {}
     for policy in (
         RESKIN_POLICY_EXISTING_CELLS_V1,
         RESKIN_POLICY_REFERENCE_DENSE_V1,
@@ -81,10 +85,7 @@ def compare_reskin_policies_from_parent(
         )
         reskin_diagnostics = diagnostics["reskin"]
         skin_mask = skin_mask_from_skins(skins, arrays["fv"].shape)
-        parent_ridge = positive_candidate_mask(
-            arrays["fvt"],
-            epsilon=NONZERO_EPSILON,
-        )
+        skin_masks[policy] = skin_mask
         policies[policy] = {
             "reskin_policy": policy,
             "parent_fingerprint": parent_fingerprint,
@@ -103,19 +104,17 @@ def compare_reskin_policies_from_parent(
                 "reference": "shared_parent_fvt_positive",
                 "positive_epsilon": NONZERO_EPSILON,
                 "ridge_voxel_count": int(np.count_nonzero(parent_ridge)),
-                "overlap": buffered_surface_overlap(
-                    skin_mask,
-                    parent_ridge,
-                    radius=2.0,
-                ),
-                "surface_distance": surface_distance_metrics(
-                    skin_mask,
-                    parent_ridge,
-                ),
             },
             "duplicate_rounded_cell_index_count": rounded_duplicate_cell_count(skins),
             "diagnostics": diagnostics,
         }
+    surface_metrics = surface_comparison_metrics(
+        skin_masks,
+        parent_ridge,
+        radius=2.0,
+    )
+    for policy, metrics in surface_metrics.items():
+        policies[policy]["parent_ridge_surface"].update(metrics)
 
     baseline = policies[RESKIN_POLICY_EXISTING_CELLS_V1]
     candidate = policies[RESKIN_POLICY_REFERENCE_DENSE_V1]

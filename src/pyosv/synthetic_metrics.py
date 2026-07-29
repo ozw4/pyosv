@@ -29,6 +29,7 @@ __all__ = [
     "skin_orientation_error",
     "skin_topology_metrics",
     "skin_truth_metrics",
+    "surface_comparison_metrics",
     "surface_distance_metrics",
     "top_k_mask",
     "top_positive_k_mask",
@@ -123,14 +124,32 @@ def buffered_surface_overlap(
 
     candidate, truth = _validate_mask_pair(candidate_mask, truth_mask)
     buffer_radius = _validate_nonnegative_finite_scalar(radius, "radius")
+    return _buffered_surface_overlap_from_distances(
+        candidate,
+        truth,
+        buffer_radius,
+        candidate_distance=_surface_distance_field(candidate),
+        truth_distance=_surface_distance_field(truth),
+    )
+
+
+def _buffered_surface_overlap_from_distances(
+    candidate: np.ndarray,
+    truth: np.ndarray,
+    radius: float,
+    *,
+    candidate_distance: np.ndarray | None,
+    truth_distance: np.ndarray | None,
+) -> dict[str, float | int]:
+    """Compute overlap from already-validated masks and reusable distance fields."""
 
     candidate_count = int(np.count_nonzero(candidate))
     truth_count = int(np.count_nonzero(truth))
     intersection_count = int(np.count_nonzero(candidate & truth))
     union_count = int(np.count_nonzero(candidate | truth))
 
-    truth_buffer = _distance_buffer(truth, buffer_radius)
-    candidate_buffer = _distance_buffer(candidate, buffer_radius)
+    truth_buffer = _distance_buffer_from_field(truth, radius, truth_distance)
+    candidate_buffer = _distance_buffer_from_field(candidate, radius, candidate_distance)
     candidate_in_truth_buffer_count = int(np.count_nonzero(candidate & truth_buffer))
     truth_in_candidate_buffer_count = int(np.count_nonzero(truth & candidate_buffer))
 
@@ -153,7 +172,7 @@ def buffered_surface_overlap(
         "buffered_precision": buffered_precision,
         "buffered_recall": buffered_recall,
         "buffered_f1": _f1(buffered_precision, buffered_recall),
-        "radius": float(buffer_radius),
+        "radius": float(radius),
     }
 
 
@@ -207,6 +226,63 @@ def surface_distance_metrics(
     """Return directional and symmetric surface distance metrics."""
 
     candidate, truth = _validate_mask_pair(candidate_mask, truth_mask)
+    return _surface_distance_metrics_from_distances(
+        candidate,
+        truth,
+        candidate_distance=_surface_distance_field(candidate),
+        truth_distance=_surface_distance_field(truth),
+    )
+
+
+def surface_comparison_metrics(
+    candidate_masks: Mapping[str, np.ndarray],
+    truth_mask: np.ndarray,
+    *,
+    radius: float,
+) -> dict[str, dict[str, dict[str, float | int]]]:
+    """Compare multiple candidates while sharing each full-volume distance field."""
+
+    if not isinstance(candidate_masks, Mapping) or not candidate_masks:
+        raise ValueError("candidate_masks must be a non-empty mapping")
+    buffer_radius = _validate_nonnegative_finite_scalar(radius, "radius")
+    truth_input = np.asarray(truth_mask)
+    truth: np.ndarray | None = None
+    truth_distance: np.ndarray | None = None
+    results: dict[str, dict[str, dict[str, float | int]]] = {}
+    for name, candidate_mask in candidate_masks.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("candidate mask names must be non-empty strings")
+        candidate, validated_truth = _validate_mask_pair(candidate_mask, truth_input)
+        if truth is None:
+            truth = validated_truth
+            truth_distance = _surface_distance_field(truth)
+        candidate_distance = _surface_distance_field(candidate)
+        results[name] = {
+            "overlap": _buffered_surface_overlap_from_distances(
+                candidate,
+                truth,
+                buffer_radius,
+                candidate_distance=candidate_distance,
+                truth_distance=truth_distance,
+            ),
+            "surface_distance": _surface_distance_metrics_from_distances(
+                candidate,
+                truth,
+                candidate_distance=candidate_distance,
+                truth_distance=truth_distance,
+            ),
+        }
+    return results
+
+
+def _surface_distance_metrics_from_distances(
+    candidate: np.ndarray,
+    truth: np.ndarray,
+    *,
+    candidate_distance: np.ndarray | None,
+    truth_distance: np.ndarray | None,
+) -> dict[str, float | int]:
+    """Compute surface distances from validated masks and reusable fields."""
 
     candidate_count = int(np.count_nonzero(candidate))
     truth_count = int(np.count_nonzero(truth))
@@ -216,11 +292,11 @@ def surface_distance_metrics(
         penalty = _volume_diagonal(candidate.shape)
         return _distance_result(candidate_count, truth_count, penalty, penalty)
 
-    distance_to_truth = distance_transform_edt(~truth)
-    candidate_to_truth = _distance_summary(distance_to_truth[candidate])
+    assert truth_distance is not None
+    candidate_to_truth = _distance_summary(truth_distance[candidate])
 
-    distance_to_candidate = distance_transform_edt(~candidate)
-    truth_to_candidate = _distance_summary(distance_to_candidate[truth])
+    assert candidate_distance is not None
+    truth_to_candidate = _distance_summary(candidate_distance[truth])
 
     result = {
         "candidate_count": candidate_count,
@@ -648,6 +724,10 @@ def reskin_generation_metrics(
     )
     if reported_output_count != output_count:
         raise ValueError("reskin diagnostics output_cell_count does not match skins")
+    if observed_count != output_count - generated_count:
+        raise ValueError(
+            "reskin diagnostics observed_output_cell_count does not match skins"
+        )
 
     support_summary = _nullable_summary(supports)
     likelihood_summary = _nullable_summary(generated_likelihoods)
@@ -719,19 +799,16 @@ def skin_link_topology_metrics(skins: Sequence[FaultSkin]) -> dict[str, int]:
     cross_skin_links = 0
     self_links = 0
     adjacency: dict[int, set[int]] = {id(cell): set() for cell in cells}
-    isolated = 0
     quad_candidates = 0
     quad_matches = 0
     quad_mismatches = 0
 
     for cell in cells:
         cell_id = id(cell)
-        links = []
         for name, reverse_name in reciprocal.items():
             linked = getattr(cell, name, None)
             if linked is None:
                 continue
-            links.append(linked)
             linked_id = id(linked)
             if linked is cell:
                 self_links += 1
@@ -744,9 +821,6 @@ def skin_link_topology_metrics(skins: Sequence[FaultSkin]) -> dict[str, int]:
                 cross_skin_links += 1
             if getattr(linked, reverse_name, None) is not cell:
                 reciprocal_violations += 1
-        if not links:
-            isolated += 1
-
         right = getattr(cell, "cr", None)
         below = getattr(cell, "cb", None)
         right_below = None if right is None else getattr(right, "cb", None)
@@ -759,6 +833,7 @@ def skin_link_topology_metrics(skins: Sequence[FaultSkin]) -> dict[str, int]:
                 quad_mismatches += 1
 
     component_count = 0
+    isolated = sum(not neighbors for neighbors in adjacency.values())
     unvisited = set(adjacency)
     while unvisited:
         component_count += 1
@@ -1055,9 +1130,23 @@ def _buffered_overlap_key(radius: float) -> str:
 
 
 def _distance_buffer(mask: np.ndarray, radius: float) -> np.ndarray:
+    return _distance_buffer_from_field(mask, radius, _surface_distance_field(mask))
+
+
+def _surface_distance_field(mask: np.ndarray) -> np.ndarray | None:
     if not np.any(mask):
+        return None
+    return distance_transform_edt(~mask)
+
+
+def _distance_buffer_from_field(
+    mask: np.ndarray,
+    radius: float,
+    distance: np.ndarray | None,
+) -> np.ndarray:
+    if distance is None:
         return np.zeros(mask.shape, dtype=bool)
-    return distance_transform_edt(~mask) <= radius
+    return distance <= radius
 
 
 def _edge_region(shape: tuple[int, ...], margin: int) -> np.ndarray:

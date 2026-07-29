@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from pyosv.evaluation.f3d_mode_comparison.skin_artifacts import (
+    ParsedSkinArtifacts,
     SkinCellRecord,
     SkinArtifactValidationError,
     canonical_skins_payload,
@@ -16,6 +17,7 @@ from pyosv.evaluation.f3d_mode_comparison.skin_artifacts import (
     resolve_final_skin_cell_value_provenance,
     resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
+    validate_skin_generation_provenance,
 )
 
 _SHAPE = (2, 3, 4)
@@ -401,6 +403,70 @@ def test_connected_component_primary_ignores_reskin_setting_for_provenance() -> 
         )
         == "primary_nearest_sample"
     )
+
+
+def test_contract4_connected_component_has_method_specific_provenance() -> None:
+    assert (
+        resolve_final_skin_cell_value_provenance(
+            {
+                **_resolved_skinning(method="connected_component", reskin=True),
+                "reskin_policy": "existing_cells_v1",
+            },
+            _resolved_variant(),
+            fallback_used=False,
+        )
+        == "primary_connected_component"
+    )
+
+
+@pytest.mark.parametrize(
+    ("provenance", "generation", "valid"),
+    (
+        ("primary_nearest_sample", "grown", True),
+        ("primary_nearest_sample", "connected_component", False),
+        ("primary_connected_component", "connected_component", True),
+        ("primary_connected_component", "grown", False),
+    ),
+)
+def test_contract4_generation_validation_is_method_specific(
+    provenance: str,
+    generation: str,
+    valid: bool,
+) -> None:
+    parsed = ParsedSkinArtifacts(
+        skins=(
+            (
+                SkinCellRecord(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0,
+                    0,
+                    0,
+                    0.8,
+                    25.0,
+                    70.0,
+                    generation,
+                    None,
+                ),
+            ),
+        ),
+        format_version=2,
+    )
+
+    if valid:
+        validate_skin_generation_provenance(
+            parsed,
+            provenance,
+            semantic_contract_version=4,
+        )
+    else:
+        with pytest.raises(SkinArtifactValidationError, match="generation conflicts"):
+            validate_skin_generation_provenance(
+                parsed,
+                provenance,
+                semantic_contract_version=4,
+            )
 
 
 @pytest.mark.parametrize(

@@ -1,12 +1,15 @@
 import csv
+import copy
 import json
 from dataclasses import asdict
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 import pyosv.evaluation.dense_reskin_quality as dense_reskin_quality
 import pyosv.evaluation.f3d_mode_comparison.result as f3_result_module
+import pyosv.synthetic_metrics as synthetic_metrics
 from pyosv.cells import FaultCell
 from pyosv.evaluation.dense_reskin_quality import (
     build_dense_reskin_promotion_gate,
@@ -20,7 +23,36 @@ from pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison import (
 )
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
 from pyosv.skin import FaultSkin
-from pyosv.synthetic_metrics import skin_link_topology_metrics
+from pyosv.synthetic_metrics import reskin_generation_metrics, skin_link_topology_metrics
+
+
+def _set_nested(mapping, path, value) -> None:
+    target = mapping
+    for field in path[:-1]:
+        target = target[field]
+    target[path[-1]] = value
+
+
+@pytest.fixture(scope="module")
+def passing_gate_inputs():
+    gate = build_dense_reskin_promotion_gate()
+    results = gate["case_results"]
+    aggregate = dense_reskin_quality._aggregate(results)
+    aggregate.update(
+        {
+            "candidate_buffered_recall_mean": aggregate["baseline_buffered_recall_mean"],
+            "buffered_recall_delta": 0.0,
+            "buffered_precision_delta": -0.02,
+            "symmetric_chamfer_mean_delta": 0.25,
+            "small_skin_cell_fraction_delta": 0.05,
+        }
+    )
+    assert dense_reskin_quality._gate_reasons(
+        results,
+        aggregate,
+        deterministic=True,
+    ) == []
+    return results, aggregate
 
 
 def test_controlled_dense_reskin_gate_applies_fixed_contract_to_every_case() -> None:
@@ -83,8 +115,34 @@ def test_link_topology_helper_reports_violations_without_mutation() -> None:
 
     assert metrics["reciprocal_link_violation_count"] == 1
     assert metrics["cross_skin_link_count"] == 1
+    assert metrics["isolated_cell_count"] == 0
     assert left.cr is right
     assert right.cl is None
+
+
+def test_reskin_generation_metrics_reject_inconsistent_observed_count() -> None:
+    observed = FaultCell(1, 1, 1, 1, 0, 90)
+    generated = FaultCell(
+        2,
+        1,
+        1,
+        1,
+        0,
+        90,
+        generation="dense_reskin_generated",
+        reskin_support=0.5,
+    )
+
+    with pytest.raises(ValueError, match="observed_output_cell_count does not match"):
+        reskin_generation_metrics(
+            (FaultSkin.from_cells((observed, generated)),),
+            diagnostics={
+                "input_cell_count": 1,
+                "output_cell_count": 2,
+                "observed_output_cell_count": 2,
+                "generated_cell_count": 1,
+            },
+        )
 
 
 def test_dense_gate_writers_keep_nulls_explicit(tmp_path) -> None:
@@ -172,7 +230,258 @@ def test_dense_gate_requires_boundary_rejection_evidence(monkeypatch) -> None:
     assert "volume_boundary_surface:out_of_bounds_rejection_not_exercised" in gate["reasons"]
 
 
-def test_f3_skin_only_pair_shares_parent_and_branches_policy() -> None:
+@pytest.mark.parametrize(
+    ("case_id", "policy", "path", "value", "expected_reason"),
+    (
+        (
+            "plane_3x3_center_hole",
+            "baseline",
+            ("finite_failure_count",),
+            1,
+            "plane_3x3_center_hole:baseline_nonfinite_metric",
+        ),
+        (
+            "plane_3x3_center_hole",
+            "candidate",
+            ("finite_failure_count",),
+            1,
+            "plane_3x3_center_hole:nonfinite_metric",
+        ),
+        (
+            "plane_3x3_center_hole",
+            "candidate",
+            ("duplicate_rounded_cell_index_count",),
+            1,
+            "plane_3x3_center_hole:duplicate_rounded_cell_index",
+        ),
+        (
+            "plane_3x3_center_hole",
+            "candidate",
+            ("link_topology", "reciprocal_link_violation_count"),
+            1,
+            "plane_3x3_center_hole:reciprocal_link_violation_count",
+        ),
+        (
+            "plane_3x3_center_hole",
+            "candidate",
+            ("link_topology", "cross_skin_link_count"),
+            1,
+            "plane_3x3_center_hole:cross_skin_link_count",
+        ),
+        (
+            "plane_3x3_center_hole",
+            "candidate",
+            ("link_topology", "self_link_count"),
+            1,
+            "plane_3x3_center_hole:self_link_count",
+        ),
+        (
+            "valid_mask_barrier",
+            "candidate",
+            ("generated_on_invalid_mask_count",),
+            1,
+            "valid_mask_barrier:generated_on_invalid_mask_count",
+        ),
+        (
+            "prior_occupancy_barrier",
+            "candidate",
+            ("generated_on_prior_occupancy_count",),
+            1,
+            "prior_occupancy_barrier:generated_on_prior_occupancy_count",
+        ),
+        (
+            "volume_boundary_surface",
+            "candidate",
+            ("out_of_volume_cell_count",),
+            1,
+            "volume_boundary_surface:out_of_volume_cell_count",
+        ),
+        (
+            "volume_boundary_surface",
+            "candidate",
+            ("clamped_artifact_count",),
+            1,
+            "volume_boundary_surface:clamped_artifact_count",
+        ),
+        (
+            "plane_3x3_center_hole",
+            "candidate",
+            ("truth", "truth_hole_recovered_count"),
+            0,
+            "plane_3x3_center_hole:hole_not_recovered",
+        ),
+        (
+            "plane_3x3_center_hole",
+            "candidate",
+            ("truth", "truth_buffer_outside_generated_cell_count"),
+            1,
+            "plane_3x3_center_hole:generated_outside_truth_buffer",
+        ),
+        (
+            "plane_4x4_internal_2x2_hole",
+            "candidate",
+            ("truth", "overlap", "recall"),
+            "baseline_recall",
+            "plane_4x4_internal_2x2_hole:recall_not_improved",
+        ),
+        (
+            "plane_4x4_internal_2x2_hole",
+            "candidate",
+            ("truth", "truth_buffer_outside_generated_cell_count"),
+            1,
+            "plane_4x4_internal_2x2_hole:generated_outside_truth_buffer",
+        ),
+        (
+            "low_support_gap",
+            "candidate",
+            ("generation", "reskin_generated_cell_count"),
+            1,
+            "low_support_gap:generated_cell",
+        ),
+        (
+            "valid_mask_barrier",
+            "candidate",
+            ("generation", "reskin_rejected_invalid_mask_count"),
+            0,
+            "valid_mask_barrier:invalid_mask_rejection_not_exercised",
+        ),
+        (
+            "prior_occupancy_barrier",
+            "candidate",
+            ("generation", "reskin_rejected_prior_skin_collision_count"),
+            0,
+            "prior_occupancy_barrier:collision_not_exercised",
+        ),
+        (
+            "volume_boundary_surface",
+            "candidate",
+            ("truth", "truth_hole_recovered_count"),
+            0,
+            "volume_boundary_surface:boundary_hole_not_recovered",
+        ),
+        (
+            "volume_boundary_surface",
+            "candidate",
+            ("generation", "reskin_generated_cell_count"),
+            0,
+            "volume_boundary_surface:dense_generation_not_exercised",
+        ),
+        (
+            "volume_boundary_surface",
+            "candidate",
+            ("generation", "reskin_rejected_out_of_bounds_count"),
+            0,
+            "volume_boundary_surface:out_of_bounds_rejection_not_exercised",
+        ),
+        (
+            "parallel_surfaces",
+            "candidate",
+            ("truth_fault_id_bridge_count",),
+            1,
+            "parallel_surfaces:truth_fault_id_bridge",
+        ),
+        (
+            "corner_touch_orientation_boundary",
+            "candidate",
+            ("truth_fault_id_bridge_count",),
+            1,
+            "corner_touch_orientation_boundary:truth_fault_id_bridge",
+        ),
+    ),
+)
+def test_every_dense_hard_gate_failure_reason(
+    passing_gate_inputs,
+    case_id,
+    policy,
+    path,
+    value,
+    expected_reason,
+) -> None:
+    base_results, base_aggregate = passing_gate_inputs
+    results = copy.deepcopy(base_results)
+    aggregate = copy.deepcopy(base_aggregate)
+    by_id = {result["case_id"]: result for result in results}
+    if value == "baseline_recall":
+        value = by_id[case_id]["baseline"]["truth"]["overlap"]["recall"]
+    _set_nested(by_id[case_id][policy], path, value)
+
+    reasons = dense_reskin_quality._gate_reasons(
+        results,
+        aggregate,
+        deterministic=True,
+    )
+
+    assert reasons == [expected_reason]
+
+
+def test_dense_gate_rejects_nondeterministic_payload(passing_gate_inputs) -> None:
+    results, aggregate = passing_gate_inputs
+
+    reasons = dense_reskin_quality._gate_reasons(
+        results,
+        aggregate,
+        deterministic=False,
+    )
+
+    assert reasons == ["canonical_payload_not_deterministic"]
+
+
+@pytest.mark.parametrize(
+    ("field", "boundary", "failure_direction", "expected_reason"),
+    (
+        (
+            "candidate_buffered_recall_mean",
+            "baseline",
+            -1.0,
+            "aggregate:buffered_recall_regressed",
+        ),
+        (
+            "buffered_precision_delta",
+            -0.02,
+            -1.0,
+            "aggregate:buffered_precision_regressed_over_0.02",
+        ),
+        (
+            "symmetric_chamfer_mean_delta",
+            0.25,
+            1.0,
+            "aggregate:symmetric_chamfer_regressed_over_0.25",
+        ),
+        (
+            "small_skin_cell_fraction_delta",
+            0.05,
+            1.0,
+            "aggregate:small_skin_cell_fraction_increased_over_0.05",
+        ),
+    ),
+)
+def test_dense_aggregate_gate_passes_at_boundary_and_fails_beyond_it(
+    passing_gate_inputs,
+    field,
+    boundary,
+    failure_direction,
+    expected_reason,
+) -> None:
+    results, base_aggregate = passing_gate_inputs
+    aggregate = copy.deepcopy(base_aggregate)
+    if boundary == "baseline":
+        boundary = aggregate["baseline_buffered_recall_mean"]
+    aggregate[field] = boundary
+    assert dense_reskin_quality._gate_reasons(
+        results,
+        aggregate,
+        deterministic=True,
+    ) == []
+
+    aggregate[field] = np.nextafter(boundary, failure_direction * np.inf)
+    assert dense_reskin_quality._gate_reasons(
+        results,
+        aggregate,
+        deterministic=True,
+    ) == [expected_reason]
+
+
+def test_f3_skin_only_pair_shares_parent_and_branches_policy(monkeypatch) -> None:
     shape = (15, 15, 15)
     fv = np.zeros(shape, dtype=np.float32)
     vp = np.zeros(shape, dtype=np.float32)
@@ -191,6 +500,18 @@ def test_f3_skin_only_pair_shares_parent_and_branches_policy() -> None:
         rw=5,
         reskin=True,
     )
+    distance_transform = synthetic_metrics.distance_transform_edt
+    transform_shapes = []
+
+    def counted_distance_transform(values):
+        transform_shapes.append(values.shape)
+        return distance_transform(values)
+
+    monkeypatch.setattr(
+        synthetic_metrics,
+        "distance_transform_edt",
+        counted_distance_transform,
+    )
 
     report = compare_reskin_policies_from_parent(
         fv=fv,
@@ -201,6 +522,7 @@ def test_f3_skin_only_pair_shares_parent_and_branches_policy() -> None:
     )
 
     assert report["upstream_parent_fingerprint_identical"] is True
+    assert transform_shapes == [shape, shape, shape]
     assert report["contrast"]["generated_cell_count_delta"] == 1
     assert set(report["policies"]) == {"existing_cells_v1", "reference_dense_v1"}
     assert (

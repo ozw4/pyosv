@@ -65,6 +65,7 @@ PRIMARY_NEAREST_SAMPLE = "primary_nearest_sample"
 PRIMARY_RESKINNED = "primary_reskinned"
 PRIMARY_EXISTING_CELLS_RESKINNED = "primary_existing_cells_reskinned"
 PRIMARY_DENSE_RESKINNED = "primary_dense_reskinned"
+PRIMARY_CONNECTED_COMPONENT = "primary_connected_component"
 CONNECTED_COMPONENT_FALLBACK = "connected_component_fallback"
 _CELL_GENERATIONS = {
     FAULT_CELL_GENERATION_GROWN,
@@ -346,6 +347,11 @@ def resolve_final_skin_cell_value_provenance(
         if reskin_policy == RESKIN_POLICY_REFERENCE_DENSE_V1:
             return PRIMARY_DENSE_RESKINNED
         return PRIMARY_EXISTING_CELLS_RESKINNED
+    if (
+        method == "connected_component"
+        and semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+    ):
+        return PRIMARY_CONNECTED_COMPONENT
     return PRIMARY_NEAREST_SAMPLE
 
 
@@ -550,6 +556,8 @@ def validate_skin_generation_provenance(
     allowed = {
         PRIMARY_NEAREST_SAMPLE: {
             FAULT_CELL_GENERATION_GROWN,
+        },
+        PRIMARY_CONNECTED_COMPONENT: {
             FAULT_CELL_GENERATION_CONNECTED_COMPONENT,
         },
         PRIMARY_EXISTING_CELLS_RESKINNED: {
