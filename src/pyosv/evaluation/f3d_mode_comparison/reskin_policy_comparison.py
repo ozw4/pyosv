@@ -957,9 +957,7 @@ def _parent_fingerprint(
             ).encode("ascii")
         )
         for index in range(scanner_target_positive_mask.shape[0]):
-            digest.update(
-                np.ascontiguousarray(scanner_target_positive_mask[index]).tobytes()
-            )
+            digest.update(np.ascontiguousarray(scanner_target_positive_mask[index]).tobytes())
     return digest.hexdigest()
 
 

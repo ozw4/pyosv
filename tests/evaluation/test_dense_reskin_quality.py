@@ -742,8 +742,7 @@ def test_f3_parent_fingerprint_includes_scanner_target_mask() -> None:
     )
 
     assert (
-        without_target["upstream_parent_fingerprint"]
-        != with_target["upstream_parent_fingerprint"]
+        without_target["upstream_parent_fingerprint"] != with_target["upstream_parent_fingerprint"]
     )
 
 
@@ -865,9 +864,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         assert policy_payload["diagnostics"]["fallback_enabled"] is True
         assert policy_payload["diagnostics"]["fallback_used"] is True
         assert (
-            policy_payload["diagnostics"][
-                "skin_scanner_target_positive_edge_shell_fraction"
-            ]
+            policy_payload["diagnostics"]["skin_scanner_target_positive_edge_shell_fraction"]
             is not None
         )
         assert policy_payload["generation"]["reskin_input_cell_count"] == 0

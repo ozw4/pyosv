@@ -209,9 +209,7 @@ def controlled_dense_reskin_cases() -> tuple[DenseReskinCase, ...]:
     prior_occupancy = np.zeros(shape, dtype=np.bool_)
     prior_transform = _surface_transform(prior_surfaces[0])
     for key in prior_surfaces[0].truth_keys:
-        i1, i2, i3 = _rounded_index(
-            _surface_world(prior_surfaces[0], prior_transform, key)
-        )
+        i1, i2, i3 = _rounded_index(_surface_world(prior_surfaces[0], prior_transform, key))
         prior_occupancy[i3, i2, i1] = True
     cases.append(
         _materialize_case(
