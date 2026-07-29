@@ -94,6 +94,13 @@ below the original grow threshold. The policy is validated even when
 reskinning is disabled or the connected-component backend is selected; the
 connected-component backend does not apply either reference reskin policy.
 
+The versioned `"reference_dense_v1"` numerical contract fixes surface
+smoothing sigma on `(w, v)` at `(4.0, 4.0)`, support smoothing sigma at
+`(8.0, 8.0)`, and the normalized-surface denominator epsilon at `1e-6`.
+Candidates require the strict tests `support > 0.2` and
+`abs(candidate_u - current_u) < 5.0`; these constants are part of the policy
+version rather than settings derived from the grow threshold.
+
 Each `FaultCell` has stable, in-memory provenance in `generation`:
 `"grown"` for grow-only cells, `"existing_cells_reskinned"` for multi-cell
 `existing_cells_v1` output, `"dense_reskin_observed"` and
@@ -118,7 +125,9 @@ prior-skin occupancy, then rounded world-index duplicate removal. Local-u
 rejections contribute to the candidate count but have no dedicated aggregate
 field. A local key is counted in at most one reported rejection category.
 This sink is intentionally isolated from the legacy `diagnostics` mapping;
-the legacy key set and meanings do not include reskin details.
+the legacy key set and meanings do not include reskin details. The two
+arguments must therefore be distinct mutable mappings; passing the same
+mapping as both sinks is rejected before either mapping is changed.
 
 Both methods also accept a keyword-only `valid_mask`. When supplied, it must be
 a three-dimensional boolean NumPy array with the same shape as `fv`. The

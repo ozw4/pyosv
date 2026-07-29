@@ -96,6 +96,19 @@ def test_fault_cell_six_positional_constructor_defaults_to_grown_generation() ->
     assert cell.reskin_support is None
 
 
+def test_fault_cell_metadata_is_keyword_only() -> None:
+    with pytest.raises(TypeError):
+        FaultCell(  # type: ignore[call-arg]
+            1.0,
+            2.0,
+            3.0,
+            0.8,
+            20.0,
+            60.0,
+            FAULT_CELL_GENERATION_GROWN,
+        )
+
+
 @pytest.mark.parametrize(
     ("generation", "support"),
     (

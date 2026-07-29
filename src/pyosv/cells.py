@@ -85,8 +85,9 @@ class FaultCell:
     generation: FaultCellGeneration = field(
         default=FAULT_CELL_GENERATION_GROWN,
         compare=False,
+        kw_only=True,
     )
-    reskin_support: float | None = field(default=None, compare=False)
+    reskin_support: float | None = field(default=None, compare=False, kw_only=True)
     ca: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
     cb: FaultCell | None = field(default=None, init=False, repr=False, compare=False)
     cl: FaultCell | None = field(default=None, init=False, repr=False, compare=False)

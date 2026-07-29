@@ -183,6 +183,10 @@ class FaultSkinner:
     ) -> list[FaultSkin]:
         """Find skins with the configured backend."""
 
+        if diagnostics is not None and diagnostics is reskin_diagnostics:
+            raise ValueError(
+                "diagnostics and reskin_diagnostics must be distinct mappings",
+            )
         should_reskin = _validate_bool(reskin, "reskin")
         policy = _validate_reskin_policy(reskin_policy)
         aggregate_reskin_diagnostics = _prepare_reskin_diagnostics_sink(

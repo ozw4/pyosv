@@ -1015,6 +1015,7 @@ def test_reference_find_skins_populates_diagnostics_without_changing_result() ->
     fv[10, 10, 0] = 0.95
     fv[10, 10, 10] = 0.90
     diagnostics: dict[str, object] = {"stale": True}
+    reskin_diagnostics: dict[str, object] = {"stale": True}
 
     skinner = FaultSkinner(min_likelihood=0.5, min_skin_size=1)
     skins = skinner.find_skins(
@@ -1032,6 +1033,7 @@ def test_reference_find_skins_populates_diagnostics_without_changing_result() ->
         max_steps=1,
         reskin=False,
         diagnostics=diagnostics,
+        reskin_diagnostics=reskin_diagnostics,
     )
     without_diagnostics = skinner.find_skins(
         fv,
@@ -1053,6 +1055,21 @@ def test_reference_find_skins_populates_diagnostics_without_changing_result() ->
         [cell.index for cell in skin] for skin in without_diagnostics
     ]
     assert "stale" not in diagnostics
+    assert set(diagnostics) == {
+        "seed_candidate_count_before_spacing",
+        "seed_count_after_spacing",
+        "seed_count_rejected_by_occupied",
+        "grow_attempt_count",
+        "grown_skin_count_before_min_size",
+        "discarded_empty_skin_count",
+        "discarded_small_skin_count",
+        "accepted_skin_count",
+        "accepted_cell_count",
+        "accepted_occupancy_radius",
+        "seed_min_ep",
+        "seed_threshold",
+        "grow_threshold",
+    }
     assert diagnostics == {
         "seed_candidate_count_before_spacing": 2,
         "seed_count_after_spacing": 2,
@@ -1068,6 +1085,25 @@ def test_reference_find_skins_populates_diagnostics_without_changing_result() ->
         "seed_threshold": pytest.approx(0.5),
         "grow_threshold": pytest.approx(0.5),
     }
+    assert "stale" not in reskin_diagnostics
+    assert reskin_diagnostics["reskin_applied"] is False
+    assert not set(reskin_diagnostics) & set(diagnostics)
+
+
+def test_find_skins_rejects_aliased_diagnostics_sinks_without_mutation() -> None:
+    fv = np.zeros((3, 3, 3), dtype=np.float32)
+    diagnostics: dict[str, object] = {"stale": True}
+
+    with pytest.raises(ValueError, match="must be distinct"):
+        FaultSkinner().find_skins(
+            fv,
+            fv.copy(),
+            fv.copy(),
+            diagnostics=diagnostics,
+            reskin_diagnostics=diagnostics,
+        )
+
+    assert diagnostics == {"stale": True}
 
 
 def test_mark_occupied_skin_registers_accepted_cells_with_box_radius() -> None:
