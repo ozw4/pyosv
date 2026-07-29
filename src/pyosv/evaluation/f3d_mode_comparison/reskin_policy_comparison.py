@@ -615,8 +615,13 @@ def _validate_reported_policy_metrics(
     }
     if not isinstance(links, Mapping) or set(links) != expected_link_fields:
         raise ValueError("reskin policy comparison link topology field set mismatch")
-    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in links.values()):
-        raise ValueError("reskin policy comparison link topology counts must be non-negative integers")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in links.values()
+    ):
+        raise ValueError(
+            "reskin policy comparison link topology counts must be non-negative integers"
+        )
     if any(
         links[name] != 0
         for name in (

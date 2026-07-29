@@ -817,9 +817,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         (
             lambda report: report["policies"]["existing_cells_v1"]["generation"].__setitem__(
                 "reskin_output_cell_count",
-                report["policies"]["existing_cells_v1"]["generation"][
-                    "reskin_output_cell_count"
-                ]
+                report["policies"]["existing_cells_v1"]["generation"]["reskin_output_cell_count"]
                 + 1,
             ),
             "generation metrics mismatch",
@@ -834,19 +832,14 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         (
             lambda report: report["policies"]["existing_cells_v1"].__setitem__(
                 "duplicate_rounded_cell_index_count",
-                report["policies"]["existing_cells_v1"][
-                    "duplicate_rounded_cell_index_count"
-                ]
-                + 1,
+                report["policies"]["existing_cells_v1"]["duplicate_rounded_cell_index_count"] + 1,
             ),
             "duplicate count mismatch",
         ),
         (
             lambda report: report["policies"]["existing_cells_v1"]["link_topology"].__setitem__(
                 "linked_component_count",
-                report["policies"]["existing_cells_v1"]["link_topology"][
-                    "linked_component_count"
-                ]
+                report["policies"]["existing_cells_v1"]["link_topology"]["linked_component_count"]
                 + 1,
             ),
             "linked component count mismatch",
