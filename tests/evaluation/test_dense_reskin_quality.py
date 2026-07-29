@@ -2,6 +2,7 @@ import csv
 import copy
 import json
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -62,7 +63,9 @@ def test_controlled_dense_reskin_gate_applies_fixed_contract_to_every_case() -> 
     gate = build_dense_reskin_promotion_gate()
     case_ids = [case.case_id for case in controlled_dense_reskin_cases()]
 
-    assert gate["schema_version"] == 1
+    assert gate["schema_version"] == 2
+    assert gate["promotion_status"] == "promotion_candidate"
+    assert gate["artifacts"] == {"figures": []}
     assert gate["passed"] is False
     assert gate["reasons"] == ["aggregate:buffered_recall_regressed"]
     assert gate["aggregate"]["deterministic_reexecution"] is True
@@ -164,6 +167,98 @@ def test_dense_gate_writers_keep_nulls_explicit(tmp_path) -> None:
     assert "Gate reasons" in markdown_path.read_text()
 
 
+def test_dense_gate_save_figures_writes_file_list_and_metadata(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_panels = []
+
+    def fake_save_slice_panel(path, panels, **kwargs):
+        output = Path(path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"figure")
+        captured_panels.append(
+            (
+                [name for name, _ in panels],
+                [np.asarray(values).shape for _, values in panels],
+                kwargs,
+            )
+        )
+        return output
+
+    monkeypatch.setattr("pyosv.viz.save_slice_panel", fake_save_slice_panel)
+    gate = build_dense_reskin_promotion_gate()
+
+    json_path, _, markdown_path = write_dense_reskin_evidence(
+        gate,
+        tmp_path,
+        save_figures=True,
+    )
+
+    payload = json.loads(json_path.read_text())
+    figures = payload["artifacts"]["figures"]
+    case_ids = [result["case_id"] for result in gate["case_results"]]
+    assert [item["case_id"] for item in figures] == case_ids
+    assert [item["path"] for item in figures] == [
+        f"figures/{case_id}_dense_reskin_i2_projection.png" for case_id in case_ids
+    ]
+    assert all(item["projection_axis"] == "i2" for item in figures)
+    assert all(
+        item["panels"]
+        == [
+            "baseline_cells",
+            "candidate_observed_cells",
+            "candidate_generated_cells",
+            "truth_surface",
+        ]
+        for item in figures
+    )
+    assert all((tmp_path / item["path"]).is_file() for item in figures)
+    assert len(captured_panels) == len(case_ids)
+    assert all(
+        names
+        == [
+            "baseline cells",
+            "candidate observed cells",
+            "candidate generated cells",
+            "truth surface",
+        ]
+        and shapes == [(21, 21)] * 4
+        and options["clip_percentiles"] == (0.0, 100.0)
+        for names, shapes, options in captured_panels
+    )
+    assert "Promotion status: `promotion_candidate`" in markdown_path.read_text()
+
+
+def test_dense_gate_cli_forwards_save_figures(tmp_path, monkeypatch) -> None:
+    calls = []
+    gate = build_dense_reskin_promotion_gate()
+
+    monkeypatch.setattr(
+        dense_reskin_quality,
+        "build_dense_reskin_promotion_gate",
+        lambda: gate,
+    )
+
+    def fake_write(evidence, output_dir, *, save_figures):
+        calls.append((evidence, output_dir, save_figures))
+        return (tmp_path / "gate.json", tmp_path / "gate.csv", tmp_path / "gate.md")
+
+    monkeypatch.setattr(dense_reskin_quality, "write_dense_reskin_evidence", fake_write)
+
+    assert (
+        dense_reskin_quality.main(
+            [
+                "--output-dir",
+                str(tmp_path),
+                "--save-figures",
+            ]
+        )
+        == 0
+    )
+    assert calls == [(gate, tmp_path, True)]
+
+
 def test_dense_gate_reports_baseline_and_candidate_nonfinite_metrics(tmp_path, monkeypatch) -> None:
     evaluate = dense_reskin_quality.evaluate_dense_reskin_case
 
@@ -189,6 +284,52 @@ def test_dense_gate_reports_baseline_and_candidate_nonfinite_metrics(tmp_path, m
     json.dumps(gate, allow_nan=False)
     json_path, _, _ = write_dense_reskin_evidence(gate, tmp_path)
     assert json.loads(json_path.read_text())["passed"] is False
+
+
+def test_out_of_volume_cell_becomes_machine_readable_gate_failure(
+    passing_gate_inputs,
+) -> None:
+    case = controlled_dense_reskin_cases()[0]
+    observed = FaultCell(
+        7,
+        7,
+        7,
+        0.9,
+        0,
+        90,
+        generation="dense_reskin_observed",
+        reskin_support=0.8,
+    )
+    out_of_volume = FaultCell(
+        -1,
+        7,
+        7,
+        0.9,
+        0,
+        90,
+        generation="dense_reskin_generated",
+        reskin_support=0.8,
+    )
+    metrics = dense_reskin_quality._policy_metrics(
+        case,
+        (FaultSkin.from_cells((observed, out_of_volume)),),
+        {
+            "input_cell_count": 1,
+            "output_cell_count": 2,
+            "observed_output_cell_count": 1,
+            "generated_cell_count": 1,
+        },
+    )
+
+    assert metrics["out_of_volume_cell_count"] == 1
+    results, aggregate = copy.deepcopy(passing_gate_inputs)
+    by_id = {result["case_id"]: result for result in results}
+    by_id[case.case_id]["candidate"] = metrics
+    assert f"{case.case_id}:out_of_volume_cell_count" in dense_reskin_quality._gate_reasons(
+        results,
+        aggregate,
+        deterministic=True,
+    )
 
 
 def test_dense_gate_requires_valid_mask_rejection_evidence(monkeypatch) -> None:

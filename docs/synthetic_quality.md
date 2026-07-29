@@ -1836,13 +1836,19 @@ Run it without scanner or voting work:
 
 ```bash
 PYTHONPATH=src python -m pyosv.evaluation.dense_reskin_quality \
+  --save-figures \
   --output-dir outputs/3d/synthetic_quality/dense_reskin_gate
 ```
 
 The output directory contains the versioned
 `dense_reskin_promotion_gate.json`, `dense_reskin_case_metrics.csv`, and
-`dense_reskin_promotion_gate.md`. Empty generated-cell statistics remain JSON
-`null`/empty CSV fields with explicit status fields in JSON. The fixed
+`dense_reskin_promotion_gate.md`. Gate schema version 2 records
+`promotion_status: promotion_candidate` so a passing gate cannot be confused
+with a default promotion. With `--save-figures`, the JSON also records the
+ordered figure artifact metadata, and `figures/` contains one four-panel `i2`
+projection per case for baseline cells, candidate observed cells, candidate
+generated cells, and the truth surface. Empty generated-cell statistics remain
+JSON `null`/empty CSV fields with explicit status fields in JSON. The fixed
 practical limits are: no buffered-recall regression, no buffered-precision
 regression beyond `0.02`, no symmetric-Chamfer regression beyond `0.25` index
 unit, and no small-skin-cell-fraction increase beyond `0.05`. Practical

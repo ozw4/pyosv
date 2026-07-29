@@ -10,6 +10,7 @@ import sys
 import textwrap
 from collections import Counter
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +18,10 @@ import numpy as np
 import pytest
 
 import pyosv._skinner.growth as skinner_growth_module
+import pyosv.evaluation.f3d_mode_comparison.models as f3_models_module
 import pyosv.evaluation.f3d_mode_comparison.result as result_module
 import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
+import pyosv.evaluation.f3d_mode_comparison.skin_artifacts as skin_artifacts_module
 import pyosv.evaluation.workflow3d as workflow3d_module
 from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetSpec,
@@ -123,6 +126,235 @@ def _tree_paths(root: Path) -> set[str]:
 
 def _flip_sha256(value: str) -> str:
     return value[:-1] + ("0" if value[-1] != "0" else "1")
+
+
+def _without_reskin_policy(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_reskin_policy(item)
+            for key, item in value.items()
+            if key != "reskin_policy"
+        }
+    if isinstance(value, list):
+        return [_without_reskin_policy(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_reskin_policy(item) for item in value)
+    return value
+
+
+def _install_historical_skin_contract_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_runner_asdict = runner_module.asdict
+    original_plan_as_dict = f3_models_module.F3ModeComparisonPlan.as_dict
+
+    def historical_asdict(instance: Any) -> dict[str, Any]:
+        return _without_reskin_policy(original_runner_asdict(instance))
+
+    def historical_plan_as_dict(instance: Any) -> dict[str, Any]:
+        return _without_reskin_policy(original_plan_as_dict(instance))
+
+    monkeypatch.setattr(runner_module, "asdict", historical_asdict)
+    monkeypatch.setattr(
+        f3_models_module.F3ModeComparisonPlan,
+        "as_dict",
+        historical_plan_as_dict,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
+        3,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "canonical_skins_payload",
+        lambda skins: skin_artifacts_module._canonical_skins_payload_for_format(
+            skins,
+            format_version=1,
+        ),
+    )
+
+
+def _historical_reskinned_workflow(**kwargs: Any) -> Any:
+    result = _controlled_reskinned_primary_workflow(**kwargs)
+    diagnostics = dict(result.diagnostics.skinning)
+    diagnostics.pop("reskin", None)
+    skin = replace(result.skin, diagnostics=diagnostics)
+    return replace(
+        result,
+        skin=skin,
+        diagnostics=replace(result.diagnostics, skinning=diagnostics),
+    )
+
+
+def _dense_reskin_config() -> Any:
+    config = _reskinned_primary_config()
+    return replace(
+        config,
+        skinning_template=replace(
+            config.skinning_template,
+            reskin_policy="reference_dense_v1",
+        ),
+    )
+
+
+def test_historical_contract3_format1_bundle_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "fixture-data"
+    output_root = tmp_path / "run"
+    spec = _write_fixture(data_root, shape=(13, 13, 13))
+    calls: Counter[str] = Counter()
+    runtime_identity = _fixed_runtime_identity()
+    _install_historical_skin_contract_writer(monkeypatch)
+
+    first = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        calls,
+        resume=False,
+        monkeypatch=monkeypatch,
+        plan_config=_reskinned_primary_config(),
+        workspace_runtime_identity=runtime_identity,
+        workflow_runner=_historical_reskinned_workflow,
+    )
+
+    manifest = json.loads((output_root / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "reskin_policy" not in json.dumps(manifest["plan"])
+    for cell in first.cells:
+        assert "reskin_policy" not in cell.resolved_config["skinning"]
+    for fingerprint in {cell.stages.skinning for cell in first.cells}:
+        stage = output_root / "stages" / "skinning" / fingerprint
+        stage_manifest = json.loads((stage / "stage_manifest.json").read_text(encoding="utf-8"))
+        report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+        payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+        assert stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"] == 3
+        assert report["final_cell_value_provenance"] == "primary_reskinned"
+        assert "reskin" not in report["diagnostics"]
+        assert payload["format_version"] == 1
+        assert all(
+            set(item) == {"x1", "x2", "x3", "i1", "i2", "i3", "fl", "fp", "ft"}
+            for skin in payload["skins"]
+            for item in skin["cells"]
+        )
+
+    assert validate_completed_f3d_bundle(output_root, _dataset_spec=spec)
+    assert validate_completed_f3d_bundle(output_root, deep=True, _dataset_spec=spec)
+    before_resume = calls.copy()
+    resumed = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        calls,
+        resume=True,
+        monkeypatch=monkeypatch,
+        plan_config=_reskinned_primary_config(),
+        workspace_runtime_identity=runtime_identity,
+        workflow_runner=_historical_reskinned_workflow,
+    )
+    assert resumed == first
+    assert calls - before_resume == Counter({"complete result load": 1})
+
+
+def test_dense_contract_cache_resume_and_rehashed_policy_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "fixture-data"
+    output_root = tmp_path / "run"
+    spec = _write_fixture(data_root, shape=(13, 13, 13))
+    calls: Counter[str] = Counter()
+    runtime_identity = _fixed_runtime_identity()
+    config = _dense_reskin_config()
+
+    first = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        calls,
+        resume=False,
+        monkeypatch=monkeypatch,
+        plan_config=config,
+        workspace_runtime_identity=runtime_identity,
+        workflow_runner=_controlled_reskinned_primary_workflow,
+    )
+    stage_fingerprints = {cell.stages.skinning for cell in first.cells}
+    for fingerprint in stage_fingerprints:
+        stage = output_root / "stages" / "skinning" / fingerprint
+        report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+        payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+        assert (
+            report["resolved_stage_settings"]["resolved_skinner_config"]["reskin_policy"]
+            == "reference_dense_v1"
+        )
+        assert report["diagnostics"]["reskin"]["reskin_policy"] == "reference_dense_v1"
+        assert any(
+            item["generation"].startswith("dense_reskin_")
+            for skin in payload["skins"]
+            for item in skin["cells"]
+        )
+
+    before_complete_resume = calls.copy()
+    assert (
+        _run_fixture(
+            data_root,
+            output_root,
+            spec,
+            calls,
+            resume=True,
+            monkeypatch=monkeypatch,
+            plan_config=config,
+            workspace_runtime_identity=runtime_identity,
+            workflow_runner=_controlled_reskinned_primary_workflow,
+        )
+        == first
+    )
+    assert calls - before_complete_resume == Counter({"complete result load": 1})
+
+    (output_root / "completion.json").unlink()
+    missing_fingerprint = first.cells[0].stages.skinning
+    missing_stage = output_root / "stages" / "skinning" / missing_fingerprint
+    expected_stage_bytes = _tree_bytes(missing_stage)
+    shutil.rmtree(missing_stage)
+    before_partial_resume = calls.copy()
+    partial = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        calls,
+        resume=True,
+        monkeypatch=monkeypatch,
+        plan_config=config,
+        workspace_runtime_identity=runtime_identity,
+        workflow_runner=_controlled_reskinned_primary_workflow,
+    )
+    assert partial.cells == first.cells
+    assert calls - before_partial_resume == Counter(
+        {
+            "workflow callback": 1,
+            "metric callback": 1,
+        }
+    )
+    assert _tree_bytes(missing_stage) == expected_stage_bytes
+    assert validate_completed_f3d_bundle(output_root, deep=True, _dataset_spec=spec)
+
+    tampered_root = tmp_path / "tampered-policy"
+    shutil.copytree(output_root, tampered_root)
+    loaded = load_f3d_mode_comparison_result(tampered_root, _dataset_spec=spec)
+    stage = tampered_root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    report_path = stage / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["resolved_stage_settings"]["resolved_skinner_config"]["reskin_policy"] = (
+        "existing_cells_v1"
+    )
+    report["diagnostics"]["reskin"]["reskin_policy"] = "existing_cells_v1"
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    _rehash_stage_artifact(tampered_root, stage, "report.json")
+
+    with pytest.raises(F3ResultValidationError, match="resolved_stage_settings"):
+        validate_completed_f3d_bundle(tampered_root, _dataset_spec=spec)
 
 
 def test_publication_contract_v3_small_fixture_end_to_end(

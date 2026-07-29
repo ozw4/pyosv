@@ -23,7 +23,11 @@ from pyosv._skinner.reskin import (
     _reskin_reference_dense_v1,
 )
 from pyosv._skinner.transforms import _local_index_to_world, _update_transform_map
-from pyosv.cells import FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED, FaultCell
+from pyosv.cells import (
+    FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED,
+    FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED,
+    FaultCell,
+)
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
 from pyosv.experimental.boundary_skinning import find_synthetic_skins
 from pyosv.skin import FaultSkin
@@ -35,7 +39,7 @@ from pyosv.synthetic_metrics import (
     skin_topology_metrics,
 )
 
-DENSE_RESKIN_GATE_SCHEMA_VERSION = 1
+DENSE_RESKIN_GATE_SCHEMA_VERSION = 2
 DENSE_RESKIN_CANDIDATE = "quality_reference_dense_v1"
 DENSE_RESKIN_BASELINE = "quality_existing_cells_v1"
 
@@ -280,6 +284,7 @@ def build_dense_reskin_promotion_gate(
     reasons = _gate_reasons(first_results, aggregate, deterministic=deterministic)
     gate = {
         "schema_version": DENSE_RESKIN_GATE_SCHEMA_VERSION,
+        "promotion_status": "promotion_candidate",
         "candidate": DENSE_RESKIN_CANDIDATE,
         "baseline": DENSE_RESKIN_BASELINE,
         "passed": not reasons,
@@ -289,6 +294,7 @@ def build_dense_reskin_promotion_gate(
             **aggregate,
             "deterministic_reexecution": deterministic,
         },
+        "artifacts": {"figures": []},
     }
     return _nonfinite_to_none(gate)
 
@@ -296,18 +302,107 @@ def build_dense_reskin_promotion_gate(
 def write_dense_reskin_evidence(
     gate: Mapping[str, Any],
     output_dir: str | Path,
+    *,
+    save_figures: bool = False,
 ) -> tuple[Path, Path, Path]:
     """Write canonical JSON plus compact CSV and Markdown evidence."""
 
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
+    evidence = dict(_nonfinite_to_none(gate))
+    if save_figures:
+        figure_paths = write_dense_reskin_figures(evidence, root)
+        evidence["artifacts"] = {
+            "figures": [
+                {
+                    "case_id": case_result["case_id"],
+                    "path": path.relative_to(root).as_posix(),
+                    "projection_axis": "i2",
+                    "panels": [
+                        "baseline_cells",
+                        "candidate_observed_cells",
+                        "candidate_generated_cells",
+                        "truth_surface",
+                    ],
+                }
+                for case_result, path in zip(
+                    evidence["case_results"],
+                    figure_paths,
+                    strict=True,
+                )
+            ]
+        }
+    else:
+        evidence["artifacts"] = {"figures": []}
     json_path = root / "dense_reskin_promotion_gate.json"
     csv_path = root / "dense_reskin_case_metrics.csv"
     markdown_path = root / "dense_reskin_promotion_gate.md"
-    json_path.write_text(_canonical_json(gate) + "\n", encoding="utf-8")
-    csv_path.write_text(_gate_csv(gate), encoding="utf-8")
-    markdown_path.write_text(dense_reskin_gate_markdown(gate), encoding="utf-8")
+    json_path.write_text(_canonical_json(evidence) + "\n", encoding="utf-8")
+    csv_path.write_text(_gate_csv(evidence), encoding="utf-8")
+    markdown_path.write_text(dense_reskin_gate_markdown(evidence), encoding="utf-8")
     return json_path, csv_path, markdown_path
+
+
+def write_dense_reskin_figures(
+    gate: Mapping[str, Any],
+    output_dir: str | Path,
+    *,
+    cases: Sequence[DenseReskinCase] | None = None,
+) -> tuple[Path, ...]:
+    """Write one four-panel projection for each controlled reskin case."""
+
+    from pyosv import viz
+
+    case_set = tuple(controlled_dense_reskin_cases() if cases is None else cases)
+    cases_by_id = {case.case_id: case for case in case_set}
+    if len(cases_by_id) != len(case_set):
+        raise ValueError("dense reskin figure cases must have unique case_id values")
+    figures_dir = Path(output_dir) / "figures"
+    written: list[Path] = []
+    for case_result in gate["case_results"]:
+        case_id = case_result["case_id"]
+        try:
+            case = cases_by_id[case_id]
+        except KeyError as error:
+            raise ValueError(f"missing dense reskin figure case: {case_id}") from error
+        baseline = _skin_payload_mask(
+            case_result["baseline"]["canonical_skin_payload"],
+            case.shape,
+        )
+        candidate_observed = _skin_payload_mask(
+            case_result["candidate"]["canonical_skin_payload"],
+            case.shape,
+            generations={FAULT_CELL_GENERATION_DENSE_RESKIN_OBSERVED},
+        )
+        candidate_generated = _skin_payload_mask(
+            case_result["candidate"]["canonical_skin_payload"],
+            case.shape,
+            generations={FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED},
+        )
+        path = figures_dir / f"{case_id}_dense_reskin_i2_projection.png"
+        written.append(
+            viz.save_slice_panel(
+                path,
+                [
+                    ("baseline cells", viz.maximum_intensity_projection(baseline, "i2")),
+                    (
+                        "candidate observed cells",
+                        viz.maximum_intensity_projection(candidate_observed, "i2"),
+                    ),
+                    (
+                        "candidate generated cells",
+                        viz.maximum_intensity_projection(candidate_generated, "i2"),
+                    ),
+                    (
+                        "truth surface",
+                        viz.maximum_intensity_projection(case.truth_surface_mask, "i2"),
+                    ),
+                ],
+                title=f"{case_id} dense reskin i2 projection",
+                clip_percentiles=(0.0, 100.0),
+            )
+        )
+    return tuple(written)
 
 
 def dense_reskin_gate_markdown(gate: Mapping[str, Any]) -> str:
@@ -318,6 +413,7 @@ def dense_reskin_gate_markdown(gate: Mapping[str, Any]) -> str:
         "# Dense reskin promotion gate",
         "",
         f"- Status: **{status}**",
+        f"- Promotion status: `{gate['promotion_status']}`",
         f"- Baseline: `{gate['baseline']}`",
         f"- Candidate: `{gate['candidate']}`",
         "",
@@ -529,27 +625,21 @@ def _policy_metrics(
     diagnostics: Mapping[str, Any],
 ) -> dict[str, Any]:
     generation = reskin_generation_metrics(skins, diagnostics=diagnostics)
-    truth = reskin_truth_correspondence_metrics(
-        skins,
-        shape=case.shape,
-        truth_surface_mask=case.truth_surface_mask,
-        truth_strike=case.truth_strike,
-        truth_dip=case.truth_dip,
-        buffer_radius=2.0,
-        truth_hole_mask=case.truth_hole_mask,
-    )
     generated_invalid = 0
     generated_prior = 0
     out_of_volume = 0
     clamped_artifacts = 0
+    in_volume_skins: list[FaultSkin] = []
     touched_ids_by_skin: list[set[int]] = []
     for skin in skins:
         touched: set[int] = set()
+        in_volume_cells: list[FaultCell] = []
         for cell in skin:
             index = cell.index
             if not _index_in_shape(index, case.shape):
                 out_of_volume += 1
                 continue
+            in_volume_cells.append(cell)
             i1, i2, i3 = index
             if case.truth_fault_id[i3, i2, i1] > 0:
                 touched.add(int(case.truth_fault_id[i3, i2, i1]))
@@ -564,8 +654,18 @@ def _policy_metrics(
                     generated_invalid += 1
                 if case.prior_occupancy_mask is not None and case.prior_occupancy_mask[i3, i2, i1]:
                     generated_prior += 1
+        in_volume_skins.append(FaultSkin.from_cells(in_volume_cells))
         touched_ids_by_skin.append(touched)
-    topology = skin_topology_metrics(skins, case.shape, small_skin_size=10)
+    truth = reskin_truth_correspondence_metrics(
+        in_volume_skins,
+        shape=case.shape,
+        truth_surface_mask=case.truth_surface_mask,
+        truth_strike=case.truth_strike,
+        truth_dip=case.truth_dip,
+        buffer_radius=2.0,
+        truth_hole_mask=case.truth_hole_mask,
+    )
+    topology = skin_topology_metrics(in_volume_skins, case.shape, small_skin_size=10)
     result = {
         "generation": generation,
         "truth": truth,
@@ -581,6 +681,23 @@ def _policy_metrics(
     }
     result["finite_failure_count"] = int(_contains_nonfinite(result))
     return result
+
+
+def _skin_payload_mask(
+    payload: Sequence[Mapping[str, Any]],
+    shape: tuple[int, int, int],
+    *,
+    generations: set[str] | None = None,
+) -> np.ndarray:
+    mask = np.zeros(shape, dtype=np.float32)
+    for skin in payload:
+        for cell in skin["cells"]:
+            if generations is not None and cell["generation"] not in generations:
+                continue
+            index = (int(cell["i1"]), int(cell["i2"]), int(cell["i3"]))
+            if _index_in_shape(index, shape):
+                mask[index[2], index[1], index[0]] = np.float32(1.0)
+    return mask
 
 
 def _contrast_metrics(
@@ -1025,9 +1142,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--save-figures",
+        action="store_true",
+        help=(
+            "Write per-case baseline, candidate observed/generated, and truth projection panels."
+        ),
+    )
     args = parser.parse_args(argv)
     gate = build_dense_reskin_promotion_gate()
-    write_dense_reskin_evidence(gate, args.output_dir)
+    write_dense_reskin_evidence(
+        gate,
+        args.output_dir,
+        save_figures=args.save_figures,
+    )
     print(args.output_dir)
     return 0
 
@@ -1043,6 +1171,7 @@ __all__ = [
     "dense_reskin_gate_markdown",
     "evaluate_dense_reskin_case",
     "write_dense_reskin_evidence",
+    "write_dense_reskin_figures",
 ]
 
 

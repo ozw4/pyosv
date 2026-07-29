@@ -31,6 +31,7 @@ def __getattr__(name: str) -> Any:
         "build_dense_reskin_promotion_gate",
         "controlled_dense_reskin_cases",
         "write_dense_reskin_evidence",
+        "write_dense_reskin_figures",
     }:
         from .. import dense_reskin_quality
 
@@ -57,4 +58,5 @@ __all__ = [
     "resolve_workflow_settings",
     "run_case",
     "write_dense_reskin_evidence",
+    "write_dense_reskin_figures",
 ]
