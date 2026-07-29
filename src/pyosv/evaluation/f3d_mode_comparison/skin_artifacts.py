@@ -586,9 +586,7 @@ def validate_skin_generation_provenance(
         PRIMARY_EXISTING_CELLS_RESKINNED,
         PRIMARY_DENSE_RESKINNED,
     }:
-        raise SkinArtifactValidationError(
-            "reskin diagnostics conflict with final provenance"
-        )
+        raise SkinArtifactValidationError("reskin diagnostics conflict with final provenance")
     if not isinstance(reskin_diagnostics, Mapping):
         raise SkinArtifactValidationError("reskin diagnostics must be an object")
 
@@ -639,9 +637,7 @@ def validate_skin_generation_provenance(
             f"reskin diagnostics {name}",
         )
         if actual < 0:
-            raise SkinArtifactValidationError(
-                f"reskin diagnostics {name} must be non-negative"
-            )
+            raise SkinArtifactValidationError(f"reskin diagnostics {name} must be non-negative")
         if actual != expected:
             raise SkinArtifactValidationError(
                 f"reskin diagnostics {name} does not match skins.json generations"

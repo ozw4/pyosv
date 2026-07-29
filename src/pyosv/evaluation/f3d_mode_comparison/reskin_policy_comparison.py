@@ -249,9 +249,7 @@ def compare_reskin_policies_from_bundle(
             deep=deep,
             result=result,
         )
-    if destination.exists() and (
-        not destination.is_dir() or destination.is_symlink()
-    ):
+    if destination.exists() and (not destination.is_dir() or destination.is_symlink()):
         raise ValueError("reskin policy comparison output must be a directory")
     if resume and destination.is_dir():
         for item in destination.glob(".complete.json.tmp-*"):
@@ -265,11 +263,7 @@ def compare_reskin_policies_from_bundle(
             F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
         }
         for item in destination.iterdir():
-            if (
-                item.name not in allowed_partial_files
-                or not item.is_file()
-                or item.is_symlink()
-            ):
+            if item.name not in allowed_partial_files or not item.is_file() or item.is_symlink():
                 raise ValueError("incomplete reskin policy comparison file set is invalid")
 
     report, cell, shape = _comparison_report_from_bundle(root, result)
@@ -283,10 +277,7 @@ def compare_reskin_policies_from_bundle(
             "voting": cell.stages.voting,
             "thinning": cell.stages.thinning,
         },
-        "artifact_files": {
-            path.name: artifact_file_metadata(path)
-            for path in paths
-        },
+        "artifact_files": {path.name: artifact_file_metadata(path) for path in paths},
     }
     atomic_write_artifact(
         completion_path,
@@ -367,13 +358,9 @@ def validate_f3_reskin_policy_comparison(
     if completion["upstream_parent_stage_fingerprints"] != expected_parent_stages:
         raise ValueError("reskin policy comparison parent stage mismatch")
 
-    paths = tuple(
-        destination / filename for filename in F3_RESKIN_POLICY_COMPARISON_FILES
-    )
+    paths = tuple(destination / filename for filename in F3_RESKIN_POLICY_COMPARISON_FILES)
     metadata = completion["artifact_files"]
-    if not isinstance(metadata, Mapping) or set(metadata) != set(
-        F3_RESKIN_POLICY_COMPARISON_FILES
-    ):
+    if not isinstance(metadata, Mapping) or set(metadata) != set(F3_RESKIN_POLICY_COMPARISON_FILES):
         raise ValueError("reskin policy comparison artifact metadata mismatch")
     for path in paths:
         if artifact_file_metadata(path) != metadata[path.name]:
