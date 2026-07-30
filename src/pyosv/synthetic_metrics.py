@@ -17,12 +17,15 @@ if TYPE_CHECKING:
     from pyosv.skin import FaultSkin
 
 COMPONENT_QUALIFICATION_MIN_FRACTION = 0.05
+SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION = 1
 
 __all__ = [
     "COMPONENT_QUALIFICATION_MIN_FRACTION",
+    "SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION",
     "buffered_surface_overlap",
     "component_aware_skin_topology_metrics",
     "edge_false_positive_ratio",
+    "metrics_from_surface_evidence",
     "masked_orientation_error",
     "reskin_generation_metrics",
     "reskin_truth_correspondence_metrics",
@@ -33,6 +36,7 @@ __all__ = [
     "skin_topology_metrics",
     "skin_truth_metrics",
     "surface_comparison_metrics",
+    "surface_comparison_metrics_with_evidence",
     "surface_distance_metrics",
     "top_k_mask",
     "top_positive_k_mask",
@@ -156,6 +160,27 @@ def _buffered_surface_overlap_from_distances(
     candidate_in_truth_buffer_count = int(np.count_nonzero(candidate & truth_buffer))
     truth_in_candidate_buffer_count = int(np.count_nonzero(truth & candidate_buffer))
 
+    return _overlap_metrics_from_counts(
+        candidate_count=candidate_count,
+        truth_count=truth_count,
+        intersection_count=intersection_count,
+        union_count=union_count,
+        candidate_in_truth_buffer_count=candidate_in_truth_buffer_count,
+        truth_in_candidate_buffer_count=truth_in_candidate_buffer_count,
+        radius=radius,
+    )
+
+
+def _overlap_metrics_from_counts(
+    *,
+    candidate_count: int,
+    truth_count: int,
+    intersection_count: int,
+    union_count: int,
+    candidate_in_truth_buffer_count: int,
+    truth_in_candidate_buffer_count: int,
+    radius: float,
+) -> dict[str, float | int]:
     precision = _precision(intersection_count, candidate_count)
     recall = _recall(intersection_count, truth_count)
     buffered_precision = _precision(candidate_in_truth_buffer_count, candidate_count)
@@ -245,13 +270,32 @@ def surface_comparison_metrics(
 ) -> dict[str, dict[str, dict[str, float | int]]]:
     """Compare multiple candidates while sharing each full-volume distance field."""
 
+    results = surface_comparison_metrics_with_evidence(
+        candidate_masks,
+        truth_mask,
+        radius=radius,
+        positive_epsilon=0.0,
+    )
+    return {name: value["metrics"] for name, value in results.items()}
+
+
+def surface_comparison_metrics_with_evidence(
+    candidate_masks: Mapping[str, np.ndarray],
+    truth_mask: np.ndarray,
+    *,
+    radius: float,
+    positive_epsilon: float,
+) -> dict[str, dict[str, Any]]:
+    """Compare surfaces and retain bounded scalar evidence for every metric."""
+
     if not isinstance(candidate_masks, Mapping) or not candidate_masks:
         raise ValueError("candidate_masks must be a non-empty mapping")
     buffer_radius = _validate_nonnegative_finite_scalar(radius, "radius")
+    epsilon = _validate_nonnegative_finite_scalar(positive_epsilon, "positive_epsilon")
     truth_input = np.asarray(truth_mask)
     truth: np.ndarray | None = None
     truth_distance: np.ndarray | None = None
-    results: dict[str, dict[str, dict[str, float | int]]] = {}
+    results: dict[str, dict[str, Any]] = {}
     for name, candidate_mask in candidate_masks.items():
         if not isinstance(name, str) or not name:
             raise ValueError("candidate mask names must be non-empty strings")
@@ -260,22 +304,106 @@ def surface_comparison_metrics(
             truth = validated_truth
             truth_distance = _surface_distance_field(truth)
         candidate_distance = _surface_distance_field(candidate)
-        results[name] = {
-            "overlap": _buffered_surface_overlap_from_distances(
-                candidate,
-                truth,
-                buffer_radius,
-                candidate_distance=candidate_distance,
-                truth_distance=truth_distance,
-            ),
-            "surface_distance": _surface_distance_metrics_from_distances(
+        overlap = _buffered_surface_overlap_from_distances(
+            candidate,
+            truth,
+            buffer_radius,
+            candidate_distance=candidate_distance,
+            truth_distance=truth_distance,
+        )
+        evidence = {
+            "schema_version": SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION,
+            "overlap": {
+                "candidate_count": overlap["candidate_count"],
+                "reference_ridge_count": overlap["truth_count"],
+                "exact_intersection_count": overlap["intersection_count"],
+                "exact_union_count": overlap["union_count"],
+                "candidate_in_reference_buffer_count": overlap["candidate_in_truth_buffer_count"],
+                "reference_in_candidate_buffer_count": overlap["truth_in_candidate_buffer_count"],
+                "buffer_radius": overlap["radius"],
+                "positive_epsilon": epsilon,
+            },
+            "surface_distance": _surface_distance_evidence(
                 candidate,
                 truth,
                 candidate_distance=candidate_distance,
                 truth_distance=truth_distance,
             ),
         }
+        results[name] = {
+            "metrics": metrics_from_surface_evidence(evidence),
+            "evidence": evidence,
+        }
+        del candidate_distance
     return results
+
+
+def metrics_from_surface_evidence(
+    evidence: Mapping[str, Any],
+) -> dict[str, dict[str, float | int]]:
+    """Validate bounded surface evidence and derive all public metric scalars."""
+
+    if not isinstance(evidence, Mapping) or set(evidence) != {
+        "schema_version",
+        "overlap",
+        "surface_distance",
+    }:
+        raise ValueError("surface metric evidence field set mismatch")
+    if evidence["schema_version"] != SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("unsupported surface metric evidence schema version")
+    overlap_evidence = evidence["overlap"]
+    if not isinstance(overlap_evidence, Mapping) or set(overlap_evidence) != {
+        "candidate_count",
+        "reference_ridge_count",
+        "exact_intersection_count",
+        "exact_union_count",
+        "candidate_in_reference_buffer_count",
+        "reference_in_candidate_buffer_count",
+        "buffer_radius",
+        "positive_epsilon",
+    }:
+        raise ValueError("surface overlap evidence field set mismatch")
+    counts = {
+        name: _evidence_nonnegative_int(overlap_evidence[name], name)
+        for name in (
+            "candidate_count",
+            "reference_ridge_count",
+            "exact_intersection_count",
+            "exact_union_count",
+            "candidate_in_reference_buffer_count",
+            "reference_in_candidate_buffer_count",
+        )
+    }
+    candidate_count = counts["candidate_count"]
+    reference_count = counts["reference_ridge_count"]
+    intersection_count = counts["exact_intersection_count"]
+    union_count = counts["exact_union_count"]
+    if intersection_count > min(candidate_count, reference_count):
+        raise ValueError("surface overlap evidence intersection count is inconsistent")
+    if union_count != candidate_count + reference_count - intersection_count:
+        raise ValueError("surface overlap evidence union count is inconsistent")
+    if not (intersection_count <= counts["candidate_in_reference_buffer_count"] <= candidate_count):
+        raise ValueError("surface overlap evidence candidate buffer count is inconsistent")
+    if not (intersection_count <= counts["reference_in_candidate_buffer_count"] <= reference_count):
+        raise ValueError("surface overlap evidence reference buffer count is inconsistent")
+    radius = _evidence_nonnegative_finite(overlap_evidence["buffer_radius"], "buffer_radius")
+    _evidence_nonnegative_finite(overlap_evidence["positive_epsilon"], "positive_epsilon")
+
+    overlap = _overlap_metrics_from_counts(
+        candidate_count=candidate_count,
+        truth_count=reference_count,
+        intersection_count=intersection_count,
+        union_count=union_count,
+        candidate_in_truth_buffer_count=counts["candidate_in_reference_buffer_count"],
+        truth_in_candidate_buffer_count=counts["reference_in_candidate_buffer_count"],
+        radius=radius,
+    )
+    distance = _distance_metrics_from_evidence(
+        evidence["surface_distance"],
+        candidate_count=candidate_count,
+        reference_count=reference_count,
+    )
+    return {"overlap": overlap, "surface_distance": distance}
 
 
 def _surface_distance_metrics_from_distances(
@@ -289,28 +417,386 @@ def _surface_distance_metrics_from_distances(
 
     candidate_count = int(np.count_nonzero(candidate))
     truth_count = int(np.count_nonzero(truth))
-    if candidate_count == 0 and truth_count == 0:
-        return _distance_result(candidate_count, truth_count, 0.0, 0.0)
-    if candidate_count == 0 or truth_count == 0:
-        penalty = _volume_diagonal(candidate.shape)
-        return _distance_result(candidate_count, truth_count, penalty, penalty)
+    evidence = _surface_distance_evidence(
+        candidate,
+        truth,
+        candidate_distance=candidate_distance,
+        truth_distance=truth_distance,
+    )
+    return _distance_metrics_from_evidence(
+        evidence,
+        candidate_count=candidate_count,
+        reference_count=truth_count,
+    )
 
-    assert truth_distance is not None
-    candidate_to_truth = _distance_summary(truth_distance[candidate])
 
-    assert candidate_distance is not None
-    truth_to_candidate = _distance_summary(candidate_distance[truth])
+def _surface_distance_evidence(
+    candidate: np.ndarray,
+    truth: np.ndarray,
+    *,
+    candidate_distance: np.ndarray | None,
+    truth_distance: np.ndarray | None,
+) -> dict[str, Any]:
+    candidate_count = int(np.count_nonzero(candidate))
+    reference_count = int(np.count_nonzero(truth))
+    if candidate_count == 0 and reference_count == 0:
+        status = "both_empty"
+    elif candidate_count == 0:
+        status = "candidate_empty"
+    elif reference_count == 0:
+        status = "reference_empty"
+    else:
+        status = "nonempty"
+    empty_penalty = (
+        _volume_diagonal(candidate.shape)
+        if status in {"candidate_empty", "reference_empty"}
+        else 0.0
+    )
 
+    if status == "nonempty":
+        assert truth_distance is not None
+        assert candidate_distance is not None
+        candidate_to_reference = _directional_distance_evidence(truth_distance[candidate])
+        reference_to_candidate = _directional_distance_evidence(candidate_distance[truth])
+    else:
+        candidate_to_reference = _constant_directional_distance_evidence(
+            candidate_count,
+            empty_penalty,
+        )
+        reference_to_candidate = _constant_directional_distance_evidence(
+            reference_count,
+            empty_penalty,
+        )
+    return {
+        "status": status,
+        "volume_shape": list(candidate.shape),
+        "empty_penalty": empty_penalty,
+        "quantile_contract": {
+            "method": "linear",
+            "rank_formula": "(sample_count - 1) * quantile",
+        },
+        "candidate_to_reference": candidate_to_reference,
+        "reference_to_candidate": reference_to_candidate,
+    }
+
+
+def _empty_directional_distance_evidence(sample_count: int) -> dict[str, Any]:
+    return {
+        "sample_count": sample_count,
+        "distance_sum": 0.0,
+        "minimum": None,
+        "maximum": None,
+        "mean_numerator": 0.0,
+        "mean_denominator": 0,
+        "quantiles": {},
+    }
+
+
+def _constant_directional_distance_evidence(
+    sample_count: int,
+    value: float,
+) -> dict[str, Any]:
+    if sample_count == 0:
+        return _empty_directional_distance_evidence(0)
+    distance_sum = float(value * sample_count)
+    return {
+        "sample_count": sample_count,
+        "distance_sum": distance_sum,
+        "minimum": float(value),
+        "maximum": float(value),
+        "mean_numerator": distance_sum,
+        "mean_denominator": sample_count,
+        "quantiles": {
+            name: _constant_quantile_evidence(sample_count, value, quantile)
+            for name, quantile in (
+                ("median", 0.5),
+                ("p90", 0.9),
+                ("p95", 0.95),
+            )
+        },
+    }
+
+
+def _constant_quantile_evidence(
+    sample_count: int,
+    value: float,
+    quantile: float,
+) -> dict[str, Any]:
+    rank = float((sample_count - 1) * quantile)
+    return {
+        "quantile": float(quantile),
+        "rank": rank,
+        "lower_rank": int(np.floor(rank)),
+        "upper_rank": int(np.ceil(rank)),
+        "lower_value": float(value),
+        "upper_value": float(value),
+        "interpolation_weight": float(rank - np.floor(rank)),
+    }
+
+
+def _directional_distance_evidence(distances: np.ndarray) -> dict[str, Any]:
+    values = np.asarray(distances, dtype=np.float64)
+    count = int(values.size)
+    if count == 0:
+        raise ValueError("directional distance evidence requires at least one sample")
+    ordered = np.sort(values)
+    distance_sum = float(np.sum(values))
+    quantiles = {
+        name: _linear_quantile_evidence(ordered, quantile)
+        for name, quantile in (
+            ("median", 0.5),
+            ("p90", 0.9),
+            ("p95", 0.95),
+        )
+    }
+    return {
+        "sample_count": count,
+        "distance_sum": distance_sum,
+        "minimum": float(ordered[0]),
+        "maximum": float(ordered[-1]),
+        "mean_numerator": distance_sum,
+        "mean_denominator": count,
+        "quantiles": quantiles,
+    }
+
+
+def _linear_quantile_evidence(ordered: np.ndarray, quantile: float) -> dict[str, Any]:
+    count = int(ordered.size)
+    rank = float((count - 1) * quantile)
+    lower_rank = int(np.floor(rank))
+    upper_rank = int(np.ceil(rank))
+    weight = float(rank - lower_rank)
+    return {
+        "quantile": float(quantile),
+        "rank": rank,
+        "lower_rank": lower_rank,
+        "upper_rank": upper_rank,
+        "lower_value": float(ordered[lower_rank]),
+        "upper_value": float(ordered[upper_rank]),
+        "interpolation_weight": weight,
+    }
+
+
+def _distance_metrics_from_evidence(
+    value: Any,
+    *,
+    candidate_count: int,
+    reference_count: int,
+) -> dict[str, float | int]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "status",
+        "volume_shape",
+        "empty_penalty",
+        "quantile_contract",
+        "candidate_to_reference",
+        "reference_to_candidate",
+    }:
+        raise ValueError("surface distance evidence field set mismatch")
+    expected_status = (
+        "both_empty"
+        if candidate_count == 0 and reference_count == 0
+        else (
+            "candidate_empty"
+            if candidate_count == 0
+            else "reference_empty"
+            if reference_count == 0
+            else "nonempty"
+        )
+    )
+    if value["status"] != expected_status:
+        raise ValueError("surface distance evidence status is inconsistent")
+    volume_shape = value["volume_shape"]
+    if (
+        not isinstance(volume_shape, list)
+        or not volume_shape
+        or any(
+            isinstance(size, bool) or not isinstance(size, int) or size <= 0
+            for size in volume_shape
+        )
+    ):
+        raise ValueError("surface distance evidence volume shape is invalid")
+    penalty = _evidence_nonnegative_finite(value["empty_penalty"], "empty_penalty")
+    expected_penalty = (
+        _volume_diagonal(tuple(volume_shape))
+        if expected_status in {"candidate_empty", "reference_empty"}
+        else 0.0
+    )
+    if penalty != expected_penalty:
+        raise ValueError("surface distance evidence empty penalty mismatch")
+    contract = value["quantile_contract"]
+    if contract != {
+        "method": "linear",
+        "rank_formula": "(sample_count - 1) * quantile",
+    }:
+        raise ValueError("surface distance quantile contract mismatch")
+
+    if expected_status != "nonempty":
+        _validate_empty_status_direction(
+            value["candidate_to_reference"],
+            sample_count=candidate_count,
+            penalty=penalty,
+        )
+        _validate_empty_status_direction(
+            value["reference_to_candidate"],
+            sample_count=reference_count,
+            penalty=penalty,
+        )
+        return _distance_result(
+            candidate_count,
+            reference_count,
+            penalty,
+            penalty,
+        )
+
+    candidate_summary = _directional_summary_from_evidence(
+        value["candidate_to_reference"],
+        expected_count=candidate_count,
+    )
+    reference_summary = _directional_summary_from_evidence(
+        value["reference_to_candidate"],
+        expected_count=reference_count,
+    )
     result = {
         "candidate_count": candidate_count,
-        "truth_count": truth_count,
-        **_prefixed_summary("candidate_to_truth", candidate_to_truth),
-        **_prefixed_summary("truth_to_candidate", truth_to_candidate),
+        "truth_count": reference_count,
+        **_prefixed_summary("candidate_to_truth", candidate_summary),
+        **_prefixed_summary("truth_to_candidate", reference_summary),
     }
     result["symmetric_chamfer_mean"] = float(
-        0.5 * (candidate_to_truth["mean"] + truth_to_candidate["mean"])
+        0.5 * (candidate_summary["mean"] + reference_summary["mean"])
     )
-    result["hausdorff_p95"] = float(max(candidate_to_truth["p95"], truth_to_candidate["p95"]))
+    result["hausdorff_p95"] = float(max(candidate_summary["p95"], reference_summary["p95"]))
+    return result
+
+
+def _validate_empty_status_direction(
+    value: Any,
+    *,
+    sample_count: int,
+    penalty: float,
+) -> None:
+    if value != _constant_directional_distance_evidence(sample_count, penalty):
+        raise ValueError("empty surface distance directional evidence is inconsistent")
+
+
+def _directional_summary_from_evidence(
+    value: Any,
+    *,
+    expected_count: int,
+) -> dict[str, float]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "sample_count",
+        "distance_sum",
+        "minimum",
+        "maximum",
+        "mean_numerator",
+        "mean_denominator",
+        "quantiles",
+    }:
+        raise ValueError("directional distance evidence field set mismatch")
+    count = _evidence_nonnegative_int(value["sample_count"], "sample_count")
+    denominator = _evidence_nonnegative_int(value["mean_denominator"], "mean_denominator")
+    if count != expected_count or denominator != count or count == 0:
+        raise ValueError("directional distance sample count is inconsistent")
+    distance_sum = _evidence_nonnegative_finite(value["distance_sum"], "distance_sum")
+    numerator = _evidence_nonnegative_finite(value["mean_numerator"], "mean_numerator")
+    if numerator != distance_sum:
+        raise ValueError("directional distance mean accumulator is inconsistent")
+    minimum = _evidence_nonnegative_finite(value["minimum"], "minimum")
+    maximum = _evidence_nonnegative_finite(value["maximum"], "maximum")
+    if minimum > maximum:
+        raise ValueError("directional distance minimum exceeds maximum")
+    mean = float(numerator / denominator)
+    if not minimum <= mean <= maximum:
+        raise ValueError("directional distance mean is outside its value range")
+    if not minimum * count <= distance_sum <= maximum * count:
+        raise ValueError("directional distance sum is outside its value range")
+
+    quantiles = value["quantiles"]
+    expected_quantiles = {"median": 0.5, "p90": 0.9, "p95": 0.95}
+    if not isinstance(quantiles, Mapping) or set(quantiles) != set(expected_quantiles):
+        raise ValueError("directional distance quantile evidence coverage mismatch")
+    summary: dict[str, float] = {"mean": mean}
+    previous = minimum
+    for name, quantile in expected_quantiles.items():
+        result = _quantile_from_evidence(
+            quantiles[name],
+            sample_count=count,
+            expected_quantile=quantile,
+            minimum=minimum,
+            maximum=maximum,
+        )
+        if result < previous:
+            raise ValueError("directional distance quantiles are not monotonic")
+        summary[name] = result
+        previous = result
+    return summary
+
+
+def _quantile_from_evidence(
+    value: Any,
+    *,
+    sample_count: int,
+    expected_quantile: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    if not isinstance(value, Mapping) or set(value) != {
+        "quantile",
+        "rank",
+        "lower_rank",
+        "upper_rank",
+        "lower_value",
+        "upper_value",
+        "interpolation_weight",
+    }:
+        raise ValueError("distance quantile evidence field set mismatch")
+    quantile = _evidence_nonnegative_finite(value["quantile"], "quantile")
+    if quantile != expected_quantile or quantile > 1.0:
+        raise ValueError("distance quantile evidence probability mismatch")
+    expected_rank = float((sample_count - 1) * quantile)
+    rank = _evidence_nonnegative_finite(value["rank"], "rank")
+    if rank != expected_rank:
+        raise ValueError("distance quantile evidence rank mismatch")
+    lower_rank = _evidence_nonnegative_int(value["lower_rank"], "lower_rank")
+    upper_rank = _evidence_nonnegative_int(value["upper_rank"], "upper_rank")
+    if (
+        lower_rank != int(np.floor(rank))
+        or upper_rank != int(np.ceil(rank))
+        or upper_rank >= sample_count
+    ):
+        raise ValueError("distance quantile evidence order-statistic rank mismatch")
+    weight = _evidence_nonnegative_finite(
+        value["interpolation_weight"],
+        "interpolation_weight",
+    )
+    if weight != rank - lower_rank or weight > 1.0:
+        raise ValueError("distance quantile evidence interpolation weight mismatch")
+    lower = _evidence_nonnegative_finite(value["lower_value"], "lower_value")
+    upper = _evidence_nonnegative_finite(value["upper_value"], "upper_value")
+    if not minimum <= lower <= upper <= maximum:
+        raise ValueError("distance quantile order statistics are outside the value range")
+    return float(
+        np.quantile(
+            np.asarray((lower, upper), dtype=np.float64),
+            weight,
+            method="linear",
+        )
+    )
+
+
+def _evidence_nonnegative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _evidence_nonnegative_finite(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a non-negative finite number")
+    result = float(value)
+    if not np.isfinite(result) or result < 0.0:
+        raise ValueError(f"{name} must be a non-negative finite number")
     return result
 
 

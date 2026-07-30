@@ -6,28 +6,33 @@ import csv
 import hashlib
 import io
 import json
+import os
+import shutil
+import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
-from pyosv.evaluation.synthetic_quality.variants import VariantSpec
+from pyosv.evaluation.synthetic_quality.variants import SkinningPatch, VariantSpec, VotingPatch
 from pyosv.evaluation.workflow3d import execute_skinning_phase3d
 from pyosv.skinner import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
 )
 from pyosv.synthetic_metrics import (
+    SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION,
+    metrics_from_surface_evidence,
     reskin_generation_metrics,
     rounded_duplicate_cell_count,
     skin_mask_from_skins,
     skin_link_topology_metrics,
     skin_topology_metrics,
-    surface_comparison_metrics,
+    surface_comparison_metrics_with_evidence,
 )
 
 from .artifacts import (
@@ -56,8 +61,9 @@ from .skin_artifacts import (
     validate_skin_generation_provenance,
 )
 
-F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 3
-F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION = 3
+F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 4
+F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION = 4
+F3_RESKIN_POLICY_CONFIG_SCHEMA_VERSION = 1
 F3_RESKIN_POLICY_COMPARISON_FILES = (
     "reskin_policy_comparison.json",
     "reskin_policy_metrics.csv",
@@ -108,6 +114,7 @@ def compare_reskin_policies_from_parent(
     skinning_config: SyntheticSkinningConfig,
     variant_spec: VariantSpec = _F3_CANONICAL_VARIANT,
     scanner_target_positive_mask: np.ndarray | None = None,
+    scanner_target_mask_source: str | None = None,
 ) -> dict[str, Any]:
     """Branch only skinning policy while retaining one exact parent fingerprint."""
 
@@ -122,6 +129,22 @@ def compare_reskin_policies_from_parent(
         raise ValueError("skinning_config.reskin must be true")
     if not isinstance(variant_spec, VariantSpec):
         raise ValueError("variant_spec must be a VariantSpec")
+    if scanner_target_mask_source is None:
+        scanner_target_mask_source = (
+            "provided_parent_mask" if scanner_target_positive_mask is not None else "not_provided"
+        )
+    if not isinstance(scanner_target_mask_source, str) or not scanner_target_mask_source:
+        raise ValueError("scanner_target_mask_source must be a non-empty string")
+    if scanner_target_positive_mask is None and scanner_target_mask_source != "not_provided":
+        raise ValueError("scanner target mask source requires a provided mask")
+    if scanner_target_positive_mask is not None and scanner_target_mask_source == "not_provided":
+        raise ValueError("provided scanner target mask requires its source")
+    resolved_config = _resolved_comparison_config(
+        skinning_config,
+        variant_spec,
+        scanner_target_mask_source=scanner_target_mask_source,
+    )
+    comparison_config_fingerprint = canonical_fingerprint(resolved_config)
 
     scanner_mask = _validated_parent_mask(
         scanner_target_positive_mask,
@@ -177,13 +200,14 @@ def compare_reskin_policies_from_parent(
             "duplicate_rounded_cell_index_count": rounded_duplicate_cell_count(skins),
             "diagnostics": diagnostics,
         }
-    surface_metrics = surface_comparison_metrics(
+    surface_results = surface_comparison_metrics_with_evidence(
         skin_masks,
         parent_ridge,
         radius=2.0,
+        positive_epsilon=NONZERO_EPSILON,
     )
-    for policy, metrics in surface_metrics.items():
-        policies[policy]["parent_ridge_surface"].update(metrics)
+    for policy, result in surface_results.items():
+        policies[policy]["parent_ridge_surface"].update(result)
 
     baseline = policies[RESKIN_POLICY_EXISTING_CELLS_V1]
     candidate = policies[RESKIN_POLICY_REFERENCE_DENSE_V1]
@@ -195,6 +219,10 @@ def compare_reskin_policies_from_parent(
         "upstream_parent_fingerprint_identical": (
             baseline["parent_fingerprint"] == candidate["parent_fingerprint"]
         ),
+        "resolved_config": resolved_config,
+        "comparison_config_fingerprint": comparison_config_fingerprint,
+        "metric_evidence_schema_version": SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION,
+        "validation_level": "shallow",
         "policies": policies,
         "contrast": _comparison_contrast(policies),
     }
@@ -284,12 +312,22 @@ def compare_reskin_policies_from_bundle(
     if completion_path.is_file() and not completion_path.is_symlink():
         if not resume:
             raise FileExistsError(f"completed F3 reskin policy comparison exists: {destination}")
-        return validate_f3_reskin_policy_comparison(
+        paths = validate_f3_reskin_policy_comparison(
             root,
             output_dir=destination,
             deep=deep,
             result=result,
         )
+        if deep:
+            return _promote_comparison_completion(
+                destination,
+                validator=lambda: validate_f3_reskin_policy_comparison(
+                    root,
+                    output_dir=destination,
+                    result=result,
+                ),
+            )
+        return paths
     comparison_runtime_sha256 = _validate_current_comparison_runtime(source_identity)
     comparison_implementation = _comparison_implementation_identity()
     if destination.exists() and (not destination.is_dir() or destination.is_symlink()):
@@ -327,6 +365,10 @@ def compare_reskin_policies_from_bundle(
         "source_runtime_identity_sha256": source_identity.runtime_identity_sha256,
         "comparison_runtime_identity_sha256": comparison_runtime_sha256,
         "comparison_implementation_identity_sha256": comparison_implementation_sha256,
+        "comparison_config_fingerprint": report["comparison_config_fingerprint"],
+        "metric_evidence_schema_version": SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION,
+        "report_semantic_evidence_sha256": _report_semantic_evidence_digest(report),
+        "validation_level": report["validation_level"],
         "upstream_parent_stage_fingerprints": {
             "scanner": cell.stages.scanner,
             "voting": cell.stages.voting,
@@ -340,13 +382,24 @@ def compare_reskin_policies_from_bundle(
         temporary_prefix=".complete.json.tmp-",
     )
     try:
-        return validate_f3_reskin_policy_comparison(
+        validated = validate_f3_reskin_policy_comparison(
             root,
             output_dir=destination,
             deep=deep,
             result=result,
             _shape=shape,
         )
+        if deep:
+            return _promote_comparison_completion(
+                destination,
+                validator=lambda: validate_f3_reskin_policy_comparison(
+                    root,
+                    output_dir=destination,
+                    result=result,
+                    _shape=shape,
+                ),
+            )
+        return validated
     except BaseException:
         completion_path.unlink(missing_ok=True)
         raise
@@ -357,13 +410,14 @@ def validate_f3_reskin_policy_comparison(
     *,
     output_dir: str | Path | None = None,
     deep: bool = False,
+    require_deep: bool = False,
     result: Any | None = None,
     _shape: tuple[int, int, int] | None = None,
 ) -> tuple[Path, Path, Path, Path, Path]:
     """Validate completion and optionally exact-replay both skin artifacts."""
 
-    if not isinstance(deep, bool):
-        raise TypeError("deep must be bool")
+    if not isinstance(deep, bool) or not isinstance(require_deep, bool):
+        raise TypeError("deep and require_deep must be bool")
     root = Path(bundle)
     destination = (
         Path(output_dir) if output_dir is not None else root / F3_RESKIN_POLICY_COMPARISON_DIR
@@ -388,6 +442,10 @@ def validate_f3_reskin_policy_comparison(
         "source_runtime_identity_sha256",
         "comparison_runtime_identity_sha256",
         "comparison_implementation_identity_sha256",
+        "comparison_config_fingerprint",
+        "metric_evidence_schema_version",
+        "report_semantic_evidence_sha256",
+        "validation_level",
         "upstream_parent_stage_fingerprints",
         "artifact_files",
     }
@@ -404,13 +462,21 @@ def validate_f3_reskin_policy_comparison(
         raise ValueError("reskin policy comparison status must be 'complete'")
     if completion["source_cell"] != F3_RESKIN_POLICY_COMPARISON_CELL:
         raise ValueError("reskin policy comparison source cell mismatch")
+    if completion["validation_level"] not in {"shallow", "deep"}:
+        raise ValueError("reskin policy comparison validation level is invalid")
+    if require_deep and completion["validation_level"] != "deep":
+        raise ValueError(
+            "reskin policy comparison is not publication-ready: deep validation required"
+        )
+    if completion["metric_evidence_schema_version"] != SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("reskin policy comparison metric evidence schema mismatch")
 
     source_identity = _load_source_bundle_identity(root)
     if result is None:
         from .result import load_f3d_mode_comparison_result
 
         result = load_f3d_mode_comparison_result(root, deep=False)
-    cell, config = _comparison_cell_and_config(result)
+    cell, config, variant = _comparison_cell_and_config(result)
     expected_parent_stages = {
         "scanner": cell.stages.scanner,
         "voting": cell.stages.voting,
@@ -446,6 +512,10 @@ def validate_f3_reskin_policy_comparison(
         "candidate",
         "upstream_parent_fingerprint",
         "upstream_parent_fingerprint_identical",
+        "resolved_config",
+        "comparison_config_fingerprint",
+        "metric_evidence_schema_version",
+        "validation_level",
         "policies",
         "contrast",
         "source_cell",
@@ -471,6 +541,28 @@ def validate_f3_reskin_policy_comparison(
         raise ValueError("reskin policy comparison report parent stage mismatch")
     if report["upstream_parent_fingerprint_identical"] is not True:
         raise ValueError("reskin policy comparison parent fingerprint differs")
+    if report["validation_level"] not in {"shallow", "deep"}:
+        raise ValueError("reskin policy comparison report validation level is invalid")
+    if report["validation_level"] != completion["validation_level"]:
+        raise ValueError("reskin policy comparison validation level mismatch")
+    expected_resolved_config = _resolved_comparison_config(config, variant)
+    resolved_config = report["resolved_config"]
+    if not isinstance(resolved_config, Mapping):
+        raise ValueError("reskin policy comparison resolved config must be an object")
+    if resolved_config.get("schema_version") != F3_RESKIN_POLICY_CONFIG_SCHEMA_VERSION:
+        raise ValueError("reskin policy comparison resolved config schema mismatch")
+    _validate_effective_skinning_configs(resolved_config.get("effective_skinning_configs"))
+    if report["resolved_config"] != expected_resolved_config:
+        raise ValueError("reskin policy comparison resolved config mismatch")
+    expected_config_fingerprint = canonical_fingerprint(expected_resolved_config)
+    if report["comparison_config_fingerprint"] != expected_config_fingerprint:
+        raise ValueError("reskin policy comparison config fingerprint mismatch")
+    if completion["comparison_config_fingerprint"] != expected_config_fingerprint:
+        raise ValueError("reskin policy comparison completion config fingerprint mismatch")
+    if report["metric_evidence_schema_version"] != SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("reskin policy comparison report metric evidence schema mismatch")
+    if completion["report_semantic_evidence_sha256"] != _report_semantic_evidence_digest(report):
+        raise ValueError("reskin policy comparison semantic evidence digest mismatch")
     contrast = report.get("contrast")
     if not isinstance(contrast, Mapping) or set(contrast) != set(_CONTRAST_FIELDS):
         raise ValueError("reskin policy comparison contrast field set mismatch")
@@ -502,6 +594,10 @@ def validate_f3_reskin_policy_comparison(
             raise ValueError("reskin policy comparison policy payload must be an object")
         if item.get("reskin_policy") != policy:
             raise ValueError("reskin policy comparison policy identity mismatch")
+        if resolved_config["effective_skinning_configs"][policy]["reskin_policy"] != item.get(
+            "reskin_policy"
+        ):
+            raise ValueError("reskin policy comparison config/policy identity mismatch")
         if item.get("parent_fingerprint") != report["upstream_parent_fingerprint"]:
             raise ValueError("reskin policy comparison parent fingerprint mismatch")
         canonical_artifact = item.get("canonical_skin_artifact")
@@ -534,7 +630,7 @@ def validate_f3_reskin_policy_comparison(
     if paths[2].read_text(encoding="utf-8") != _comparison_markdown(report):
         raise ValueError("reskin policy comparison Markdown does not match report")
 
-    if deep:
+    if deep or require_deep:
         comparison_runtime_sha256 = _validate_current_comparison_runtime(source_identity)
         recomputed, _, _ = _comparison_report_from_bundle(
             root,
@@ -543,6 +639,7 @@ def validate_f3_reskin_policy_comparison(
             comparison_runtime_sha256=comparison_runtime_sha256,
             comparison_implementation=comparison_implementation,
         )
+        recomputed["validation_level"] = report["validation_level"]
         if canonical_json_bytes(recomputed) != canonical_json_bytes(report):
             raise ValueError(
                 "reskin policy comparison does not exactly match skin-only recomputation"
@@ -550,7 +647,9 @@ def validate_f3_reskin_policy_comparison(
     return paths
 
 
-def _comparison_cell_and_config(result: Any) -> tuple[Any, SyntheticSkinningConfig]:
+def _comparison_cell_and_config(
+    result: Any,
+) -> tuple[Any, SyntheticSkinningConfig, VariantSpec]:
     cell = next(
         (item for item in result.cells if item.label == F3_RESKIN_POLICY_COMPARISON_CELL),
         None,
@@ -563,14 +662,29 @@ def _comparison_cell_and_config(result: Any) -> tuple[Any, SyntheticSkinningConf
         raise ValueError("canonical reskin comparison requires a skinning-enabled bundle")
 
     skinning = cell.resolved_config.get("skinning")
-    if not isinstance(skinning, Mapping):
-        raise ValueError("canonical comparison cell has no resolved skinning config")
+    variant = cell.resolved_config.get("variant")
+    if not isinstance(skinning, Mapping) or not isinstance(variant, Mapping):
+        raise ValueError("canonical comparison cell has no resolved skinning/variant config")
     config = SyntheticSkinningConfig(**dict(skinning))
+    try:
+        variant_spec = VariantSpec(
+            name=variant["name"],
+            voting=VotingPatch(**dict(variant["voting"])),
+            seed_policy=variant["seed_policy"],
+            thinning_policy=variant["thinning_policy"],
+            post_thinning_policy=variant["post_thinning_policy"],
+            skinning=SkinningPatch(**dict(variant["skinning"])),
+            experimental=variant["experimental"],
+            presets=tuple(variant["presets"]),
+            baseline=variant["baseline"],
+        )
+    except (KeyError, TypeError) as error:
+        raise ValueError("canonical comparison cell resolved variant is invalid") from error
     if config.method != "quality" or not config.reskin:
         raise ValueError(
             "canonical Q-QUAL skinning config must use method='quality' and reskin=True"
         )
-    return cell, config
+    return cell, config, variant_spec
 
 
 def _comparison_report_from_bundle(
@@ -587,7 +701,7 @@ def _comparison_report_from_bundle(
         comparison_runtime_sha256 = _validate_current_comparison_runtime(source_identity)
     if comparison_implementation is None:
         comparison_implementation = _comparison_implementation_identity()
-    cell, config = _comparison_cell_and_config(result)
+    cell, config, variant = _comparison_cell_and_config(result)
     scanner_path = root / "stages" / "scanner" / cell.stages.scanner
     voting_path = root / "stages" / "voting" / cell.stages.voting
     thinning_path = root / "stages" / "thinning" / cell.stages.thinning
@@ -605,7 +719,10 @@ def _comparison_report_from_bundle(
         _open_parent_dat(scanner_path / "ft.dat", shape),
     )
     try:
-        scanner_target_positive_mask = positive_candidate_mask(arrays[4])
+        scanner_target_positive_mask = positive_candidate_mask(
+            arrays[4],
+            epsilon=NONZERO_EPSILON,
+        )
         scanner_target_positive_mask.flags.writeable = False
         report = compare_reskin_policies_from_parent(
             fv=arrays[0],
@@ -613,7 +730,9 @@ def _comparison_report_from_bundle(
             vp=arrays[2],
             vt=arrays[3],
             skinning_config=config,
+            variant_spec=variant,
             scanner_target_positive_mask=scanner_target_positive_mask,
+            scanner_target_mask_source="source_scanner_ft_positive",
         )
     finally:
         scanner_target_positive_mask = None
@@ -638,6 +757,170 @@ def _comparison_report_from_bundle(
     return report, cell, shape
 
 
+def _resolved_comparison_config(
+    skinning_config: SyntheticSkinningConfig,
+    variant_spec: VariantSpec,
+    *,
+    scanner_target_mask_source: str = "source_scanner_ft_positive",
+) -> dict[str, Any]:
+    shared = _mutable_scalar_evidence(asdict(skinning_config))
+    effective = {
+        policy: _mutable_scalar_evidence(asdict(replace(skinning_config, reskin_policy=policy)))
+        for policy in (
+            RESKIN_POLICY_EXISTING_CELLS_V1,
+            RESKIN_POLICY_REFERENCE_DENSE_V1,
+        )
+    }
+    _validate_effective_skinning_configs(effective)
+    return {
+        "schema_version": F3_RESKIN_POLICY_CONFIG_SCHEMA_VERSION,
+        "shared_skinning_config": shared,
+        "resolved_variant": _mutable_scalar_evidence(asdict(variant_spec)),
+        "scanner_target_mask": {
+            "source": scanner_target_mask_source,
+            "positive_epsilon": NONZERO_EPSILON,
+        },
+        "effective_skinning_configs": effective,
+    }
+
+
+def _validate_effective_skinning_configs(value: Any) -> None:
+    if not isinstance(value, Mapping) or set(value) != {
+        RESKIN_POLICY_EXISTING_CELLS_V1,
+        RESKIN_POLICY_REFERENCE_DENSE_V1,
+    }:
+        raise ValueError("effective skinning config policy coverage mismatch")
+    without_policy: list[dict[str, Any]] = []
+    for policy in (
+        RESKIN_POLICY_EXISTING_CELLS_V1,
+        RESKIN_POLICY_REFERENCE_DENSE_V1,
+    ):
+        config = value[policy]
+        if not isinstance(config, Mapping):
+            raise ValueError("effective skinning config must be an object")
+        config_copy = dict(config)
+        if config_copy.pop("reskin_policy", None) != policy:
+            raise ValueError("effective skinning config policy identity mismatch")
+        without_policy.append(config_copy)
+    if without_policy[0] != without_policy[1]:
+        raise ValueError("effective skinning configs differ outside reskin_policy")
+
+
+def _report_semantic_evidence_digest(report: Mapping[str, Any]) -> str:
+    policies = report["policies"]
+    semantic_policies = {
+        policy: {
+            name: policies[policy][name]
+            for name in (
+                "reskin_policy",
+                "parent_fingerprint",
+                "generation",
+                "link_topology",
+                "skin_topology",
+                "parent_ridge_surface",
+                "duplicate_rounded_cell_index_count",
+            )
+        }
+        for policy in (
+            RESKIN_POLICY_EXISTING_CELLS_V1,
+            RESKIN_POLICY_REFERENCE_DENSE_V1,
+        )
+    }
+    return canonical_fingerprint(
+        {
+            "schema_version": report["schema_version"],
+            "baseline": report["baseline"],
+            "candidate": report["candidate"],
+            "upstream_parent_fingerprint": report["upstream_parent_fingerprint"],
+            "resolved_config": report["resolved_config"],
+            "comparison_config_fingerprint": report["comparison_config_fingerprint"],
+            "metric_evidence_schema_version": report["metric_evidence_schema_version"],
+            "validation_level": report["validation_level"],
+            "policies": semantic_policies,
+            "contrast": report["contrast"],
+        }
+    )
+
+
+def _promote_comparison_completion(
+    destination: Path,
+    *,
+    validator: Callable[[], tuple[Path, Path, Path, Path, Path]],
+) -> tuple[Path, Path, Path, Path, Path]:
+    paths = tuple(destination / name for name in F3_RESKIN_POLICY_COMPARISON_FILES)
+    completion_path = destination / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}.promotion-tmp-",
+            dir=destination.parent,
+        )
+    )
+    backup = staging / "previous"
+    backup.mkdir()
+    changed_paths = paths[:3]
+    try:
+        report = _read_json_object(paths[0], "reskin policy comparison report")
+        report["validation_level"] = "deep"
+        staged_paths = tuple(staging / path.name for path in changed_paths)
+        atomic_write_artifact(
+            staged_paths[0],
+            canonical_json_bytes(report) + b"\n",
+            temporary_prefix=".reskin_policy_comparison.json.tmp-",
+        )
+        atomic_write_artifact(
+            staged_paths[1],
+            _comparison_csv(report).encode("utf-8"),
+            temporary_prefix=".reskin_policy_metrics.csv.tmp-",
+        )
+        atomic_write_artifact(
+            staged_paths[2],
+            _comparison_markdown(report).encode("utf-8"),
+            temporary_prefix=".reskin_policy_comparison.md.tmp-",
+        )
+        completion = _read_json_object(
+            completion_path,
+            "reskin policy comparison completion",
+        )
+        completion["validation_level"] = "deep"
+        completion["report_semantic_evidence_sha256"] = _report_semantic_evidence_digest(report)
+        completion["artifact_files"] = {
+            **{
+                path.name: artifact_file_metadata(staged)
+                for path, staged in zip(changed_paths, staged_paths, strict=True)
+            },
+            **{path.name: artifact_file_metadata(path) for path in paths[3:]},
+        }
+        staged_completion = staging / completion_path.name
+        atomic_write_artifact(
+            staged_completion,
+            canonical_json_bytes(completion) + b"\n",
+            temporary_prefix=".complete.json.tmp-",
+        )
+
+        for path in changed_paths:
+            os.replace(path, backup / path.name)
+        os.replace(completion_path, backup / completion_path.name)
+        for staged, path in zip(staged_paths, changed_paths, strict=True):
+            os.replace(staged, path)
+        os.replace(staged_completion, completion_path)
+        validated = validator()
+    except BaseException as error:
+        completion_path.unlink(missing_ok=True)
+        for path in changed_paths:
+            previous = backup / path.name
+            if previous.is_file():
+                try:
+                    os.replace(previous, path)
+                except BaseException as restore_error:
+                    add_note = getattr(error, "add_note", None)
+                    if add_note is not None:
+                        add_note(f"comparison artifact restore also failed: {restore_error!r}")
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return validated
+
+
 def _comparison_contrast(policies: Mapping[str, Any]) -> dict[str, float | int]:
     baseline = policies[RESKIN_POLICY_EXISTING_CELLS_V1]
     candidate = policies[RESKIN_POLICY_REFERENCE_DENSE_V1]
@@ -655,16 +938,20 @@ def _comparison_contrast(policies: Mapping[str, Any]) -> dict[str, float | int]:
             - baseline["skin_topology"]["small_skin_cell_fraction"]
         ),
         "parent_ridge_buffered_precision_delta": (
-            candidate["parent_ridge_surface"]["overlap"]["buffered_precision"]
-            - baseline["parent_ridge_surface"]["overlap"]["buffered_precision"]
+            candidate["parent_ridge_surface"]["metrics"]["overlap"]["buffered_precision"]
+            - baseline["parent_ridge_surface"]["metrics"]["overlap"]["buffered_precision"]
         ),
         "parent_ridge_buffered_recall_delta": (
-            candidate["parent_ridge_surface"]["overlap"]["buffered_recall"]
-            - baseline["parent_ridge_surface"]["overlap"]["buffered_recall"]
+            candidate["parent_ridge_surface"]["metrics"]["overlap"]["buffered_recall"]
+            - baseline["parent_ridge_surface"]["metrics"]["overlap"]["buffered_recall"]
         ),
         "parent_ridge_symmetric_chamfer_mean_delta": (
-            candidate["parent_ridge_surface"]["surface_distance"]["symmetric_chamfer_mean"]
-            - baseline["parent_ridge_surface"]["surface_distance"]["symmetric_chamfer_mean"]
+            candidate["parent_ridge_surface"]["metrics"]["surface_distance"][
+                "symmetric_chamfer_mean"
+            ]
+            - baseline["parent_ridge_surface"]["metrics"]["surface_distance"][
+                "symmetric_chamfer_mean"
+            ]
         ),
     }
 
@@ -777,8 +1064,8 @@ def _validate_reported_policy_metrics(
         "reference",
         "positive_epsilon",
         "ridge_voxel_count",
-        "overlap",
-        "surface_distance",
+        "metrics",
+        "evidence",
     }:
         raise ValueError("reskin policy comparison parent ridge surface field set mismatch")
     if surface["reference"] != "shared_parent_fvt_positive":
@@ -788,8 +1075,21 @@ def _validate_reported_policy_metrics(
     ridge_count = surface["ridge_voxel_count"]
     if isinstance(ridge_count, bool) or not isinstance(ridge_count, int) or ridge_count < 0:
         raise ValueError("reskin policy comparison ridge voxel count is invalid")
+    evidence = surface["evidence"]
+    try:
+        derived = metrics_from_surface_evidence(evidence)
+    except ValueError as error:
+        raise ValueError(
+            f"reskin policy comparison parent ridge metric evidence is invalid: {error}"
+        ) from error
+    if surface["metrics"] != derived:
+        raise ValueError("reskin policy comparison parent ridge metrics/evidence mismatch")
+    if evidence["overlap"]["positive_epsilon"] != NONZERO_EPSILON:
+        raise ValueError("reskin policy comparison metric evidence epsilon mismatch")
+    if evidence["surface_distance"]["volume_shape"] != list(shape):
+        raise ValueError("reskin policy comparison metric evidence shape mismatch")
     for name in ("overlap", "surface_distance"):
-        metrics = surface[name]
+        metrics = derived[name]
         if not isinstance(metrics, Mapping):
             raise ValueError(f"reskin policy comparison {name} must be an object")
         if metrics.get("candidate_count") != expected_topology["unique_cell_count"]:
@@ -825,6 +1125,9 @@ def _comparison_csv(report: Mapping[str, Any]) -> str:
         "policy",
         "reskin_policy",
         "parent_fingerprint",
+        "comparison_config_fingerprint",
+        "metric_evidence_schema_version",
+        "validation_level",
         "metric",
         "value",
         "status",
@@ -841,10 +1144,13 @@ def _comparison_csv(report: Mapping[str, Any]) -> str:
             ("generation", item["generation"]),
             ("link_topology", item["link_topology"]),
             ("skin_topology", item["skin_topology"]),
-            ("parent_ridge_overlap", item["parent_ridge_surface"]["overlap"]),
+            (
+                "parent_ridge_overlap",
+                item["parent_ridge_surface"]["metrics"]["overlap"],
+            ),
             (
                 "parent_ridge_surface_distance",
-                item["parent_ridge_surface"]["surface_distance"],
+                item["parent_ridge_surface"]["metrics"]["surface_distance"],
             ),
         )
         for group, metrics in metric_groups:
@@ -861,6 +1167,9 @@ def _comparison_csv(report: Mapping[str, Any]) -> str:
                         ),
                         "reskin_policy": policy,
                         "parent_fingerprint": item["parent_fingerprint"],
+                        "comparison_config_fingerprint": report["comparison_config_fingerprint"],
+                        "metric_evidence_schema_version": report["metric_evidence_schema_version"],
+                        "validation_level": report["validation_level"],
                         "metric": f"{group}.{metric}",
                         "value": value,
                         "status": (
@@ -881,6 +1190,9 @@ def _comparison_csv(report: Mapping[str, Any]) -> str:
                     f"{RESKIN_POLICY_REFERENCE_DENSE_V1}_minus_{RESKIN_POLICY_EXISTING_CELLS_V1}"
                 ),
                 "parent_fingerprint": report["upstream_parent_fingerprint"],
+                "comparison_config_fingerprint": report["comparison_config_fingerprint"],
+                "metric_evidence_schema_version": report["metric_evidence_schema_version"],
+                "validation_level": report["validation_level"],
                 "metric": metric,
                 "value": value,
             }
@@ -894,6 +1206,9 @@ def _comparison_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"- Shared parent fingerprint: `{report['upstream_parent_fingerprint']}`",
         f"- Parent fingerprint identical: `{str(report['upstream_parent_fingerprint_identical']).lower()}`",
+        f"- Comparison config fingerprint: `{report['comparison_config_fingerprint']}`",
+        f"- Metric evidence schema: `{report['metric_evidence_schema_version']}`",
+        f"- Validation level: `{report['validation_level']}`",
         "",
         "| Policy | Cells | Generated | Generated fraction | Support min/mean/max | "
         "Ridge buffered precision/recall | Ridge chamfer | Link violations |",
@@ -905,8 +1220,8 @@ def _comparison_markdown(report: Mapping[str, Any]) -> str:
     ):
         item = report["policies"][policy]
         generation = item["generation"]
-        overlap = item["parent_ridge_surface"]["overlap"]
-        distance = item["parent_ridge_surface"]["surface_distance"]
+        overlap = item["parent_ridge_surface"]["metrics"]["overlap"]
+        distance = item["parent_ridge_surface"]["metrics"]["surface_distance"]
         links = item["link_topology"]
         support = "/".join(
             _display(generation[name])

@@ -1,6 +1,7 @@
 import csv
 import copy
 import json
+import weakref
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from pyosv.evaluation.synthetic_quality import (
     SyntheticSkinningConfig,
     resolve_workflow_settings,
 )
+from pyosv.evaluation.synthetic_quality.variants import VariantSpec
 from pyosv.skin import FaultSkin
 from pyosv.synthetic_metrics import reskin_generation_metrics, skin_link_topology_metrics
 
@@ -38,6 +40,36 @@ def _set_nested(mapping, path, value) -> None:
     for field in path[:-1]:
         target = target[field]
     target[path[-1]] = value
+
+
+def _write_rehashed_comparison_report(
+    report,
+    paths,
+    completion_path,
+    completion,
+) -> None:
+    paths[0].write_text(
+        reskin_policy_comparison._canonical_json(report) + "\n",
+        encoding="utf-8",
+    )
+    paths[1].write_text(
+        reskin_policy_comparison._comparison_csv(report),
+        encoding="utf-8",
+    )
+    paths[2].write_text(
+        reskin_policy_comparison._comparison_markdown(report),
+        encoding="utf-8",
+    )
+    completion["report_semantic_evidence_sha256"] = (
+        reskin_policy_comparison._report_semantic_evidence_digest(report)
+    )
+    completion["artifact_files"] = {
+        path.name: reskin_policy_comparison.artifact_file_metadata(path) for path in paths
+    }
+    completion_path.write_text(
+        reskin_policy_comparison._canonical_json(completion) + "\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture(scope="module")
@@ -706,7 +738,7 @@ def test_f3_skin_only_pair_shares_parent_and_branches_policy(monkeypatch) -> Non
     assert report["contrast"]["generated_cell_count_delta"] == 1
     assert set(report["policies"]) == {"existing_cells_v1", "reference_dense_v1"}
     assert (
-        report["policies"]["reference_dense_v1"]["parent_ridge_surface"]["overlap"][
+        report["policies"]["reference_dense_v1"]["parent_ridge_surface"]["metrics"]["overlap"][
             "buffered_recall"
         ]
         == 1.0
@@ -743,6 +775,167 @@ def test_f3_parent_fingerprint_includes_scanner_target_mask() -> None:
 
     assert (
         without_target["upstream_parent_fingerprint"] != with_target["upstream_parent_fingerprint"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("candidate_indices", "reference_indices", "status"),
+    (
+        ((), (), "both_empty"),
+        ((), (0,), "candidate_empty"),
+        ((0,), (), "reference_empty"),
+    ),
+)
+def test_f3_parent_surface_evidence_preserves_empty_semantics(
+    candidate_indices,
+    reference_indices,
+    status,
+) -> None:
+    candidate = np.zeros(7, dtype=bool)
+    reference = np.zeros_like(candidate)
+    candidate[list(candidate_indices)] = True
+    reference[list(reference_indices)] = True
+
+    result = synthetic_metrics.surface_comparison_metrics_with_evidence(
+        {"policy": candidate},
+        reference,
+        radius=2.0,
+        positive_epsilon=1.0e-6,
+    )["policy"]
+
+    assert result["evidence"]["surface_distance"]["status"] == status
+    assert synthetic_metrics.metrics_from_surface_evidence(result["evidence"]) == result["metrics"]
+
+
+@pytest.mark.parametrize(
+    ("candidate_indices", "expected_lower", "expected_upper", "expected_weight"),
+    (
+        ((0, 1, 3), 1, 1, 0.0),
+        ((0, 1, 3, 6), 1, 2, 0.5),
+    ),
+)
+def test_f3_parent_surface_quantiles_use_bounded_order_statistic_evidence(
+    candidate_indices,
+    expected_lower,
+    expected_upper,
+    expected_weight,
+) -> None:
+    candidate = np.zeros(7, dtype=bool)
+    reference = np.zeros_like(candidate)
+    candidate[list(candidate_indices)] = True
+    reference[0] = True
+
+    result = synthetic_metrics.surface_comparison_metrics_with_evidence(
+        {"policy": candidate},
+        reference,
+        radius=2.0,
+        positive_epsilon=1.0e-6,
+    )["policy"]
+    median = result["evidence"]["surface_distance"]["candidate_to_reference"]["quantiles"]["median"]
+
+    assert median["lower_rank"] == expected_lower
+    assert median["upper_rank"] == expected_upper
+    assert median["interpolation_weight"] == expected_weight
+    median["rank"] += 0.25
+    with pytest.raises(ValueError, match="rank mismatch"):
+        synthetic_metrics.metrics_from_surface_evidence(result["evidence"])
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "expected_error"),
+    (
+        (
+            ("overlap", "exact_intersection_count"),
+            3,
+            "intersection count is inconsistent",
+        ),
+        (("overlap", "exact_union_count"), 1, "union count is inconsistent"),
+        (
+            ("overlap", "candidate_in_reference_buffer_count"),
+            3,
+            "candidate buffer count is inconsistent",
+        ),
+        (
+            ("overlap", "candidate_in_reference_buffer_count"),
+            0,
+            "candidate buffer count is inconsistent",
+        ),
+        (
+            ("overlap", "reference_in_candidate_buffer_count"),
+            0,
+            "reference buffer count is inconsistent",
+        ),
+        (
+            (
+                "surface_distance",
+                "candidate_to_reference",
+                "mean_numerator",
+            ),
+            2.0,
+            "mean accumulator is inconsistent",
+        ),
+        (
+            (
+                "surface_distance",
+                "candidate_to_reference",
+                "quantiles",
+                "p90",
+                "interpolation_weight",
+            ),
+            0.25,
+            "interpolation weight mismatch",
+        ),
+    ),
+)
+def test_f3_parent_surface_rejects_invalid_scalar_evidence(
+    path,
+    value,
+    expected_error,
+) -> None:
+    candidate = np.array([True, True, False, False])
+    reference = np.array([True, False, False, True])
+    evidence = synthetic_metrics.surface_comparison_metrics_with_evidence(
+        {"policy": candidate},
+        reference,
+        radius=1.0,
+        positive_epsilon=1.0e-6,
+    )["policy"]["evidence"]
+    _set_nested(evidence, path, value)
+
+    with pytest.raises(ValueError, match=expected_error):
+        synthetic_metrics.metrics_from_surface_evidence(evidence)
+
+
+def test_surface_comparison_releases_each_candidate_distance_field_before_next(
+    monkeypatch,
+) -> None:
+    masks = {
+        "baseline": np.array([True, False, False]),
+        "candidate": np.array([False, False, True]),
+    }
+    reference = np.array([False, True, False])
+    original = synthetic_metrics._surface_distance_field
+    first_candidate_distance = None
+    call_count = 0
+
+    def tracked(mask):
+        nonlocal call_count, first_candidate_distance
+        call_count += 1
+        if call_count == 3:
+            assert first_candidate_distance is not None
+            assert first_candidate_distance() is None
+        result = original(mask)
+        if call_count == 2:
+            first_candidate_distance = weakref.ref(result)
+        return result
+
+    monkeypatch.setattr(synthetic_metrics, "_surface_distance_field", tracked)
+
+    synthetic_metrics.surface_comparison_metrics_with_evidence(
+        masks,
+        reference,
+        radius=1.0,
+        positive_epsilon=0.0,
     )
 
 
@@ -788,6 +981,9 @@ def test_f3_pair_writes_json_csv_markdown_and_canonical_skins(tmp_path) -> None:
             "policy",
             "reskin_policy",
             "parent_fingerprint",
+            "comparison_config_fingerprint",
+            "metric_evidence_schema_version",
+            "validation_level",
             "metric",
             "value",
             "status",
@@ -837,7 +1033,10 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         backend="quality",
         workflow="quality",
         skinning_enabled=True,
-        resolved_config={"skinning": asdict(config)},
+        resolved_config={
+            "skinning": asdict(config),
+            "variant": asdict(VariantSpec("f3-canonical", experimental=False)),
+        },
         stages=SimpleNamespace(
             scanner=scanner_fingerprint,
             voting=voting_fingerprint,
@@ -888,7 +1087,12 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
 
     payload = json.loads(paths[0].read_text())
     assert payload["source_cell"] == "Q-QUAL"
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
+    assert payload["metric_evidence_schema_version"] == 1
+    assert payload["validation_level"] == "shallow"
+    assert payload["comparison_config_fingerprint"] == (
+        reskin_policy_comparison.canonical_fingerprint(payload["resolved_config"])
+    )
     assert payload["source_run_fingerprint"] == source_run_fingerprint
     assert payload["source_runtime_identity_schema_version"] == 3
     assert (
@@ -920,8 +1124,45 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
     comparison_root = paths[0].parent
     completion_path = comparison_root / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
     assert completion_path.is_file()
+    completion_payload = json.loads(completion_path.read_text())
+    assert completion_payload["validation_level"] == "shallow"
+    with pytest.raises(ValueError, match="deep validation required"):
+        validate_f3_reskin_policy_comparison(tmp_path, require_deep=True)
     snapshots = {path: path.read_bytes() for path in paths}
     completion_snapshot = completion_path.read_bytes()
+
+    def fail_validation():
+        raise ValueError("injected final validation failure")
+
+    def successful_validation():
+        return paths
+
+    original_atomic_write = reskin_policy_comparison.atomic_write_artifact
+
+    def fail_markdown_write(path, payload, *, temporary_prefix):
+        if Path(path).name == "reskin_policy_comparison.md":
+            raise OSError("injected promotion write failure")
+        return original_atomic_write(path, payload, temporary_prefix=temporary_prefix)
+
+    for failure in ("write", "validation"):
+        with monkeypatch.context() as promotion_patch:
+            validator = fail_validation
+            if failure == "write":
+                promotion_patch.setattr(
+                    reskin_policy_comparison,
+                    "atomic_write_artifact",
+                    fail_markdown_write,
+                )
+                validator = successful_validation
+            with pytest.raises((OSError, ValueError), match="injected"):
+                reskin_policy_comparison._promote_comparison_completion(
+                    comparison_root,
+                    validator=validator,
+                )
+        assert {path: path.read_bytes() for path in paths} == snapshots
+        assert not completion_path.exists()
+        assert not tuple(comparison_root.parent.glob(f".{comparison_root.name}.promotion-tmp-*"))
+        completion_path.write_bytes(completion_snapshot)
 
     monkeypatch.setattr(
         reskin_policy_comparison,
@@ -975,13 +1216,123 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
     separate_paths = compare_reskin_policies_from_bundle(
         tmp_path,
         output_dir=separate_root,
+        deep=True,
     )
     separate_payload = json.loads(separate_paths[0].read_text())
+    assert separate_payload["validation_level"] == "deep"
+    assert (
+        validate_f3_reskin_policy_comparison(
+            tmp_path,
+            output_dir=separate_root,
+            require_deep=True,
+        )
+        == separate_paths
+    )
     assert separate_payload["source_run_fingerprint"] == source_run_fingerprint
     assert (
         separate_payload["source_runtime_identity_sha256"]
         == payload["source_runtime_identity_sha256"]
     )
+
+    source_config = copy.deepcopy(cell.resolved_config)
+    cell.resolved_config["skinning"]["min_skin_size"] += 1
+    with pytest.raises(ValueError, match="resolved config mismatch"):
+        validate_f3_reskin_policy_comparison(tmp_path)
+    cell.resolved_config = source_config
+
+    config_tamper_cases = (
+        (
+            lambda report, completion: report["resolved_config"]["effective_skinning_configs"][
+                "reference_dense_v1"
+            ].__setitem__(
+                "min_skin_size",
+                report["resolved_config"]["effective_skinning_configs"]["reference_dense_v1"][
+                    "min_skin_size"
+                ]
+                + 1,
+            ),
+            "differ outside reskin_policy",
+        ),
+        (
+            lambda report, completion: report["policies"]["existing_cells_v1"].__setitem__(
+                "reskin_policy",
+                "reference_dense_v1",
+            ),
+            "policy identity mismatch",
+        ),
+        (
+            lambda report, completion: (
+                report["resolved_config"]["shared_skinning_config"].__setitem__(
+                    "min_skin_size",
+                    report["resolved_config"]["shared_skinning_config"]["min_skin_size"] + 1,
+                ),
+                report.__setitem__(
+                    "comparison_config_fingerprint",
+                    reskin_policy_comparison.canonical_fingerprint(report["resolved_config"]),
+                ),
+                completion.__setitem__(
+                    "comparison_config_fingerprint",
+                    report["comparison_config_fingerprint"],
+                ),
+            ),
+            "resolved config mismatch",
+        ),
+        (
+            lambda report, completion: (
+                report.__setitem__("comparison_config_fingerprint", "e" * 64),
+                completion.__setitem__("comparison_config_fingerprint", "e" * 64),
+            ),
+            "config fingerprint mismatch",
+        ),
+    )
+    for tamper, expected_error in config_tamper_cases:
+        report_payload = json.loads(snapshots[paths[0]])
+        completion = json.loads(completion_snapshot)
+        tamper(report_payload, completion)
+        _write_rehashed_comparison_report(
+            report_payload,
+            paths,
+            completion_path,
+            completion,
+        )
+        with pytest.raises(ValueError, match=expected_error):
+            validate_f3_reskin_policy_comparison(tmp_path)
+        for path, content in snapshots.items():
+            path.write_bytes(content)
+        completion_path.write_bytes(completion_snapshot)
+
+    deep_report = json.loads(separate_paths[0].read_text())
+    deep_completion_path = separate_root / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    deep_completion = json.loads(deep_completion_path.read_text())
+    surface = deep_report["policies"]["existing_cells_v1"]["parent_ridge_surface"]
+    surface["evidence"]["overlap"]["buffer_radius"] += 1.0
+    surface["metrics"] = synthetic_metrics.metrics_from_surface_evidence(surface["evidence"])
+    deep_report["contrast"] = reskin_policy_comparison._comparison_contrast(deep_report["policies"])
+    _write_rehashed_comparison_report(
+        deep_report,
+        separate_paths,
+        deep_completion_path,
+        deep_completion,
+    )
+    assert (
+        validate_f3_reskin_policy_comparison(
+            tmp_path,
+            output_dir=separate_root,
+        )
+        == separate_paths
+    )
+    with pytest.raises(ValueError, match="does not exactly match"):
+        validate_f3_reskin_policy_comparison(
+            tmp_path,
+            output_dir=separate_root,
+            deep=True,
+        )
+
+    def tamper_parent_surface_metric(report):
+        report["policies"]["existing_cells_v1"]["parent_ridge_surface"]["metrics"]["overlap"][
+            "buffered_precision"
+        ] = 0.5
+        report["contrast"] = reskin_policy_comparison._comparison_contrast(report["policies"])
 
     tamper_cases = (
         (
@@ -1021,6 +1372,10 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
             ),
             "contrast metrics mismatch",
         ),
+        (
+            tamper_parent_surface_metric,
+            "metrics/evidence mismatch",
+        ),
     )
     for tamper, expected_error in tamper_cases:
         report_payload = json.loads(snapshots[paths[0]])
@@ -1038,6 +1393,9 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
             encoding="utf-8",
         )
         completion = json.loads(completion_snapshot)
+        completion["report_semantic_evidence_sha256"] = (
+            reskin_policy_comparison._report_semantic_evidence_digest(report_payload)
+        )
         completion["artifact_files"] = {
             path.name: reskin_policy_comparison.artifact_file_metadata(path) for path in paths
         }
@@ -1092,13 +1450,27 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         completion_path.write_bytes(completion_snapshot)
 
     legacy_completion = json.loads(completion_snapshot)
-    legacy_completion["completion_schema_version"] = 2
+    legacy_completion["completion_schema_version"] = 3
     completion_path.write_text(
         reskin_policy_comparison._canonical_json(legacy_completion) + "\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="unsupported.*completion schema"):
         validate_f3_reskin_policy_comparison(tmp_path)
+    completion_path.write_bytes(completion_snapshot)
+
+    legacy_report = json.loads(snapshots[paths[0]])
+    legacy_report["schema_version"] = 3
+    _write_rehashed_comparison_report(
+        legacy_report,
+        paths,
+        completion_path,
+        json.loads(completion_snapshot),
+    )
+    with pytest.raises(ValueError, match="report schema mismatch"):
+        validate_f3_reskin_policy_comparison(tmp_path)
+    for path, content in snapshots.items():
+        path.write_bytes(content)
     completion_path.write_bytes(completion_snapshot)
 
     paths[4].write_text("{}\n", encoding="utf-8")

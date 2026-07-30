@@ -949,7 +949,12 @@ one shared upstream SHA-256 fingerprint, both canonical skin artifacts,
 generation diagnostics, link topology, and skin topology. It also compares
 each policy's skin mask with the positive ridge mask from the shared parent
 `fvt`, using the existing buffered surface overlap and surface-distance
-metrics. Parent FVT is comparison evidence, not independent geological truth.
+metrics. The report records the source cell's shared skinning configuration,
+resolved variant, scanner-target mask source and epsilon, and both full
+effective skinning configurations. A canonical
+`comparison_config_fingerprint` binds that configuration; the two effective
+configs must differ only in `reskin_policy`. Parent FVT is comparison evidence,
+not independent geological truth.
 Use
 `SyntheticSkinningConfig(method="quality", reskin=True)` with all other
 skinning controls fixed. The complete resolved skinning configuration is
@@ -968,18 +973,28 @@ reference_dense_v1_skins.json
 complete.json
 ```
 
-Report and completion schema version 3 bind the scanner, voting, and thinning
+Report and completion schema version 4 bind the scanner, voting, and thinning
 stage fingerprints, include the scanner target mask in the shared parent
 content fingerprint, and bind the comparison to the source run fingerprint,
 recorded numerical runtime identity, and comparison implementation identity.
-Version 2 comparisons are legacy artifacts and are rejected without implicit
-upgrade.
+Version 3 comparisons are legacy artifacts and are rejected without implicit
+upgrade. Versioned, bounded scalar evidence records the overlap counts,
+directional distance accumulators, and the lower/upper order statistics needed
+for every published quantile. Shallow validation re-derives the public
+parent-ridge metrics and policy contrast from this evidence. Deep validation
+also regenerates the evidence from parent FVT and the canonical skin artifacts.
 
 The CSV is long-form and retains explicit zero-denominator status for
 generation fractions, support, and generated-likelihood summaries. The
 Markdown displays generation, support, parent-ridge correspondence, and link
-violations. This dedicated evidence does not add unversioned fields to the
-canonical F3 result bundle.
+violations. Both expose the config fingerprint, metric-evidence version, and
+validation level without expanding every evidence scalar. A comparison
+generated without exact replay records `validation_level="shallow"`;
+`deep=True` promotes it to `"deep"` only after replay succeeds.
+`validate_f3_reskin_policy_comparison(..., require_deep=True)` rejects a
+shallow-only completion and performs deep replay for publication readiness.
+This dedicated evidence does not add unversioned fields to the canonical F3
+result bundle.
 
 The external full-volume F3 comparison was not run for the dense-reskin gate
 in this change. Run the reproducible same-parent comparison with:
