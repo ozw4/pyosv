@@ -97,6 +97,7 @@ from .skin_artifacts import (
     PRIMARY_EXISTING_CELLS_RESKINNED,
     ParsedSkinArtifacts,
     SkinArtifactValidationError,
+    _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     _canonical_skins_payload_for_format,
     parse_skins_json,
     resolve_final_skin_cell_value_provenance,
@@ -1547,6 +1548,9 @@ def _validate_stage_resolved_settings(
                 expected = _canonical_skinning_stage_settings(
                     resolved,
                     workflow_identity,
+                    semantic_contract_version=settings.get(
+                        "skin_artifact_semantic_contract_version"
+                    ),
                 )
             else:
                 raise ValueError(f"unknown stage kind: {kind}")
@@ -1565,13 +1569,29 @@ def _validate_stage_resolved_settings(
 def _canonical_skinning_stage_settings(
     resolved_config: Mapping[str, Any],
     workflow_identity: Any,
+    *,
+    semantic_contract_version: int | None = None,
 ) -> dict[str, Any]:
     skinning = dict(_object(resolved_config["skinning"], "cell skinning config"))
-    semantic_contract_version = (
-        F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+    if semantic_contract_version is None:
+        semantic_contract_version = (
+            F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+            if "reskin_policy" in skinning
+            else F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        )
+    valid_contracts = (
+        {
+            _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+            F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        }
         if "reskin_policy" in skinning
-        else F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        else {F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION}
     )
+    if (
+        isinstance(semantic_contract_version, bool)
+        or semantic_contract_version not in valid_contracts
+    ):
+        raise ValueError("skin artifact semantic contract version is invalid")
     settings = {
         "cell_runner_contract_version": F3_CELL_RUNNER_CONTRACT_VERSION,
         "implementation_contract": F3_SKINNING_STAGE_IMPLEMENTATION,
@@ -2728,6 +2748,19 @@ def _recompute_skin_artifacts(
             )
             if semantic_contract_version == F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
                 normalized_recomputed_diagnostics.pop("reskin", None)
+            elif (
+                semantic_contract_version
+                == _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+            ):
+                normalized_reskin = _object(
+                    normalized_recomputed_diagnostics.get("reskin"),
+                    "recomputed reskin diagnostics",
+                )
+                normalized_recomputed_diagnostics["reskin"] = {
+                    name: value
+                    for name, value in normalized_reskin.items()
+                    if name not in {"reskin_diagnostics_contract_version", "attempted"}
+                }
             if normalized_recomputed_diagnostics != dict(recorded_diagnostics):
                 differing_fields = sorted(
                     name

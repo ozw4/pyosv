@@ -187,6 +187,21 @@ def _historical_reskinned_workflow(**kwargs: Any) -> Any:
     )
 
 
+def _historical_contract4_reskinned_workflow(**kwargs: Any) -> Any:
+    result = _controlled_reskinned_primary_workflow(**kwargs)
+    diagnostics = dict(result.diagnostics.skinning)
+    reskin = dict(diagnostics["reskin"])
+    reskin.pop("reskin_diagnostics_contract_version")
+    reskin.pop("attempted")
+    diagnostics["reskin"] = reskin
+    skin = replace(result.skin, diagnostics=diagnostics)
+    return replace(
+        result,
+        skin=skin,
+        diagnostics=replace(result.diagnostics, skinning=diagnostics),
+    )
+
+
 def _dense_reskin_config() -> Any:
     config = _reskinned_primary_config()
     return replace(
@@ -256,6 +271,46 @@ def test_historical_contract3_format1_bundle_end_to_end(
     )
     assert resumed == first
     assert calls - before_resume == Counter({"complete result load": 1})
+
+
+def test_historical_contract4_format2_bundle_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "fixture-data"
+    output_root = tmp_path / "run"
+    spec = _write_fixture(data_root, shape=(13, 13, 13))
+    calls: Counter[str] = Counter()
+    monkeypatch.setattr(
+        runner_module,
+        "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
+        4,
+    )
+
+    result = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        calls,
+        resume=False,
+        monkeypatch=monkeypatch,
+        plan_config=_reskinned_primary_config(),
+        workspace_runtime_identity=_fixed_runtime_identity(),
+        workflow_runner=_historical_contract4_reskinned_workflow,
+    )
+
+    for fingerprint in {cell.stages.skinning for cell in result.cells}:
+        stage = output_root / "stages" / "skinning" / fingerprint
+        stage_manifest = json.loads((stage / "stage_manifest.json").read_text(encoding="utf-8"))
+        report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+        payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+        assert stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"] == 4
+        assert payload["format_version"] == 2
+        assert "reskin_diagnostics_contract_version" not in report["diagnostics"]["reskin"]
+        assert "attempted" not in report["diagnostics"]["reskin"]
+
+    assert validate_completed_f3d_bundle(output_root, _dataset_spec=spec)
+    assert validate_completed_f3d_bundle(output_root, deep=True, _dataset_spec=spec)
 
 
 def test_dense_contract_cache_resume_and_rehashed_policy_tamper(

@@ -72,6 +72,55 @@ def _write_rehashed_comparison_report(
     )
 
 
+def _publication_runtime_identity():
+    identity = copy.deepcopy(reskin_policy_comparison.numerical_runtime_identity())
+    identity.update(
+        {
+            "requested_acceleration_mode": "auto",
+            "pyosv_accel": "auto",
+            "numba_available": True,
+            "numba_version": "test-numba",
+            "numba_jit": {"status": "enabled", "enabled": True},
+            "effective_acceleration_state": "numba_jit_enabled",
+            "python_hash_seed": "0",
+            "numpy_build": {
+                "status": "available",
+                "sha256": "a" * 64,
+            },
+            "numpy_runtime_cpu": {
+                "status": "available",
+                "features": ["TEST_CPU_FEATURE"],
+            },
+            "numpy_runtime_blas": {
+                "status": "available",
+                "libraries": [
+                    {
+                        "implementation": "test-blas",
+                        "version": "1",
+                        "threading_layer": "pthreads",
+                        "architecture": "test-architecture",
+                        "effective_thread_count": 1,
+                    }
+                ],
+            },
+            "scipy_build": {
+                "status": "available",
+                "sha256": "b" * 64,
+            },
+        }
+    )
+    for name in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        identity["thread_environment"][name] = "1"
+    identity["numba_environment"]["NUMBA_DISABLE_JIT"] = "0"
+    identity["numba_environment"]["NUMBA_NUM_THREADS"] = "1"
+    return identity
+
+
 @pytest.fixture(scope="module")
 def passing_gate_inputs():
     gate = build_dense_reskin_promotion_gate()
@@ -1048,7 +1097,12 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         "load_f3d_mode_comparison_result",
         lambda *args, **kwargs: SimpleNamespace(cells=(cell,)),
     )
-    runtime_identity = reskin_policy_comparison.numerical_runtime_identity()
+    runtime_identity = _publication_runtime_identity()
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "numerical_runtime_identity",
+        lambda: runtime_identity,
+    )
     dataset_file_size = int(np.prod(shape)) * np.dtype(">f4").itemsize
     computation = {
         "artifact_schema_version": 1,
@@ -1056,7 +1110,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         "fingerprint_contract_version": 4,
         "plan": {"fixture": "small-reskin-comparison"},
         "dataset_identity": {
-            "dataset_id": "small-reskin-fixture-v1",
+            "dataset_id": reskin_policy_comparison.F3_DATASET_ID,
             "files": [
                 {
                     "role": "input",
@@ -1099,6 +1153,13 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         payload["source_runtime_identity_sha256"] == payload["comparison_runtime_identity_sha256"]
     )
     assert payload["comparison_implementation_identity"]["algorithm_modules"]
+    assert {
+        "_skinner/reference.py",
+        "evaluation/synthetic_quality/quality_metrics.py",
+        "experimental/boundary_thinning.py",
+        "filters.py",
+        "geometry.py",
+    } <= set(payload["comparison_implementation_identity"]["algorithm_modules"])
     assert payload["upstream_parent_stage_fingerprints"] == {
         "scanner": scanner_fingerprint,
         "voting": voting_fingerprint,
@@ -1130,6 +1191,8 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         validate_f3_reskin_policy_comparison(tmp_path, require_deep=True)
     snapshots = {path: path.read_bytes() for path in paths}
     completion_snapshot = completion_path.read_bytes()
+    manifest_path = tmp_path / "run_manifest.json"
+    manifest_snapshot = manifest_path.read_bytes()
 
     def fail_validation():
         raise ValueError("injected final validation failure")
@@ -1160,9 +1223,8 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
                     validator=validator,
                 )
         assert {path: path.read_bytes() for path in paths} == snapshots
-        assert not completion_path.exists()
+        assert completion_path.read_bytes() == completion_snapshot
         assert not tuple(comparison_root.parent.glob(f".{comparison_root.name}.promotion-tmp-*"))
-        completion_path.write_bytes(completion_snapshot)
 
     monkeypatch.setattr(
         reskin_policy_comparison,
@@ -1179,26 +1241,96 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
     )
     assert validate_f3_reskin_policy_comparison(tmp_path, deep=True) == paths
 
-    changed_runtime = copy.deepcopy(runtime_identity)
-    changed_runtime["python_hash_seed"] = (
-        "different" if runtime_identity["python_hash_seed"] != "different" else "other"
+    invalid_manifest = json.loads(manifest_snapshot)
+    invalid_manifest["runtime_identity"]["python_hash_seed"] = "invalid"
+    invalid_computation = {
+        name: invalid_manifest[name] for name in reskin_policy_comparison._RUN_COMPUTATION_FIELDS
+    }
+    invalid_manifest["run_fingerprint"] = reskin_policy_comparison.canonical_fingerprint(
+        invalid_computation
     )
-    monkeypatch.setattr(
-        reskin_policy_comparison,
-        "numerical_runtime_identity",
-        lambda: changed_runtime,
+    manifest_path.write_text(
+        reskin_policy_comparison._canonical_json(invalid_manifest) + "\n",
+        encoding="utf-8",
     )
+    with pytest.raises(ValueError, match="publication runtime identity is invalid"):
+        validate_f3_reskin_policy_comparison(tmp_path)
+    assert {path: path.read_bytes() for path in paths} == snapshots
+    assert completion_path.read_bytes() == completion_snapshot
+    manifest_path.write_bytes(manifest_snapshot)
+
     original_open_parent_dat = reskin_policy_comparison._open_parent_dat
     monkeypatch.setattr(
         reskin_policy_comparison,
         "_open_parent_dat",
         lambda *args, **kwargs: pytest.fail("runtime mismatch opened a parent DAT"),
     )
-    separate_root = tmp_path / "separate-comparison"
-    with pytest.raises(ValueError, match="current runtime identity does not match"):
-        compare_reskin_policies_from_bundle(tmp_path, output_dir=separate_root)
-    assert not separate_root.exists()
-    with pytest.raises(ValueError, match="current runtime identity does not match"):
+
+    def change_acceleration(identity):
+        identity["numba_available"] = False
+        identity["numba_version"] = None
+        identity["numba_jit"] = {"status": "not_applicable", "enabled": None}
+        identity["effective_acceleration_state"] = "python_only"
+
+    def change_jit(identity):
+        identity["numba_jit"] = {"status": "disabled", "enabled": False}
+        identity["effective_acceleration_state"] = "numba_jit_disabled"
+        identity["numba_environment"]["NUMBA_DISABLE_JIT"] = "1"
+
+    runtime_mismatches = {
+        "acceleration": change_acceleration,
+        "jit": change_jit,
+        "cpu": lambda identity: identity["numpy_runtime_cpu"]["features"].append(
+            "TEST_CPU_FEATURE_2"
+        ),
+        "blas": lambda identity: identity["numpy_runtime_blas"]["libraries"][0].__setitem__(
+            "version", "2"
+        ),
+        "blas-threads": lambda identity: identity["numpy_runtime_blas"]["libraries"][0].__setitem__(
+            "effective_thread_count", 2
+        ),
+        "scipy": lambda identity: identity["scipy_build"].__setitem__("sha256", "c" * 64),
+        "hash": lambda identity: identity.__setitem__("python_hash_seed", "different"),
+        "threads": lambda identity: identity["thread_environment"].__setitem__(
+            "OMP_NUM_THREADS", "2"
+        ),
+    }
+    for name, mutate_runtime in runtime_mismatches.items():
+        changed_runtime = copy.deepcopy(runtime_identity)
+        mutate_runtime(changed_runtime)
+        monkeypatch.setattr(
+            reskin_policy_comparison,
+            "numerical_runtime_identity",
+            lambda changed_runtime=changed_runtime: changed_runtime,
+        )
+        mismatch_root = tmp_path / f"{name}-mismatch-comparison"
+        with pytest.raises(
+            ValueError,
+            match="current (?:publication runtime identity is invalid|runtime identity does not match)",
+        ):
+            compare_reskin_policies_from_bundle(tmp_path, output_dir=mismatch_root)
+        assert not mismatch_root.exists()
+        with pytest.raises(
+            ValueError,
+            match="current (?:publication runtime identity is invalid|runtime identity does not match)",
+        ):
+            validate_f3_reskin_policy_comparison(tmp_path, deep=True)
+        assert {path: path.read_bytes() for path in paths} == snapshots
+        assert completion_path.read_bytes() == completion_snapshot
+
+    def fail_runtime_identity():
+        raise RuntimeError("injected runtime identity failure")
+
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "numerical_runtime_identity",
+        fail_runtime_identity,
+    )
+    getter_failure_root = tmp_path / "getter-failure-comparison"
+    with pytest.raises(ValueError, match="current publication runtime identity is invalid"):
+        compare_reskin_policies_from_bundle(tmp_path, output_dir=getter_failure_root)
+    assert not getter_failure_root.exists()
+    with pytest.raises(ValueError, match="current publication runtime identity is invalid"):
         validate_f3_reskin_policy_comparison(tmp_path, deep=True)
     assert {path: path.read_bytes() for path in paths} == snapshots
     assert completion_path.read_bytes() == completion_snapshot
@@ -1213,6 +1345,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         "_open_parent_dat",
         original_open_parent_dat,
     )
+    separate_root = tmp_path / "separate-comparison"
     separate_paths = compare_reskin_policies_from_bundle(
         tmp_path,
         output_dir=separate_root,

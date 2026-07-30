@@ -897,24 +897,35 @@ def _promote_comparison_completion(
             temporary_prefix=".complete.json.tmp-",
         )
 
+        os.replace(completion_path, backup / completion_path.name)
         for path in changed_paths:
             os.replace(path, backup / path.name)
-        os.replace(completion_path, backup / completion_path.name)
         for staged, path in zip(staged_paths, changed_paths, strict=True):
             os.replace(staged, path)
         os.replace(staged_completion, completion_path)
         validated = validator()
     except BaseException as error:
-        completion_path.unlink(missing_ok=True)
-        for path in changed_paths:
-            previous = backup / path.name
-            if previous.is_file():
+        previous_completion = backup / completion_path.name
+        if previous_completion.is_file():
+            completion_path.unlink(missing_ok=True)
+            restore_failed = False
+            for path in changed_paths:
+                previous = backup / path.name
+                if previous.is_file():
+                    try:
+                        os.replace(previous, path)
+                    except BaseException as restore_error:
+                        restore_failed = True
+                        add_note = getattr(error, "add_note", None)
+                        if add_note is not None:
+                            add_note(f"comparison artifact restore also failed: {restore_error!r}")
+            if not restore_failed:
                 try:
-                    os.replace(previous, path)
+                    os.replace(previous_completion, completion_path)
                 except BaseException as restore_error:
                     add_note = getattr(error, "add_note", None)
                     if add_note is not None:
-                        add_note(f"comparison artifact restore also failed: {restore_error!r}")
+                        add_note(f"comparison completion restore also failed: {restore_error!r}")
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1431,15 +1442,34 @@ def _validate_current_comparison_runtime(source: _SourceBundleIdentity) -> str:
 def _comparison_implementation_identity() -> dict[str, Any]:
     package_root = Path(__file__).resolve().parents[2]
     relative_sources = (
+        "_accel.py",
+        "_skinner/candidate_path.py",
+        "_skinner/candidate_sampling.py",
+        "_skinner/connected.py",
+        "_skinner/grid.py",
         "candidate_volume.py",
         "cells.py",
+        "filters.py",
+        "geometry.py",
         "skin.py",
         "skinner.py",
         "_skinner/growth.py",
+        "_skinner/models.py",
+        "_skinner/occupancy.py",
+        "_skinner/reference.py",
         "_skinner/reskin.py",
+        "_skinner/seeds.py",
+        "_skinner/transforms.py",
+        "_skinner/validation.py",
         "evaluation/workflow3d.py",
         "evaluation/f3d_mode_comparison/reskin_policy_comparison.py",
+        "evaluation/synthetic_quality/config.py",
+        "evaluation/synthetic_quality/quality_metrics.py",
+        "evaluation/synthetic_quality/stage_cache.py",
+        "evaluation/synthetic_quality/stage_keys.py",
+        "evaluation/synthetic_quality/variants.py",
         "experimental/boundary_skinning.py",
+        "experimental/boundary_thinning.py",
         "experimental/skin_diagnostics.py",
         "synthetic_metrics.py",
     )
