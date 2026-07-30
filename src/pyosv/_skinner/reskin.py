@@ -150,7 +150,6 @@ def _replace_final_reskin_diagnostics_with_observed_skins(
     final["input_cell_count"] = cell_count
     final["output_cell_count"] = cell_count
     final["observed_output_cell_count"] = cell_count
-    _merge_reskin_diagnostics(diagnostics["attempted"], final)
     diagnostics.update(final)
 
 

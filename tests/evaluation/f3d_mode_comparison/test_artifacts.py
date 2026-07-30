@@ -432,7 +432,7 @@ def test_publication_runtime_identity_accepts_fixed_available_runtime() -> None:
     assert validate_publication_runtime_identity(identity) == identity
 
 
-def test_publication_runtime_identity_accepts_auto_without_numba() -> None:
+def test_publication_runtime_identity_rejects_auto_without_numba() -> None:
     identity = {
         **_publication_runtime_identity(),
         "numba_available": False,
@@ -444,7 +444,8 @@ def test_publication_runtime_identity_accepts_auto_without_numba() -> None:
         "effective_acceleration_state": "python_only",
     }
 
-    assert validate_publication_runtime_identity(identity) == identity
+    with pytest.raises(ValueError, match="numba_jit_enabled"):
+        validate_publication_runtime_identity(identity)
 
 
 def test_publication_runtime_identity_rejects_explicit_acceleration_off() -> None:
@@ -461,7 +462,7 @@ def test_publication_runtime_identity_rejects_explicit_acceleration_off() -> Non
         "effective_acceleration_state": "python_only",
     }
 
-    with pytest.raises(ValueError, match="PYOSV_ACCEL must be auto"):
+    with pytest.raises(ValueError, match="numba_jit_enabled"):
         validate_publication_runtime_identity(identity)
 
 

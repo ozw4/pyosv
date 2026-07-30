@@ -581,6 +581,34 @@ def test_contract5_validates_final_and_attempted_reskin_diagnostics() -> None:
     )
 
 
+def test_contract5_fallback_keeps_primary_attempted_counts_separate() -> None:
+    """Fallback final counts need not be bounded by primary attempt counts."""
+
+    parsed = _contract5_parsed_skin()
+    cell = parsed.skins[0][0]
+    fallback = ParsedSkinArtifacts(
+        skins=((replace(cell, generation="connected_component"),),),
+        format_version=parsed.format_version,
+    )
+    diagnostics = _contract5_reskin_diagnostics()
+    diagnostics["reskin_applied"] = False
+    diagnostics["attempted"] = {
+        **diagnostics["attempted"],
+        "reskin_applied": True,
+        "processed_skin_count": 1,
+        "input_cell_count": 1,
+        "output_cell_count": 1,
+        "observed_output_cell_count": 1,
+    }
+
+    validate_skin_generation_provenance(
+        fallback,
+        "connected_component_fallback",
+        semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        reskin_diagnostics=diagnostics,
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     (

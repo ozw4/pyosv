@@ -306,7 +306,12 @@ def compare_reskin_policies_from_bundle(
     resume: bool = False,
     deep: bool = False,
 ) -> tuple[Path, Path, Path, Path, Path]:
-    """Run or reuse the fixed skin-only pair from canonical Q-QUAL parents."""
+    """Run or reuse the fixed skin-only pair from canonical Q-QUAL parents.
+
+    A deep-complete ``resume=True, deep=True`` checks saved deep evidence only;
+    explicit :func:`validate_f3_reskin_policy_comparison` with ``deep=True``
+    remains the current-runtime exact-replay path.
+    """
 
     # Keep result loading local: package __init__ imports this module before result.py.
     from .result import load_f3d_mode_comparison_result
@@ -333,14 +338,20 @@ def compare_reskin_policies_from_bundle(
                 completion_path,
                 "reskin policy comparison completion",
             )
+            if completion["validation_level"] == "deep":
+                validate_f3_reskin_policy_comparison(
+                    root,
+                    output_dir=destination,
+                    require_deep=True,
+                    result=result,
+                )
+                return paths
             validate_f3_reskin_policy_comparison(
                 root,
                 output_dir=destination,
                 deep=True,
                 result=result,
             )
-            if completion["validation_level"] == "deep":
-                return paths
             return _promote_comparison_completion(
                 destination,
                 validator=lambda: validate_f3_reskin_policy_comparison(
@@ -694,7 +705,9 @@ def validate_f3_reskin_policy_comparison(
     if paths[2].read_text(encoding="utf-8") != _comparison_markdown(report):
         raise ValueError("reskin policy comparison Markdown does not match report")
 
-    if deep or require_deep:
+    # ``require_deep`` attests to persisted completion evidence. Only the
+    # explicit ``deep`` request performs a current-runtime replay.
+    if deep:
         comparison_runtime_sha256 = _validate_current_comparison_runtime(source_identity)
         recomputed, _, _ = _comparison_report_from_bundle(
             root,
@@ -1087,6 +1100,15 @@ def _validate_reported_policy_metrics(
             reskin_diagnostics,
             semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
             skin_count=len(parsed.skins),
+            final_provenance=(
+                CONNECTED_COMPONENT_FALLBACK
+                if diagnostics.get("fallback_used") is True
+                else (
+                    PRIMARY_EXISTING_CELLS_RESKINNED
+                    if item["reskin_policy"] == RESKIN_POLICY_EXISTING_CELLS_V1
+                    else PRIMARY_DENSE_RESKINNED
+                )
+            ),
         )
     except ValueError as error:
         raise ValueError(

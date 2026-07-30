@@ -1715,10 +1715,10 @@ def _publication_runtime_identity() -> dict[str, Any]:
         {
             "requested_acceleration_mode": "auto",
             "pyosv_accel": "auto",
-            "numba_available": False,
-            "numba_version": None,
-            "numba_jit": {"status": "not_applicable", "enabled": None},
-            "effective_acceleration_state": "python_only",
+            "numba_available": True,
+            "numba_version": "test-numba",
+            "numba_jit": {"status": "enabled", "enabled": True},
+            "effective_acceleration_state": "numba_jit_enabled",
             "python_hash_seed": "0",
             "numpy_runtime_cpu": {"status": "available", "features": ["TEST"]},
             "numpy_runtime_blas": {
@@ -1791,6 +1791,7 @@ def test_official_shallow_validation_enforces_recorded_publication_runtime_only(
         ("hash-seed", "PYTHONHASHSEED must equal 0"),
         ("thread-environment", "OMP_NUM_THREADS must equal 1"),
         ("implicit-acceleration", "PYOSV_ACCEL must be explicitly set"),
+        ("python-only", "effective acceleration state must be numba_jit_enabled"),
         ("jit-disabled", "Numba JIT must be enabled"),
         ("cpu-unavailable", "numpy_runtime_cpu must be available"),
         ("blas-unavailable", "numpy_runtime_blas must be available"),
@@ -1818,6 +1819,15 @@ def test_official_shallow_validation_rejects_recorded_policy_violations(
         runtime["thread_environment"]["OMP_NUM_THREADS"] = "2"
     elif case == "implicit-acceleration":
         runtime["pyosv_accel"] = None
+    elif case == "python-only":
+        runtime.update(
+            {
+                "numba_available": False,
+                "numba_version": None,
+                "numba_jit": {"status": "not_applicable", "enabled": None},
+                "effective_acceleration_state": "python_only",
+            }
+        )
     elif case == "jit-disabled":
         runtime.update(
             {

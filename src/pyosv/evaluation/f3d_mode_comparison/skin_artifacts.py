@@ -607,6 +607,7 @@ def validate_skin_generation_provenance(
         reskin_diagnostics,
         semantic_contract_version=semantic_contract_version,
         skin_count=len(parsed.skins),
+        final_provenance=provenance,
     )
 
     if reskinned_provenance:
@@ -700,6 +701,7 @@ def validate_reskin_diagnostics_contract(
     *,
     semantic_contract_version: int,
     skin_count: int | None = None,
+    final_provenance: str | None = None,
 ) -> None:
     """Validate the diagnostics schema paired with one skin semantic contract."""
 
@@ -709,7 +711,11 @@ def validate_reskin_diagnostics_contract(
         _validate_reskin_diagnostics_v1(diagnostics)
         return
     if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
-        _validate_reskin_diagnostics_v2(diagnostics, skin_count=skin_count)
+        _validate_reskin_diagnostics_v2(
+            diagnostics,
+            skin_count=skin_count,
+            final_provenance=final_provenance,
+        )
         return
     raise SkinArtifactValidationError(
         "reskin diagnostics require skin artifact semantic contract 4 or 5"
@@ -738,6 +744,7 @@ def _validate_reskin_diagnostics_v2(
     diagnostics: Mapping[str, Any],
     *,
     skin_count: int | None,
+    final_provenance: str | None,
 ) -> None:
     expected_final_fields = {
         "reskin_diagnostics_contract_version",
@@ -799,6 +806,11 @@ def _validate_reskin_diagnostics_v2(
             raise SkinArtifactValidationError(
                 "reskin diagnostics attempted counts require a processed skin"
             )
+        return
+    # A connected-component fallback replaces the persisted final skins. Its
+    # diagnostics therefore belong to a different producer than the primary
+    # reskin attempt and cannot be compared namespace-to-namespace.
+    if final_provenance == CONNECTED_COMPONENT_FALLBACK:
         return
     for name in (*_RESKIN_COUNT_FIELDS, _RESKIN_MAX_DISTANCE_FIELD):
         if attempted_counts[name] < final_counts[name]:

@@ -1062,18 +1062,19 @@ def _validate_cells_and_stages(
                     >= _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
                     else None
                 )
-                if report_reskin_diagnostics is not None:
-                    validate_reskin_diagnostics_contract(
-                        report_reskin_diagnostics,
-                        semantic_contract_version=semantic_contract_version,
-                        skin_count=len(parsed_skins[cell.stages.skinning].skins),
-                    )
                 provenance = resolve_final_skin_cell_value_provenance(
                     _object(cell.resolved_config["skinning"], "cell skinning config"),
                     _object(cell.resolved_config["variant"], "cell variant config"),
                     fallback_used=fallback_used,
                     resolved_stage_settings=skinning_settings,
                 )
+                if report_reskin_diagnostics is not None:
+                    validate_reskin_diagnostics_contract(
+                        report_reskin_diagnostics,
+                        semantic_contract_version=semantic_contract_version,
+                        skin_count=len(parsed_skins[cell.stages.skinning].skins),
+                        final_provenance=provenance,
+                    )
                 if (
                     semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
                     and report_reskin_diagnostics is not None

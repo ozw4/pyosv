@@ -107,8 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--deep-validate",
         action="store_true",
         help=(
-            "Recompute full-volume metrics during validation. Reskin comparison replay "
-            "requires the exact publication runtime recorded by the source bundle."
+            "Explicitly recompute full-volume metrics during validation. Reskin "
+            "comparison replay requires the exact publication runtime recorded by "
+            "the source bundle; deep-complete comparison resume reuses saved evidence."
         ),
     )
     parser.add_argument(

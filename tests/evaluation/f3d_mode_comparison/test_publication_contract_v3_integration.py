@@ -902,7 +902,7 @@ def test_runtime_identity_changes_reject_resume_without_workspace_writes(
                 "available": False,
                 "jit": {"status": "not_applicable", "enabled": None},
                 "state": "python_only",
-                "publication_accepted": True,
+                "publication_accepted": False,
             },
         ),
         (

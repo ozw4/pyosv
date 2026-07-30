@@ -124,9 +124,11 @@ plan, and resulting run fingerprint match exactly. The runtime identity records
 the requested acceleration mode, effective Numba JIT state and version,
 platform, allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
 BLAS/LAPACK build digest. Valid content-addressed stages are reused and missing
-stages are computed. The publication validator rejects an available Numba
-runtime with JIT disabled and requires `NUMBA_NUM_THREADS=1` when that variable
-is set. `PYOSV_ACCEL=auto` remains valid when Numba is unavailable. Shallow
+stages are computed. The publication validator requires
+`effective_acceleration_state="numba_jit_enabled"`,
+`numba_jit.status="enabled"`, and `numba_jit.enabled=true`; an unavailable,
+disabled, or unknown Numba JIT is not publication-valid. It also requires
+`NUMBA_NUM_THREADS=1` when that variable is set. Shallow
 validation always applies the publication runtime policy to the identity
 recorded by an official bundle, but does not inspect or compare the current
 process identity. Deep validation and resume computation for missing stages
@@ -1006,7 +1008,11 @@ validation level without expanding every evidence scalar. A comparison
 generated without exact replay records `validation_level="shallow"`;
 `deep=True` promotes it to `"deep"` only after replay succeeds.
 `validate_f3_reskin_policy_comparison(..., require_deep=True)` rejects a
-shallow-only completion and performs deep replay for publication readiness.
+shallow-only completion while checking saved deep evidence without replay.
+`validate_f3_reskin_policy_comparison(..., deep=True)` is the explicit
+current-runtime exact-replay path. In contrast, `resume=True, deep=True` on
+an already deep-complete comparison only reuses the saved deep evidence and
+does not reopen parent DAT files or rewrite comparison artifacts.
 This dedicated evidence does not add unversioned fields to the canonical F3
 result bundle.
 

@@ -254,8 +254,13 @@ def test_dense_reskin_comparison_strict_deep_and_complete_resume(
     artifact_paths = (*paths, completion_path)
     before_resume = _file_state(artifact_paths)
     parent_reads.clear()
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: pytest.fail("deep-complete resume queried the current runtime"),
+    )
     assert compare_reskin_policies_from_bundle(output_root, resume=True, deep=True) == paths
-    assert parent_reads == Counter({"DAT": 5})
+    assert not parent_reads
     assert _file_state(artifact_paths) == before_resume
 
 
@@ -513,9 +518,8 @@ def test_source_bindings_and_rehashed_tamper_rejection_phases(
     report["validation_level"] = "deep"
     completion["validation_level"] = "deep"
     _write_rehashed_comparison(report, paths, completion_path, completion)
-    with pytest.raises(ValueError, match="does not exactly match"):
-        compare_reskin_policies_from_bundle(output_root, resume=True, deep=True)
-    assert parent_reads == Counter({"DAT": 5})
+    assert compare_reskin_policies_from_bundle(output_root, resume=True, deep=True) == paths
+    assert not parent_reads
     restore()
     monkeypatch.setattr(
         comparison_module,
