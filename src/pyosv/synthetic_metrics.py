@@ -707,9 +707,19 @@ def _directional_summary_from_evidence(
     if minimum > maximum:
         raise ValueError("directional distance minimum exceeds maximum")
     mean = float(numerator / denominator)
-    if not minimum <= mean <= maximum:
+    if _outside_accumulated_float_bounds(
+        mean,
+        minimum,
+        maximum,
+        sample_count=count,
+    ):
         raise ValueError("directional distance mean is outside its value range")
-    if not minimum * count <= distance_sum <= maximum * count:
+    if _outside_accumulated_float_bounds(
+        distance_sum,
+        minimum * count,
+        maximum * count,
+        sample_count=count,
+    ):
         raise ValueError("directional distance sum is outside its value range")
 
     quantiles = value["quantiles"]
@@ -731,6 +741,22 @@ def _directional_summary_from_evidence(
         summary[name] = result
         previous = result
     return summary
+
+
+def _outside_accumulated_float_bounds(
+    value: float,
+    minimum: float,
+    maximum: float,
+    *,
+    sample_count: int,
+) -> bool:
+    rounding_steps = int(np.ceil(np.log2(sample_count))) + 2
+    tolerance = (
+        rounding_steps
+        * float(np.finfo(np.float64).eps)
+        * max(abs(value), abs(minimum), abs(maximum))
+    )
+    return value < minimum - tolerance or value > maximum + tolerance
 
 
 def _quantile_from_evidence(

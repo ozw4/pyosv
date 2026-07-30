@@ -857,6 +857,22 @@ def test_f3_parent_surface_evidence_preserves_empty_semantics(
     assert synthetic_metrics.metrics_from_surface_evidence(result["evidence"]) == result["metrics"]
 
 
+def test_surface_comparison_accepts_rounding_at_constant_distance_bound() -> None:
+    candidate = np.zeros((2, 29), dtype=bool)
+    reference = np.zeros_like(candidate)
+    candidate[0, 0::3] = True
+    reference[1, 1::3] = True
+
+    metrics = synthetic_metrics.surface_comparison_metrics(
+        {"policy": candidate},
+        reference,
+        radius=2.0,
+    )["policy"]["surface_distance"]
+
+    assert metrics["candidate_to_truth_mean"] == pytest.approx(np.sqrt(2.0))
+    assert metrics["truth_to_candidate_mean"] == pytest.approx(np.sqrt(2.0))
+
+
 @pytest.mark.parametrize(
     ("candidate_indices", "expected_lower", "expected_upper", "expected_weight"),
     (
@@ -1265,6 +1281,23 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         else:
             assert not transaction_root.exists()
         assert not tuple(transaction_root.parent.glob(f".{transaction_root.name}.generation-tmp-*"))
+
+    def fail_temporary_directory_creation(*_args, **_kwargs):
+        raise OSError("injected temporary-directory failure")
+
+    missing_parent = tmp_path / "missing-output-parent"
+    with monkeypatch.context() as temporary_patch:
+        temporary_patch.setattr(
+            reskin_policy_comparison.tempfile,
+            "mkdtemp",
+            fail_temporary_directory_creation,
+        )
+        with pytest.raises(OSError, match="injected temporary-directory failure"):
+            compare_reskin_policies_from_bundle(
+                tmp_path,
+                output_dir=missing_parent / "comparison",
+            )
+    assert not missing_parent.exists()
 
     for failure in ("write", "validation"):
         with monkeypatch.context() as promotion_patch:

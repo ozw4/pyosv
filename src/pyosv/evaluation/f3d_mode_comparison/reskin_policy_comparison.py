@@ -356,13 +356,14 @@ def compare_reskin_policies_from_bundle(
         comparison_implementation=comparison_implementation,
     )
     created_parents = _create_missing_parents(destination.parent)
-    staging = Path(
-        tempfile.mkdtemp(
-            prefix=f".{destination.name}.generation-tmp-",
-            dir=destination.parent,
-        )
-    )
+    staging: Path | None = None
     try:
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{destination.name}.generation-tmp-",
+                dir=destination.parent,
+            )
+        )
         staged_paths = write_f3_reskin_policy_comparison(report, staging)
         comparison_implementation_sha256 = canonical_fingerprint(comparison_implementation)
         completion = {
@@ -410,7 +411,8 @@ def compare_reskin_policies_from_bundle(
         _publish_comparison_directory(staging, destination)
         return tuple(destination / name for name in F3_RESKIN_POLICY_COMPARISON_FILES)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
         for parent in created_parents:
             try:
                 parent.rmdir()
