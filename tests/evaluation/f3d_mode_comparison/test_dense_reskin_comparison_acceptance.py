@@ -603,10 +603,13 @@ def test_controlled_promotion_gate_contract_is_deterministic() -> None:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    if int(np.__version__.partition(".")[0]) < 2:
-        assert hashlib.sha256(canonical_payload).hexdigest() == (
-            "98554f6a3bbf073217ed0aba21998db1bb19ac4b1b7e03f4f913ea7c6d1b5a32"
-        )
+    expected_payload_sha256 = {
+        1: "98554f6a3bbf073217ed0aba21998db1bb19ac4b1b7e03f4f913ea7c6d1b5a32",
+        2: "f355f90e8c76b9721fae4b586c090b88fdaf801005357b6061f2ac7edff46fdd",
+    }
+    numpy_major = int(np.__version__.partition(".")[0])
+    assert numpy_major in expected_payload_sha256
+    assert hashlib.sha256(canonical_payload).hexdigest() == expected_payload_sha256[numpy_major]
     assert first["schema_version"] == 2
     assert first["passed"] is True
     assert first["reasons"] == []

@@ -57,27 +57,25 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     runtime_identity = validate_publication_runtime_identity(numerical_runtime_identity())
     assert runtime_identity["effective_acceleration_state"] == "numba_jit_enabled"
     assert runtime_identity["numba_jit"]["enabled"] is True
-    deep = os.environ.get("PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE") == "1"
     source_arguments = [
         "--data-root",
         str(data_root),
         "--output-dir",
         str(output_root),
+        "--deep-validate",
     ]
     if output_root.exists():
         source_arguments.append("--resume")
-    if deep:
-        source_arguments.append("--deep-validate")
 
     assert f3d_mode_comparison.main(source_arguments) == 0
     assert validate_completed_f3d_bundle(output_root)
-    assert validate_completed_f3d_bundle(output_root, deep=deep)
+    assert validate_completed_f3d_bundle(output_root, deep=True)
     source_resume_arguments = list(source_arguments)
     if "--resume" not in source_resume_arguments:
         source_resume_arguments.append("--resume")
     assert f3d_mode_comparison.main(source_resume_arguments) == 0
 
-    result = load_f3d_mode_comparison_result(output_root, deep=deep)
+    result = load_f3d_mode_comparison_result(output_root, deep=True)
     assert result.dataset_id == OFFICIAL_F3_DATASET_SPEC.dataset_id
     assert result.volume_shape == OFFICIAL_F3_DATASET_SPEC.shape
     assert [cell.label for cell in result.cells] == [
@@ -126,8 +124,8 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     assert f3d_mode_comparison.main(comparison_arguments) == 0
     comparison_paths = validate_f3_reskin_policy_comparison(
         output_root,
-        deep=deep,
-        require_deep=deep,
+        deep=True,
+        require_deep=True,
     )
     comparison_root = output_root / F3_RESKIN_POLICY_COMPARISON_DIR
     comparison_completion_path = comparison_root / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
@@ -138,9 +136,8 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     assert comparison_completion["comparison_runtime_identity_sha256"] == runtime_sha256
     assert comparison_report["source_runtime_identity_sha256"] == runtime_sha256
     assert comparison_report["comparison_runtime_identity_sha256"] == runtime_sha256
-    if deep:
-        assert comparison_completion["validation_level"] == "deep"
-        assert comparison_report["validation_level"] == "deep"
+    assert comparison_completion["validation_level"] == "deep"
+    assert comparison_report["validation_level"] == "deep"
 
     comparison_files = (
         *comparison_paths,
