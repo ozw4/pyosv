@@ -968,9 +968,12 @@ reference_dense_v1_skins.json
 complete.json
 ```
 
-Report and completion schema version 2 bind the scanner, voting, and thinning
-stage fingerprints and include the scanner target mask in the shared parent
-content fingerprint.
+Report and completion schema version 3 bind the scanner, voting, and thinning
+stage fingerprints, include the scanner target mask in the shared parent
+content fingerprint, and bind the comparison to the source run fingerprint,
+recorded numerical runtime identity, and comparison implementation identity.
+Version 2 comparisons are legacy artifacts and are rejected without implicit
+upgrade.
 
 The CSV is long-form and retains explicit zero-denominator status for
 generation fractions, support, and generated-likelihood summaries. The
@@ -991,6 +994,11 @@ python -m pyosv.cli.f3d_mode_comparison \
 
 The CLI completes the canonical F3 run, then reads the `Q-QUAL` cell's exact
 scanner, voting, and thinning artifacts and branches only the reskin policy.
+Generating, regenerating, or deep-validating this numerical comparison requires
+the current process to have the exact same publication-valid numerical runtime
+identity recorded by the source bundle. Shallow validation and resume of an
+already complete comparison inspect saved provenance without querying the
+current runtime.
 The comparison option does not override the canonical run's reskin setting.
 It writes the six dedicated files above under
 `outputs/3d/f3d/dense_reskin_candidate/reskin_policy_comparison/`. The JSON

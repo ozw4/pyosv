@@ -849,11 +849,52 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         "load_f3d_mode_comparison_result",
         lambda *args, **kwargs: SimpleNamespace(cells=(cell,)),
     )
+    runtime_identity = reskin_policy_comparison.numerical_runtime_identity()
+    dataset_file_size = int(np.prod(shape)) * np.dtype(">f4").itemsize
+    computation = {
+        "artifact_schema_version": 1,
+        "stage_contract_version": 1,
+        "fingerprint_contract_version": 4,
+        "plan": {"fixture": "small-reskin-comparison"},
+        "dataset_identity": {
+            "dataset_id": "small-reskin-fixture-v1",
+            "files": [
+                {
+                    "role": "input",
+                    "size": dataset_file_size,
+                    "sha256": "d" * 64,
+                    "shape": list(shape),
+                    "storage_dtype": ">f4",
+                }
+            ],
+        },
+        "implementation_identity": {"fixture": "small-reskin-comparison-v1"},
+        "runtime_identity": runtime_identity,
+    }
+    source_run_fingerprint = reskin_policy_comparison.canonical_fingerprint(computation)
+    (tmp_path / "run_manifest.json").write_text(
+        reskin_policy_comparison._canonical_json(
+            {
+                **computation,
+                "run_fingerprint": source_run_fingerprint,
+                "provenance": {},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     paths = compare_reskin_policies_from_bundle(tmp_path)
 
     payload = json.loads(paths[0].read_text())
     assert payload["source_cell"] == "Q-QUAL"
+    assert payload["schema_version"] == 3
+    assert payload["source_run_fingerprint"] == source_run_fingerprint
+    assert payload["source_runtime_identity_schema_version"] == 3
+    assert (
+        payload["source_runtime_identity_sha256"] == payload["comparison_runtime_identity_sha256"]
+    )
+    assert payload["comparison_implementation_identity"]["algorithm_modules"]
     assert payload["upstream_parent_stage_fingerprints"] == {
         "scanner": scanner_fingerprint,
         "voting": voting_fingerprint,
@@ -882,9 +923,65 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
     snapshots = {path: path.read_bytes() for path in paths}
     completion_snapshot = completion_path.read_bytes()
 
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "numerical_runtime_identity",
+        lambda: pytest.fail("shallow comparison resume queried current runtime"),
+    )
     assert compare_reskin_policies_from_bundle(tmp_path, resume=True) == paths
+    assert validate_f3_reskin_policy_comparison(tmp_path) == paths
     assert {path: path.read_bytes() for path in paths} == snapshots
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "numerical_runtime_identity",
+        lambda: runtime_identity,
+    )
     assert validate_f3_reskin_policy_comparison(tmp_path, deep=True) == paths
+
+    changed_runtime = copy.deepcopy(runtime_identity)
+    changed_runtime["python_hash_seed"] = (
+        "different" if runtime_identity["python_hash_seed"] != "different" else "other"
+    )
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "numerical_runtime_identity",
+        lambda: changed_runtime,
+    )
+    original_open_parent_dat = reskin_policy_comparison._open_parent_dat
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "_open_parent_dat",
+        lambda *args, **kwargs: pytest.fail("runtime mismatch opened a parent DAT"),
+    )
+    separate_root = tmp_path / "separate-comparison"
+    with pytest.raises(ValueError, match="current runtime identity does not match"):
+        compare_reskin_policies_from_bundle(tmp_path, output_dir=separate_root)
+    assert not separate_root.exists()
+    with pytest.raises(ValueError, match="current runtime identity does not match"):
+        validate_f3_reskin_policy_comparison(tmp_path, deep=True)
+    assert {path: path.read_bytes() for path in paths} == snapshots
+    assert completion_path.read_bytes() == completion_snapshot
+
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "numerical_runtime_identity",
+        lambda: runtime_identity,
+    )
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "_open_parent_dat",
+        original_open_parent_dat,
+    )
+    separate_paths = compare_reskin_policies_from_bundle(
+        tmp_path,
+        output_dir=separate_root,
+    )
+    separate_payload = json.loads(separate_paths[0].read_text())
+    assert separate_payload["source_run_fingerprint"] == source_run_fingerprint
+    assert (
+        separate_payload["source_runtime_identity_sha256"]
+        == payload["source_runtime_identity_sha256"]
+    )
 
     tamper_cases = (
         (
@@ -953,6 +1050,56 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         for path, content in snapshots.items():
             path.write_bytes(content)
         completion_path.write_bytes(completion_snapshot)
+
+    provenance_tamper_cases = (
+        ("report", "source_run_fingerprint", "e" * 64, "source run fingerprint"),
+        ("completion", "source_run_fingerprint", "e" * 64, "source run fingerprint"),
+        ("report", "source_runtime_identity_sha256", "e" * 64, "source runtime digest"),
+        (
+            "completion",
+            "comparison_runtime_identity_sha256",
+            "e" * 64,
+            "runtime digest",
+        ),
+        (
+            "completion",
+            "comparison_implementation_identity_sha256",
+            "e" * 64,
+            "implementation digest",
+        ),
+    )
+    for target, field, value, expected_error in provenance_tamper_cases:
+        report_payload = json.loads(snapshots[paths[0]])
+        completion = json.loads(completion_snapshot)
+        if target == "report":
+            report_payload[field] = value
+            paths[0].write_text(
+                reskin_policy_comparison._canonical_json(report_payload) + "\n",
+                encoding="utf-8",
+            )
+            completion["artifact_files"][paths[0].name] = (
+                reskin_policy_comparison.artifact_file_metadata(paths[0])
+            )
+        else:
+            completion[field] = value
+        completion_path.write_text(
+            reskin_policy_comparison._canonical_json(completion) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=expected_error):
+            validate_f3_reskin_policy_comparison(tmp_path)
+        paths[0].write_bytes(snapshots[paths[0]])
+        completion_path.write_bytes(completion_snapshot)
+
+    legacy_completion = json.loads(completion_snapshot)
+    legacy_completion["completion_schema_version"] = 2
+    completion_path.write_text(
+        reskin_policy_comparison._canonical_json(legacy_completion) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unsupported.*completion schema"):
+        validate_f3_reskin_policy_comparison(tmp_path)
+    completion_path.write_bytes(completion_snapshot)
 
     paths[4].write_text("{}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="hash or size mismatch"):

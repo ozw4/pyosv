@@ -7,7 +7,7 @@ import hashlib
 import io
 import json
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,21 @@ from pyosv.synthetic_metrics import (
     surface_comparison_metrics,
 )
 
-from .artifacts import artifact_file_metadata, atomic_write_artifact, canonical_json_bytes
+from .artifacts import (
+    F3_FINGERPRINT_CONTRACT_VERSION,
+    RUN_MANIFEST_FILE,
+    artifact_file_metadata,
+    atomic_write_artifact,
+    canonical_fingerprint,
+    canonical_json_bytes,
+    implementation_identity,
+)
+from .data import F3_DATASET_ID
+from .runtime_identity import (
+    numerical_runtime_identity,
+    validate_numerical_runtime_identity,
+    validate_publication_runtime_identity,
+)
 from .skin_artifacts import (
     CONNECTED_COMPONENT_FALLBACK,
     F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
@@ -42,8 +56,8 @@ from .skin_artifacts import (
     validate_skin_generation_provenance,
 )
 
-F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 2
-F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION = 2
+F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 3
+F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION = 3
 F3_RESKIN_POLICY_COMPARISON_FILES = (
     "reskin_policy_comparison.json",
     "reskin_policy_metrics.csv",
@@ -63,6 +77,26 @@ _CONTRAST_FIELDS = (
     "parent_ridge_buffered_recall_delta",
     "parent_ridge_symmetric_chamfer_mean_delta",
 )
+_RUN_COMPUTATION_FIELDS = (
+    "artifact_schema_version",
+    "stage_contract_version",
+    "fingerprint_contract_version",
+    "plan",
+    "dataset_identity",
+    "implementation_identity",
+    "runtime_identity",
+)
+_SHA256_LENGTH = 64
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceBundleIdentity:
+    run_fingerprint: str
+    dataset_identity: dict[str, Any]
+    runtime_identity: dict[str, Any]
+    runtime_identity_schema_version: int
+    runtime_identity_sha256: str
+    official: bool
 
 
 def compare_reskin_policies_from_parent(
@@ -190,18 +224,32 @@ def write_f3_reskin_policy_comparison(
     markdown_path = root / F3_RESKIN_POLICY_COMPARISON_FILES[2]
     baseline_skin_path = root / F3_RESKIN_POLICY_COMPARISON_FILES[3]
     candidate_skin_path = root / F3_RESKIN_POLICY_COMPARISON_FILES[4]
-    json_path.write_text(_canonical_json(report) + "\n", encoding="utf-8")
-    csv_path.write_text(_comparison_csv(report), encoding="utf-8")
-    markdown_path.write_text(_comparison_markdown(report), encoding="utf-8")
-    baseline_skin_path.write_text(
-        _canonical_json(policies[RESKIN_POLICY_EXISTING_CELLS_V1]["canonical_skin_artifact"])
-        + "\n",
-        encoding="utf-8",
+    atomic_write_artifact(
+        json_path,
+        canonical_json_bytes(report) + b"\n",
+        temporary_prefix=".reskin_policy_comparison.json.tmp-",
     )
-    candidate_skin_path.write_text(
-        _canonical_json(policies[RESKIN_POLICY_REFERENCE_DENSE_V1]["canonical_skin_artifact"])
-        + "\n",
-        encoding="utf-8",
+    atomic_write_artifact(
+        csv_path,
+        _comparison_csv(report).encode("utf-8"),
+        temporary_prefix=".reskin_policy_metrics.csv.tmp-",
+    )
+    atomic_write_artifact(
+        markdown_path,
+        _comparison_markdown(report).encode("utf-8"),
+        temporary_prefix=".reskin_policy_comparison.md.tmp-",
+    )
+    atomic_write_artifact(
+        baseline_skin_path,
+        canonical_json_bytes(policies[RESKIN_POLICY_EXISTING_CELLS_V1]["canonical_skin_artifact"])
+        + b"\n",
+        temporary_prefix=".existing_cells_v1_skins.json.tmp-",
+    )
+    atomic_write_artifact(
+        candidate_skin_path,
+        canonical_json_bytes(policies[RESKIN_POLICY_REFERENCE_DENSE_V1]["canonical_skin_artifact"])
+        + b"\n",
+        temporary_prefix=".reference_dense_v1_skins.json.tmp-",
     )
     return (
         json_path,
@@ -228,6 +276,7 @@ def compare_reskin_policies_from_bundle(
         raise TypeError("resume and deep must be bool")
     root = Path(bundle)
     result = load_f3d_mode_comparison_result(root, deep=False)
+    source_identity = _load_source_bundle_identity(root)
     destination = (
         Path(output_dir) if output_dir is not None else root / F3_RESKIN_POLICY_COMPARISON_DIR
     )
@@ -241,6 +290,8 @@ def compare_reskin_policies_from_bundle(
             deep=deep,
             result=result,
         )
+    comparison_runtime_sha256 = _validate_current_comparison_runtime(source_identity)
+    comparison_implementation = _comparison_implementation_identity()
     if destination.exists() and (not destination.is_dir() or destination.is_symlink()):
         raise ValueError("reskin policy comparison output must be a directory")
     if resume and destination.is_dir():
@@ -258,13 +309,24 @@ def compare_reskin_policies_from_bundle(
             if item.name not in allowed_partial_files or not item.is_file() or item.is_symlink():
                 raise ValueError("incomplete reskin policy comparison file set is invalid")
 
-    report, cell, shape = _comparison_report_from_bundle(root, result)
+    report, cell, shape = _comparison_report_from_bundle(
+        root,
+        result,
+        source_identity=source_identity,
+        comparison_runtime_sha256=comparison_runtime_sha256,
+        comparison_implementation=comparison_implementation,
+    )
     paths = write_f3_reskin_policy_comparison(report, destination)
+    comparison_implementation_sha256 = canonical_fingerprint(comparison_implementation)
     completion = {
         "completion_schema_version": F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION,
         "comparison_schema_version": F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
         "status": "complete",
         "source_cell": F3_RESKIN_POLICY_COMPARISON_CELL,
+        "source_run_fingerprint": source_identity.run_fingerprint,
+        "source_runtime_identity_sha256": source_identity.runtime_identity_sha256,
+        "comparison_runtime_identity_sha256": comparison_runtime_sha256,
+        "comparison_implementation_identity_sha256": comparison_implementation_sha256,
         "upstream_parent_stage_fingerprints": {
             "scanner": cell.stages.scanner,
             "voting": cell.stages.voting,
@@ -322,6 +384,10 @@ def validate_f3_reskin_policy_comparison(
         "comparison_schema_version",
         "status",
         "source_cell",
+        "source_run_fingerprint",
+        "source_runtime_identity_sha256",
+        "comparison_runtime_identity_sha256",
+        "comparison_implementation_identity_sha256",
         "upstream_parent_stage_fingerprints",
         "artifact_files",
     }
@@ -339,6 +405,7 @@ def validate_f3_reskin_policy_comparison(
     if completion["source_cell"] != F3_RESKIN_POLICY_COMPARISON_CELL:
         raise ValueError("reskin policy comparison source cell mismatch")
 
+    source_identity = _load_source_bundle_identity(root)
     if result is None:
         from .result import load_f3d_mode_comparison_result
 
@@ -353,6 +420,17 @@ def validate_f3_reskin_policy_comparison(
         raise ValueError("reskin policy comparison parent stage mismatch")
 
     paths = tuple(destination / filename for filename in F3_RESKIN_POLICY_COMPARISON_FILES)
+    report = _read_json_object(paths[0], "reskin policy comparison report")
+    comparison_implementation = _comparison_implementation_identity()
+    comparison_implementation_sha256 = canonical_fingerprint(comparison_implementation)
+    _validate_comparison_provenance(
+        report,
+        completion,
+        source_identity=source_identity,
+        comparison_implementation=comparison_implementation,
+        comparison_implementation_sha256=comparison_implementation_sha256,
+    )
+
     metadata = completion["artifact_files"]
     if not isinstance(metadata, Mapping) or set(metadata) != set(F3_RESKIN_POLICY_COMPARISON_FILES):
         raise ValueError("reskin policy comparison artifact metadata mismatch")
@@ -362,7 +440,6 @@ def validate_f3_reskin_policy_comparison(
                 f"reskin policy comparison artifact hash or size mismatch: {path.name}"
             )
 
-    report = _read_json_object(paths[0], "reskin policy comparison report")
     expected_report_fields = {
         "schema_version",
         "baseline",
@@ -372,6 +449,11 @@ def validate_f3_reskin_policy_comparison(
         "policies",
         "contrast",
         "source_cell",
+        "source_run_fingerprint",
+        "source_runtime_identity_schema_version",
+        "source_runtime_identity_sha256",
+        "comparison_runtime_identity_sha256",
+        "comparison_implementation_identity",
         "upstream_parent_stage_fingerprints",
     }
     if set(report) != expected_report_fields:
@@ -453,7 +535,14 @@ def validate_f3_reskin_policy_comparison(
         raise ValueError("reskin policy comparison Markdown does not match report")
 
     if deep:
-        recomputed, _, _ = _comparison_report_from_bundle(root, result)
+        comparison_runtime_sha256 = _validate_current_comparison_runtime(source_identity)
+        recomputed, _, _ = _comparison_report_from_bundle(
+            root,
+            result,
+            source_identity=source_identity,
+            comparison_runtime_sha256=comparison_runtime_sha256,
+            comparison_implementation=comparison_implementation,
+        )
         if canonical_json_bytes(recomputed) != canonical_json_bytes(report):
             raise ValueError(
                 "reskin policy comparison does not exactly match skin-only recomputation"
@@ -487,7 +576,17 @@ def _comparison_cell_and_config(result: Any) -> tuple[Any, SyntheticSkinningConf
 def _comparison_report_from_bundle(
     root: Path,
     result: Any,
+    *,
+    source_identity: _SourceBundleIdentity | None = None,
+    comparison_runtime_sha256: str | None = None,
+    comparison_implementation: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Any, tuple[int, int, int]]:
+    if source_identity is None:
+        source_identity = _load_source_bundle_identity(root)
+    if comparison_runtime_sha256 is None:
+        comparison_runtime_sha256 = _validate_current_comparison_runtime(source_identity)
+    if comparison_implementation is None:
+        comparison_implementation = _comparison_implementation_identity()
     cell, config = _comparison_cell_and_config(result)
     scanner_path = root / "stages" / "scanner" / cell.stages.scanner
     voting_path = root / "stages" / "voting" / cell.stages.voting
@@ -524,6 +623,13 @@ def _comparison_report_from_bundle(
                 mapping.close()
 
     report["source_cell"] = F3_RESKIN_POLICY_COMPARISON_CELL
+    report["source_run_fingerprint"] = source_identity.run_fingerprint
+    report["source_runtime_identity_schema_version"] = (
+        source_identity.runtime_identity_schema_version
+    )
+    report["source_runtime_identity_sha256"] = source_identity.runtime_identity_sha256
+    report["comparison_runtime_identity_sha256"] = comparison_runtime_sha256
+    report["comparison_implementation_identity"] = dict(comparison_implementation)
     report["upstream_parent_stage_fingerprints"] = {
         "scanner": cell.stages.scanner,
         "voting": cell.stages.voting,
@@ -878,6 +984,201 @@ def _read_json_object(path: Path, context: str) -> dict[str, Any]:
         raise ValueError(f"{context} is not strict JSON") from error
     if not isinstance(value, dict):
         raise ValueError(f"{context} must be an object")
+    return value
+
+
+def _load_source_bundle_identity(root: Path) -> _SourceBundleIdentity:
+    manifest = _read_json_object(root / RUN_MANIFEST_FILE, RUN_MANIFEST_FILE)
+    return _source_bundle_identity_from_manifest(manifest)
+
+
+def _source_bundle_identity_from_manifest(
+    manifest: Mapping[str, Any],
+) -> _SourceBundleIdentity:
+    """Return canonical numerical provenance from one source run manifest."""
+
+    if not isinstance(manifest, Mapping):
+        raise ValueError("source run manifest must be an object")
+    expected_fields = {*_RUN_COMPUTATION_FIELDS, "run_fingerprint", "provenance"}
+    if set(manifest) != expected_fields:
+        raise ValueError("source run manifest field set mismatch")
+    computation = {name: manifest[name] for name in _RUN_COMPUTATION_FIELDS}
+    run_fingerprint = _validated_sha256(
+        manifest["run_fingerprint"],
+        "source run fingerprint",
+    )
+    if canonical_fingerprint(computation) != run_fingerprint:
+        raise ValueError("source run manifest fingerprint mismatch")
+    if manifest["fingerprint_contract_version"] != F3_FINGERPRINT_CONTRACT_VERSION:
+        raise ValueError("source run manifest fingerprint contract mismatch")
+
+    dataset_identity = _validated_source_dataset_identity(manifest["dataset_identity"])
+    official = dataset_identity["dataset_id"] == F3_DATASET_ID
+    try:
+        runtime_identity = (
+            validate_publication_runtime_identity(manifest["runtime_identity"])
+            if official
+            else validate_numerical_runtime_identity(manifest["runtime_identity"])
+        )
+    except ValueError as error:
+        contract = "publication runtime" if official else "runtime"
+        raise ValueError(f"source run manifest {contract} identity is invalid: {error}") from error
+    schema_version = runtime_identity["runtime_identity_schema_version"]
+    return _SourceBundleIdentity(
+        run_fingerprint=run_fingerprint,
+        dataset_identity=dataset_identity,
+        runtime_identity=runtime_identity,
+        runtime_identity_schema_version=schema_version,
+        runtime_identity_sha256=canonical_fingerprint(runtime_identity),
+        official=official,
+    )
+
+
+def _validated_source_dataset_identity(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {"dataset_id", "files"}:
+        raise ValueError("source run manifest dataset identity is invalid")
+    dataset_id = value["dataset_id"]
+    files = value["files"]
+    if not isinstance(dataset_id, str) or not dataset_id:
+        raise ValueError("source run manifest dataset ID is invalid")
+    if not isinstance(files, list) or not files:
+        raise ValueError("source run manifest dataset files are invalid")
+    roles: set[str] = set()
+    normalized_files: list[dict[str, Any]] = []
+    for item in files:
+        if not isinstance(item, Mapping) or set(item) != {
+            "role",
+            "size",
+            "sha256",
+            "shape",
+            "storage_dtype",
+        }:
+            raise ValueError("source run manifest dataset file identity is invalid")
+        role = item["role"]
+        size = item["size"]
+        shape = item["shape"]
+        if not isinstance(role, str) or not role or role in roles:
+            raise ValueError("source run manifest dataset file roles are invalid")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise ValueError("source run manifest dataset file size is invalid")
+        if (
+            not isinstance(shape, list)
+            or len(shape) != 3
+            or any(
+                isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0
+                for dimension in shape
+            )
+        ):
+            raise ValueError("source run manifest dataset file shape is invalid")
+        try:
+            dtype = np.dtype(item["storage_dtype"])
+        except TypeError as error:
+            raise ValueError("source run manifest dataset file dtype is invalid") from error
+        if dtype.str != ">f4" or size != int(np.prod(shape, dtype=np.int64)) * dtype.itemsize:
+            raise ValueError("source run manifest dataset file layout is invalid")
+        roles.add(role)
+        normalized_files.append(
+            {
+                "role": role,
+                "size": size,
+                "sha256": _validated_sha256(
+                    item["sha256"],
+                    f"source dataset file {role} digest",
+                ),
+                "shape": list(shape),
+                "storage_dtype": dtype.str,
+            }
+        )
+    return {"dataset_id": dataset_id, "files": normalized_files}
+
+
+def _validate_current_comparison_runtime(source: _SourceBundleIdentity) -> str:
+    """Require exact source/current numerical identity before recomputation."""
+
+    try:
+        current_raw = numerical_runtime_identity()
+        current = (
+            validate_publication_runtime_identity(current_raw)
+            if source.official
+            else validate_numerical_runtime_identity(current_raw)
+        )
+    except (RuntimeError, ValueError) as error:
+        contract = "publication runtime" if source.official else "runtime"
+        raise ValueError(f"comparison current {contract} identity is invalid: {error}") from error
+    current_sha256 = canonical_fingerprint(current)
+    if current_sha256 != source.runtime_identity_sha256 or canonical_json_bytes(
+        current
+    ) != canonical_json_bytes(source.runtime_identity):
+        raise ValueError("comparison current runtime identity does not match source run manifest")
+    return current_sha256
+
+
+def _comparison_implementation_identity() -> dict[str, Any]:
+    package_root = Path(__file__).resolve().parents[2]
+    relative_sources = (
+        "candidate_volume.py",
+        "cells.py",
+        "skin.py",
+        "skinner.py",
+        "_skinner/growth.py",
+        "_skinner/reskin.py",
+        "evaluation/workflow3d.py",
+        "evaluation/f3d_mode_comparison/reskin_policy_comparison.py",
+        "experimental/boundary_skinning.py",
+        "experimental/skin_diagnostics.py",
+        "synthetic_metrics.py",
+    )
+    return implementation_identity(
+        source_files={name: package_root / name for name in relative_sources}
+    )
+
+
+def _validate_comparison_provenance(
+    report: Mapping[str, Any],
+    completion: Mapping[str, Any],
+    *,
+    source_identity: _SourceBundleIdentity,
+    comparison_implementation: Mapping[str, Any],
+    comparison_implementation_sha256: str,
+) -> None:
+    source_runtime_sha256 = source_identity.runtime_identity_sha256
+    if (
+        report.get("source_run_fingerprint") != source_identity.run_fingerprint
+        or completion["source_run_fingerprint"] != source_identity.run_fingerprint
+    ):
+        raise ValueError("reskin policy comparison source run fingerprint mismatch")
+    if (
+        report.get("source_runtime_identity_schema_version")
+        != source_identity.runtime_identity_schema_version
+    ):
+        raise ValueError("reskin policy comparison source runtime schema mismatch")
+    if (
+        report.get("source_runtime_identity_sha256") != source_runtime_sha256
+        or completion["source_runtime_identity_sha256"] != source_runtime_sha256
+    ):
+        raise ValueError("reskin policy comparison source runtime digest mismatch")
+    if (
+        report.get("comparison_runtime_identity_sha256") != source_runtime_sha256
+        or completion["comparison_runtime_identity_sha256"] != source_runtime_sha256
+    ):
+        raise ValueError("reskin policy comparison runtime digest mismatch")
+    if report.get("comparison_implementation_identity") != comparison_implementation:
+        raise ValueError("reskin policy comparison implementation identity mismatch")
+    if (
+        completion["comparison_implementation_identity_sha256"] != comparison_implementation_sha256
+        or canonical_fingerprint(report["comparison_implementation_identity"])
+        != comparison_implementation_sha256
+    ):
+        raise ValueError("reskin policy comparison implementation digest mismatch")
+
+
+def _validated_sha256(value: Any, context: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != _SHA256_LENGTH
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{context} must be a lowercase SHA-256 digest")
     return value
 
 

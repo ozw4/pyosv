@@ -106,7 +106,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--deep-validate",
         action="store_true",
-        help="Recompute full-volume metrics during validation.",
+        help=(
+            "Recompute full-volume metrics during validation. Reskin comparison replay "
+            "requires the exact publication runtime recorded by the source bundle."
+        ),
     )
     parser.add_argument(
         "--pretty",
@@ -135,7 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="BASELINE,CANDIDATE",
         help=(
             "After the canonical run, branch the Q-QUAL voting/thinning parent into "
-            "the fixed existing_cells_v1,reference_dense_v1 skin-only comparison."
+            "the fixed existing_cells_v1,reference_dense_v1 skin-only comparison. "
+            "Recomputation requires the exact publication runtime recorded by the "
+            "source bundle."
         ),
     )
     parser.add_argument(
