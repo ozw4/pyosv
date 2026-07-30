@@ -104,6 +104,7 @@ def _generate_official_bundle(
     monkeypatch: pytest.MonkeyPatch,
     *,
     workflow_runner: Any | None = None,
+    plan_config: Any | None = None,
 ) -> Any:
     monkeypatch.setattr(result_module, "numerical_runtime_identity", lambda: runtime_identity)
     evidence_calls: Counter[str] = Counter()
@@ -127,6 +128,8 @@ def _generate_official_bundle(
     options: dict[str, Any] = {}
     if workflow_runner is not None:
         options["workflow_runner"] = workflow_runner
+    if plan_config is not None:
+        options["plan_config"] = plan_config
     return _run_fixture(
         data_root,
         output_root,

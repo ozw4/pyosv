@@ -25,11 +25,10 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
     canonical_fingerprint,
     compare_reskin_policies_from_bundle,
-    compare_reskin_policies_from_parent,
     validate_completed_f3d_bundle,
     validate_f3_reskin_policy_comparison,
 )
-from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
+from pyosv.evaluation.workflow3d import execute_skinning_phase3d
 from pyosv.synthetic_metrics import metrics_from_surface_evidence
 
 from .test_final_acceptance_integration import (
@@ -90,6 +89,9 @@ def _write_rehashed_comparison(
 def _comparison_fixture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    workflow_runner: Any = _controlled_reskinned_primary_workflow,
+    plan_config: Any | None = None,
 ) -> tuple[
     Path,
     Any,
@@ -110,7 +112,8 @@ def _comparison_fixture(
         runtime_identity,
         Counter(),
         monkeypatch,
-        workflow_runner=_controlled_reskinned_primary_workflow,
+        workflow_runner=workflow_runner,
+        plan_config=plan_config,
     )
     original_load = result_module.load_f3d_mode_comparison_result
 
@@ -134,6 +137,30 @@ def _comparison_fixture(
         completion_path,
         json.loads(paths[0].read_text(encoding="utf-8")),
         json.loads(completion_path.read_text(encoding="utf-8")),
+    )
+
+
+def _controlled_discarding_workflow(**kwargs: Any) -> Any:
+    base = _controlled_reskinned_primary_workflow(**kwargs)
+    fv = base.fv.copy()
+    fv[12, 12, 12] = np.float32(0.9)
+    fvt = fv.copy()
+    skin = execute_skinning_phase3d(
+        fv=fv,
+        fvt=fvt,
+        vp=base.vp,
+        vt=base.vt,
+        skinning_settings=kwargs["skinning_settings"],
+        variant_spec=kwargs["variant_spec"],
+        scanner_target_positive_mask=None,
+        boundary_fallback_runner=kwargs["boundary_fallback_runner"],
+    )
+    return replace(
+        base,
+        fv=fv,
+        fvt=fvt,
+        skin=skin,
+        diagnostics=replace(base.diagnostics, skinning=skin.diagnostics),
     )
 
 
@@ -299,29 +326,62 @@ def test_source_bindings_and_rehashed_tamper_rejection_phases(
         manifest_path.write_bytes(manifest_snapshot)
         restore()
 
-    q_qual_index = next(index for index, cell in enumerate(source.cells) if cell.label == "Q-QUAL")
-    q_qual = source.cells[q_qual_index]
-    changed_config = deepcopy(dict(q_qual.resolved_config))
-    changed_config["skinning"]["min_skin_size"] += 1
-    changed_cells = list(source.cells)
-    changed_cells[q_qual_index] = replace(q_qual, resolved_config=changed_config)
-    with pytest.raises(ValueError, match="resolved config mismatch"):
-        validate_f3_reskin_policy_comparison(
-            output_root,
-            result=replace(source, cells=tuple(changed_cells)),
-        )
-    assert not parent_reads
+    source_loads: Counter[str] = Counter()
+    production_loader = result_module.load_f3d_mode_comparison_result
 
-    changed_cells[q_qual_index] = replace(
-        q_qual,
-        stages=replace(q_qual.stages, thinning="e" * 64),
+    def tracked_source_loader(*args: Any, **kwargs: Any) -> Any:
+        source_loads["bundle"] += 1
+        return production_loader(*args, **kwargs)
+
+    monkeypatch.setattr(
+        result_module,
+        "load_f3d_mode_comparison_result",
+        tracked_source_loader,
     )
-    with pytest.raises(ValueError, match="parent stage mismatch"):
-        validate_f3_reskin_policy_comparison(
-            output_root,
-            result=replace(source, cells=tuple(changed_cells)),
+    cells_report_path = output_root / "reports" / "cells.json"
+    q_qual_path = output_root / "cells" / "Q-QUAL.json"
+    bundle_completion_path = output_root / "completion.json"
+    source_snapshots = _file_state((cells_report_path, q_qual_path, bundle_completion_path))
+
+    def write_source_cell_tamper(field: str) -> None:
+        cells_report = json.loads(cells_report_path.read_text(encoding="utf-8"))
+        report_cell = next(cell for cell in cells_report["cells"] if cell["label"] == "Q-QUAL")
+        cell_payload = json.loads(q_qual_path.read_text(encoding="utf-8"))
+        if field == "resolved_config":
+            report_cell["resolved_config"]["skinning"]["min_skin_size"] += 1
+            cell_payload["resolved_config"]["skinning"]["min_skin_size"] += 1
+        else:
+            report_cell["stages"]["thinning"] = "e" * 64
+            cell_payload["stages"]["thinning"] = "e" * 64
+        cells_report_path.write_text(
+            comparison_module._canonical_json(cells_report) + "\n",
+            encoding="utf-8",
         )
-    assert not parent_reads
+        q_qual_path.write_text(
+            comparison_module._canonical_json(cell_payload) + "\n",
+            encoding="utf-8",
+        )
+        bundle_completion = json.loads(bundle_completion_path.read_text(encoding="utf-8"))
+        bundle_completion["report_files"]["cells.json"] = comparison_module.artifact_file_metadata(
+            cells_report_path
+        )
+        bundle_completion_path.write_text(
+            comparison_module._canonical_json(bundle_completion) + "\n",
+            encoding="utf-8",
+        )
+
+    for field, expected_error in (
+        ("resolved_config", "resolved_config"),
+        ("parent_stage", "(?:stage|artifact)"),
+    ):
+        write_source_cell_tamper(field)
+        with pytest.raises(ValueError, match=expected_error):
+            validate_f3_reskin_policy_comparison(output_root)
+        assert source_loads == Counter({"bundle": 1})
+        assert not parent_reads
+        for path, (_, _, payload) in source_snapshots.items():
+            path.write_bytes(payload)
+        source_loads.clear()
 
     def policy(report: dict[str, Any]) -> dict[str, Any]:
         return report["policies"]["existing_cells_v1"]
@@ -465,37 +525,54 @@ def test_source_bindings_and_rehashed_tamper_rejection_phases(
 
 
 @pytest.mark.parametrize("min_skin_size", (2, 50), ids=("accepted-and-discarded", "all-discarded"))
-def test_final_artifacts_exclude_discarded_attempts(min_skin_size: int) -> None:
-    shape = (15, 15, 15)
-    fv = np.zeros(shape, dtype=np.float32)
-    fv[3:10, 6, 3:10] = np.float32(0.9)
-    fv[12, 12, 12] = np.float32(0.9)
-    report = compare_reskin_policies_from_parent(
-        fv=fv,
-        fvt=fv.copy(),
-        vp=np.zeros(shape, dtype=np.float32),
-        vt=np.full(shape, np.float32(90.0), dtype=np.float32),
-        skinning_config=SyntheticSkinningConfig(
+def test_final_artifacts_exclude_discarded_attempts_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    min_skin_size: int,
+) -> None:
+    plan_config = _reskinned_primary_config()
+    plan_config = replace(
+        plan_config,
+        skinning_template=replace(
+            plan_config.skinning_template,
             method="quality",
             growth_source="pre_thin",
-            min_likelihood=0.5,
             min_skin_size=min_skin_size,
-            d=1,
-            ru=5,
-            rv=6,
-            rw=6,
-            max_steps=6,
-            reskin=True,
-            accepted_occupancy_radius=0,
-            boundary_skinner_fallback=False,
         ),
     )
-    for item in report["policies"].values():
+    (
+        output_root,
+        _,
+        runtime_identity,
+        paths,
+        _,
+        _,
+        _,
+    ) = _comparison_fixture(
+        tmp_path,
+        monkeypatch,
+        workflow_runner=_controlled_discarding_workflow,
+        plan_config=plan_config,
+    )
+    assert validate_f3_reskin_policy_comparison(output_root) == paths
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: deepcopy(runtime_identity),
+    )
+    assert validate_f3_reskin_policy_comparison(output_root, deep=True) == paths
+
+    report = json.loads(paths[0].read_text(encoding="utf-8"))
+    for item, artifact_path in zip(
+        report["policies"].values(),
+        paths[3:],
+        strict=True,
+    ):
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        assert artifact == item["canonical_skin_artifact"]
         final = item["diagnostics"]["reskin"]
         attempted = final["attempted"]
-        cells = [
-            cell for skin in item["canonical_skin_artifact"]["skins"] for cell in skin["cells"]
-        ]
+        cells = [cell for skin in artifact["skins"] for cell in skin["cells"]]
         assert attempted["processed_skin_count"] > final["processed_skin_count"]
         assert attempted["output_cell_count"] > final["output_cell_count"]
         assert all((cell["i1"], cell["i2"], cell["i3"]) != (12, 12, 12) for cell in cells)
