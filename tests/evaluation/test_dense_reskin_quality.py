@@ -1077,6 +1077,13 @@ def test_f3_pair_writes_json_csv_markdown_and_canonical_skins(tmp_path) -> None:
         vt=vt,
         skinning_config=config,
     )
+    tampered_diagnostics = copy.deepcopy(report)
+    tampered_diagnostics["policies"]["existing_cells_v1"]["diagnostics"]["reskin"]["attempted"][
+        "processed_skin_count"
+    ] += 1
+    assert reskin_policy_comparison._report_semantic_evidence_digest(
+        tampered_diagnostics
+    ) != reskin_policy_comparison._report_semantic_evidence_digest(report)
 
     paths = write_f3_reskin_policy_comparison(report, tmp_path)
 
@@ -1649,6 +1656,18 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         (
             tamper_parent_surface_metric,
             "metrics/evidence mismatch",
+        ),
+        (
+            lambda report: report["policies"]["existing_cells_v1"]["diagnostics"]["reskin"][
+                "attempted"
+            ].__setitem__(
+                "output_cell_count",
+                report["policies"]["existing_cells_v1"]["diagnostics"]["reskin"]["attempted"][
+                    "output_cell_count"
+                ]
+                + 1,
+            ),
+            "reskin diagnostics are invalid",
         ),
     )
     for tamper, expected_error in tamper_cases:

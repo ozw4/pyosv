@@ -1066,6 +1066,7 @@ def _validate_cells_and_stages(
                     validate_reskin_diagnostics_contract(
                         report_reskin_diagnostics,
                         semantic_contract_version=semantic_contract_version,
+                        skin_count=len(parsed_skins[cell.stages.skinning].skins),
                     )
                 provenance = resolve_final_skin_cell_value_provenance(
                     _object(cell.resolved_config["skinning"], "cell skinning config"),
@@ -1073,17 +1074,26 @@ def _validate_cells_and_stages(
                     fallback_used=fallback_used,
                     resolved_stage_settings=skinning_settings,
                 )
+                if (
+                    semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+                    and report_reskin_diagnostics is not None
+                    and report_reskin_diagnostics.get("reskin_policy")
+                    != _object(
+                        cell.resolved_config["skinning"],
+                        "cell skinning config",
+                    ).get("reskin_policy")
+                ):
+                    raise F3ResultValidationError(
+                        "reskin diagnostics policy conflicts with resolved config"
+                    )
                 validate_skin_generation_provenance(
                     parsed_skins[cell.stages.skinning],
                     provenance,
                     semantic_contract_version=semantic_contract_version,
                     reskin_diagnostics=(
                         report_reskin_diagnostics
-                        if provenance
-                        in {
-                            PRIMARY_EXISTING_CELLS_RESKINNED,
-                            PRIMARY_DENSE_RESKINNED,
-                        }
+                        if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+                        or provenance in {PRIMARY_EXISTING_CELLS_RESKINNED, PRIMARY_DENSE_RESKINNED}
                         else None
                     ),
                 )

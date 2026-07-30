@@ -64,6 +64,7 @@ from .skin_artifacts import (
     canonical_skins_payload,
     parse_skins_json,
     validate_skin_generation_provenance,
+    validate_reskin_diagnostics_contract,
 )
 
 F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION = 4
@@ -665,11 +666,14 @@ def validate_f3_reskin_policy_comparison(
         fallback_used = diagnostics.get("fallback_used")
         if not isinstance(fallback_used, bool):
             raise ValueError("reskin policy comparison fallback_used must be a bool")
+        reskin_diagnostics = diagnostics.get("reskin")
+        if not isinstance(reskin_diagnostics, Mapping):
+            raise ValueError("reskin policy comparison reskin diagnostics must be an object")
         validate_skin_generation_provenance(
             parsed,
             CONNECTED_COMPONENT_FALLBACK if fallback_used else provenance,
             semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
-            reskin_diagnostics=_final_reskin_diagnostics(diagnostics),
+            reskin_diagnostics=reskin_diagnostics,
         )
 
     if dict(contrast) != _comparison_contrast(policies):
@@ -894,6 +898,7 @@ def _report_semantic_evidence_digest(report: Mapping[str, Any]) -> str:
                 "skin_topology",
                 "parent_ridge_surface",
                 "duplicate_rounded_cell_index_count",
+                "diagnostics",
             )
         }
         for policy in (
@@ -1063,6 +1068,21 @@ def _validate_reported_policy_metrics(
     if set(item) != expected_fields:
         raise ValueError("reskin policy comparison policy field set mismatch")
     diagnostics = item["diagnostics"]
+    reskin_diagnostics = diagnostics.get("reskin")
+    if not isinstance(reskin_diagnostics, Mapping):
+        raise ValueError("reskin policy comparison reskin diagnostics must be an object")
+    try:
+        validate_reskin_diagnostics_contract(
+            reskin_diagnostics,
+            semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+            skin_count=len(parsed.skins),
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"reskin policy comparison reskin diagnostics are invalid: {error}"
+        ) from error
+    if reskin_diagnostics.get("reskin_policy") != item["reskin_policy"]:
+        raise ValueError("reskin policy comparison diagnostics policy identity mismatch")
     expected_generation = reskin_generation_metrics(
         parsed.skins,
         diagnostics=_final_reskin_diagnostics(diagnostics),

@@ -20,6 +20,7 @@ from pyosv.evaluation.f3d_mode_comparison.skin_artifacts import (
     resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
     validate_skin_generation_provenance,
+    validate_reskin_diagnostics_contract,
 )
 
 _SHAPE = (2, 3, 4)
@@ -578,6 +579,66 @@ def test_contract5_validates_final_and_attempted_reskin_diagnostics() -> None:
         semantic_contract_version=4,
         reskin_diagnostics=historical,
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    (
+        ("reskin_policy", "invalid", "policy is invalid"),
+        ("reskin_applied", 1, "reskin_applied must be bool"),
+    ),
+)
+def test_contract5_rejects_invalid_final_reskin_identity(
+    field: str,
+    value: Any,
+    match: str,
+) -> None:
+    diagnostics = _contract5_reskin_diagnostics()
+    diagnostics[field] = value
+
+    with pytest.raises(SkinArtifactValidationError, match=match):
+        validate_reskin_diagnostics_contract(
+            diagnostics,
+            semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+            skin_count=1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("provenance", "generation"),
+    (
+        ("primary_nearest_sample", "grown"),
+        ("primary_connected_component", "connected_component"),
+        ("connected_component_fallback", "connected_component"),
+    ),
+)
+def test_contract5_non_reskinned_provenance_matches_final_diagnostics(
+    provenance: str,
+    generation: str,
+) -> None:
+    cell = replace(_contract5_parsed_skin().skins[0][0], generation=generation)
+    parsed = ParsedSkinArtifacts(skins=((cell,),), format_version=2)
+    diagnostics = _contract5_reskin_diagnostics()
+    diagnostics["reskin_applied"] = False
+    diagnostics["attempted"] = {
+        name: False if name == "reskin_applied" else 0 for name in diagnostics["attempted"]
+    }
+
+    validate_skin_generation_provenance(
+        parsed,
+        provenance,
+        semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        reskin_diagnostics=diagnostics,
+    )
+
+    diagnostics["processed_skin_count"] = 2
+    with pytest.raises(SkinArtifactValidationError, match="processed_skin_count"):
+        validate_skin_generation_provenance(
+            parsed,
+            provenance,
+            semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+            reskin_diagnostics=diagnostics,
+        )
 
 
 def test_contract4_rejects_diagnostics_v2_fields() -> None:

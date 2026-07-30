@@ -741,6 +741,26 @@ def test_deep_validation_exactly_reexecutes_boundary_fallback(
     assert fallback_calls == len(fingerprints)
 
 
+def test_contract5_fallback_rejects_rehashed_final_reskin_count_tamper(
+    tmp_path: Path,
+) -> None:
+    root = _complete_boundary_skin_bundle(tmp_path)
+    loaded = load_f3d_mode_comparison_result(root)
+    stage = root / "stages" / "skinning" / loaded.cells[0].stages.skinning
+    report_path = stage / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    reskin = report["diagnostics"]["reskin"]
+    for counts in (reskin, reskin["attempted"]):
+        counts["processed_skin_count"] += 1
+        for name in ("input_cell_count", "output_cell_count", "observed_output_cell_count"):
+            counts[name] += 1
+    report_path.write_bytes(canonical_json_bytes(report) + b"\n")
+    _rehash_stage_artifact(root, stage, "report.json")
+
+    with pytest.raises(F3ResultValidationError, match="processed_skin_count"):
+        validate_completed_f3d_bundle(root)
+
+
 def test_reskinned_primary_cells_use_exact_replay_instead_of_parent_samples(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import numpy as np
 
 from pyosv._dp.path2d import strain_to_bstrain
+from pyosv._skinner.reskin import (
+    ReskinDiagnostics,
+    _replace_final_reskin_diagnostics_with_observed_skins,
+)
 from pyosv._voting3d.orientation import _SURFACE_ORIENTATION_BACKENDS
 from pyosv._voting3d.policies import SURFACE_VOTING_POLICY_REGISTRY
 from pyosv._voting3d.validation import (
@@ -405,6 +409,14 @@ def execute_skinning_phase3d(
         diagnostics=skin_diagnostics,
         scanner_target_positive_mask=scanner_target_positive_mask,
     )
+    if skin_diagnostics.get("fallback_used") is True:
+        reskin_diagnostics = skin_diagnostics.get("reskin")
+        if isinstance(reskin_diagnostics, dict):
+            _replace_final_reskin_diagnostics_with_observed_skins(
+                cast(ReskinDiagnostics, reskin_diagnostics),
+                skin_count=len(skins),
+                cell_count=sum(map(len, skins)),
+            )
     return Workflow3DSkinResult(
         enabled=True,
         skins=tuple(skins),

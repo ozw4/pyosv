@@ -137,6 +137,23 @@ def _merge_reskin_diagnostics(
     )
 
 
+def _replace_final_reskin_diagnostics_with_observed_skins(
+    diagnostics: ReskinDiagnostics,
+    *,
+    skin_count: int,
+    cell_count: int,
+) -> None:
+    """Replace final counts after a connected-component fallback wins."""
+
+    final = _empty_reskin_attempt_diagnostics()
+    final["processed_skin_count"] = skin_count
+    final["input_cell_count"] = cell_count
+    final["output_cell_count"] = cell_count
+    final["observed_output_cell_count"] = cell_count
+    _merge_reskin_diagnostics(diagnostics["attempted"], final)
+    diagnostics.update(final)
+
+
 def _publish_reskin_diagnostics(
     sink: MutableMapping[str, object] | None,
     diagnostics: ReskinDiagnostics | None,

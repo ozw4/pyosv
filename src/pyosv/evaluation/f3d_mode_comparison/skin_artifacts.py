@@ -591,10 +591,15 @@ def validate_skin_generation_provenance(
         )
     if reskin_diagnostics is None:
         return
-    if provenance not in {
+    reskinned_provenance = provenance in {
         PRIMARY_EXISTING_CELLS_RESKINNED,
         PRIMARY_DENSE_RESKINNED,
-    }:
+    }
+    if (
+        not reskinned_provenance
+        and semantic_contract_version
+        == _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+    ):
         raise SkinArtifactValidationError("reskin diagnostics conflict with final provenance")
     if not isinstance(reskin_diagnostics, Mapping):
         raise SkinArtifactValidationError("reskin diagnostics must be an object")
@@ -604,16 +609,17 @@ def validate_skin_generation_provenance(
         skin_count=len(parsed.skins),
     )
 
-    expected_policy = (
-        RESKIN_POLICY_EXISTING_CELLS_V1
-        if provenance == PRIMARY_EXISTING_CELLS_RESKINNED
-        else RESKIN_POLICY_REFERENCE_DENSE_V1
-    )
-    if reskin_diagnostics.get("reskin_policy") != expected_policy:
-        raise SkinArtifactValidationError(
-            "reskin diagnostics policy conflicts with final provenance"
+    if reskinned_provenance:
+        expected_policy = (
+            RESKIN_POLICY_EXISTING_CELLS_V1
+            if provenance == PRIMARY_EXISTING_CELLS_RESKINNED
+            else RESKIN_POLICY_REFERENCE_DENSE_V1
         )
-    if any(
+        if reskin_diagnostics.get("reskin_policy") != expected_policy:
+            raise SkinArtifactValidationError(
+                "reskin diagnostics policy conflicts with final provenance"
+            )
+    if reskinned_provenance and any(
         cell.generation == FAULT_CELL_GENERATION_GROWN
         for skin in parsed.skins
         if len(skin) > 1
@@ -653,11 +659,10 @@ def validate_skin_generation_provenance(
     reskin_applied = reskin_diagnostics.get("reskin_applied")
     if not isinstance(reskin_applied, bool):
         raise SkinArtifactValidationError("reskin diagnostics reskin_applied must be bool")
-    policy_generations = (
-        {FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED}
-        if provenance == PRIMARY_EXISTING_CELLS_RESKINNED
-        else _DENSE_GENERATIONS
-    )
+    policy_generations = {
+        PRIMARY_EXISTING_CELLS_RESKINNED: {FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED},
+        PRIMARY_DENSE_RESKINNED: _DENSE_GENERATIONS,
+    }.get(provenance, set())
     expected_reskin_applied = bool(generations & policy_generations)
     historical_discarded_output = any(
         actual_counts[name] > expected for name, expected in expected_counts.items()
@@ -749,6 +754,12 @@ def _validate_reskin_diagnostics_v2(
         != RESKIN_DIAGNOSTICS_CONTRACT_VERSION
     ):
         raise SkinArtifactValidationError("reskin diagnostics contract version mismatch")
+    try:
+        validate_reskin_policy(diagnostics.get("reskin_policy"))
+    except (TypeError, ValueError) as error:
+        raise SkinArtifactValidationError("reskin diagnostics policy is invalid") from error
+    if not isinstance(diagnostics.get("reskin_applied"), bool):
+        raise SkinArtifactValidationError("reskin diagnostics reskin_applied must be bool")
     if skin_count is not None and diagnostics.get("processed_skin_count") != skin_count:
         raise SkinArtifactValidationError(
             "reskin diagnostics processed_skin_count does not match skins.json"
