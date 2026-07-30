@@ -40,8 +40,12 @@ from .test_publication_contract_v3_integration import (
 )
 
 
-def _official_fixture(data_root: Path):
-    return replace(_write_fixture(data_root), dataset_id=F3_DATASET_ID)
+def _official_fixture(
+    data_root: Path,
+    *,
+    shape: tuple[int, int, int] = (3, 4, 5),
+):
+    return replace(_write_fixture(data_root, shape=shape), dataset_id=F3_DATASET_ID)
 
 
 def _sampling_contract(spec: Any, calls: Counter[str]) -> dict[str, dict[str, Any]]:
@@ -98,6 +102,9 @@ def _generate_official_bundle(
     runtime_identity: dict[str, Any],
     calls: Counter[str],
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    workflow_runner: Any | None = None,
+    plan_config: Any | None = None,
 ) -> Any:
     monkeypatch.setattr(result_module, "numerical_runtime_identity", lambda: runtime_identity)
     evidence_calls: Counter[str] = Counter()
@@ -118,6 +125,11 @@ def _generate_official_bundle(
         "canonical_scanner_sampling_evidence",
         lambda config, backend, **kwargs: evidence[backend],
     )
+    options: dict[str, Any] = {}
+    if workflow_runner is not None:
+        options["workflow_runner"] = workflow_runner
+    if plan_config is not None:
+        options["plan_config"] = plan_config
     return _run_fixture(
         data_root,
         output_root,
@@ -130,6 +142,7 @@ def _generate_official_bundle(
         scanner_factory=_factory(calls),
         sampling_evidence_by_backend=evidence,
         finalization_deep=False,
+        **options,
     )
 
 
