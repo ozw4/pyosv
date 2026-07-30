@@ -58,22 +58,25 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     assert runtime_identity["effective_acceleration_state"] == "numba_jit_enabled"
     assert runtime_identity["numba_jit"]["enabled"] is True
     deep = os.environ.get("PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE") == "1"
-    arguments = [
+    source_arguments = [
         "--data-root",
         str(data_root),
         "--output-dir",
         str(output_root),
-        "--compare-reskin-policies",
-        "existing_cells_v1,reference_dense_v1",
     ]
     if output_root.exists():
-        arguments.append("--resume")
+        source_arguments.append("--resume")
     if deep:
-        arguments.append("--deep-validate")
+        source_arguments.append("--deep-validate")
 
-    assert f3d_mode_comparison.main(arguments) == 0
+    assert f3d_mode_comparison.main(source_arguments) == 0
     assert validate_completed_f3d_bundle(output_root)
     assert validate_completed_f3d_bundle(output_root, deep=deep)
+    source_resume_arguments = list(source_arguments)
+    if "--resume" not in source_resume_arguments:
+        source_resume_arguments.append("--resume")
+    assert f3d_mode_comparison.main(source_resume_arguments) == 0
+
     result = load_f3d_mode_comparison_result(output_root, deep=deep)
     assert result.dataset_id == OFFICIAL_F3_DATASET_SPEC.dataset_id
     assert result.volume_shape == OFFICIAL_F3_DATASET_SPEC.shape
@@ -115,6 +118,12 @@ def test_official_f3_full_volume_mode_comparison() -> None:
         len(metadata["sha256"]) == 64 for metadata in completion["stage_completions"].values()
     )
 
+    comparison_arguments = [
+        *source_resume_arguments,
+        "--compare-reskin-policies",
+        "existing_cells_v1,reference_dense_v1",
+    ]
+    assert f3d_mode_comparison.main(comparison_arguments) == 0
     comparison_paths = validate_f3_reskin_policy_comparison(
         output_root,
         deep=deep,
@@ -145,10 +154,7 @@ def test_official_f3_full_volume_mode_comparison() -> None:
         )
         for path in comparison_files
     }
-    resume_arguments = list(arguments)
-    if "--resume" not in resume_arguments:
-        resume_arguments.append("--resume")
-    assert f3d_mode_comparison.main(resume_arguments) == 0
+    assert f3d_mode_comparison.main(comparison_arguments) == 0
     assert {
         path: (
             path.stat().st_size,
