@@ -655,6 +655,10 @@ def test_historical_skin_artifacts_remain_read_only_when_comparison_is_written(
     )
 
 
+@pytest.mark.skipif(
+    int(np.__version__.partition(".")[0]) >= 2,
+    reason="canonical dense reskin evidence requires the supported numpy<2 runtime",
+)
 def test_controlled_promotion_gate_contract_is_deterministic() -> None:
     first = build_dense_reskin_promotion_gate()
     second = build_dense_reskin_promotion_gate()
