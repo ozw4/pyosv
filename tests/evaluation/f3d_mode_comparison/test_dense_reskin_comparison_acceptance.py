@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from copy import deepcopy
@@ -227,7 +228,7 @@ def test_dense_reskin_comparison_strict_deep_and_complete_resume(
     before_resume = _file_state(artifact_paths)
     parent_reads.clear()
     assert compare_reskin_policies_from_bundle(output_root, resume=True, deep=True) == paths
-    assert not parent_reads
+    assert parent_reads == Counter({"DAT": 5})
     assert _file_state(artifact_paths) == before_resume
 
 
@@ -448,6 +449,14 @@ def test_source_bindings_and_rehashed_tamper_rejection_phases(
         )
     assert parent_reads == Counter({"DAT": 5})
     restore()
+
+    report["validation_level"] = "deep"
+    completion["validation_level"] = "deep"
+    _write_rehashed_comparison(report, paths, completion_path, completion)
+    with pytest.raises(ValueError, match="does not exactly match"):
+        compare_reskin_policies_from_bundle(output_root, resume=True, deep=True)
+    assert parent_reads == Counter({"DAT": 5})
+    restore()
     monkeypatch.setattr(
         comparison_module,
         "numerical_runtime_identity",
@@ -573,13 +582,35 @@ def test_historical_skin_artifacts_remain_read_only_when_comparison_is_written(
 def test_controlled_promotion_gate_contract_is_deterministic() -> None:
     first = build_dense_reskin_promotion_gate()
     second = build_dense_reskin_promotion_gate()
-    case_ids = [case.case_id for case in controlled_dense_reskin_cases()]
+    expected_case_ids = (
+        "plane_3x3_center_hole",
+        "plane_4x4_internal_2x2_hole",
+        "low_support_gap",
+        "dipping_surface_internal_hole",
+        "parallel_surfaces",
+        "corner_touch_orientation_boundary",
+        "rounded_subvoxel_surface",
+        "volume_boundary_surface",
+        "valid_mask_barrier",
+        "prior_occupancy_barrier",
+    )
+    case_ids = tuple(case.case_id for case in controlled_dense_reskin_cases())
     assert first == second
+    assert case_ids == expected_case_ids
+    canonical_payload = json.dumps(
+        first,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    assert hashlib.sha256(canonical_payload).hexdigest() == (
+        "98554f6a3bbf073217ed0aba21998db1bb19ac4b1b7e03f4f913ea7c6d1b5a32"
+    )
     assert first["schema_version"] == 2
     assert first["passed"] is True
     assert first["reasons"] == []
     assert first["aggregate"]["deterministic_reexecution"] is True
-    assert first["aggregate"]["case_ids"] == case_ids
+    assert tuple(first["aggregate"]["case_ids"]) == expected_case_ids
     assert first["aggregate"]["case_count"] == len(case_ids) == 10
     assert first["aggregate"]["buffered_precision_delta"] >= -0.02
     assert first["aggregate"]["symmetric_chamfer_mean_delta"] <= 0.25

@@ -333,14 +333,14 @@ def compare_reskin_policies_from_bundle(
                 completion_path,
                 "reskin policy comparison completion",
             )
-            if completion["validation_level"] == "deep":
-                return paths
             validate_f3_reskin_policy_comparison(
                 root,
                 output_dir=destination,
                 deep=True,
                 result=result,
             )
+            if completion["validation_level"] == "deep":
+                return paths
             return _promote_comparison_completion(
                 destination,
                 validator=lambda: validate_f3_reskin_policy_comparison(
