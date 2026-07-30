@@ -727,7 +727,10 @@ def test_primary_skinning_snapshot_clones_cells_links_skins_and_diagnostics() ->
     object.__setattr__(below, "ca", above)
     result = PrimarySkinningStageResult.from_skins(
         [FaultSkin.from_cells((above, below))],
-        {"nested": ["clean"]},
+        {
+            "nested": ["clean"],
+            "reskin": {"attempted": {"processed_skin_count": 2}},
+        },
     )
 
     first_skins, first_diagnostics = result.clone()
@@ -735,6 +738,7 @@ def test_primary_skinning_snapshot_clones_cells_links_skins_and_diagnostics() ->
     first_skins[0].append(FaultCell(0, 0, 0, 0.1, 0, 90))
     object.__setattr__(next(iter(first_skins[0])), "cb", None)
     first_diagnostics["nested"].append("mutated")
+    first_diagnostics["reskin"]["attempted"]["processed_skin_count"] = 99
 
     second_cells = list(second_skins[0])
     assert len(second_cells) == 2
@@ -747,7 +751,10 @@ def test_primary_skinning_snapshot_clones_cells_links_skins_and_diagnostics() ->
     assert [cell.reskin_support for cell in second_cells] == [0.7, 0.6]
     assert first_skins[0].cells[0] is not second_cells[0]
     assert first_skins[0].cells[1] is not second_cells[1]
-    assert second_diagnostics == {"nested": ["clean"]}
+    assert second_diagnostics == {
+        "nested": ["clean"],
+        "reskin": {"attempted": {"processed_skin_count": 2}},
+    }
 
 
 @pytest.mark.parametrize(

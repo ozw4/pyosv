@@ -15,6 +15,7 @@ from pyosv.skinner import (
     ConnectedComponentSkinner,
     FaultSkinner,
     RESKIN_POLICY_EXISTING_CELLS_V1,
+    RESKIN_POLICY_REFERENCE_DENSE_V1,
     _adaptive_skin_likelihood_threshold,
     _candidate_slice_above_below,
     _candidate_slice_left_right,
@@ -30,6 +31,7 @@ from pyosv.skinner import (
     find_connected_component_skins,
     find_skins,
 )
+from pyosv.synthetic_metrics import reskin_generation_metrics
 from pyosv.voting3d import OptimalSurfaceVoter
 
 
@@ -1087,7 +1089,109 @@ def test_reference_find_skins_populates_diagnostics_without_changing_result() ->
     }
     assert "stale" not in reskin_diagnostics
     assert reskin_diagnostics["reskin_applied"] is False
+    assert reskin_diagnostics["processed_skin_count"] == 1
+    assert reskin_diagnostics["output_cell_count"] == 1
+    assert reskin_diagnostics["observed_output_cell_count"] == 1
+    assert reskin_diagnostics["attempted"]["processed_skin_count"] == 0
     assert not set(reskin_diagnostics) & set(diagnostics)
+
+
+@pytest.mark.parametrize(
+    "reskin_policy",
+    (
+        RESKIN_POLICY_EXISTING_CELLS_V1,
+        RESKIN_POLICY_REFERENCE_DENSE_V1,
+    ),
+)
+def test_reference_reskin_diagnostics_exclude_discarded_small_skin(
+    reskin_policy: str,
+) -> None:
+    fv = np.zeros((15, 15, 15), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[7, 5, 6:8] = 0.9
+    fv[7, 11, 7] = 0.85
+    diagnostics: dict[str, object] = {}
+
+    skins = FaultSkinner(min_likelihood=0.5, min_skin_size=2).find_skins(
+        fv,
+        vp,
+        vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        ru=3,
+        rv=3,
+        rw=3,
+        max_steps=2,
+        reskin_policy=reskin_policy,
+        accepted_occupancy_radius=0,
+        reskin_diagnostics=diagnostics,
+    )
+
+    assert [len(skin) for skin in skins] == [2]
+    assert diagnostics["reskin_diagnostics_contract_version"] == 2
+    assert diagnostics["processed_skin_count"] == 1
+    assert diagnostics["input_cell_count"] == 2
+    assert diagnostics["output_cell_count"] == 2
+    attempted = diagnostics["attempted"]
+    assert isinstance(attempted, dict)
+    assert attempted["processed_skin_count"] == 2
+    assert attempted["input_cell_count"] == 3
+    assert attempted["output_cell_count"] == 3
+    assert (
+        reskin_generation_metrics(skins, diagnostics=diagnostics)["reskin_output_cell_count"] == 2
+    )
+
+
+@pytest.mark.parametrize(
+    "reskin_policy",
+    (
+        RESKIN_POLICY_EXISTING_CELLS_V1,
+        RESKIN_POLICY_REFERENCE_DENSE_V1,
+    ),
+)
+def test_reference_reskin_diagnostics_are_zero_when_all_skins_discarded(
+    reskin_policy: str,
+) -> None:
+    fv = np.zeros((15, 15, 15), dtype=np.float32)
+    vp = np.zeros_like(fv)
+    vt = np.full_like(fv, 90.0)
+    fv[7, 5, 6:8] = 0.9
+    fv[7, 11, 7] = 0.85
+    diagnostics: dict[str, object] = {}
+
+    skins = FaultSkinner(min_likelihood=0.5, min_skin_size=3).find_skins(
+        fv,
+        vp,
+        vt,
+        ep=np.ones_like(fv),
+        ft=fv,
+        pt=vp,
+        tt=vt,
+        d=0,
+        ru=3,
+        rv=3,
+        rw=3,
+        max_steps=2,
+        reskin_policy=reskin_policy,
+        accepted_occupancy_radius=0,
+        reskin_diagnostics=diagnostics,
+    )
+
+    assert skins == []
+    assert diagnostics["reskin_applied"] is False
+    assert diagnostics["processed_skin_count"] == 0
+    assert diagnostics["input_cell_count"] == 0
+    assert diagnostics["output_cell_count"] == 0
+    attempted = diagnostics["attempted"]
+    assert isinstance(attempted, dict)
+    assert attempted["reskin_applied"] is True
+    assert attempted["processed_skin_count"] == 3
+    assert attempted["input_cell_count"] == 5
+    assert attempted["output_cell_count"] == 5
 
 
 def test_find_skins_rejects_aliased_diagnostics_sinks_without_mutation() -> None:

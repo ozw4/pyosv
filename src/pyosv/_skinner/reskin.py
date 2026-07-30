@@ -33,12 +33,12 @@ RESKIN_POLICIES = (
     RESKIN_POLICY_REFERENCE_DENSE_V1,
 )
 ReskinPolicy = Literal["existing_cells_v1", "reference_dense_v1"]
+RESKIN_DIAGNOSTICS_CONTRACT_VERSION = 2
 
 
-class ReskinDiagnostics(TypedDict):
-    """Aggregate diagnostics emitted through the dedicated reskin sink."""
+class ReskinAttemptDiagnostics(TypedDict):
+    """Counts for one or more grow/reskin items before final filtering."""
 
-    reskin_policy: ReskinPolicy
     reskin_applied: bool
     processed_skin_count: int
     input_cell_count: int
@@ -54,6 +54,14 @@ class ReskinDiagnostics(TypedDict):
     rejected_out_of_bounds_count: int
     rejected_duplicate_world_index_count: int
     max_generated_chebyshev_distance_from_observed: int
+
+
+class ReskinDiagnostics(ReskinAttemptDiagnostics):
+    """Versioned final diagnostics emitted through the dedicated reskin sink."""
+
+    reskin_diagnostics_contract_version: int
+    reskin_policy: ReskinPolicy
+    attempted: ReskinAttemptDiagnostics
 
 
 _COUNT_DIAGNOSTIC_KEYS = (
@@ -73,9 +81,8 @@ _COUNT_DIAGNOSTIC_KEYS = (
 )
 
 
-def _empty_reskin_diagnostics(policy: ReskinPolicy) -> ReskinDiagnostics:
-    return ReskinDiagnostics(
-        reskin_policy=policy,
+def _empty_reskin_attempt_diagnostics() -> ReskinAttemptDiagnostics:
+    return ReskinAttemptDiagnostics(
         reskin_applied=False,
         processed_skin_count=0,
         input_cell_count=0,
@@ -94,6 +101,15 @@ def _empty_reskin_diagnostics(policy: ReskinPolicy) -> ReskinDiagnostics:
     )
 
 
+def _empty_reskin_diagnostics(policy: ReskinPolicy) -> ReskinDiagnostics:
+    return ReskinDiagnostics(
+        reskin_diagnostics_contract_version=RESKIN_DIAGNOSTICS_CONTRACT_VERSION,
+        reskin_policy=policy,
+        **_empty_reskin_attempt_diagnostics(),
+        attempted=_empty_reskin_attempt_diagnostics(),
+    )
+
+
 def _prepare_reskin_diagnostics_sink(
     sink: MutableMapping[str, object] | None,
     policy: ReskinPolicy,
@@ -109,8 +125,8 @@ def _prepare_reskin_diagnostics_sink(
 
 
 def _merge_reskin_diagnostics(
-    aggregate: ReskinDiagnostics,
-    item: ReskinDiagnostics,
+    aggregate: ReskinAttemptDiagnostics,
+    item: ReskinAttemptDiagnostics,
 ) -> None:
     aggregate["reskin_applied"] = aggregate["reskin_applied"] or item["reskin_applied"]
     for key in _COUNT_DIAGNOSTIC_KEYS:

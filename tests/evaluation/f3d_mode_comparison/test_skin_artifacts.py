@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import numpy as np
 import pytest
 
 from pyosv.evaluation.f3d_mode_comparison.skin_artifacts import (
+    F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     ParsedSkinArtifacts,
     SkinCellRecord,
     SkinArtifactValidationError,
@@ -503,6 +505,122 @@ def test_contract4_dense_generation_must_match_reskin_diagnostics() -> None:
                 "observed_output_cell_count": 0,
                 "generated_cell_count": 1,
             },
+        )
+
+
+def _contract5_reskin_diagnostics() -> dict[str, Any]:
+    counts = {
+        "reskin_applied": True,
+        "processed_skin_count": 1,
+        "input_cell_count": 1,
+        "output_cell_count": 1,
+        "observed_output_cell_count": 1,
+        "generated_cell_count": 0,
+        "dropped_input_cell_count": 0,
+        "projected_local_duplicate_count": 0,
+        "candidate_local_key_count": 0,
+        "rejected_support_count": 0,
+        "rejected_invalid_mask_count": 0,
+        "rejected_prior_skin_collision_count": 0,
+        "rejected_out_of_bounds_count": 0,
+        "rejected_duplicate_world_index_count": 0,
+        "max_generated_chebyshev_distance_from_observed": 0,
+    }
+    return {
+        "reskin_diagnostics_contract_version": 2,
+        "reskin_policy": "existing_cells_v1",
+        **counts,
+        "attempted": dict(counts),
+    }
+
+
+def _contract5_parsed_skin() -> ParsedSkinArtifacts:
+    return ParsedSkinArtifacts(
+        skins=(
+            (
+                SkinCellRecord(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0,
+                    0,
+                    0,
+                    0.8,
+                    25.0,
+                    70.0,
+                    "existing_cells_reskinned",
+                    None,
+                ),
+            ),
+        ),
+        format_version=2,
+    )
+
+
+def test_contract5_validates_final_and_attempted_reskin_diagnostics() -> None:
+    validate_skin_generation_provenance(
+        _contract5_parsed_skin(),
+        "primary_existing_cells_reskinned",
+        semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        reskin_diagnostics=_contract5_reskin_diagnostics(),
+    )
+
+    historical = _contract5_reskin_diagnostics()
+    historical.pop("reskin_diagnostics_contract_version")
+    historical.pop("attempted")
+    validate_skin_generation_provenance(
+        _contract5_parsed_skin(),
+        "primary_existing_cells_reskinned",
+        semantic_contract_version=4,
+        reskin_diagnostics=historical,
+    )
+
+
+def test_contract5_allows_zero_attempted_counts_when_reskin_phase_is_not_reached() -> None:
+    diagnostics = _contract5_reskin_diagnostics()
+    diagnostics["reskin_applied"] = False
+    diagnostics["attempted"] = {
+        name: False if name == "reskin_applied" else 0 for name in diagnostics["attempted"]
+    }
+    parsed = _contract5_parsed_skin()
+    cell = parsed.skins[0][0]
+    parsed = ParsedSkinArtifacts(
+        skins=((replace(cell, generation="grown"),),),
+        format_version=parsed.format_version,
+    )
+
+    validate_skin_generation_provenance(
+        parsed,
+        "primary_existing_cells_reskinned",
+        semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        reskin_diagnostics=diagnostics,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda diagnostics: diagnostics.__setitem__(
+            "reskin_diagnostics_contract_version",
+            1,
+        ),
+        lambda diagnostics: diagnostics.__setitem__("output_cell_count", 2),
+        lambda diagnostics: diagnostics["attempted"].__setitem__(
+            "processed_skin_count",
+            0,
+        ),
+    ),
+)
+def test_contract5_rejects_reskin_diagnostics_tamper(mutate: Any) -> None:
+    diagnostics = _contract5_reskin_diagnostics()
+    mutate(diagnostics)
+
+    with pytest.raises(SkinArtifactValidationError):
+        validate_skin_generation_provenance(
+            _contract5_parsed_skin(),
+            "primary_existing_cells_reskinned",
+            semantic_contract_version=F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+            reskin_diagnostics=diagnostics,
         )
 
 

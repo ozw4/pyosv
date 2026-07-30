@@ -1452,7 +1452,7 @@ These rows are a within-experiment breakdown rather than isolated-process
 benchmarks. Their disjoint elapsed sum may not exceed
 `trial_total`, and the sum of trial totals may not exceed `experiment_total`.
 Its authoritative artifact schema is v3, with independent scalar-evidence and
-runtime contract versions (currently scalar-evidence version 5 and runtime
+runtime contract versions (currently scalar-evidence version 7 and runtime
 version 4). Each trial persists one canonical truth-evidence object; all
 scanner, voting, thinning, and enabled-skin quality reports bind their
 fault-band and thin-surface truth counts to it. Scanner publication metrics are

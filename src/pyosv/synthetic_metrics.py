@@ -1196,6 +1196,9 @@ def reskin_generation_metrics(
         raise ValueError("reskin cell metrics require finite likelihood and support values")
 
     detail = dict(diagnostics or {})
+    contract_version = detail.get("reskin_diagnostics_contract_version")
+    if contract_version is not None and contract_version != 2:
+        raise ValueError("unsupported reskin diagnostics contract version")
     output_count = len(cells)
     generated_count = len(generated)
     input_count = _nonnegative_diagnostic_count(detail, "input_cell_count", output_count)

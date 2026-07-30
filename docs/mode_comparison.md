@@ -251,7 +251,7 @@ existing operational validation paths.
   the completed output path. `validate_completed_bundle()` checks cross-file
   scalar semantics in addition to hashes and syntax. The authoritative writer
   emits artifact schema v3 with independently versioned scalar-evidence and
-  runtime contracts (currently scalar-evidence version 5 and runtime version
+  runtime contracts (currently scalar-evidence version 7 and runtime version
   4). Each trial has one canonical truth-evidence object, and scanner, voting,
   thinning, and enabled-skin reports bind their fault-band and thin-surface
   truth counts to it. Schema-v1 bundles lack complete scanner evidence, while

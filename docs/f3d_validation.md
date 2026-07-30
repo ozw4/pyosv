@@ -200,11 +200,19 @@ full-volume computation.
 
 The publication contract currently records runtime identity schema 3,
 fingerprint contract 4, scanner stage contract 5, skin artifact semantic
-contract 4, and metric schema 2. Skin reports record whether final cell values
+contract 5, and metric schema 2. Skin reports record whether final cell values
 come from primary nearest samples, `existing_cells_v1` reskinning,
 `reference_dense_v1` reskinning, or the connected-component fallback.
 Canonical `skins.json` format 2 stores cell `generation` and `reskin_support`;
-strict readers still accept historical format 1 / semantic-contract-3 bundles.
+semantic contract 5 also requires reskin-diagnostics contract 2, whose flat
+counts describe only persisted final skins and whose nested `attempted` counts
+describe pre-filter reskin attempts. Strict validation matches the final
+processed/output/observed/generated counts to `skins.json` and checks that
+attempted counts are not below their final counterparts. Deep validation
+recreates both namespaces by exact skin-only replay. Strict readers still
+accept historical format 1 / semantic-contract-3 bundles and format 2 /
+semantic-contract-4 bundles with the historical diagnostics meaning; writers
+emit format 2 / semantic-contract 5.
 Deep validation applies parent-volume nearest-sample checks only to the
 applicable paths; reskinned cells are instead checked authoritatively by the
 exact skin-only rerun using the recorded policy. A validated bundle provides PR4 with the validated DAT

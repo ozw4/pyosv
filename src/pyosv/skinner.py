@@ -51,6 +51,7 @@ from pyosv._skinner.reference import (
     find_skins,
 )
 from pyosv._skinner.reskin import (
+    RESKIN_DIAGNOSTICS_CONTRACT_VERSION,
     RESKIN_POLICIES,
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
@@ -107,6 +108,7 @@ from pyosv._skinner.validation import (
 __all__ = [
     "ConnectedComponentSkinner",
     "FaultSkinner",
+    "RESKIN_DIAGNOSTICS_CONTRACT_VERSION",
     "RESKIN_POLICIES",
     "RESKIN_POLICY_EXISTING_CELLS_V1",
     "RESKIN_POLICY_REFERENCE_DENSE_V1",

@@ -82,7 +82,7 @@ The successful command writes exactly these eight files atomically:
 - `manifest.json`: artifact schema v3 plus independent scalar-evidence and
   runtime contract versions, requested configuration, resolved canonical plan,
   case and trial order, software versions, cache statistics, and source
-  provenance. The current scalar-evidence contract version is 5 and the
+  provenance. The current scalar-evidence contract version is 7 and the
   runtime contract version is 4.
 - `cell_reports.json`: ordered scalar cell reports. Artifact schema v3 records
   one immutable `truth_evidence` object per trial, containing only the fault-

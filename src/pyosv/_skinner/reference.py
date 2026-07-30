@@ -214,6 +214,7 @@ class FaultSkinner:
                 cell_count = sum(len(skin) for skin in skins)
                 aggregate_reskin_diagnostics["input_cell_count"] = cell_count
                 aggregate_reskin_diagnostics["output_cell_count"] = cell_count
+                aggregate_reskin_diagnostics["observed_output_cell_count"] = cell_count
             _publish_reskin_diagnostics(
                 reskin_diagnostics,
                 aggregate_reskin_diagnostics,
@@ -297,9 +298,13 @@ class FaultSkinner:
         """Grow one reference-like skin from ``seed`` without changing defaults."""
 
         policy = _validate_reskin_policy(reskin_policy)
+        should_reskin = _validate_bool(reskin, "reskin")
         aggregate_reskin_diagnostics = _prepare_reskin_diagnostics_sink(
             reskin_diagnostics,
             policy,
+        )
+        item_reskin_diagnostics = (
+            _empty_reskin_diagnostics(policy) if aggregate_reskin_diagnostics is not None else None
         )
         threshold = self.min_likelihood if min_likelihood is None else min_likelihood
         skin = _grow_reference_skin(
@@ -314,11 +319,21 @@ class FaultSkinner:
             max_steps=max_steps,
             du=du,
             max_delta_strike=max_delta_strike,
-            reskin=reskin,
+            reskin=should_reskin,
             reskin_policy=policy,
             valid_mask=valid_mask,
-            _reskin_diagnostics=aggregate_reskin_diagnostics,
+            _reskin_diagnostics=item_reskin_diagnostics,
         )
+        if aggregate_reskin_diagnostics is not None and item_reskin_diagnostics is not None:
+            if should_reskin:
+                _merge_reskin_diagnostics(
+                    aggregate_reskin_diagnostics["attempted"],
+                    item_reskin_diagnostics,
+                )
+            _merge_reskin_diagnostics(
+                aggregate_reskin_diagnostics,
+                item_reskin_diagnostics,
+            )
         _publish_reskin_diagnostics(
             reskin_diagnostics,
             aggregate_reskin_diagnostics,
@@ -494,9 +509,13 @@ def _find_reference_skins(
             valid_mask=validated_valid_mask,
             _reskin_diagnostics=item_reskin_diagnostics,
         )
-        if _reskin_diagnostics is not None and item_reskin_diagnostics is not None:
+        if (
+            should_reskin
+            and _reskin_diagnostics is not None
+            and item_reskin_diagnostics is not None
+        ):
             _merge_reskin_diagnostics(
-                _reskin_diagnostics,
+                _reskin_diagnostics["attempted"],
                 item_reskin_diagnostics,
             )
         skin_cell_count = len(skin)
@@ -510,6 +529,11 @@ def _find_reference_skins(
             discarded_small_skin_count += 1
             continue
 
+        if _reskin_diagnostics is not None and item_reskin_diagnostics is not None:
+            _merge_reskin_diagnostics(
+                _reskin_diagnostics,
+                item_reskin_diagnostics,
+            )
         skins.append(skin)
         _mark_occupied_skin_validated(occupied, skin, radius=occupancy_radius)
 

@@ -117,23 +117,39 @@ JSON `null`. The F3 reader continues to accept strict historical v1 payloads,
 where both values are explicitly unknown at the artifact layer.
 
 `find_skins` and `find_skin` accept a separate mutable
-`reskin_diagnostics` mapping. It is cleared at the start and reports the
-selected policy, whether reskinning was applied, processed/input/output cell
-counts, observed/generated/dropped counts, projected local duplicates,
-candidate local keys, rejection counts, and the maximum generated-key
-Chebyshev distance from an observed local key. Multi-skin calls sum counts and
-take the maximum distance. Dense-v1 candidate rejection uses the fixed order
-support or invalid surface, local-u continuity, volume bounds, `valid_mask`,
-prior-skin occupancy, then rounded world-index duplicate removal. Local-u
-rejections contribute to the candidate count but have no dedicated aggregate
-field. A local key is counted in at most one reported rejection category.
+`reskin_diagnostics` mapping. It is cleared at the start and emits
+`reskin_diagnostics_contract_version=2`. The existing flat fields describe
+only the final skins returned after empty and `min_skin_size` filtering:
+the selected policy, whether reskinning was applied to an accepted skin,
+processed/input/output cell counts, observed/generated/dropped counts,
+projected local duplicates, candidate local keys, rejection counts, and the
+maximum generated-key Chebyshev distance from an observed local key.
+`processed_skin_count` is therefore the number of accepted final skins, and
+`reskin_applied` is false when every reskinned attempt is discarded.
+
+The nested `attempted` mapping preserves the corresponding counts and
+`reskin_applied` state before empty and minimum-size filtering. Its
+`processed_skin_count` is the number of items that reached the reskin phase.
+Consequently attempted counts can exceed final counts without affecting
+persisted-skin generation metrics. Multi-skin calls sum counts within each
+namespace and take the maximum distance. Grow-only, empty, single-cell, and
+connected-component paths retain zero for generated and rejection counts that
+do not apply.
+
+Dense-v1 candidate rejection uses the fixed order support or invalid surface,
+local-u continuity, volume bounds, `valid_mask`, prior-skin occupancy, then
+rounded world-index duplicate removal. Local-u rejections contribute to the
+candidate count but have no dedicated aggregate field. A local key is counted
+in at most one reported rejection category.
 This sink is intentionally isolated from the legacy `diagnostics` mapping;
 the legacy key set and meanings do not include reskin details. The two
 arguments must therefore be distinct mutable mappings; passing the same
 mapping as both sinks is rejected before either mapping is changed.
 Evaluation runners publish this dedicated evidence under the nested
 `diagnostics.reskin` namespace so it remains scalar-only and cache-safe without
-changing the core legacy diagnostic keys.
+changing the core legacy diagnostic keys. Scalar-evidence contract 7 preserves
+the nested `attempted` mapping in immutable cache snapshots and independent
+clones.
 
 Both methods also accept a keyword-only `valid_mask`. When supplied, it must be
 a three-dimensional boolean NumPy array with the same shape as `fv`. The

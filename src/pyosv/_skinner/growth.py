@@ -333,6 +333,7 @@ def _grow_reference_skin_validated(
             _reskin_diagnostics["processed_skin_count"] = 1
             _reskin_diagnostics["input_cell_count"] = len(grown_skin)
             _reskin_diagnostics["output_cell_count"] = len(grown_skin)
+            _reskin_diagnostics["observed_output_cell_count"] = len(grown_skin)
         return grown_skin
     if not grown_skin:
         if _reskin_diagnostics is not None:

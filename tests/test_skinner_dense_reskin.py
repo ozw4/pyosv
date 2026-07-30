@@ -436,8 +436,7 @@ def test_reference_dense_v1_dedicated_diagnostics_counts_center_hole() -> None:
 
     assert len(skin) == 9
     assert "stale" not in diagnostics
-    assert diagnostics == {
-        "reskin_policy": RESKIN_POLICY_REFERENCE_DENSE_V1,
+    expected_counts = {
         "reskin_applied": True,
         "processed_skin_count": 1,
         "input_cell_count": 8,
@@ -453,6 +452,12 @@ def test_reference_dense_v1_dedicated_diagnostics_counts_center_hole() -> None:
         "rejected_out_of_bounds_count": 0,
         "rejected_duplicate_world_index_count": 0,
         "max_generated_chebyshev_distance_from_observed": 1,
+    }
+    assert diagnostics == {
+        "reskin_diagnostics_contract_version": 2,
+        "reskin_policy": RESKIN_POLICY_REFERENCE_DENSE_V1,
+        **expected_counts,
+        "attempted": expected_counts,
     }
 
 

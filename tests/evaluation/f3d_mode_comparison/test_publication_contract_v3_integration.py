@@ -423,7 +423,7 @@ def test_publication_contract_v3_small_fixture_end_to_end(
         F3_FINGERPRINT_CONTRACT_VERSION,
         F3_SCANNER_STAGE_CONTRACT_VERSION,
         F3_METRIC_SCHEMA_VERSION,
-    ) == (4, 3, 4, 5, 2)
+    ) == (5, 3, 4, 5, 2)
     assert reskin_transitions
     assert any(
         len(before) == len(after)
@@ -472,7 +472,7 @@ def test_publication_contract_v3_small_fixture_end_to_end(
                 encoding="utf-8"
             )
         )
-        assert stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"] == 4
+        assert stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"] == 5
         stage = output_root / "stages" / "skinning" / fingerprint
         report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
         payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))

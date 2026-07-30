@@ -344,6 +344,7 @@ _PRIMARY_SKINNER_DIAGNOSTIC_FIELDS = {
     "grow_threshold": "nonnegative_number",
 }
 _RESKIN_DIAGNOSTIC_REPORT_SCHEMA = {
+    "reskin_diagnostics_contract_version": "nonnegative_integer",
     "reskin_policy": "string",
     "reskin_applied": "boolean",
     **dict.fromkeys(
@@ -1737,11 +1738,28 @@ def _load_skinning_diagnostics(
         _GUARDRAIL_REPORT_SCHEMA,
         f"{context}.fallback_v5_guardrail",
     )
-    reskin_diagnostics = _load_scalar_report_object(
+    reskin_diagnostics = _object(
         payload["reskin"],
+        {*_RESKIN_DIAGNOSTIC_REPORT_SCHEMA, "attempted"},
+        f"{context}.reskin",
+    )
+    _load_scalar_report_fields(
+        reskin_diagnostics,
         _RESKIN_DIAGNOSTIC_REPORT_SCHEMA,
         f"{context}.reskin",
     )
+    if reskin_diagnostics["reskin_diagnostics_contract_version"] != 2:
+        raise ValueError(f"{context}.reskin diagnostics contract version is unsupported")
+    attempted = _load_scalar_report_object(
+        reskin_diagnostics["attempted"],
+        {
+            name: field_type
+            for name, field_type in _RESKIN_DIAGNOSTIC_REPORT_SCHEMA.items()
+            if name not in {"reskin_diagnostics_contract_version", "reskin_policy"}
+        },
+        f"{context}.reskin.attempted",
+    )
+    reskin_diagnostics["attempted"] = attempted
     if reskin_diagnostics["reskin_policy"] != reskin_policy:
         raise ValueError(f"{context}.reskin policy does not match config")
     if (not reskin or method == "connected_component") and reskin_diagnostics["reskin_applied"]:

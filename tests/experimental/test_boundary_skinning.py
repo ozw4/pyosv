@@ -36,12 +36,13 @@ def test_connected_component_skinning_publishes_reskin_diagnostics() -> None:
 
     assert len(skins) == 1
     assert diagnostics["reskin"] == {
+        "reskin_diagnostics_contract_version": 2,
         "reskin_policy": "reference_dense_v1",
         "reskin_applied": False,
         "processed_skin_count": 1,
         "input_cell_count": 2,
         "output_cell_count": 2,
-        "observed_output_cell_count": 0,
+        "observed_output_cell_count": 2,
         "generated_cell_count": 0,
         "dropped_input_cell_count": 0,
         "projected_local_duplicate_count": 0,
@@ -52,6 +53,23 @@ def test_connected_component_skinning_publishes_reskin_diagnostics() -> None:
         "rejected_out_of_bounds_count": 0,
         "rejected_duplicate_world_index_count": 0,
         "max_generated_chebyshev_distance_from_observed": 0,
+        "attempted": {
+            "reskin_applied": False,
+            "processed_skin_count": 0,
+            "input_cell_count": 0,
+            "output_cell_count": 0,
+            "observed_output_cell_count": 0,
+            "generated_cell_count": 0,
+            "dropped_input_cell_count": 0,
+            "projected_local_duplicate_count": 0,
+            "candidate_local_key_count": 0,
+            "rejected_support_count": 0,
+            "rejected_invalid_mask_count": 0,
+            "rejected_prior_skin_collision_count": 0,
+            "rejected_out_of_bounds_count": 0,
+            "rejected_duplicate_world_index_count": 0,
+            "max_generated_chebyshev_distance_from_observed": 0,
+        },
     }
 
 

@@ -20,6 +20,7 @@ from pyosv.cells import (
     FAULT_CELL_GENERATION_GROWN,
 )
 from pyosv.skinner import (
+    RESKIN_DIAGNOSTICS_CONTRACT_VERSION,
     RESKIN_POLICY_EXISTING_CELLS_V1,
     RESKIN_POLICY_REFERENCE_DENSE_V1,
     validate_reskin_policy,
@@ -59,8 +60,9 @@ _INTEGER_TOPOLOGY_FIELDS = frozenset(
 _DAT_DTYPE = np.dtype(">f4")
 _MASK_SLAB_VOXELS = 1_000_000
 _INDEX_CHUNK_SIZE = 100_000
-F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 4
+F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 5
 F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 3
+_F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION = 4
 PRIMARY_NEAREST_SAMPLE = "primary_nearest_sample"
 PRIMARY_RESKINNED = "primary_reskinned"
 PRIMARY_EXISTING_CELLS_RESKINNED = "primary_existing_cells_reskinned"
@@ -298,7 +300,7 @@ def resolve_final_skin_cell_value_provenance(
         resolved_skinning,
         resolved_stage_settings,
     )
-    if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+    if semantic_contract_version >= _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
         try:
             reskin_policy = validate_reskin_policy(resolved_skinning["reskin_policy"])
         except (KeyError, TypeError, ValueError) as error:
@@ -349,7 +351,8 @@ def resolve_final_skin_cell_value_provenance(
         return PRIMARY_EXISTING_CELLS_RESKINNED
     if (
         method == "connected_component"
-        and semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        and semantic_contract_version
+        >= _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
     ):
         return PRIMARY_CONNECTED_COMPONENT
     return PRIMARY_NEAREST_SAMPLE
@@ -369,6 +372,7 @@ def _semantic_contract_version(
         version = resolved_stage_settings.get("skin_artifact_semantic_contract_version")
     if isinstance(version, bool) or version not in {
         F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
         F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     }:
         raise SkinArtifactValidationError("skin artifact semantic contract version is invalid")
@@ -548,10 +552,15 @@ def validate_skin_generation_provenance(
         if parsed.format_version != 1:
             raise SkinArtifactValidationError("contract 3 requires skins.json format version 1")
         return
-    if semantic_contract_version != F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+    if semantic_contract_version not in {
+        _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+        F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
+    }:
         raise SkinArtifactValidationError("skin artifact semantic contract version is invalid")
     if parsed.format_version != 2:
-        raise SkinArtifactValidationError("contract 4 requires skins.json format version 2")
+        raise SkinArtifactValidationError(
+            "skin artifact semantic contract requires skins.json format version 2"
+        )
 
     generations = {cell.generation for skin in parsed.skins for cell in skin}
     allowed = {
@@ -642,6 +651,107 @@ def validate_skin_generation_provenance(
             raise SkinArtifactValidationError(
                 f"reskin diagnostics {name} does not match skins.json generations"
             )
+    if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        _validate_reskin_diagnostics_v2(
+            reskin_diagnostics,
+            skin_count=len(parsed.skins),
+        )
+
+
+_RESKIN_COUNT_FIELDS = (
+    "processed_skin_count",
+    "input_cell_count",
+    "output_cell_count",
+    "observed_output_cell_count",
+    "generated_cell_count",
+    "dropped_input_cell_count",
+    "projected_local_duplicate_count",
+    "candidate_local_key_count",
+    "rejected_support_count",
+    "rejected_invalid_mask_count",
+    "rejected_prior_skin_collision_count",
+    "rejected_out_of_bounds_count",
+    "rejected_duplicate_world_index_count",
+)
+_RESKIN_MAX_DISTANCE_FIELD = "max_generated_chebyshev_distance_from_observed"
+
+
+def _validate_reskin_diagnostics_v2(
+    diagnostics: Mapping[str, Any],
+    *,
+    skin_count: int,
+) -> None:
+    if (
+        diagnostics.get("reskin_diagnostics_contract_version")
+        != RESKIN_DIAGNOSTICS_CONTRACT_VERSION
+    ):
+        raise SkinArtifactValidationError("reskin diagnostics contract version mismatch")
+    if diagnostics.get("processed_skin_count") != skin_count:
+        raise SkinArtifactValidationError(
+            "reskin diagnostics processed_skin_count does not match skins.json"
+        )
+    final_counts = _reskin_diagnostic_counts(diagnostics, "reskin diagnostics")
+    _validate_reskin_count_relations(final_counts, "reskin diagnostics")
+
+    attempted = diagnostics.get("attempted")
+    if not isinstance(attempted, Mapping):
+        raise SkinArtifactValidationError("reskin diagnostics attempted must be an object")
+    attempted_applied = attempted.get("reskin_applied")
+    if not isinstance(attempted_applied, bool):
+        raise SkinArtifactValidationError(
+            "reskin diagnostics attempted reskin_applied must be bool"
+        )
+    if diagnostics["reskin_applied"] and not attempted_applied:
+        raise SkinArtifactValidationError(
+            "reskin diagnostics attempted reskin_applied conflicts with final diagnostics"
+        )
+    attempted_counts = _reskin_diagnostic_counts(
+        attempted,
+        "reskin diagnostics attempted",
+    )
+    _validate_reskin_count_relations(
+        attempted_counts,
+        "reskin diagnostics attempted",
+    )
+    if attempted_counts["processed_skin_count"] == 0:
+        if attempted_applied or any(attempted_counts.values()):
+            raise SkinArtifactValidationError(
+                "reskin diagnostics attempted counts require a processed skin"
+            )
+        return
+    for name in (*_RESKIN_COUNT_FIELDS, _RESKIN_MAX_DISTANCE_FIELD):
+        if attempted_counts[name] < final_counts[name]:
+            raise SkinArtifactValidationError(
+                f"reskin diagnostics attempted {name} is below final diagnostics"
+            )
+
+
+def _reskin_diagnostic_counts(
+    diagnostics: Mapping[str, Any],
+    context: str,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for name in (*_RESKIN_COUNT_FIELDS, _RESKIN_MAX_DISTANCE_FIELD):
+        value = _integer(diagnostics.get(name), f"{context} {name}")
+        if value < 0:
+            raise SkinArtifactValidationError(f"{context} {name} must be non-negative")
+        counts[name] = value
+    return counts
+
+
+def _validate_reskin_count_relations(counts: Mapping[str, int], context: str) -> None:
+    if counts["output_cell_count"] != (
+        counts["observed_output_cell_count"] + counts["generated_cell_count"]
+    ):
+        raise SkinArtifactValidationError(f"{context} output generation counts are inconsistent")
+    if counts["dropped_input_cell_count"] != (
+        counts["input_cell_count"] - counts["observed_output_cell_count"]
+    ):
+        raise SkinArtifactValidationError(f"{context} input/drop counts are inconsistent")
+    if counts["generated_cell_count"] == 0 and counts[_RESKIN_MAX_DISTANCE_FIELD] != 0:
+        raise SkinArtifactValidationError(
+            f"{context} max generated distance requires generated cells"
+        )
 
 
 def _validate_skin_mask(

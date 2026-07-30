@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 ScalarStageSetting = str | int | float | bool
 DiagnosticItems = tuple[tuple[str, Any], ...]
-SCALAR_EVIDENCE_CONTRACT_VERSION = 6
+SCALAR_EVIDENCE_CONTRACT_VERSION = 7
 
 
 class ImmutableScalarMapping(dict[str, Any]):
