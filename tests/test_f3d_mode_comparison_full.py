@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,13 +12,18 @@ from pyosv.cli import f3d_mode_comparison
 from pyosv.evaluation.f3d_mode_comparison import (
     F3_FINGERPRINT_CONTRACT_VERSION,
     F3_METRIC_SCHEMA_VERSION,
+    F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
+    F3_RESKIN_POLICY_COMPARISON_DIR,
+    F3_RESKIN_POLICY_COMPARISON_FILES,
     F3_RUNTIME_IDENTITY_SCHEMA_VERSION,
     F3_SCANNER_STAGE_CONTRACT_VERSION,
     F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION,
     OFFICIAL_F3_DATASET_SPEC,
+    canonical_fingerprint,
     load_f3d_mode_comparison_result,
     numerical_runtime_identity,
     validate_completed_f3d_bundle,
+    validate_f3_reskin_policy_comparison,
     validate_publication_runtime_identity,
 )
 from pyosv.evaluation.f3d_mode_comparison.scanner import sampling_count_from_evidence
@@ -57,6 +63,8 @@ def test_official_f3_full_volume_mode_comparison() -> None:
         str(data_root),
         "--output-dir",
         str(output_root),
+        "--compare-reskin-policies",
+        "existing_cells_v1,reference_dense_v1",
     ]
     if output_root.exists():
         arguments.append("--resume")
@@ -106,6 +114,50 @@ def test_official_f3_full_volume_mode_comparison() -> None:
     assert all(
         len(metadata["sha256"]) == 64 for metadata in completion["stage_completions"].values()
     )
+
+    comparison_paths = validate_f3_reskin_policy_comparison(
+        output_root,
+        deep=deep,
+        require_deep=deep,
+    )
+    comparison_root = output_root / F3_RESKIN_POLICY_COMPARISON_DIR
+    comparison_completion_path = comparison_root / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    comparison_completion = json.loads(comparison_completion_path.read_text())
+    comparison_report = json.loads(comparison_paths[0].read_text())
+    runtime_sha256 = canonical_fingerprint(runtime_identity)
+    assert comparison_completion["source_runtime_identity_sha256"] == runtime_sha256
+    assert comparison_completion["comparison_runtime_identity_sha256"] == runtime_sha256
+    assert comparison_report["source_runtime_identity_sha256"] == runtime_sha256
+    assert comparison_report["comparison_runtime_identity_sha256"] == runtime_sha256
+    if deep:
+        assert comparison_completion["validation_level"] == "deep"
+        assert comparison_report["validation_level"] == "deep"
+
+    comparison_files = (
+        *comparison_paths,
+        comparison_completion_path,
+    )
+    before_resume = {
+        path: (
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in comparison_files
+    }
+    resume_arguments = list(arguments)
+    if "--resume" not in resume_arguments:
+        resume_arguments.append("--resume")
+    assert f3d_mode_comparison.main(resume_arguments) == 0
+    assert {
+        path: (
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in comparison_files
+    } == before_resume
+    assert {path.name for path in comparison_paths} == set(F3_RESKIN_POLICY_COMPARISON_FILES)
 
     scanner_fingerprints = {cell.stages.scanner for cell in result.cells}
     for fingerprint in scanner_fingerprints:

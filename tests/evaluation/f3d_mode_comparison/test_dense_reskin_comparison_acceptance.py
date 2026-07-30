@@ -1,0 +1,649 @@
+from __future__ import annotations
+
+import json
+from collections import Counter
+from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pytest
+
+import pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison as comparison_module
+import pyosv.evaluation.f3d_mode_comparison.result as result_module
+import pyosv.evaluation.f3d_mode_comparison.runner as runner_module
+from pyosv.cli import f3d_mode_comparison
+from pyosv.evaluation.dense_reskin_quality import (
+    build_dense_reskin_promotion_gate,
+    controlled_dense_reskin_cases,
+)
+from pyosv.evaluation.f3d_mode_comparison import (
+    F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
+    F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION,
+    F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
+    canonical_fingerprint,
+    compare_reskin_policies_from_bundle,
+    compare_reskin_policies_from_parent,
+    validate_completed_f3d_bundle,
+    validate_f3_reskin_policy_comparison,
+)
+from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
+from pyosv.synthetic_metrics import metrics_from_surface_evidence
+
+from .test_final_acceptance_integration import (
+    _fixed_runtime_identity,
+    _generate_official_bundle,
+    _official_fixture,
+)
+from .test_integration import _run_fixture, _write_fixture
+from .test_bundle_validation import (
+    _controlled_reskinned_primary_workflow,
+    _reskinned_primary_config,
+)
+from .test_publication_contract_v3_integration import (
+    _historical_contract4_reskinned_workflow,
+    _historical_reskinned_workflow,
+    _install_historical_skin_contract_writer,
+    _tree_bytes,
+)
+
+
+def _file_state(paths: tuple[Path, ...]) -> dict[Path, tuple[int, int, bytes]]:
+    return {
+        path: (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes()) for path in paths
+    }
+
+
+def _write_rehashed_comparison(
+    report: dict[str, Any],
+    paths: tuple[Path, ...],
+    completion_path: Path,
+    completion: dict[str, Any],
+) -> None:
+    paths[0].write_text(comparison_module._canonical_json(report) + "\n", encoding="utf-8")
+    paths[1].write_text(comparison_module._comparison_csv(report), encoding="utf-8")
+    paths[2].write_text(comparison_module._comparison_markdown(report), encoding="utf-8")
+    for policy, path in zip(
+        ("existing_cells_v1", "reference_dense_v1"),
+        paths[3:],
+        strict=True,
+    ):
+        path.write_text(
+            comparison_module._canonical_json(report["policies"][policy]["canonical_skin_artifact"])
+            + "\n",
+            encoding="utf-8",
+        )
+    completion["report_semantic_evidence_sha256"] = (
+        comparison_module._report_semantic_evidence_digest(report)
+    )
+    completion["artifact_files"] = {
+        path.name: comparison_module.artifact_file_metadata(path) for path in paths
+    }
+    completion_path.write_text(
+        comparison_module._canonical_json(completion) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _comparison_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    Path,
+    Any,
+    dict[str, Any],
+    tuple[Path, ...],
+    Path,
+    dict[str, Any],
+    dict[str, Any],
+]:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "bundle"
+    spec = _official_fixture(data_root, shape=(15, 15, 15))
+    runtime_identity = _fixed_runtime_identity()
+    source = _generate_official_bundle(
+        data_root,
+        output_root,
+        spec,
+        runtime_identity,
+        Counter(),
+        monkeypatch,
+        workflow_runner=_controlled_reskinned_primary_workflow,
+    )
+    original_load = result_module.load_f3d_mode_comparison_result
+
+    def load_fixture(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("_dataset_spec", spec)
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(result_module, "load_f3d_mode_comparison_result", load_fixture)
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: deepcopy(runtime_identity),
+    )
+    paths = compare_reskin_policies_from_bundle(output_root)
+    completion_path = paths[0].parent / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    return (
+        output_root,
+        source,
+        runtime_identity,
+        paths,
+        completion_path,
+        json.loads(paths[0].read_text(encoding="utf-8")),
+        json.loads(completion_path.read_text(encoding="utf-8")),
+    )
+
+
+def test_dense_reskin_comparison_strict_deep_and_complete_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        output_root,
+        source,
+        runtime_identity,
+        paths,
+        completion_path,
+        report,
+        completion,
+    ) = _comparison_fixture(tmp_path, monkeypatch)
+    assert [cell.label for cell in source.cells] == [
+        "RL-REF",
+        "RL-QUAL",
+        "Q-REF",
+        "Q-QUAL",
+    ]
+    q_qual = next(cell for cell in source.cells if cell.label == "Q-QUAL")
+    runtime_sha256 = canonical_fingerprint(runtime_identity)
+
+    assert report["schema_version"] == F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION
+    assert (
+        completion["completion_schema_version"]
+        == F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION
+    )
+    assert report["validation_level"] == completion["validation_level"] == "shallow"
+    assert report["source_run_fingerprint"] == source.run_fingerprint
+    assert report["source_runtime_identity_sha256"] == runtime_sha256
+    assert report["comparison_runtime_identity_sha256"] == runtime_sha256
+    assert report["upstream_parent_stage_fingerprints"] == {
+        "scanner": q_qual.stages.scanner,
+        "voting": q_qual.stages.voting,
+        "thinning": q_qual.stages.thinning,
+    }
+    effective = report["resolved_config"]["effective_skinning_configs"]
+    baseline = dict(effective["existing_cells_v1"])
+    candidate = dict(effective["reference_dense_v1"])
+    assert baseline.pop("reskin_policy") == "existing_cells_v1"
+    assert candidate.pop("reskin_policy") == "reference_dense_v1"
+    assert baseline == candidate
+    assert report["comparison_config_fingerprint"] == canonical_fingerprint(
+        report["resolved_config"]
+    )
+    assert all(
+        policy["canonical_skin_artifact"]["format_version"] == 2
+        for policy in report["policies"].values()
+    )
+    for policy in report["policies"].values():
+        assert policy["canonical_skin_artifact"]["skins"]
+        assert policy["parent_ridge_surface"]["evidence"]["surface_distance"][
+            "candidate_to_reference"
+        ]["quantiles"]
+        final = policy["diagnostics"]["reskin"]
+        attempted = final["attempted"]
+        assert final["processed_skin_count"] <= attempted["processed_skin_count"]
+        assert final["output_cell_count"] <= attempted["output_cell_count"]
+
+    parent_reads = Counter()
+    original_open_parent = comparison_module._open_parent_dat
+
+    def tracked_open_parent(*args: Any, **kwargs: Any) -> Any:
+        parent_reads["DAT"] += 1
+        return original_open_parent(*args, **kwargs)
+
+    monkeypatch.setattr(comparison_module, "_open_parent_dat", tracked_open_parent)
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: pytest.fail("shallow validation queried the current runtime"),
+    )
+    assert validate_f3_reskin_policy_comparison(output_root) == paths
+    assert compare_reskin_policies_from_bundle(output_root, resume=True) == paths
+    assert not parent_reads
+
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: deepcopy(runtime_identity),
+    )
+    assert compare_reskin_policies_from_bundle(output_root, resume=True, deep=True) == paths
+    assert parent_reads == Counter({"DAT": 5})
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    assert completion["validation_level"] == "deep"
+    assert validate_f3_reskin_policy_comparison(output_root, require_deep=True) == paths
+
+    artifact_paths = (*paths, completion_path)
+    before_resume = _file_state(artifact_paths)
+    parent_reads.clear()
+    assert compare_reskin_policies_from_bundle(output_root, resume=True, deep=True) == paths
+    assert not parent_reads
+    assert _file_state(artifact_paths) == before_resume
+
+
+def test_source_bindings_and_rehashed_tamper_rejection_phases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        output_root,
+        source,
+        runtime_identity,
+        paths,
+        completion_path,
+        original_report,
+        original_completion,
+    ) = _comparison_fixture(tmp_path, monkeypatch)
+    snapshots = _file_state((*paths, completion_path))
+    parent_reads: Counter[str] = Counter()
+    original_open_parent = comparison_module._open_parent_dat
+
+    def tracked_open_parent(*args: Any, **kwargs: Any) -> Any:
+        parent_reads["DAT"] += 1
+        return original_open_parent(*args, **kwargs)
+
+    monkeypatch.setattr(comparison_module, "_open_parent_dat", tracked_open_parent)
+
+    def restore() -> None:
+        for path, (_, _, payload) in snapshots.items():
+            path.write_bytes(payload)
+        parent_reads.clear()
+
+    manifest_path = output_root / "run_manifest.json"
+    manifest_snapshot = manifest_path.read_bytes()
+    for name, mutate, expected_error in (
+        (
+            "run-fingerprint",
+            lambda manifest: manifest["implementation_identity"].__setitem__(
+                "fixture_source_binding", "changed"
+            ),
+            "source run fingerprint",
+        ),
+        (
+            "runtime-identity",
+            lambda manifest: manifest["runtime_identity"].__setitem__(
+                "platform_machine", "changed-valid-machine"
+            ),
+            "source runtime digest",
+        ),
+    ):
+        manifest = json.loads(manifest_snapshot)
+        mutate(manifest)
+        manifest["run_fingerprint"] = canonical_fingerprint(
+            {field: manifest[field] for field in comparison_module._RUN_COMPUTATION_FIELDS}
+        )
+        manifest_path.write_text(
+            comparison_module._canonical_json(manifest) + "\n",
+            encoding="utf-8",
+        )
+        if name == "runtime-identity":
+            report = deepcopy(original_report)
+            completion = deepcopy(original_completion)
+            report["source_run_fingerprint"] = manifest["run_fingerprint"]
+            completion["source_run_fingerprint"] = manifest["run_fingerprint"]
+            _write_rehashed_comparison(report, paths, completion_path, completion)
+        with pytest.raises(ValueError, match=expected_error):
+            validate_f3_reskin_policy_comparison(output_root, result=source)
+        assert not parent_reads
+        manifest_path.write_bytes(manifest_snapshot)
+        restore()
+
+    q_qual_index = next(index for index, cell in enumerate(source.cells) if cell.label == "Q-QUAL")
+    q_qual = source.cells[q_qual_index]
+    changed_config = deepcopy(dict(q_qual.resolved_config))
+    changed_config["skinning"]["min_skin_size"] += 1
+    changed_cells = list(source.cells)
+    changed_cells[q_qual_index] = replace(q_qual, resolved_config=changed_config)
+    with pytest.raises(ValueError, match="resolved config mismatch"):
+        validate_f3_reskin_policy_comparison(
+            output_root,
+            result=replace(source, cells=tuple(changed_cells)),
+        )
+    assert not parent_reads
+
+    changed_cells[q_qual_index] = replace(
+        q_qual,
+        stages=replace(q_qual.stages, thinning="e" * 64),
+    )
+    with pytest.raises(ValueError, match="parent stage mismatch"):
+        validate_f3_reskin_policy_comparison(
+            output_root,
+            result=replace(source, cells=tuple(changed_cells)),
+        )
+    assert not parent_reads
+
+    def policy(report: dict[str, Any]) -> dict[str, Any]:
+        return report["policies"]["existing_cells_v1"]
+
+    def first_cell(report: dict[str, Any]) -> dict[str, Any]:
+        return policy(report)["canonical_skin_artifact"]["skins"][0]["cells"][0]
+
+    def mutate_resolved_config(report: dict[str, Any], completion: dict[str, Any]) -> None:
+        report["resolved_config"]["shared_skinning_config"]["min_skin_size"] += 1
+        report["comparison_config_fingerprint"] = canonical_fingerprint(report["resolved_config"])
+        completion["comparison_config_fingerprint"] = report["comparison_config_fingerprint"]
+
+    def mutate_overlap(report: dict[str, Any], _: dict[str, Any]) -> None:
+        policy(report)["parent_ridge_surface"]["evidence"]["overlap"][
+            "exact_intersection_count"
+        ] += 1
+
+    def mutate_distance(report: dict[str, Any], _: dict[str, Any]) -> None:
+        policy(report)["parent_ridge_surface"]["evidence"]["surface_distance"][
+            "candidate_to_reference"
+        ]["mean_numerator"] += 1.0
+
+    def mutate_quantile(report: dict[str, Any], _: dict[str, Any]) -> None:
+        quantiles = policy(report)["parent_ridge_surface"]["evidence"]["surface_distance"][
+            "candidate_to_reference"
+        ]["quantiles"]
+        quantiles["median"]["rank"] += 0.25
+
+    def mutate_metric(report: dict[str, Any], _: dict[str, Any]) -> None:
+        policy(report)["parent_ridge_surface"]["metrics"]["overlap"]["buffered_precision"] += 0.125
+
+    def mutate_contrast(report: dict[str, Any], _: dict[str, Any]) -> None:
+        report["contrast"]["generated_cell_count_delta"] += 1
+
+    def mutate_final_diagnostics(report: dict[str, Any], _: dict[str, Any]) -> None:
+        policy(report)["diagnostics"]["reskin"]["output_cell_count"] += 1
+
+    def mutate_attempted_diagnostics(report: dict[str, Any], _: dict[str, Any]) -> None:
+        policy(report)["diagnostics"]["reskin"]["attempted"]["output_cell_count"] += 1
+
+    def mutate_generation(report: dict[str, Any], _: dict[str, Any]) -> None:
+        first_cell(report)["generation"] = "connected_component"
+
+    def mutate_support(report: dict[str, Any], _: dict[str, Any]) -> None:
+        cell = first_cell(report)
+        cell["reskin_support"] = int(cell["reskin_support"] or 0) + 1
+
+    tamper_cases = (
+        (
+            "comparison runtime digest",
+            lambda report, completion: (
+                report.__setitem__("comparison_runtime_identity_sha256", "e" * 64),
+                completion.__setitem__("comparison_runtime_identity_sha256", "e" * 64),
+            ),
+            "runtime digest mismatch",
+        ),
+        (
+            "comparison implementation identity",
+            lambda report, completion: report["comparison_implementation_identity"].__setitem__(
+                "name", "tampered"
+            ),
+            "implementation identity mismatch",
+        ),
+        ("resolved config", mutate_resolved_config, "resolved config mismatch"),
+        (
+            "config fingerprint",
+            lambda report, completion: (
+                report.__setitem__("comparison_config_fingerprint", "e" * 64),
+                completion.__setitem__("comparison_config_fingerprint", "e" * 64),
+            ),
+            "config fingerprint mismatch",
+        ),
+        ("overlap count evidence", mutate_overlap, "inconsistent"),
+        ("distance accumulator evidence", mutate_distance, "inconsistent"),
+        ("quantile evidence", mutate_quantile, "rank mismatch"),
+        ("derived metric", mutate_metric, "metrics/evidence mismatch"),
+        ("derived contrast", mutate_contrast, "contrast metrics mismatch"),
+        ("final diagnostics", mutate_final_diagnostics, "reskin diagnostics are invalid"),
+        (
+            "attempted diagnostics",
+            mutate_attempted_diagnostics,
+            "reskin diagnostics are invalid",
+        ),
+        (
+            "canonical generation",
+            mutate_generation,
+            "(?:generation provenance|output_cell_count does not match skins)",
+        ),
+        (
+            "canonical support",
+            mutate_support,
+            "(?:support|generation provenance|metrics mismatch)",
+        ),
+        (
+            "completion validation level",
+            lambda report, completion: completion.__setitem__("validation_level", "deep"),
+            "validation level mismatch",
+        ),
+    )
+    assert len(tamper_cases) >= 12
+    for _, mutate, expected_error in tamper_cases:
+        report = deepcopy(original_report)
+        completion = deepcopy(original_completion)
+        mutate(report, completion)
+        _write_rehashed_comparison(report, paths, completion_path, completion)
+        with pytest.raises(ValueError, match=expected_error):
+            validate_f3_reskin_policy_comparison(output_root, result=source)
+        assert not parent_reads
+        restore()
+
+    report = deepcopy(original_report)
+    completion = deepcopy(original_completion)
+    surface = policy(report)["parent_ridge_surface"]
+    surface["evidence"]["overlap"]["buffer_radius"] += 1.0
+    surface["metrics"] = metrics_from_surface_evidence(surface["evidence"])
+    report["contrast"] = comparison_module._comparison_contrast(report["policies"])
+    _write_rehashed_comparison(report, paths, completion_path, completion)
+    assert validate_f3_reskin_policy_comparison(output_root, result=source) == paths
+    assert not parent_reads
+    with pytest.raises(ValueError, match="does not exactly match"):
+        validate_f3_reskin_policy_comparison(
+            output_root,
+            deep=True,
+            result=source,
+        )
+    assert parent_reads == Counter({"DAT": 5})
+    restore()
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: deepcopy(runtime_identity),
+    )
+
+
+@pytest.mark.parametrize("min_skin_size", (2, 50), ids=("accepted-and-discarded", "all-discarded"))
+def test_final_artifacts_exclude_discarded_attempts(min_skin_size: int) -> None:
+    shape = (15, 15, 15)
+    fv = np.zeros(shape, dtype=np.float32)
+    fv[3:10, 6, 3:10] = np.float32(0.9)
+    fv[12, 12, 12] = np.float32(0.9)
+    report = compare_reskin_policies_from_parent(
+        fv=fv,
+        fvt=fv.copy(),
+        vp=np.zeros(shape, dtype=np.float32),
+        vt=np.full(shape, np.float32(90.0), dtype=np.float32),
+        skinning_config=SyntheticSkinningConfig(
+            method="quality",
+            growth_source="pre_thin",
+            min_likelihood=0.5,
+            min_skin_size=min_skin_size,
+            d=1,
+            ru=5,
+            rv=6,
+            rw=6,
+            max_steps=6,
+            reskin=True,
+            accepted_occupancy_radius=0,
+            boundary_skinner_fallback=False,
+        ),
+    )
+    for item in report["policies"].values():
+        final = item["diagnostics"]["reskin"]
+        attempted = final["attempted"]
+        cells = [
+            cell for skin in item["canonical_skin_artifact"]["skins"] for cell in skin["cells"]
+        ]
+        assert attempted["processed_skin_count"] > final["processed_skin_count"]
+        assert attempted["output_cell_count"] > final["output_cell_count"]
+        assert all((cell["i1"], cell["i2"], cell["i3"]) != (12, 12, 12) for cell in cells)
+        if min_skin_size == 50:
+            assert not cells
+            assert final["processed_skin_count"] == final["output_cell_count"] == 0
+        else:
+            assert cells
+
+
+@pytest.mark.parametrize("contract", (3, 4))
+def test_historical_skin_artifacts_remain_read_only_when_comparison_is_written(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    contract: int,
+) -> None:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "bundle"
+    spec = _write_fixture(data_root, shape=(13, 13, 13))
+    runtime_identity = _fixed_runtime_identity()
+    workflow_runner = _historical_contract4_reskinned_workflow
+    if contract == 3:
+        _install_historical_skin_contract_writer(monkeypatch)
+        workflow_runner = _historical_reskinned_workflow
+    else:
+        monkeypatch.setattr(
+            runner_module,
+            "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
+            4,
+        )
+    plan_config = _reskinned_primary_config()
+    plan_config = replace(
+        plan_config,
+        skinning_template=replace(
+            plan_config.skinning_template,
+            method="quality",
+        ),
+    )
+    source = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        Counter(),
+        resume=False,
+        monkeypatch=monkeypatch,
+        plan_config=plan_config,
+        workspace_runtime_identity=runtime_identity,
+        workflow_runner=workflow_runner,
+    )
+    before = _tree_bytes(output_root)
+    original_load = result_module.load_f3d_mode_comparison_result
+
+    def load_fixture(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("_dataset_spec", spec)
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(result_module, "load_f3d_mode_comparison_result", load_fixture)
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: deepcopy(runtime_identity),
+    )
+    paths = compare_reskin_policies_from_bundle(output_root)
+    assert validate_completed_f3d_bundle(output_root, _dataset_spec=spec)
+    assert all(
+        path.read_bytes() == payload
+        for relative, payload in before.items()
+        if (path := output_root / relative).is_file()
+    )
+    for cell in source.cells:
+        stage = output_root / "stages" / "skinning" / cell.stages.skinning
+        artifact = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+        stage_manifest = json.loads((stage / "stage_manifest.json").read_text(encoding="utf-8"))
+        assert artifact["format_version"] == (1 if contract == 3 else 2)
+        assert (
+            stage_manifest["resolved_settings"]["skin_artifact_semantic_contract_version"]
+            == contract
+        )
+    assert all(
+        json.loads(path.read_text(encoding="utf-8"))["format_version"] == 2 for path in paths[3:]
+    )
+
+
+def test_controlled_promotion_gate_contract_is_deterministic() -> None:
+    first = build_dense_reskin_promotion_gate()
+    second = build_dense_reskin_promotion_gate()
+    case_ids = [case.case_id for case in controlled_dense_reskin_cases()]
+    assert first == second
+    assert first["schema_version"] == 2
+    assert first["passed"] is True
+    assert first["reasons"] == []
+    assert first["aggregate"]["deterministic_reexecution"] is True
+    assert first["aggregate"]["case_ids"] == case_ids
+    assert first["aggregate"]["case_count"] == len(case_ids) == 10
+    assert first["aggregate"]["buffered_precision_delta"] >= -0.02
+    assert first["aggregate"]["symmetric_chamfer_mean_delta"] <= 0.25
+    assert first["aggregate"]["small_skin_cell_fraction_delta"] <= 0.05
+    for result in first["case_results"]:
+        candidate = result["candidate"]
+        assert candidate["finite_failure_count"] == 0
+        assert candidate["duplicate_rounded_cell_index_count"] == 0
+        assert candidate["generated_on_invalid_mask_count"] == 0
+        assert candidate["generated_on_prior_occupancy_count"] == 0
+        assert candidate["out_of_volume_cell_count"] == 0
+        assert candidate["clamped_artifact_count"] == 0
+
+
+def test_cli_acceptance_paths_forward_comparison_resume_and_deep_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "output"
+    data_root.mkdir()
+    calls: list[tuple[str, bool, bool]] = []
+
+    def run_experiment(**kwargs: Any) -> Path:
+        calls.append(("run", bool(kwargs["resume"]), bool(kwargs["deep"])))
+        output_root.mkdir(exist_ok=True)
+        (output_root / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "plan": {
+                        "reference_workflow_settings": {
+                            "skinning_config": {
+                                "reskin_policy": "existing_cells_v1",
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return output_root
+
+    def compare(_: Path, *, resume: bool = False, deep: bool = False) -> None:
+        calls.append(("compare", resume, deep))
+
+    monkeypatch.setattr(f3d_mode_comparison, "run_experiment", run_experiment)
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "compare_reskin_policies_from_bundle",
+        compare,
+    )
+    pair = [
+        "--data-root",
+        str(data_root),
+        "--output-dir",
+        str(output_root),
+        "--compare-reskin-policies",
+        "existing_cells_v1,reference_dense_v1",
+    ]
+    assert f3d_mode_comparison.main(pair) == 0
+    assert f3d_mode_comparison.main([*pair, "--resume", "--deep-validate"]) == 0
+    assert calls == [
+        ("run", False, False),
+        ("compare", False, False),
+        ("run", True, True),
+        ("compare", True, True),
+    ]

@@ -374,7 +374,11 @@ def storage_report(workspace: F3RunWorkspace | str | os.PathLike[str]) -> tuple[
     completion_temporaries = tuple(root.glob(".completion.json.tmp-*"))
     logical, actual, allocated, count = _directory_storage(
         root,
-        excluded_roots=(root / "reports",),
+        excluded_roots=(
+            root / "reports",
+            # Dedicated post-publication evidence is not source-bundle storage.
+            root / "reskin_policy_comparison",
+        ),
         excluded_files=(root / "completion.json", *completion_temporaries),
     )
     rows.append(

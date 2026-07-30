@@ -186,7 +186,7 @@ NUMBA_NUM_THREADS=1 \
 PYOSV_ACCEL=auto \
 PYOSV_RUN_F3D_MODE_COMPARISON=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
-PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_v3 \
+PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_<NEW_SHA> \
 PYOSV_F3D_MODE_COMPARISON_DEEP_VALIDATE=1 \
 python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 ```
@@ -194,6 +194,13 @@ python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 The official gate command above explicitly sets `PYOSV_ACCEL=auto` and verifies
 that the resulting effective acceleration state is `numba_jit_enabled`; a
 `python_only` run is not an official F3 result.
+It runs or resumes the canonical four-cell bundle, performs strict and
+requested deep bundle validation, generates the fixed
+`existing_cells_v1`/`reference_dense_v1` Q-QUAL comparison, deep-validates
+that comparison, and exercises complete resume without changing its six
+artifact paths, sizes, modification times, or hashes. Publication readiness
+requires the source and comparison runtime-identity digests to match and the
+comparison completion to retain `validation_level="deep"`.
 
 Normal CLI unit tests stub orchestration and do not require F3 files or
 full-volume computation.
