@@ -191,9 +191,10 @@ def _historical_contract4_reskinned_workflow(**kwargs: Any) -> Any:
     result = _controlled_reskinned_primary_workflow(**kwargs)
     diagnostics = dict(result.diagnostics.skinning)
     reskin = dict(diagnostics["reskin"])
-    reskin.pop("reskin_diagnostics_contract_version")
-    reskin.pop("attempted")
-    diagnostics["reskin"] = reskin
+    diagnostics["reskin"] = {
+        "reskin_policy": reskin["reskin_policy"],
+        **dict(reskin["attempted"]),
+    }
     skin = replace(result.skin, diagnostics=diagnostics)
     return replace(
         result,
@@ -308,6 +309,51 @@ def test_historical_contract4_format2_bundle_end_to_end(
         assert payload["format_version"] == 2
         assert "reskin_diagnostics_contract_version" not in report["diagnostics"]["reskin"]
         assert "attempted" not in report["diagnostics"]["reskin"]
+
+    assert validate_completed_f3d_bundle(output_root, _dataset_spec=spec)
+    assert validate_completed_f3d_bundle(output_root, deep=True, _dataset_spec=spec)
+
+
+def test_historical_contract4_deep_replay_preserves_discarded_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "fixture-data"
+    output_root = tmp_path / "run"
+    spec = _write_fixture(data_root, shape=(13, 13, 13))
+    config = _reskinned_primary_config()
+    config = replace(
+        config,
+        skinning_template=replace(
+            config.skinning_template,
+            min_skin_size=10_000,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
+        4,
+    )
+
+    result = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        Counter(),
+        resume=False,
+        monkeypatch=monkeypatch,
+        plan_config=config,
+        workspace_runtime_identity=_fixed_runtime_identity(),
+        workflow_runner=_historical_contract4_reskinned_workflow,
+    )
+
+    for fingerprint in {cell.stages.skinning for cell in result.cells}:
+        stage = output_root / "stages" / "skinning" / fingerprint
+        report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+        payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+        assert not payload["skins"]
+        assert report["diagnostics"]["reskin"]["processed_skin_count"] > 0
+        assert report["diagnostics"]["reskin"]["output_cell_count"] > 0
 
     assert validate_completed_f3d_bundle(output_root, _dataset_spec=spec)
     assert validate_completed_f3d_bundle(output_root, deep=True, _dataset_spec=spec)

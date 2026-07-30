@@ -609,6 +609,8 @@ def test_contract5_allows_zero_attempted_counts_when_reskin_phase_is_not_reached
             "processed_skin_count",
             0,
         ),
+        lambda diagnostics: diagnostics.__setitem__("unexpected", 0),
+        lambda diagnostics: diagnostics["attempted"].__setitem__("unexpected", 0),
     ),
 )
 def test_contract5_rejects_reskin_diagnostics_tamper(mutate: Any) -> None:

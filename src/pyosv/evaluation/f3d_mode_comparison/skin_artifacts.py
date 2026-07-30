@@ -617,19 +617,6 @@ def validate_skin_generation_provenance(
         raise SkinArtifactValidationError(
             "multi-cell reskinned skin cannot retain grown cell generation"
         )
-    reskin_applied = reskin_diagnostics.get("reskin_applied")
-    if not isinstance(reskin_applied, bool):
-        raise SkinArtifactValidationError("reskin diagnostics reskin_applied must be bool")
-    policy_generations = (
-        {FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED}
-        if provenance == PRIMARY_EXISTING_CELLS_RESKINNED
-        else _DENSE_GENERATIONS
-    )
-    if reskin_applied != bool(generations & policy_generations):
-        raise SkinArtifactValidationError(
-            "reskin diagnostics reskin_applied does not match skins.json generations"
-        )
-
     generated_count = sum(
         cell.generation == FAULT_CELL_GENERATION_DENSE_RESKIN_GENERATED
         for skin in parsed.skins
@@ -640,6 +627,7 @@ def validate_skin_generation_provenance(
         "observed_output_cell_count": parsed.cell_count - generated_count,
         "generated_cell_count": generated_count,
     }
+    actual_counts: dict[str, int] = {}
     for name, expected in expected_counts.items():
         actual = _integer(
             reskin_diagnostics.get(name),
@@ -647,10 +635,36 @@ def validate_skin_generation_provenance(
         )
         if actual < 0:
             raise SkinArtifactValidationError(f"reskin diagnostics {name} must be non-negative")
-        if actual != expected:
+        actual_counts[name] = actual
+        count_mismatch = (
+            actual != expected
+            if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+            else actual < expected
+        )
+        if count_mismatch:
             raise SkinArtifactValidationError(
                 f"reskin diagnostics {name} does not match skins.json generations"
             )
+    reskin_applied = reskin_diagnostics.get("reskin_applied")
+    if not isinstance(reskin_applied, bool):
+        raise SkinArtifactValidationError("reskin diagnostics reskin_applied must be bool")
+    policy_generations = (
+        {FAULT_CELL_GENERATION_EXISTING_CELLS_RESKINNED}
+        if provenance == PRIMARY_EXISTING_CELLS_RESKINNED
+        else _DENSE_GENERATIONS
+    )
+    expected_reskin_applied = bool(generations & policy_generations)
+    historical_discarded_output = any(
+        actual_counts[name] > expected for name, expected in expected_counts.items()
+    )
+    if reskin_applied != expected_reskin_applied and not (
+        semantic_contract_version == _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+        and reskin_applied
+        and historical_discarded_output
+    ):
+        raise SkinArtifactValidationError(
+            "reskin diagnostics reskin_applied does not match skins.json generations"
+        )
     if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
         _validate_reskin_diagnostics_v2(
             reskin_diagnostics,
@@ -681,6 +695,16 @@ def _validate_reskin_diagnostics_v2(
     *,
     skin_count: int,
 ) -> None:
+    expected_final_fields = {
+        "reskin_diagnostics_contract_version",
+        "reskin_policy",
+        "reskin_applied",
+        *_RESKIN_COUNT_FIELDS,
+        _RESKIN_MAX_DISTANCE_FIELD,
+        "attempted",
+    }
+    if set(diagnostics) != expected_final_fields:
+        raise SkinArtifactValidationError("reskin diagnostics field set mismatch")
     if (
         diagnostics.get("reskin_diagnostics_contract_version")
         != RESKIN_DIAGNOSTICS_CONTRACT_VERSION
@@ -696,6 +720,13 @@ def _validate_reskin_diagnostics_v2(
     attempted = diagnostics.get("attempted")
     if not isinstance(attempted, Mapping):
         raise SkinArtifactValidationError("reskin diagnostics attempted must be an object")
+    expected_attempted_fields = {
+        "reskin_applied",
+        *_RESKIN_COUNT_FIELDS,
+        _RESKIN_MAX_DISTANCE_FIELD,
+    }
+    if set(attempted) != expected_attempted_fields:
+        raise SkinArtifactValidationError("reskin diagnostics attempted field set mismatch")
     attempted_applied = attempted.get("reskin_applied")
     if not isinstance(attempted_applied, bool):
         raise SkinArtifactValidationError(

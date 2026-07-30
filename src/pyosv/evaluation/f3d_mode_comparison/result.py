@@ -2756,10 +2756,13 @@ def _recompute_skin_artifacts(
                     normalized_recomputed_diagnostics.get("reskin"),
                     "recomputed reskin diagnostics",
                 )
+                attempted = _object(
+                    normalized_reskin.get("attempted"),
+                    "recomputed attempted reskin diagnostics",
+                )
                 normalized_recomputed_diagnostics["reskin"] = {
-                    name: value
-                    for name, value in normalized_reskin.items()
-                    if name not in {"reskin_diagnostics_contract_version", "attempted"}
+                    "reskin_policy": normalized_reskin["reskin_policy"],
+                    **attempted,
                 }
             if normalized_recomputed_diagnostics != dict(recorded_diagnostics):
                 differing_fields = sorted(

@@ -332,10 +332,6 @@ def compare_reskin_policies_from_bundle(
     comparison_implementation = _comparison_implementation_identity()
     if destination.exists() and (not destination.is_dir() or destination.is_symlink()):
         raise ValueError("reskin policy comparison output must be a directory")
-    if resume and destination.is_dir():
-        for item in destination.glob(".complete.json.tmp-*"):
-            if item.is_file() and not item.is_symlink():
-                item.unlink()
     if destination.is_dir() and any(destination.iterdir()):
         if not resume:
             raise FileExistsError(f"reskin policy comparison output exists: {destination}")
@@ -344,7 +340,12 @@ def compare_reskin_policies_from_bundle(
             F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
         }
         for item in destination.iterdir():
-            if item.name not in allowed_partial_files or not item.is_file() or item.is_symlink():
+            is_owned_completion_temporary = item.name.startswith(".complete.json.tmp-")
+            if (
+                (item.name not in allowed_partial_files and not is_owned_completion_temporary)
+                or not item.is_file()
+                or item.is_symlink()
+            ):
                 raise ValueError("incomplete reskin policy comparison file set is invalid")
 
     report, cell, shape = _comparison_report_from_bundle(
@@ -354,55 +355,91 @@ def compare_reskin_policies_from_bundle(
         comparison_runtime_sha256=comparison_runtime_sha256,
         comparison_implementation=comparison_implementation,
     )
-    paths = write_f3_reskin_policy_comparison(report, destination)
-    comparison_implementation_sha256 = canonical_fingerprint(comparison_implementation)
-    completion = {
-        "completion_schema_version": F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION,
-        "comparison_schema_version": F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
-        "status": "complete",
-        "source_cell": F3_RESKIN_POLICY_COMPARISON_CELL,
-        "source_run_fingerprint": source_identity.run_fingerprint,
-        "source_runtime_identity_sha256": source_identity.runtime_identity_sha256,
-        "comparison_runtime_identity_sha256": comparison_runtime_sha256,
-        "comparison_implementation_identity_sha256": comparison_implementation_sha256,
-        "comparison_config_fingerprint": report["comparison_config_fingerprint"],
-        "metric_evidence_schema_version": SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION,
-        "report_semantic_evidence_sha256": _report_semantic_evidence_digest(report),
-        "validation_level": report["validation_level"],
-        "upstream_parent_stage_fingerprints": {
-            "scanner": cell.stages.scanner,
-            "voting": cell.stages.voting,
-            "thinning": cell.stages.thinning,
-        },
-        "artifact_files": {path.name: artifact_file_metadata(path) for path in paths},
-    }
-    atomic_write_artifact(
-        completion_path,
-        canonical_json_bytes(completion) + b"\n",
-        temporary_prefix=".complete.json.tmp-",
+    created_parents = _create_missing_parents(destination.parent)
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}.generation-tmp-",
+            dir=destination.parent,
+        )
     )
     try:
-        validated = validate_f3_reskin_policy_comparison(
+        staged_paths = write_f3_reskin_policy_comparison(report, staging)
+        comparison_implementation_sha256 = canonical_fingerprint(comparison_implementation)
+        completion = {
+            "completion_schema_version": F3_RESKIN_POLICY_COMPARISON_COMPLETION_SCHEMA_VERSION,
+            "comparison_schema_version": F3_RESKIN_POLICY_COMPARISON_SCHEMA_VERSION,
+            "status": "complete",
+            "source_cell": F3_RESKIN_POLICY_COMPARISON_CELL,
+            "source_run_fingerprint": source_identity.run_fingerprint,
+            "source_runtime_identity_sha256": source_identity.runtime_identity_sha256,
+            "comparison_runtime_identity_sha256": comparison_runtime_sha256,
+            "comparison_implementation_identity_sha256": comparison_implementation_sha256,
+            "comparison_config_fingerprint": report["comparison_config_fingerprint"],
+            "metric_evidence_schema_version": SURFACE_METRIC_EVIDENCE_SCHEMA_VERSION,
+            "report_semantic_evidence_sha256": _report_semantic_evidence_digest(report),
+            "validation_level": report["validation_level"],
+            "upstream_parent_stage_fingerprints": {
+                "scanner": cell.stages.scanner,
+                "voting": cell.stages.voting,
+                "thinning": cell.stages.thinning,
+            },
+            "artifact_files": {path.name: artifact_file_metadata(path) for path in staged_paths},
+        }
+        atomic_write_artifact(
+            staging / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
+            canonical_json_bytes(completion) + b"\n",
+            temporary_prefix=".complete.json.tmp-",
+        )
+        validate_f3_reskin_policy_comparison(
             root,
-            output_dir=destination,
+            output_dir=staging,
             deep=deep,
             result=result,
             _shape=shape,
         )
         if deep:
-            return _promote_comparison_completion(
-                destination,
+            _promote_comparison_completion(
+                staging,
                 validator=lambda: validate_f3_reskin_policy_comparison(
                     root,
-                    output_dir=destination,
+                    output_dir=staging,
                     result=result,
                     _shape=shape,
                 ),
             )
-        return validated
+        _publish_comparison_directory(staging, destination)
+        return tuple(destination / name for name in F3_RESKIN_POLICY_COMPARISON_FILES)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        for parent in created_parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+
+
+def _create_missing_parents(parent: Path) -> tuple[Path, ...]:
+    missing: list[Path] = []
+    current = parent
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    return tuple(missing)
+
+
+def _publish_comparison_directory(staging: Path, destination: Path) -> None:
+    if not destination.exists():
+        os.rename(staging, destination)
+        return
+    backup = staging.with_name(f"{staging.name}-previous")
+    os.rename(destination, backup)
+    try:
+        os.rename(staging, destination)
     except BaseException:
-        completion_path.unlink(missing_ok=True)
+        os.rename(backup, destination)
         raise
+    shutil.rmtree(backup, ignore_errors=True)
 
 
 def validate_f3_reskin_policy_comparison(

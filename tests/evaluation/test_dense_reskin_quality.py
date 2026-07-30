@@ -1,5 +1,6 @@
 import csv
 import copy
+import itertools
 import json
 import weakref
 from dataclasses import asdict
@@ -1206,6 +1207,64 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
         if Path(path).name == "reskin_policy_comparison.md":
             raise OSError("injected promotion write failure")
         return original_atomic_write(path, payload, temporary_prefix=temporary_prefix)
+
+    def fail_staged_validation(*args, **kwargs):
+        raise ValueError("injected staged validation failure")
+
+    for existing, failure in itertools.product((False, True), ("write", "validation")):
+        transaction_root = tmp_path / f"transaction-{existing}-{failure}"
+        if existing:
+            transaction_root.mkdir()
+            (transaction_root / "reskin_policy_metrics.csv").write_bytes(b"existing\n")
+            (transaction_root / ".complete.json.tmp-interrupted").write_bytes(b"temporary\n")
+        before_paths = (
+            {path.relative_to(transaction_root).as_posix() for path in transaction_root.rglob("*")}
+            if existing
+            else set()
+        )
+        before_files = (
+            {
+                path.relative_to(transaction_root).as_posix(): path.read_bytes()
+                for path in transaction_root.rglob("*")
+                if path.is_file()
+            }
+            if existing
+            else {}
+        )
+        with monkeypatch.context() as transaction_patch:
+            if failure == "write":
+                transaction_patch.setattr(
+                    reskin_policy_comparison,
+                    "atomic_write_artifact",
+                    fail_markdown_write,
+                )
+                expected_error = OSError
+            else:
+                transaction_patch.setattr(
+                    reskin_policy_comparison,
+                    "validate_f3_reskin_policy_comparison",
+                    fail_staged_validation,
+                )
+                expected_error = ValueError
+            with pytest.raises(expected_error, match="injected"):
+                compare_reskin_policies_from_bundle(
+                    tmp_path,
+                    output_dir=transaction_root,
+                    resume=existing,
+                )
+        if existing:
+            assert {
+                path.relative_to(transaction_root).as_posix()
+                for path in transaction_root.rglob("*")
+            } == before_paths
+            assert {
+                path.relative_to(transaction_root).as_posix(): path.read_bytes()
+                for path in transaction_root.rglob("*")
+                if path.is_file()
+            } == before_files
+        else:
+            assert not transaction_root.exists()
+        assert not tuple(transaction_root.parent.glob(f".{transaction_root.name}.generation-tmp-*"))
 
     for failure in ("write", "validation"):
         with monkeypatch.context() as promotion_patch:
