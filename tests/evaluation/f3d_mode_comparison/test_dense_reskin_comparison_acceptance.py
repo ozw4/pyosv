@@ -560,11 +560,10 @@ def test_historical_skin_artifacts_remain_read_only_when_comparison_is_written(
     )
     paths = compare_reskin_policies_from_bundle(output_root)
     assert validate_completed_f3d_bundle(output_root, _dataset_spec=spec)
-    assert all(
-        path.read_bytes() == payload
-        for relative, payload in before.items()
-        if (path := output_root / relative).is_file()
-    )
+    for relative, payload in before.items():
+        path = output_root / relative
+        assert path.is_file()
+        assert path.read_bytes() == payload
     for cell in source.cells:
         stage = output_root / "stages" / "skinning" / cell.stages.skinning
         artifact = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
@@ -603,13 +602,8 @@ def test_controlled_promotion_gate_contract_is_deterministic() -> None:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    expected_payload_sha256 = {
-        1: "98554f6a3bbf073217ed0aba21998db1bb19ac4b1b7e03f4f913ea7c6d1b5a32",
-        2: "f355f90e8c76b9721fae4b586c090b88fdaf801005357b6061f2ac7edff46fdd",
-    }
-    numpy_major = int(np.__version__.partition(".")[0])
-    assert numpy_major in expected_payload_sha256
-    assert hashlib.sha256(canonical_payload).hexdigest() == expected_payload_sha256[numpy_major]
+    expected_payload_sha256 = "98554f6a3bbf073217ed0aba21998db1bb19ac4b1b7e03f4f913ea7c6d1b5a32"
+    assert hashlib.sha256(canonical_payload).hexdigest() == expected_payload_sha256
     assert first["schema_version"] == 2
     assert first["passed"] is True
     assert first["reasons"] == []
