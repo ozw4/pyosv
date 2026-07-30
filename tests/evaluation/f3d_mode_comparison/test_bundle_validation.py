@@ -397,6 +397,70 @@ def _write_csv_rows(
         writer.writerows(rows)
 
 
+@pytest.mark.parametrize(
+    ("reskin", "method", "expected_source", "expected_observed"),
+    (
+        (True, "quality", "attempted", 4),
+        (False, "quality", "final", 2),
+        (True, "connected_component", "final", 0),
+    ),
+)
+def test_contract4_recomputed_diagnostics_restore_method_specific_flat_semantics(
+    reskin: bool,
+    method: str,
+    expected_source: str,
+    expected_observed: int,
+) -> None:
+    final = {
+        "reskin_applied": False,
+        "processed_skin_count": 1,
+        "input_cell_count": 2,
+        "output_cell_count": 2,
+        "observed_output_cell_count": 2,
+        "generated_cell_count": 0,
+        "dropped_input_cell_count": 0,
+        "projected_local_duplicate_count": 0,
+        "candidate_local_key_count": 0,
+        "rejected_support_count": 0,
+        "rejected_invalid_mask_count": 0,
+        "rejected_prior_skin_collision_count": 0,
+        "rejected_out_of_bounds_count": 0,
+        "rejected_duplicate_world_index_count": 0,
+        "max_generated_chebyshev_distance_from_observed": 0,
+    }
+    attempted = {
+        **final,
+        "reskin_applied": True,
+        "processed_skin_count": 3,
+        "input_cell_count": 5,
+        "output_cell_count": 4,
+        "observed_output_cell_count": 4,
+        "dropped_input_cell_count": 1,
+    }
+    diagnostics = {
+        "reskin": {
+            "reskin_diagnostics_contract_version": 2,
+            "reskin_policy": "existing_cells_v1",
+            **final,
+            "attempted": attempted,
+        }
+    }
+
+    result_module._normalize_recomputed_reskin_diagnostics(
+        diagnostics,
+        {"reskin": reskin, "method": method},
+        4,
+    )
+
+    restored = diagnostics["reskin"]
+    source = attempted if expected_source == "attempted" else final
+    assert restored["processed_skin_count"] == source["processed_skin_count"]
+    assert restored["input_cell_count"] == source["input_cell_count"]
+    assert restored["observed_output_cell_count"] == expected_observed
+    assert "reskin_diagnostics_contract_version" not in restored
+    assert "attempted" not in restored
+
+
 def test_complete_bundle_strict_load_deep_validation_and_resume(tmp_path: Path) -> None:
     root = _complete_small_bundle(tmp_path)
 

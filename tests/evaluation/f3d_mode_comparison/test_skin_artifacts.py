@@ -471,43 +471,6 @@ def test_contract4_generation_validation_is_method_specific(
             )
 
 
-def test_contract4_dense_generation_must_match_reskin_diagnostics() -> None:
-    parsed = ParsedSkinArtifacts(
-        skins=(
-            (
-                SkinCellRecord(
-                    0.0,
-                    0.0,
-                    0.0,
-                    0,
-                    0,
-                    0,
-                    0.8,
-                    25.0,
-                    70.0,
-                    "grown",
-                    None,
-                ),
-            ),
-        ),
-        format_version=2,
-    )
-
-    with pytest.raises(SkinArtifactValidationError, match="does not match skins.json generations"):
-        validate_skin_generation_provenance(
-            parsed,
-            "primary_dense_reskinned",
-            semantic_contract_version=4,
-            reskin_diagnostics={
-                "reskin_policy": "reference_dense_v1",
-                "reskin_applied": True,
-                "output_cell_count": 1,
-                "observed_output_cell_count": 0,
-                "generated_cell_count": 1,
-            },
-        )
-
-
 def _contract5_reskin_diagnostics() -> dict[str, Any]:
     counts = {
         "reskin_applied": True,
@@ -532,6 +495,47 @@ def _contract5_reskin_diagnostics() -> dict[str, Any]:
         **counts,
         "attempted": dict(counts),
     }
+
+
+def test_contract4_dense_generation_must_match_reskin_diagnostics() -> None:
+    parsed = ParsedSkinArtifacts(
+        skins=(
+            (
+                SkinCellRecord(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0,
+                    0,
+                    0,
+                    0.8,
+                    25.0,
+                    70.0,
+                    "grown",
+                    None,
+                ),
+            ),
+        ),
+        format_version=2,
+    )
+    diagnostics = _contract5_reskin_diagnostics()
+    diagnostics.pop("reskin_diagnostics_contract_version")
+    diagnostics.pop("attempted")
+    diagnostics.update(
+        {
+            "reskin_policy": "reference_dense_v1",
+            "observed_output_cell_count": 0,
+            "generated_cell_count": 1,
+        }
+    )
+
+    with pytest.raises(SkinArtifactValidationError, match="does not match skins.json generations"):
+        validate_skin_generation_provenance(
+            parsed,
+            "primary_dense_reskinned",
+            semantic_contract_version=4,
+            reskin_diagnostics=diagnostics,
+        )
 
 
 def _contract5_parsed_skin() -> ParsedSkinArtifacts:
@@ -574,6 +578,16 @@ def test_contract5_validates_final_and_attempted_reskin_diagnostics() -> None:
         semantic_contract_version=4,
         reskin_diagnostics=historical,
     )
+
+
+def test_contract4_rejects_diagnostics_v2_fields() -> None:
+    with pytest.raises(SkinArtifactValidationError, match="v1 field set mismatch"):
+        validate_skin_generation_provenance(
+            _contract5_parsed_skin(),
+            "primary_existing_cells_reskinned",
+            semantic_contract_version=4,
+            reskin_diagnostics=_contract5_reskin_diagnostics(),
+        )
 
 
 def test_contract5_allows_zero_attempted_counts_when_reskin_phase_is_not_reached() -> None:

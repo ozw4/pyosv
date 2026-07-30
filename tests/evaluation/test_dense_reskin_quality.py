@@ -31,7 +31,7 @@ from pyosv.evaluation.synthetic_quality import (
     SyntheticSkinningConfig,
     resolve_workflow_settings,
 )
-from pyosv.evaluation.synthetic_quality.variants import VariantSpec
+from pyosv.evaluation.synthetic_quality.variants import SkinningPatch, VariantSpec
 from pyosv.skin import FaultSkin
 from pyosv.synthetic_metrics import reskin_generation_metrics, skin_link_topology_metrics
 
@@ -793,6 +793,55 @@ def test_f3_skin_only_pair_shares_parent_and_branches_policy(monkeypatch) -> Non
         ]
         == 1.0
     )
+
+
+def test_f3_skin_only_pair_applies_variant_skinning_patch(monkeypatch) -> None:
+    shape = (5, 5, 5)
+    values = np.zeros(shape, dtype=np.float32)
+    config = SyntheticSkinningConfig(
+        method="quality",
+        min_likelihood=0.5,
+        min_skin_size=1,
+        reskin=True,
+    )
+    variant = VariantSpec(
+        "patched-skinning",
+        skinning=SkinningPatch(
+            min_likelihood=0.75,
+            override_min_likelihood=True,
+            accepted_occupancy_radius=0,
+        ),
+        experimental=False,
+    )
+    original_execute = reskin_policy_comparison.execute_skinning_phase3d
+    executed_configs = {}
+
+    def tracked_execute(**kwargs):
+        settings = kwargs["skinning_settings"]
+        executed_configs[settings.reskin_policy] = settings
+        return original_execute(**kwargs)
+
+    monkeypatch.setattr(
+        reskin_policy_comparison,
+        "execute_skinning_phase3d",
+        tracked_execute,
+    )
+
+    report = compare_reskin_policies_from_parent(
+        fv=values,
+        fvt=values,
+        vp=values,
+        vt=values,
+        skinning_config=config,
+        variant_spec=variant,
+    )
+
+    effective = report["resolved_config"]["effective_skinning_configs"]
+    assert set(executed_configs) == {"existing_cells_v1", "reference_dense_v1"}
+    for policy, settings in executed_configs.items():
+        assert settings.min_likelihood == 0.75
+        assert settings.accepted_occupancy_radius == 0
+        assert effective[policy] == asdict(settings)
 
 
 def test_f3_parent_fingerprint_includes_scanner_target_mask() -> None:

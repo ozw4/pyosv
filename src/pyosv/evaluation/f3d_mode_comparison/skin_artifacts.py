@@ -598,6 +598,11 @@ def validate_skin_generation_provenance(
         raise SkinArtifactValidationError("reskin diagnostics conflict with final provenance")
     if not isinstance(reskin_diagnostics, Mapping):
         raise SkinArtifactValidationError("reskin diagnostics must be an object")
+    validate_reskin_diagnostics_contract(
+        reskin_diagnostics,
+        semantic_contract_version=semantic_contract_version,
+        skin_count=len(parsed.skins),
+    )
 
     expected_policy = (
         RESKIN_POLICY_EXISTING_CELLS_V1
@@ -665,11 +670,6 @@ def validate_skin_generation_provenance(
         raise SkinArtifactValidationError(
             "reskin diagnostics reskin_applied does not match skins.json generations"
         )
-    if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
-        _validate_reskin_diagnostics_v2(
-            reskin_diagnostics,
-            skin_count=len(parsed.skins),
-        )
 
 
 _RESKIN_COUNT_FIELDS = (
@@ -690,10 +690,49 @@ _RESKIN_COUNT_FIELDS = (
 _RESKIN_MAX_DISTANCE_FIELD = "max_generated_chebyshev_distance_from_observed"
 
 
+def validate_reskin_diagnostics_contract(
+    diagnostics: Mapping[str, Any],
+    *,
+    semantic_contract_version: int,
+    skin_count: int | None = None,
+) -> None:
+    """Validate the diagnostics schema paired with one skin semantic contract."""
+
+    if not isinstance(diagnostics, Mapping):
+        raise SkinArtifactValidationError("reskin diagnostics must be an object")
+    if semantic_contract_version == _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        _validate_reskin_diagnostics_v1(diagnostics)
+        return
+    if semantic_contract_version == F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        _validate_reskin_diagnostics_v2(diagnostics, skin_count=skin_count)
+        return
+    raise SkinArtifactValidationError(
+        "reskin diagnostics require skin artifact semantic contract 4 or 5"
+    )
+
+
+def _validate_reskin_diagnostics_v1(diagnostics: Mapping[str, Any]) -> None:
+    expected_fields = {
+        "reskin_policy",
+        "reskin_applied",
+        *_RESKIN_COUNT_FIELDS,
+        _RESKIN_MAX_DISTANCE_FIELD,
+    }
+    if set(diagnostics) != expected_fields:
+        raise SkinArtifactValidationError("reskin diagnostics v1 field set mismatch")
+    try:
+        validate_reskin_policy(diagnostics.get("reskin_policy"))
+    except (TypeError, ValueError) as error:
+        raise SkinArtifactValidationError("reskin diagnostics policy is invalid") from error
+    if not isinstance(diagnostics.get("reskin_applied"), bool):
+        raise SkinArtifactValidationError("reskin diagnostics reskin_applied must be bool")
+    _reskin_diagnostic_counts(diagnostics, "reskin diagnostics")
+
+
 def _validate_reskin_diagnostics_v2(
     diagnostics: Mapping[str, Any],
     *,
-    skin_count: int,
+    skin_count: int | None,
 ) -> None:
     expected_final_fields = {
         "reskin_diagnostics_contract_version",
@@ -710,7 +749,7 @@ def _validate_reskin_diagnostics_v2(
         != RESKIN_DIAGNOSTICS_CONTRACT_VERSION
     ):
         raise SkinArtifactValidationError("reskin diagnostics contract version mismatch")
-    if diagnostics.get("processed_skin_count") != skin_count:
+    if skin_count is not None and diagnostics.get("processed_skin_count") != skin_count:
         raise SkinArtifactValidationError(
             "reskin diagnostics processed_skin_count does not match skins.json"
         )

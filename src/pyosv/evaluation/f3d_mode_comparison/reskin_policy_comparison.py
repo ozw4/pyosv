@@ -18,7 +18,12 @@ import numpy as np
 
 from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
-from pyosv.evaluation.synthetic_quality.variants import SkinningPatch, VariantSpec, VotingPatch
+from pyosv.evaluation.synthetic_quality.variants import (
+    SkinningPatch,
+    VariantSpec,
+    VotingPatch,
+    effective_skinning_config,
+)
 from pyosv.evaluation.workflow3d import execute_skinning_phase3d
 from pyosv.skinner import (
     RESKIN_POLICY_EXISTING_CELLS_V1,
@@ -139,10 +144,15 @@ def compare_reskin_policies_from_parent(
         raise ValueError("scanner target mask source requires a provided mask")
     if scanner_target_positive_mask is not None and scanner_target_mask_source == "not_provided":
         raise ValueError("provided scanner target mask requires its source")
+    effective_configs = _effective_comparison_skinning_configs(
+        skinning_config,
+        variant_spec,
+    )
     resolved_config = _resolved_comparison_config(
         skinning_config,
         variant_spec,
         scanner_target_mask_source=scanner_target_mask_source,
+        effective_configs=effective_configs,
     )
     comparison_config_fingerprint = canonical_fingerprint(resolved_config)
 
@@ -169,7 +179,7 @@ def compare_reskin_policies_from_parent(
             fvt=arrays["fvt"],
             vp=arrays["vp"],
             vt=arrays["vt"],
-            skinning_settings=replace(skinning_config, reskin_policy=policy),
+            skinning_settings=effective_configs[policy],
             variant_spec=variant_spec,
             scanner_target_positive_mask=scanner_mask,
         )
@@ -801,10 +811,16 @@ def _resolved_comparison_config(
     variant_spec: VariantSpec,
     *,
     scanner_target_mask_source: str = "source_scanner_ft_positive",
+    effective_configs: Mapping[str, SyntheticSkinningConfig] | None = None,
 ) -> dict[str, Any]:
     shared = _mutable_scalar_evidence(asdict(skinning_config))
+    if effective_configs is None:
+        effective_configs = _effective_comparison_skinning_configs(
+            skinning_config,
+            variant_spec,
+        )
     effective = {
-        policy: _mutable_scalar_evidence(asdict(replace(skinning_config, reskin_policy=policy)))
+        policy: _mutable_scalar_evidence(asdict(effective_configs[policy]))
         for policy in (
             RESKIN_POLICY_EXISTING_CELLS_V1,
             RESKIN_POLICY_REFERENCE_DENSE_V1,
@@ -820,6 +836,26 @@ def _resolved_comparison_config(
             "positive_epsilon": NONZERO_EPSILON,
         },
         "effective_skinning_configs": effective,
+    }
+
+
+def _effective_comparison_skinning_configs(
+    skinning_config: SyntheticSkinningConfig,
+    variant_spec: VariantSpec,
+) -> dict[str, SyntheticSkinningConfig]:
+    variant_effective = effective_skinning_config(variant_spec, skinning_config)
+    if not variant_effective.enabled:
+        raise ValueError("effective skinning config must be enabled")
+    if variant_effective.method != "quality":
+        raise ValueError("effective skinning config method must be 'quality'")
+    if not variant_effective.reskin:
+        raise ValueError("effective skinning config reskin must be true")
+    return {
+        policy: replace(variant_effective, reskin_policy=policy)
+        for policy in (
+            RESKIN_POLICY_EXISTING_CELLS_V1,
+            RESKIN_POLICY_REFERENCE_DENSE_V1,
+        )
     }
 
 

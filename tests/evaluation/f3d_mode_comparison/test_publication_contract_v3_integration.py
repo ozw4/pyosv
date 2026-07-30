@@ -191,9 +191,20 @@ def _historical_contract4_reskinned_workflow(**kwargs: Any) -> Any:
     result = _controlled_reskinned_primary_workflow(**kwargs)
     diagnostics = dict(result.diagnostics.skinning)
     reskin = dict(diagnostics["reskin"])
+    settings = kwargs["skinning_settings"]
+    if settings.reskin and settings.method != "connected_component":
+        historical_reskin = dict(reskin["attempted"])
+    else:
+        historical_reskin = {
+            name: value
+            for name, value in reskin.items()
+            if name not in {"reskin_diagnostics_contract_version", "reskin_policy", "attempted"}
+        }
+        if settings.method == "connected_component":
+            historical_reskin["observed_output_cell_count"] = 0
     diagnostics["reskin"] = {
         "reskin_policy": reskin["reskin_policy"],
-        **dict(reskin["attempted"]),
+        **historical_reskin,
     }
     skin = replace(result.skin, diagnostics=diagnostics)
     return replace(
@@ -274,9 +285,18 @@ def test_historical_contract3_format1_bundle_end_to_end(
     assert calls - before_resume == Counter({"complete result load": 1})
 
 
+@pytest.mark.parametrize(
+    ("method", "reskin"),
+    (
+        ("reference", True),
+        ("reference", False),
+    ),
+)
 def test_historical_contract4_format2_bundle_end_to_end(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    reskin: bool,
 ) -> None:
     data_root = tmp_path / "fixture-data"
     output_root = tmp_path / "run"
@@ -287,6 +307,15 @@ def test_historical_contract4_format2_bundle_end_to_end(
         "F3_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION",
         4,
     )
+    config = _reskinned_primary_config()
+    config = replace(
+        config,
+        skinning_template=replace(
+            config.skinning_template,
+            method=method,
+            reskin=reskin,
+        ),
+    )
 
     result = _run_fixture(
         data_root,
@@ -295,7 +324,7 @@ def test_historical_contract4_format2_bundle_end_to_end(
         calls,
         resume=False,
         monkeypatch=monkeypatch,
-        plan_config=_reskinned_primary_config(),
+        plan_config=config,
         workspace_runtime_identity=_fixed_runtime_identity(),
         workflow_runner=_historical_contract4_reskinned_workflow,
     )

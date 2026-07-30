@@ -104,6 +104,7 @@ from .skin_artifacts import (
     resolve_skin_parent_volume_contract,
     validate_skin_artifact_semantics,
     validate_skin_generation_provenance,
+    validate_reskin_diagnostics_contract,
 )
 from .runtime_identity import (
     numerical_runtime_identity,
@@ -1049,6 +1050,23 @@ def _validate_cells_and_stages(
             if not isinstance(fallback_used, bool):
                 raise F3ResultValidationError("skinning report fallback_used must be bool")
             try:
+                semantic_contract_version = int(
+                    skinning_settings["skin_artifact_semantic_contract_version"]
+                )
+                report_reskin_diagnostics = (
+                    _object(
+                        diagnostics.get("reskin"),
+                        "skinning report reskin diagnostics",
+                    )
+                    if semantic_contract_version
+                    >= _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
+                    else None
+                )
+                if report_reskin_diagnostics is not None:
+                    validate_reskin_diagnostics_contract(
+                        report_reskin_diagnostics,
+                        semantic_contract_version=semantic_contract_version,
+                    )
                 provenance = resolve_final_skin_cell_value_provenance(
                     _object(cell.resolved_config["skinning"], "cell skinning config"),
                     _object(cell.resolved_config["variant"], "cell variant config"),
@@ -1058,14 +1076,9 @@ def _validate_cells_and_stages(
                 validate_skin_generation_provenance(
                     parsed_skins[cell.stages.skinning],
                     provenance,
-                    semantic_contract_version=int(
-                        skinning_settings["skin_artifact_semantic_contract_version"]
-                    ),
+                    semantic_contract_version=semantic_contract_version,
                     reskin_diagnostics=(
-                        _object(
-                            diagnostics.get("reskin"),
-                            "skinning report reskin diagnostics",
-                        )
+                        report_reskin_diagnostics
                         if provenance
                         in {
                             PRIMARY_EXISTING_CELLS_RESKINNED,
@@ -2746,24 +2759,11 @@ def _recompute_skin_artifacts(
             normalized_recomputed_diagnostics = json.loads(
                 canonical_json_bytes(dict(recomputed.diagnostics))
             )
-            if semantic_contract_version == F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
-                normalized_recomputed_diagnostics.pop("reskin", None)
-            elif (
-                semantic_contract_version
-                == _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION
-            ):
-                normalized_reskin = _object(
-                    normalized_recomputed_diagnostics.get("reskin"),
-                    "recomputed reskin diagnostics",
-                )
-                attempted = _object(
-                    normalized_reskin.get("attempted"),
-                    "recomputed attempted reskin diagnostics",
-                )
-                normalized_recomputed_diagnostics["reskin"] = {
-                    "reskin_policy": normalized_reskin["reskin_policy"],
-                    **attempted,
-                }
+            _normalize_recomputed_reskin_diagnostics(
+                normalized_recomputed_diagnostics,
+                skinning_config,
+                semantic_contract_version,
+            )
             if normalized_recomputed_diagnostics != dict(recorded_diagnostics):
                 differing_fields = sorted(
                     name
@@ -2790,6 +2790,42 @@ def _recompute_skin_artifacts(
         raise SkinArtifactValidationError(
             "skins.json does not exactly match skin-only recomputation"
         )
+
+
+def _normalize_recomputed_reskin_diagnostics(
+    diagnostics: dict[str, Any],
+    skinning_config: Mapping[str, Any],
+    semantic_contract_version: int,
+) -> None:
+    if semantic_contract_version == F3_LEGACY_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        diagnostics.pop("reskin", None)
+        return
+    if semantic_contract_version != _F3_FINAL_GENERATION_SKIN_ARTIFACT_SEMANTIC_CONTRACT_VERSION:
+        return
+
+    normalized_reskin = _object(
+        diagnostics.get("reskin"),
+        "recomputed reskin diagnostics",
+    )
+    if skinning_config.get("reskin") and skinning_config.get("method") != "connected_component":
+        historical = dict(
+            _object(
+                normalized_reskin.get("attempted"),
+                "recomputed attempted reskin diagnostics",
+            )
+        )
+    else:
+        historical = {
+            name: value
+            for name, value in normalized_reskin.items()
+            if name not in {"reskin_diagnostics_contract_version", "reskin_policy", "attempted"}
+        }
+        if skinning_config.get("method") == "connected_component":
+            historical["observed_output_cell_count"] = 0
+    diagnostics["reskin"] = {
+        "reskin_policy": normalized_reskin["reskin_policy"],
+        **historical,
+    }
 
 
 def _copy_parent_volume(
