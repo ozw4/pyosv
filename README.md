@@ -183,6 +183,13 @@ runtime policy. Deep validation and resume computation for missing stages
 require the current runtime to satisfy that policy and match the recorded
 identity exactly.
 
+To validate an existing Q-QUAL reskin-policy comparison without generating it,
+add `--validate-only --compare-reskin-policies
+existing_cells_v1,reference_dense_v1`. This is shallow and reads no current
+runtime; adding `--deep-validate` performs the explicit current-runtime exact
+replay of the comparison. This differs from deep-complete `--resume`, which
+reuses saved deep evidence without replay.
+
 The thin
 [`examples/run_3d_f3d_mode_comparison.py`](examples/run_3d_f3d_mode_comparison.py)
 entry point invokes the same package CLI. The existing

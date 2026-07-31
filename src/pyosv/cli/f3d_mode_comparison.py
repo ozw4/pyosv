@@ -58,8 +58,6 @@ class _ArgumentParser(argparse.ArgumentParser):
         parsed = super().parse_args(args, namespace)
         if parsed.validate_only and parsed.resume:
             self.error("--validate-only cannot be combined with --resume")
-        if parsed.validate_only and parsed.compare_reskin_policies:
-            self.error("--validate-only cannot be combined with --compare-reskin-policies")
         if parsed.no_skinning and parsed.compare_reskin_policies:
             self.error("--no-skinning cannot be combined with --compare-reskin-policies")
         return parsed
@@ -101,7 +99,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--validate-only",
         action="store_true",
-        help="Validate an existing complete bundle without running experiment stages.",
+        help=(
+            "Validate an existing complete bundle without running experiment stages; "
+            "with --compare-reskin-policies, validate the existing comparison too."
+        ),
     )
     parser.add_argument(
         "--deep-validate",

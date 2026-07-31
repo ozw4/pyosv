@@ -93,6 +93,19 @@ def test_parser_defaults_and_global_overrides(tmp_path: Path) -> None:
         ]
     )
     assert pair.compare_reskin_policies == "existing_cells_v1,reference_dense_v1"
+    validation_pair = parser.parse_args(
+        [
+            "--output-dir",
+            str(tmp_path / "pair"),
+            "--validate-only",
+            "--deep-validate",
+            "--compare-reskin-policies",
+            "existing_cells_v1,reference_dense_v1",
+        ]
+    )
+    assert validation_pair.validate_only is True
+    assert validation_pair.deep_validate is True
+    assert validation_pair.compare_reskin_policies == "existing_cells_v1,reference_dense_v1"
 
 
 def test_parser_rejects_invalid_combinations_and_margin(tmp_path: Path) -> None:
@@ -362,6 +375,53 @@ def test_validate_only_uses_existing_bundle_without_experiment(
 
     assert code == 0
     assert seen == [(output, deep)]
+    assert capsys.readouterr().out == f"{output}\n"
+
+
+@pytest.mark.parametrize("deep", (False, True), ids=("shallow", "deep"))
+def test_validate_only_validates_existing_reskin_comparison_without_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    deep: bool,
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "bundle"
+    data.mkdir()
+    output.mkdir()
+    (output / "run_manifest.json").write_text(
+        json.dumps({"provenance": {"data_root": str(data)}}), encoding="utf-8"
+    )
+    bundle_validations: list[tuple[Path, bool]] = []
+    comparison_validations: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_completed_f3d_bundle",
+        lambda path, deep=False: bundle_validations.append((path, deep)),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_f3_reskin_policy_comparison",
+        lambda path, deep=False: comparison_validations.append((path, deep)),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "compare_reskin_policies_from_bundle",
+        lambda *args, **kwargs: pytest.fail("validate-only must not generate a comparison"),
+    )
+
+    arguments = [
+        "--output-dir",
+        str(output),
+        "--validate-only",
+        "--compare-reskin-policies",
+        "existing_cells_v1,reference_dense_v1",
+    ]
+    if deep:
+        arguments.append("--deep-validate")
+    assert f3d_mode_comparison.main(arguments) == 0
+    assert bundle_validations == [(output, deep)]
+    assert comparison_validations == [(output, deep)]
     assert capsys.readouterr().out == f"{output}\n"
 
 

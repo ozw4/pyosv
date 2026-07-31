@@ -741,6 +741,54 @@ def test_deep_validation_exactly_reexecutes_boundary_fallback(
     assert fallback_calls == len(fingerprints)
 
 
+@pytest.mark.parametrize("policy", ("existing_cells_v1", "reference_dense_v1"))
+def test_reskin_fallback_producer_keeps_attempted_diagnostics_separate(
+    tmp_path: Path,
+    policy: str,
+) -> None:
+    """The cached/written fallback final must not be merged into attempted."""
+
+    boundary = _boundary_skin_config()
+    config = replace(
+        boundary,
+        skinning_template=replace(
+            boundary.skinning_template,
+            reskin=True,
+            reskin_policy=policy,
+        ),
+    )
+    root = _complete_small_bundle(
+        tmp_path,
+        config=config,
+        workflow_runner=_controlled_boundary_skin_workflow,
+    )
+    loaded = load_f3d_mode_comparison_result(root)
+    for fingerprint in {cell.stages.skinning for cell in loaded.cells if cell.skinning_enabled}:
+        stage = root / "stages" / "skinning" / fingerprint
+        report = json.loads((stage / "report.json").read_text(encoding="utf-8"))
+        payload = json.loads((stage / "skins.json").read_text(encoding="utf-8"))
+        final = report["diagnostics"]["reskin"]
+        attempted = final["attempted"]
+        persisted_cells = sum(skin["cell_count"] for skin in payload["skins"])
+
+        assert report["diagnostics"]["fallback_used"] is True
+        assert report["final_cell_value_provenance"] == "connected_component_fallback"
+        assert final["processed_skin_count"] == len(payload["skins"])
+        assert final["output_cell_count"] == persisted_cells
+        assert final["observed_output_cell_count"] == persisted_cells
+        assert final["generated_cell_count"] == 0
+        assert final["reskin_applied"] is False
+        # Two primary reskin phase items reach the producer but have no input
+        # cells. A fallback merge would change these to 4/3/3.
+        assert attempted["processed_skin_count"] == 2
+        assert attempted["input_cell_count"] == 0
+        assert attempted["output_cell_count"] == 0
+        assert attempted["reskin_applied"] is False
+
+    assert validate_completed_f3d_bundle(root)
+    assert validate_completed_f3d_bundle(root, deep=True)
+
+
 def test_contract5_fallback_rejects_rehashed_final_reskin_count_tamper(
     tmp_path: Path,
 ) -> None:

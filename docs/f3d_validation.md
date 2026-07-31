@@ -1013,6 +1013,11 @@ shallow-only completion while checking saved deep evidence without replay.
 current-runtime exact-replay path. In contrast, `resume=True, deep=True` on
 an already deep-complete comparison only reuses the saved deep evidence and
 does not reopen parent DAT files or rewrite comparison artifacts.
+The CLI exposes the same distinction: `--validate-only --compare-reskin-policies
+existing_cells_v1,reference_dense_v1` strictly validates the existing comparison
+without current-runtime access, while adding `--deep-validate` explicitly
+replays it in the current matching runtime. Validation never generates,
+promotes, resumes, or rewrites the comparison artifacts.
 This dedicated evidence does not add unversioned fields to the canonical F3
 result bundle.
 
