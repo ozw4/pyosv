@@ -264,6 +264,58 @@ def test_dense_reskin_comparison_strict_deep_and_complete_resume(
     assert _file_state(artifact_paths) == before_resume
 
 
+def test_link_topology_algebra_tamper_is_shallow_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root, _, _, paths, completion_path, report, completion = _comparison_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    policy = report["policies"]["existing_cells_v1"]
+    topology = policy["skin_topology"]
+    parsed_skin_count = len(policy["canonical_skin_artifact"]["skins"])
+    cell_count = topology["cell_count"]
+    single_cell_skin_count = sum(
+        skin["cell_count"] == 1 for skin in policy["canonical_skin_artifact"]["skins"]
+    )
+    original_links = policy["link_topology"]
+    alternate = None
+    for component_count in range(parsed_skin_count, cell_count + 1):
+        for isolated_cell_count in range(single_cell_skin_count, component_count + 1):
+            if component_count == cell_count and isolated_cell_count != cell_count:
+                continue
+            if isolated_cell_count == cell_count and component_count != cell_count:
+                continue
+            if 2 * (component_count - isolated_cell_count) > cell_count - isolated_cell_count:
+                continue
+            candidate = (component_count, isolated_cell_count)
+            if candidate != (
+                original_links["linked_component_count"],
+                original_links["isolated_cell_count"],
+            ):
+                alternate = candidate
+                break
+        if alternate is not None:
+            break
+    assert alternate is not None
+
+    tampered_report = deepcopy(report)
+    tampered_links = tampered_report["policies"]["existing_cells_v1"]["link_topology"]
+    tampered_links["linked_component_count"], tampered_links["isolated_cell_count"] = alternate
+    tampered_completion = deepcopy(completion)
+    _write_rehashed_comparison(
+        tampered_report,
+        paths,
+        completion_path,
+        tampered_completion,
+    )
+
+    assert validate_f3_reskin_policy_comparison(output_root) == paths
+    with pytest.raises(ValueError, match="does not exactly match"):
+        validate_f3_reskin_policy_comparison(output_root, deep=True)
+
+
 def test_source_bindings_and_rehashed_tamper_rejection_phases(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

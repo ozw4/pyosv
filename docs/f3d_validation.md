@@ -1000,6 +1000,24 @@ for every published quantile. Shallow validation re-derives the public
 parent-ridge metrics and policy contrast from this evidence. Deep validation
 also regenerates the evidence from parent FVT and the canonical skin artifacts.
 
+Shallow comparison validation checks the serialized skin container together
+with the eight recorded link-topology scalars using only graph algebra and
+safety invariants. It checks non-negative integer types, zero reciprocal-link,
+cross-skin, and self-link violations, quad-closure accounting and bounds, and
+the component bounds for `N=skin_topology.cell_count`,
+`S=skin_topology.skin_count`, `Q=single-cell serialized skin count`,
+`C=linked_component_count`, and `I=isolated_cell_count`. Because `skins.json`
+does not serialize the `ca`/`cb`/`cl`/`cr` edges, shallow validation does not
+reconstruct the exact link graph and does not derive `C` or `I` from policy or
+fallback provenance. For `N=0`, it requires `S=C=I=0`; otherwise it requires
+`1 <= S <= C <= N`, `Q <= I <= C`, and
+`2 * (C - I) <= N - I`, including the corresponding all-components and
+all-isolated equalities. Explicit deep comparison validation performs the
+same-runtime skin-only replay and compares the complete report, including the
+link-topology scalars, by canonical JSON. This is the authoritative exact
+link-topology gate; the comparison remains outside cryptographic tamper
+prevention scope.
+
 The CSV is long-form and retains explicit zero-denominator status for
 generation fractions, support, and generated-likelihood summaries. The
 Markdown displays generation, support, parent-ridge correspondence, and link

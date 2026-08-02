@@ -1071,6 +1071,96 @@ def _comparison_contrast(policies: Mapping[str, Any]) -> dict[str, float | int]:
     }
 
 
+def _validate_reported_link_topology(
+    links: Any,
+    *,
+    parsed: ParsedSkinArtifacts,
+    expected_topology: Mapping[str, Any],
+) -> None:
+    """Validate link-topology algebra provable from serialized skin evidence.
+
+    Canonical skin artifacts preserve skin membership and cell values, but not
+    the live ``FaultCell.ca/cb/cl/cr`` edges.  Consequently this helper checks
+    scalar safety and graph bounds without deriving component counts from
+    policy provenance or serialized skin containers.  Exact component and
+    isolation counts remain the responsibility of current-runtime deep replay.
+    """
+
+    expected_link_fields = {
+        "reciprocal_link_violation_count",
+        "cross_skin_link_count",
+        "self_link_count",
+        "linked_component_count",
+        "isolated_cell_count",
+        "quad_closure_candidate_count",
+        "quad_closure_match_count",
+        "quad_closure_mismatch_count",
+    }
+    if not isinstance(links, Mapping) or set(links) != expected_link_fields:
+        raise ValueError("reskin policy comparison link topology field set mismatch")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in links.values()
+    ):
+        raise ValueError(
+            "reskin policy comparison link topology counts must be non-negative integers"
+        )
+
+    if any(
+        links[name] != 0
+        for name in (
+            "reciprocal_link_violation_count",
+            "cross_skin_link_count",
+            "self_link_count",
+        )
+    ):
+        raise ValueError("reskin policy comparison link topology contains a safety violation")
+
+    quad_candidates = links["quad_closure_candidate_count"]
+    quad_matches = links["quad_closure_match_count"]
+    quad_mismatches = links["quad_closure_mismatch_count"]
+    if quad_candidates != quad_matches + quad_mismatches:
+        raise ValueError("reskin policy comparison quad closure counts mismatch")
+
+    try:
+        cell_count = expected_topology["cell_count"]
+        skin_count = expected_topology["skin_count"]
+    except (KeyError, TypeError) as error:
+        raise ValueError("reskin policy comparison skin topology counts are incomplete") from error
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (cell_count, skin_count)
+    ):
+        raise ValueError("reskin policy comparison skin topology counts are invalid")
+    if cell_count != parsed.cell_count or skin_count != len(parsed.skins):
+        raise ValueError("reskin policy comparison serialized skin topology counts mismatch")
+
+    if quad_candidates > cell_count:
+        raise ValueError("reskin policy comparison quad closure candidate count exceeds cells")
+    if quad_matches > quad_candidates or quad_mismatches > quad_candidates:
+        raise ValueError("reskin policy comparison quad closure count bounds mismatch")
+
+    linked_components = links["linked_component_count"]
+    isolated_cells = links["isolated_cell_count"]
+    single_cell_skin_count = sum(len(skin) == 1 for skin in parsed.skins)
+
+    if cell_count == 0:
+        if skin_count != 0 or linked_components != 0 or isolated_cells != 0:
+            raise ValueError("reskin policy comparison empty link topology mismatch")
+        return
+
+    if not 1 <= skin_count <= linked_components <= cell_count:
+        raise ValueError("reskin policy comparison link topology component bounds mismatch")
+    if not single_cell_skin_count <= isolated_cells <= linked_components:
+        raise ValueError("reskin policy comparison link topology isolated bounds mismatch")
+    if 2 * (linked_components - isolated_cells) > cell_count - isolated_cells:
+        raise ValueError("reskin policy comparison link topology component size algebra mismatch")
+    if linked_components == cell_count and isolated_cells != cell_count:
+        raise ValueError("reskin policy comparison all-components isolation mismatch")
+    if isolated_cells == cell_count and linked_components != cell_count:
+        raise ValueError("reskin policy comparison all-isolated component mismatch")
+
+
 def _validate_reported_policy_metrics(
     item: Mapping[str, Any],
     parsed: ParsedSkinArtifacts,
@@ -1153,50 +1243,11 @@ def _validate_reported_policy_metrics(
             raise ValueError(f"reskin policy comparison diagnostics mismatch: {name}")
 
     links = item.get("link_topology")
-    expected_link_fields = {
-        "reciprocal_link_violation_count",
-        "cross_skin_link_count",
-        "self_link_count",
-        "linked_component_count",
-        "isolated_cell_count",
-        "quad_closure_candidate_count",
-        "quad_closure_match_count",
-        "quad_closure_mismatch_count",
-    }
-    if not isinstance(links, Mapping) or set(links) != expected_link_fields:
-        raise ValueError("reskin policy comparison link topology field set mismatch")
-    if any(
-        isinstance(value, bool) or not isinstance(value, int) or value < 0
-        for value in links.values()
-    ):
-        raise ValueError(
-            "reskin policy comparison link topology counts must be non-negative integers"
-        )
-    if any(
-        links[name] != 0
-        for name in (
-            "reciprocal_link_violation_count",
-            "cross_skin_link_count",
-            "self_link_count",
-        )
-    ):
-        raise ValueError("reskin policy comparison link topology contains a safety violation")
-    if links["quad_closure_candidate_count"] != (
-        links["quad_closure_match_count"] + links["quad_closure_mismatch_count"]
-    ):
-        raise ValueError("reskin policy comparison quad closure counts mismatch")
-    expected_linked_components = (
-        expected_topology["cell_count"] if fallback_used else expected_topology["skin_count"]
+    _validate_reported_link_topology(
+        links,
+        parsed=parsed,
+        expected_topology=expected_topology,
     )
-    expected_isolated = (
-        expected_topology["cell_count"]
-        if fallback_used
-        else sum(len(skin) == 1 for skin in parsed.skins)
-    )
-    if links["linked_component_count"] != expected_linked_components:
-        raise ValueError("reskin policy comparison linked component count mismatch")
-    if links["isolated_cell_count"] != expected_isolated:
-        raise ValueError("reskin policy comparison isolated cell count mismatch")
 
     surface = item.get("parent_ridge_surface")
     if not isinstance(surface, Mapping) or set(surface) != {

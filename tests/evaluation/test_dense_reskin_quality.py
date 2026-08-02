@@ -1644,7 +1644,7 @@ def test_f3_bundle_pair_reads_q_qual_parent_artifacts(tmp_path, monkeypatch) -> 
                 report["policies"]["existing_cells_v1"]["link_topology"]["linked_component_count"]
                 + 1,
             ),
-            "linked component count mismatch",
+            "link topology .*component",
         ),
         (
             lambda report: report["contrast"].__setitem__(
