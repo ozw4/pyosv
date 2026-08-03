@@ -1028,14 +1028,30 @@ generated without exact replay records `validation_level="shallow"`;
 `validate_f3_reskin_policy_comparison(..., require_deep=True)` rejects a
 shallow-only completion while checking saved deep evidence without replay.
 `validate_f3_reskin_policy_comparison(..., deep=True)` is the explicit
-current-runtime exact-replay path. In contrast, `resume=True, deep=True` on
-an already deep-complete comparison only reuses the saved deep evidence and
-does not reopen parent DAT files or rewrite comparison artifacts.
+current-runtime exact-replay path. In contrast, the comparison API's
+`resume=True, deep=True` on an already deep-complete comparison only reuses
+the saved deep evidence and does not reopen parent DAT files or rewrite
+comparison artifacts.
 The CLI exposes the same distinction: `--validate-only --compare-reskin-policies
 existing_cells_v1,reference_dense_v1` strictly validates the existing comparison
 without current-runtime access, while adding `--deep-validate` explicitly
 replays it in the current matching runtime. Validation never generates,
 promotes, resumes, or rewrites the comparison artifacts.
+For a completed source bundle, `--resume --compare-reskin-policies
+existing_cells_v1,reference_dense_v1` takes a comparison-only path: it first
+validates the recorded bundle provenance, file set, fingerprints, hashes, stage
+bindings, and runtime identity, then reuses the Q-QUAL parent artifacts without
+recomputing source stages. Source-run implementation identity and comparison
+implementation identity are recorded and validated as separate provenance.
+With `--deep-validate`, a new or shallow comparison performs the skin-only
+exact replay during comparison generation; an already deep-complete comparison
+also performs the explicit current-runtime deep replay before the CLI succeeds.
+
+Canonical `skins.json` permits `skin_count == 0`, but every serialized skin
+container must contain at least one cell. Shallow link validation checks the
+serialized container and link-topology scalars using graph algebra and safety
+invariants; it does not reconstruct unserialized link edges. Exact link scalar
+values remain authoritative only through explicit same-runtime deep replay.
 This dedicated evidence does not add unversioned fields to the canonical F3
 result bundle.
 

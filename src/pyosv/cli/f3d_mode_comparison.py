@@ -17,6 +17,8 @@ from pyosv.evaluation.f3d_mode_comparison import (
     F3_DATASET_ID,
     F3ModeComparisonConfig,
     F3ModeComparisonResult,
+    F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE,
+    F3_RESKIN_POLICY_COMPARISON_DIR,
     F3VolumeSource,
     PeakRSSRecorder,
     build_f3d_mode_comparison_plan,
@@ -304,6 +306,82 @@ def _recorded_reskin_policy(bundle: Path) -> str:
     return str(policy)
 
 
+def _comparison_was_deep_complete(bundle: Path) -> bool:
+    """Return whether a saved comparison advertises deep completion.
+
+    This is only a dispatch optimization.  The comparison API still validates
+    the complete artifact set and its completion metadata before reusing it.
+    Invalid or partial completion metadata is deliberately treated as not
+    deep-complete so the normal comparison resume validation handles it.
+    """
+
+    comparison_dir = bundle / F3_RESKIN_POLICY_COMPARISON_DIR
+    completion_path = comparison_dir / F3_RESKIN_POLICY_COMPARISON_COMPLETION_FILE
+    if not completion_path.is_file() or completion_path.is_symlink():
+        return False
+    try:
+        completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return isinstance(completion, Mapping) and completion.get("validation_level") == "deep"
+
+
+def _resume_completed_bundle_comparison(
+    bundle: str | Path,
+    *,
+    data_root: str | Path | None = None,
+    deep: bool = False,
+) -> Path:
+    """Validate a completed source bundle and run only its comparison path.
+
+    A completed source bundle is immutable evidence.  In particular, this
+    helper intentionally does not construct a source run configuration or
+    enter ``prepare_run_workspace``; the current implementation identity is
+    provenance for the new comparison, not a reason to replay source stages.
+    """
+
+    requested_bundle = Path(bundle)
+    if requested_bundle.is_symlink() or not requested_bundle.is_dir():
+        raise ValueError("completed F3 bundle must be a non-symlink directory")
+    resolved_bundle = requested_bundle.resolve(strict=False)
+    if data_root is not None:
+        resolved_bundle = ensure_output_not_in_data_root(resolved_bundle, data_root)
+    resolved_bundle = ensure_output_not_in_data_root(
+        resolved_bundle,
+        _recorded_data_root(resolved_bundle),
+    )
+    completion_path = resolved_bundle / RUN_COMPLETION_FILE
+    if not completion_path.is_file() or completion_path.is_symlink():
+        raise ValueError("completed F3 bundle completion must be a regular file")
+
+    validate_completed_f3d_bundle(resolved_bundle, deep=deep)
+    saved_deep_completion = _comparison_was_deep_complete(resolved_bundle)
+    compare_reskin_policies_from_bundle(
+        resolved_bundle,
+        resume=True,
+        deep=deep,
+    )
+    if deep:
+        if saved_deep_completion:
+            # A deep-complete resume reuses saved evidence in the comparison
+            # API.  An explicit CLI deep request must still perform the
+            # current-runtime exact replay once.
+            validate_f3_reskin_policy_comparison(
+                resolved_bundle,
+                deep=True,
+                require_deep=True,
+            )
+        else:
+            # New, incomplete, or shallow comparison state was replayed by
+            # compare_reskin_policies_from_bundle(deep=True).  Check the
+            # persisted deep completion without replaying it a second time.
+            validate_f3_reskin_policy_comparison(
+                resolved_bundle,
+                require_deep=True,
+            )
+    return resolved_bundle
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Execute, resume, or validate a canonical F3 comparison."""
 
@@ -327,6 +405,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     bundle,
                     deep=args.deep_validate,
                 )
+        elif (
+            args.resume
+            and args.compare_reskin_policies
+            and os.path.lexists(args.output_dir / RUN_COMPLETION_FILE)
+        ):
+            bundle = _resume_completed_bundle_comparison(
+                args.output_dir,
+                data_root=args.data_root,
+                deep=args.deep_validate,
+            )
         else:
             data_root = resolve_f3d_data_root(args.data_root).resolve(strict=False)
             requested_output_exists = os.path.lexists(args.output_dir)

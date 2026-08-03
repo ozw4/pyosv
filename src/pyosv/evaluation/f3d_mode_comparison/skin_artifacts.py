@@ -152,6 +152,8 @@ def _canonical_skins_payload_for_format(
     materialized = tuple(tuple(skin) for skin in skins)
     if isinstance(format_version, bool) or format_version not in {1, 2}:
         raise ValueError("format_version must be 1 or 2")
+    if any(not skin for skin in materialized):
+        raise SkinArtifactValidationError("canonical skin artifacts must not contain empty skins")
 
     def cell_payload(cell: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -414,6 +416,10 @@ def parse_skins_json(
         if not isinstance(cells_value, list):
             raise SkinArtifactValidationError("skins.json cells must be an array")
         cell_count = _integer(skin_value["cell_count"], "skins.json cell_count")
+        if cell_count < 1:
+            raise SkinArtifactValidationError(
+                "skins.json canonical skin artifacts must not contain empty skins"
+            )
         if cell_count != len(cells_value):
             raise SkinArtifactValidationError("skins.json cell_count mismatch")
 

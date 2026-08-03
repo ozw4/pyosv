@@ -245,6 +245,230 @@ def test_main_runs_fixed_reskin_pair_from_completed_bundle(
     assert compared == [output]
 
 
+def _write_completed_bundle_marker(output: Path, data: Path) -> None:
+    output.mkdir()
+    (output / "completion.json").write_text("{}\n", encoding="utf-8")
+    (output / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "provenance": {"data_root": str(data)},
+                "plan": {
+                    "reference_workflow_settings": {
+                        "skinning_config": {"reskin_policy": "existing_cells_v1"}
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_completed_resume_comparison_only_bypasses_source_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "bundle"
+    data.mkdir()
+    _write_completed_bundle_marker(output, data)
+    comparison = output / "reskin_policy_comparison"
+    comparison.mkdir()
+    (comparison / "complete.json").write_text(
+        json.dumps({"validation_level": "deep"}),
+        encoding="utf-8",
+    )
+    source_paths = (output / "completion.json", output / "run_manifest.json")
+    before = {
+        path: (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in source_paths
+    }
+    bundle_validations: list[tuple[Path, bool]] = []
+    comparisons: list[tuple[Path, dict[str, bool]]] = []
+    deep_validations: list[tuple[Path, dict[str, bool]]] = []
+
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_completed_f3d_bundle",
+        lambda path, deep=False: bundle_validations.append((path, deep)),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "compare_reskin_policies_from_bundle",
+        lambda path, **kwargs: comparisons.append((path, kwargs)),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_f3_reskin_policy_comparison",
+        lambda path, **kwargs: deep_validations.append((path, kwargs)),
+    )
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        pytest.fail("completed comparison-only resume entered source execution")
+
+    for name in (
+        "run_experiment",
+        "prepare_run_workspace",
+        "F3VolumeSource",
+        "run_scanner_stages",
+        "run_f3d_mode_comparison",
+    ):
+        monkeypatch.setattr(f3d_mode_comparison, name, forbidden)
+
+    code = f3d_mode_comparison.main(
+        [
+            "--data-root",
+            str(data),
+            "--output-dir",
+            str(output),
+            "--resume",
+            "--compare-reskin-policies",
+            "existing_cells_v1,reference_dense_v1",
+            "--deep-validate",
+        ]
+    )
+
+    assert code == 0
+    assert bundle_validations == [(output, True)]
+    assert comparisons == [(output, {"resume": True, "deep": True})]
+    assert deep_validations == [
+        (output, {"deep": True, "require_deep": True}),
+    ]
+    assert capsys.readouterr().out == f"{output}\n"
+    after = {
+        path: (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in source_paths
+    }
+    assert after == before
+
+
+def test_completed_resume_comparison_only_rejects_invalid_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "bundle"
+    data.mkdir()
+    _write_completed_bundle_marker(output, data)
+    source_paths = (output / "completion.json", output / "run_manifest.json")
+    before = {path: path.read_bytes() for path in source_paths}
+
+    def invalid_source(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise ValueError("invalid source")
+
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "validate_completed_f3d_bundle",
+        invalid_source,
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "compare_reskin_policies_from_bundle",
+        lambda *args, **kwargs: pytest.fail("invalid source reached comparison"),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "run_experiment",
+        lambda *args, **kwargs: pytest.fail("invalid source reached source run"),
+    )
+
+    code = f3d_mode_comparison.main(
+        [
+            "--data-root",
+            str(data),
+            "--output-dir",
+            str(output),
+            "--resume",
+            "--compare-reskin-policies",
+            "existing_cells_v1,reference_dense_v1",
+        ]
+    )
+
+    assert code == 1
+    assert {path: path.read_bytes() for path in source_paths} == before
+    assert "invalid source" in capsys.readouterr().err
+
+
+def test_incomplete_resume_with_comparison_uses_source_resume_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "workspace"
+    data.mkdir()
+    output.mkdir()
+    called: dict[str, object] = {}
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "_resume_completed_bundle_comparison",
+        lambda *args, **kwargs: pytest.fail("incomplete workspace used completed path"),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "run_experiment",
+        lambda **kwargs: called.update(kwargs) or output,
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "compare_reskin_policies_from_bundle",
+        lambda *args, **kwargs: None,
+    )
+
+    assert (
+        f3d_mode_comparison.main(
+            [
+                "--data-root",
+                str(data),
+                "--output-dir",
+                str(output),
+                "--resume",
+                "--compare-reskin-policies",
+                "existing_cells_v1,reference_dense_v1",
+            ]
+        )
+        == 0
+    )
+    assert called["resume"] is True
+
+
+def test_completed_resume_without_comparison_uses_existing_source_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    output = tmp_path / "bundle"
+    data.mkdir()
+    _write_completed_bundle_marker(output, data)
+    called: dict[str, object] = {}
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "_resume_completed_bundle_comparison",
+        lambda *args, **kwargs: pytest.fail("comparison-only path used without comparison"),
+    )
+    monkeypatch.setattr(
+        f3d_mode_comparison,
+        "run_experiment",
+        lambda **kwargs: called.update(kwargs) or output,
+    )
+
+    assert (
+        f3d_mode_comparison.main(
+            [
+                "--data-root",
+                str(data),
+                "--output-dir",
+                str(output),
+                "--resume",
+            ]
+        )
+        == 0
+    )
+    assert called["resume"] is True
+
+
 @pytest.mark.parametrize("resume", [False, True], ids=("fresh", "resume"))
 def test_main_propagates_deep_validation_to_reskin_pair(
     monkeypatch: pytest.MonkeyPatch,

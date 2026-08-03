@@ -229,6 +229,76 @@ def test_canonical_serializer_preserves_cell_attributes() -> None:
     assert payload["format_version"] == 2
 
 
+def test_canonical_serializer_rejects_empty_skin_but_accepts_zero_skins() -> None:
+    assert canonical_skins_payload([]) == {
+        "format_version": 2,
+        "skinning_enabled": True,
+        "skin_count": 0,
+        "skins": [],
+    }
+
+    with pytest.raises(
+        SkinArtifactValidationError,
+        match="canonical skin artifacts must not contain empty skins",
+    ):
+        canonical_skins_payload([()])
+
+    cell = SkinCellRecord(
+        0.0,
+        0.0,
+        0.0,
+        0,
+        0,
+        0,
+        0.8,
+        25.0,
+        70.0,
+        "grown",
+        None,
+    )
+    assert canonical_skins_payload([(cell,)])["skin_count"] == 1
+
+
+def test_parser_rejects_empty_canonical_skin(tmp_path: Path) -> None:
+    path = tmp_path / "skins.json"
+    _write_json(
+        path,
+        {
+            "format_version": 2,
+            "skinning_enabled": True,
+            "skin_count": 1,
+            "skins": [
+                {
+                    "skin_index": 0,
+                    "cell_count": 0,
+                    "cells": [],
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(SkinArtifactValidationError, match="empty skins"):
+        parse_skins_json(path, _SHAPE)
+
+
+def test_parser_accepts_zero_skin_canonical_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "skins.json"
+    _write_json(
+        path,
+        {
+            "format_version": 2,
+            "skinning_enabled": True,
+            "skin_count": 0,
+            "skins": [],
+        },
+    )
+
+    parsed = parse_skins_json(path, _SHAPE)
+
+    assert parsed.skins == ()
+    assert parsed.cell_count == 0
+
+
 def test_canonical_v2_round_trip_preserves_generation_and_support(tmp_path: Path) -> None:
     cells = (
         SkinCellRecord(
