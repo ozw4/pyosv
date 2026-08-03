@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison as comparison_module
 import pyosv.evaluation.f3d_mode_comparison.result as result_module
 from pyosv.cli import f3d_mode_comparison
 from pyosv.evaluation.f3d_mode_comparison import (
     F3DatasetSpec,
     F3ModeComparisonConfig,
+    implementation_identity,
+    validate_f3_reskin_policy_comparison,
+    scanner_sampling_evidence,
 )
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
 from tests.evaluation.f3d_mode_comparison.test_bundle_validation import (
@@ -19,6 +25,12 @@ from tests.evaluation.f3d_mode_comparison.test_bundle_validation import (
 )
 from tests.evaluation.f3d_mode_comparison.test_publication_contract_v3_integration import (
     _fixed_runtime_identity,
+)
+from tests.evaluation.f3d_mode_comparison.test_final_acceptance_integration import _official_fixture
+from tests.evaluation.f3d_mode_comparison.test_integration import (
+    _DeterministicScanner,
+    _fixture_plan,
+    _run_fixture,
 )
 
 
@@ -45,6 +57,155 @@ def _complete_official_cli_bundle(
     data_root = tmp_path / "data"
     monkeypatch.setattr(result_module, "F3_DATASET_ID", spec.dataset_id)
     return root, data_root
+
+
+def _file_snapshot(root: Path) -> dict[str, tuple[bytes, str, int, int]]:
+    snapshot: dict[str, tuple[bytes, str, int, int]] = {}
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        payload = path.read_bytes()
+        stat = path.stat()
+        snapshot[path.relative_to(root).as_posix()] = (
+            payload,
+            hashlib.sha256(payload).hexdigest(),
+            stat.st_size,
+            stat.st_mtime_ns,
+        )
+    return snapshot
+
+
+def _assert_source_snapshot_unchanged(
+    before: dict[str, tuple[bytes, str, int, int]],
+    after: dict[str, tuple[bytes, str, int, int]],
+) -> None:
+    comparison_prefix = "reskin_policy_comparison/"
+    new_paths = set(after) - set(before)
+    assert new_paths <= {path for path in after if path.startswith(comparison_prefix)}
+    assert not (set(before) - set(after))
+    for path, state in before.items():
+        assert after[path] == state, f"source artifact changed: {path}"
+
+
+def test_completed_bundle_comparison_only_cli_uses_real_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "bundle"
+    spec = _official_fixture(data_root)
+    runtime_identity = _fixed_runtime_identity()
+    source_implementation = deepcopy(implementation_identity())
+    source_implementation["software_versions"]["pyosv"] = "source-implementation-a"
+    fixture_plan = _fixture_plan(spec)
+    sampling_provider = _DeterministicScanner(0.0, 0.0, Counter())
+    sampling_evidence = {
+        backend: scanner_sampling_evidence(
+            sampling_provider,
+            fixture_plan.scanner_config_for(backend),
+            backend,
+            implementation_identity="cli-fixture-scanner-v1",
+        )
+        for backend in ("reference-like", "quality")
+    }
+    monkeypatch.setattr(
+        result_module,
+        "canonical_scanner_implementation_identity",
+        lambda: "cli-fixture-scanner-v1",
+    )
+    monkeypatch.setattr(
+        result_module,
+        "canonical_scanner_sampling_evidence",
+        lambda config, backend, **kwargs: sampling_evidence[backend],
+    )
+    source = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        Counter(),
+        resume=False,
+        monkeypatch=monkeypatch,
+        workspace_implementation=source_implementation,
+        workspace_runtime_identity=runtime_identity,
+        scanner_implementation_identity="cli-fixture-scanner-v1",
+        finalization_deep=False,
+    )
+
+    # Inject only the small official fixture's runtime/spec contract. All CLI dispatch,
+    # source validation, result loading, comparison generation, and comparison
+    # validation below use their production implementations.
+    monkeypatch.setattr(result_module, "OFFICIAL_F3_DATASET_SPEC", spec)
+    monkeypatch.setattr(
+        result_module,
+        "numerical_runtime_identity",
+        lambda: deepcopy(runtime_identity),
+    )
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        lambda: deepcopy(runtime_identity),
+    )
+    before = _file_snapshot(output_root)
+    pair = [
+        "--data-root",
+        str(data_root),
+        "--output-dir",
+        str(output_root),
+        "--compare-reskin-policies",
+        "existing_cells_v1,reference_dense_v1",
+    ]
+
+    # State 1: a complete source bundle without a comparison.
+    assert (
+        f3d_mode_comparison.main(
+            [
+                "--data-root",
+                str(data_root),
+                "--output-dir",
+                str(output_root),
+                "--validate-only",
+            ]
+        )
+        == 0
+    )
+    assert not (output_root / "reskin_policy_comparison").exists()
+    assert _file_snapshot(output_root) == before
+
+    # State 2: current code loads source identity A and creates only a shallow
+    # comparison artifact; it must not attempt an exact source resume.
+    assert f3d_mode_comparison.main([*pair, "--resume"]) == 0
+    comparison_dir = output_root / "reskin_policy_comparison"
+    completion_path = comparison_dir / "complete.json"
+    shallow_completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    assert shallow_completion["validation_level"] == "shallow"
+    shallow_snapshot = _file_snapshot(output_root)
+    _assert_source_snapshot_unchanged(before, shallow_snapshot)
+    assert set(shallow_snapshot) - set(before)
+
+    # State 3: the same comparison-only dispatch promotes the existing
+    # comparison to deep completion and then performs the explicit deep replay.
+    assert f3d_mode_comparison.main([*pair, "--resume", "--deep-validate"]) == 0
+    deep_completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    assert deep_completion["validation_level"] == "deep"
+    final_snapshot = _file_snapshot(output_root)
+    _assert_source_snapshot_unchanged(before, final_snapshot)
+    assert validate_f3_reskin_policy_comparison(
+        output_root,
+        deep=True,
+        require_deep=True,
+    )
+
+    manifest = json.loads((output_root / "run_manifest.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (comparison_dir / "reskin_policy_comparison.json").read_text(encoding="utf-8")
+    )
+    assert manifest["implementation_identity"] == source_implementation
+    assert report["comparison_implementation_identity"] != manifest["implementation_identity"]
+    assert (
+        "evaluation/f3d_mode_comparison/skin_artifacts.py"
+        in report["comparison_implementation_identity"]["algorithm_modules"]
+    )
+    assert source.run_fingerprint == manifest["run_fingerprint"]
 
 
 def test_parser_defaults_and_global_overrides(tmp_path: Path) -> None:
