@@ -13,6 +13,7 @@ from .config import (
     PUBLICATION_COMPLETION_SCHEMA_VERSION,
     PUBLICATION_FIGURE_CONTRACT_VERSION,
     PUBLICATION_METRIC_SELECTION_VERSION,
+    PUBLICATION_TABLE_CONTRACT_VERSION,
 )
 from .loaders import load_f3_source, load_synthetic_source
 from .models import PublicationReport
@@ -63,6 +64,7 @@ __all__ = [
     "PUBLICATION_FIGURE_CONTRACT_VERSION",
     "PUBLICATION_METRIC_REGISTRY",
     "PUBLICATION_METRIC_SELECTION_VERSION",
+    "PUBLICATION_TABLE_CONTRACT_VERSION",
     "PublicationMetric",
     "PublicationReport",
     "build_publication_report",

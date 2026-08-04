@@ -4,7 +4,7 @@ import builtins
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -15,12 +15,31 @@ from pyosv.evaluation.mode_comparison_publication import (
 )
 from pyosv.evaluation.mode_comparison_publication import artifacts as publication_artifacts
 from pyosv.evaluation.mode_comparison_publication import validation as publication_validation
+from pyosv.evaluation.mode_comparison_publication.semantic import (
+    FIGURE_DATA_FIELD_TYPES,
+    ROOT_TABLE_FIELD_TYPES,
+    ROOT_TABLE_IDENTITY_FIELDS,
+    build_table_contract,
+    canonical_digest,
+    normalize_typed_csv_row,
+)
 from pyosv.evaluation.synthetic_mode_comparison import (
     SyntheticModeComparisonConfig,
     run_mode_comparison,
     write_artifact_bundle,
 )
 from pyosv.evaluation.synthetic_quality import SyntheticSkinningConfig
+from pyosv.evaluation.mode_comparison_publication.summary import TABLE_HEADERS
+
+from tests.evaluation.mode_comparison_publication.artifact_test_support import (
+    assert_completion_matches,
+    read_csv_rows,
+    read_json,
+    rewrite_completion,
+    write_csv_rows,
+    write_json,
+    write_png,
+)
 
 
 def test_generation_preserves_sources_and_has_fixed_artifact_set(
@@ -241,7 +260,32 @@ def test_disabled_synthetic_skinning_omits_skin_figure(
     )
     assert omitted["omitted"] is True
     assert not (output / "figures" / "synthetic_skin_buffered_f1_by_case.png").exists()
+    for field in (
+        "figure_data_row_count",
+        "figure_data_identity_fields",
+        "figure_data_identity_sha256",
+        "figure_data_semantic_sha256",
+        "pixel_width",
+        "pixel_height",
+        "png_size",
+        "png_sha256",
+    ):
+        assert omitted[field] is None
     assert validate_publication_bundle(output)
+
+    tampered = tmp_path / "omitted-skin-record-removed"
+    shutil.copytree(output, tampered)
+    figure_manifest = read_json(tampered / "figure_manifest.json")
+    figure_manifest["figures"] = [
+        record
+        for record in figure_manifest["figures"]
+        if record["figure_id"] != "synthetic_skin_buffered_f1_by_case"
+    ]
+    write_json(tampered / "figure_manifest.json", figure_manifest)
+    rewrite_completion(tampered)
+    assert_completion_matches(tampered)
+    with pytest.raises(ValueError):
+        validate_publication_bundle(tampered)
 
 
 def _snapshot(root: Path) -> dict[str, tuple[bytes, int, int, str]]:
@@ -254,3 +298,468 @@ def test_publication_validator_has_no_source_runner_imports() -> None:
     source = Path(publication_validation.__file__).read_text(encoding="utf-8")
     assert "run_mode_comparison" not in source
     assert "run_f3d_mode_comparison" not in source
+
+
+def _rewrite_table(
+    root: Path,
+    filename: str,
+    mutation: Callable[[list[dict[str, str]]], None],
+) -> None:
+    path = root / filename
+    header, rows = read_csv_rows(path)
+    mutation(rows)
+    write_csv_rows(path, header, rows)
+
+
+def _rewrite_root_table_contract(root: Path, filename: str) -> None:
+    """Make a CSV semantic digest coherent while retaining source coverage evidence."""
+
+    header, rows = read_csv_rows(root / filename)
+    assert header == TABLE_HEADERS[filename]
+    typed_rows = tuple(
+        normalize_typed_csv_row(
+            row,
+            header,
+            ROOT_TABLE_FIELD_TYPES[filename],
+            context=f"test.{filename}[{index}]",
+        )
+        for index, row in enumerate(rows)
+    )
+    updated = build_table_contract(
+        header,
+        typed_rows,
+        ROOT_TABLE_IDENTITY_FIELDS[filename],
+        ROOT_TABLE_FIELD_TYPES[filename],
+    )
+    manifest_path = root / "manifest.json"
+    manifest = read_json(manifest_path)
+    contract = manifest["table_contracts"][filename]
+    contract.update(updated)
+    write_json(manifest_path, manifest)
+
+
+def _rewrite_figure_data_contract(root: Path) -> None:
+    """Rebuild one figure-data digest to reach duplicate-identity validation."""
+
+    manifest_path = root / "figure_manifest.json"
+    manifest = read_json(manifest_path)
+    record = next(record for record in manifest["figures"] if not record["omitted"])
+    header, rows = read_csv_rows(root / record["figure_data_csv"])
+    from pyosv.evaluation.mode_comparison_publication.config import (
+        FIGURE_DATA_HEADER,
+        FIGURE_DATA_IDENTITY_FIELDS,
+    )
+
+    assert header == FIGURE_DATA_HEADER
+    typed_rows = tuple(
+        normalize_typed_csv_row(
+            row,
+            header,
+            FIGURE_DATA_FIELD_TYPES,
+            context=f"test.{record['figure_id']}[{index}]",
+        )
+        for index, row in enumerate(rows)
+    )
+    updated = build_table_contract(
+        header,
+        typed_rows,
+        FIGURE_DATA_IDENTITY_FIELDS,
+        FIGURE_DATA_FIELD_TYPES,
+    )
+    record["figure_data_row_count"] = updated["row_count"]
+    record["figure_data_identity_fields"] = updated["identity_fields"]
+    record["figure_data_identity_sha256"] = updated["ordered_identity_sha256"]
+    record["figure_data_semantic_sha256"] = updated["ordered_semantic_rows_sha256"]
+    write_json(manifest_path, manifest)
+
+
+def _require_index(rows: list[dict[str, str]], predicate: Callable[[dict[str, str]], bool]) -> int:
+    for index, row in enumerate(rows):
+        if predicate(row):
+            return index
+    raise AssertionError("test fixture did not contain the requested publication row")
+
+
+def _duplicate_publication_metric(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        rows.append(dict(rows[_require_index(rows, lambda row: row["dataset"] == "synthetic")]))
+
+    _rewrite_table(root, "publication_metrics.csv", mutation)
+
+
+def _remove_f3_metric(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        del rows[_require_index(rows, lambda row: row["dataset"] == "f3")]
+
+    _rewrite_table(root, "publication_metrics.csv", mutation)
+
+
+def _remove_synthetic_canonical_metric(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        del rows[
+            _require_index(
+                rows,
+                lambda row: row["dataset"] == "synthetic" and row["cell_label"] == "RL-REF",
+            )
+        ]
+
+    _rewrite_table(root, "publication_metrics.csv", mutation)
+
+
+def _replace_nullable_distance_with_zero(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        index = _require_index(
+            rows,
+            lambda row: (
+                row["dataset"] == "f3"
+                and row["metric"] == "candidate_to_reference_p95"
+                and row["value"] == ""
+            ),
+        )
+        rows[index]["value"] = "0"
+
+    _rewrite_table(root, "publication_metrics.csv", mutation)
+
+
+def _remove_contrast(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        del rows[0]
+
+    _rewrite_table(root, "publication_contrasts.csv", mutation)
+
+
+def _clear_contrasts(root: Path) -> None:
+    _rewrite_table(root, "publication_contrasts.csv", lambda rows: rows.clear())
+
+
+def _duplicate_contrast(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        rows.append(dict(rows[0]))
+
+    _rewrite_table(root, "publication_contrasts.csv", mutation)
+
+
+def _change_contrast_raw_value(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        row = rows[0]
+        raw = float(row["raw_value"]) + 0.125
+        row["raw_value"] = repr(raw)
+        if row["direction"] == "higher":
+            row["improvement_value"] = repr(raw)
+        elif row["direction"] == "lower":
+            row["improvement_value"] = repr(-raw)
+        else:
+            row["improvement_value"] = ""
+
+    _rewrite_table(root, "publication_contrasts.csv", mutation)
+
+
+def _duplicate_summary(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        rows.append(dict(rows[0]))
+
+    _rewrite_table(root, "publication_summary.csv", mutation)
+
+
+def _remove_regional_row(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        del rows[0]
+
+    _rewrite_table(root, "f3_regional_summary.csv", mutation)
+
+
+def _duplicate_regional_row(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        rows.append(dict(rows[0]))
+
+    _rewrite_table(root, "f3_regional_summary.csv", mutation)
+
+
+def _remove_orientation_row(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        del rows[0]
+
+    _rewrite_table(root, "f3_orientation_summary.csv", mutation)
+
+
+def _duplicate_orientation_row(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        rows.append(dict(rows[0]))
+
+    _rewrite_table(root, "f3_orientation_summary.csv", mutation)
+
+
+def _remove_runtime_row(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        del rows[0]
+
+    _rewrite_table(root, "runtime_summary.csv", mutation)
+
+
+def _duplicate_runtime_row(root: Path) -> None:
+    def mutation(rows: list[dict[str, str]]) -> None:
+        rows.append(dict(rows[0]))
+
+    _rewrite_table(root, "runtime_summary.csv", mutation)
+
+
+@pytest.mark.parametrize(
+    ("name", "mutation"),
+    (
+        ("duplicate-metric", _duplicate_publication_metric),
+        ("missing-f3-metric", _remove_f3_metric),
+        ("missing-synthetic-canonical-cell", _remove_synthetic_canonical_metric),
+        ("nullable-distance-zero", _replace_nullable_distance_with_zero),
+        ("missing-contrast", _remove_contrast),
+        ("duplicate-contrast", _duplicate_contrast),
+        ("changed-contrast-raw-value", _change_contrast_raw_value),
+        ("duplicate-summary", _duplicate_summary),
+        ("missing-regional-row", _remove_regional_row),
+        ("duplicate-regional-row", _duplicate_regional_row),
+        ("missing-orientation-row", _remove_orientation_row),
+        ("duplicate-orientation-row", _duplicate_orientation_row),
+        ("missing-runtime-row", _remove_runtime_row),
+        ("duplicate-runtime-row", _duplicate_runtime_row),
+    ),
+)
+def test_semantic_table_tampering_is_rejected_after_completion_rehash(
+    publication_bundle: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+    name: str,
+    mutation: Callable[[Path], None],
+) -> None:
+    """A recomputed byte hash cannot conceal a table-level semantic mutation."""
+
+    source, _sources = publication_bundle
+    output = tmp_path / name
+    shutil.copytree(source, output)
+    mutation(output)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError):
+        validate_publication_bundle(output)
+
+
+@pytest.mark.parametrize(
+    ("filename", "mutation"),
+    (
+        ("publication_metrics.csv", _duplicate_publication_metric),
+        ("publication_contrasts.csv", _duplicate_contrast),
+        ("publication_summary.csv", _duplicate_summary),
+        ("f3_regional_summary.csv", _duplicate_regional_row),
+        ("f3_orientation_summary.csv", _duplicate_orientation_row),
+        ("runtime_summary.csv", _duplicate_runtime_row),
+    ),
+)
+def test_duplicate_root_row_identity_is_rejected_after_digest_rewrite(
+    publication_bundle: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+    filename: str,
+    mutation: Callable[[Path], None],
+) -> None:
+    """Duplicate rejection is independent of a recomputed table digest."""
+
+    source, _sources = publication_bundle
+    output = tmp_path / f"duplicate-identity-{filename}"
+    shutil.copytree(source, output)
+    mutation(output)
+    _rewrite_root_table_contract(output, filename)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="duplicate publication row identity"):
+        validate_publication_bundle(output)
+
+
+def test_header_only_contrasts_are_rejected_after_contract_rewrite(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    """An empty contrast file cannot hide behind a coherently rewritten digest."""
+
+    source, _sources = publication_bundle
+    output = tmp_path / "header-only-contrasts"
+    shutil.copytree(source, output)
+    _clear_contrasts(output)
+    _rewrite_root_table_contract(output, "publication_contrasts.csv")
+    manifest_path = output / "manifest.json"
+    manifest = read_json(manifest_path)
+    contract = manifest["table_contracts"]["publication_contrasts.csv"]
+    contract["source_expected_identities"] = []
+    contract["source_expected_identity_sha256"] = canonical_digest([])
+    write_json(manifest_path, manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="header-only"):
+        validate_publication_bundle(output)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        ("synthetic_source", "identity_digest"),
+        ("f3_source", "identity_digest"),
+        ("f3_source", "dataset_identity_digest"),
+    ),
+)
+def test_source_identity_tampering_is_rejected_after_completion_rehash(
+    publication_bundle: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+    field: tuple[str, str],
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / f"identity-{field[0]}-{field[1]}"
+    shutil.copytree(source, output)
+    manifest_path = output / "manifest.json"
+    manifest = read_json(manifest_path)
+    manifest[field[0]][field[1]] = "0" * 64
+    write_json(manifest_path, manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError):
+        validate_publication_bundle(output)
+
+
+def test_v1_publication_artifact_is_not_implicitly_upgraded(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "legacy-v1-publication"
+    shutil.copytree(source, output)
+    manifest_path = output / "manifest.json"
+    manifest = read_json(manifest_path)
+    manifest["publication_artifact_schema_version"] = 1
+    write_json(manifest_path, manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="predates the semantic table contract"):
+        validate_publication_bundle(output)
+
+
+def test_v1_figure_contract_is_not_implicitly_upgraded(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "legacy-v1-figure-contract"
+    shutil.copytree(source, output)
+    figure_manifest_path = output / "figure_manifest.json"
+    figure_manifest = read_json(figure_manifest_path)
+    figure_manifest["publication_figure_contract_version"] = 1
+    write_json(figure_manifest_path, figure_manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="predates the semantic figure-data contract"):
+        validate_publication_bundle(output)
+
+
+def test_source_paths_are_provenance_not_source_identity(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "relocated-source-provenance"
+    shutil.copytree(source, output)
+    manifest_path = output / "manifest.json"
+    manifest = read_json(manifest_path)
+    manifest["synthetic_source"]["path"] = "/relocated/synthetic"
+    manifest["f3_source"]["path"] = "/relocated/f3"
+    write_json(manifest_path, manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    assert validate_publication_bundle(output)
+
+
+def _remove_figure(root: Path, predicate: Callable[[dict[str, Any]], bool]) -> None:
+    manifest_path = root / "figure_manifest.json"
+    manifest = read_json(manifest_path)
+    records = manifest["figures"]
+    index = _require_index(records, predicate)
+    record = records.pop(index)
+    for field in ("relative_path", "figure_data_csv"):
+        value = record[field]
+        if isinstance(value, str):
+            (root / value).unlink()
+    write_json(manifest_path, manifest)
+
+
+def _duplicate_figure_data_row(root: Path) -> None:
+    manifest = read_json(root / "figure_manifest.json")
+    record = next(record for record in manifest["figures"] if not record["omitted"])
+    _rewrite_table(
+        root,
+        record["figure_data_csv"],
+        lambda rows: rows.append(dict(rows[0])),
+    )
+
+
+def _change_png_dimension_field(root: Path) -> None:
+    path = root / "figure_manifest.json"
+    manifest = read_json(path)
+    record = next(record for record in manifest["figures"] if not record["omitted"])
+    record["pixel_width"] += 1
+    write_json(path, manifest)
+
+
+def _replace_png_with_different_dimensions(root: Path) -> None:
+    manifest = read_json(root / "figure_manifest.json")
+    record = next(record for record in manifest["figures"] if not record["omitted"])
+    write_png(root / record["relative_path"], width=2, height=3)
+
+
+def _corrupt_png_ihdr(root: Path) -> None:
+    manifest = read_json(root / "figure_manifest.json")
+    record = next(record for record in manifest["figures"] if not record["omitted"])
+    path = root / record["relative_path"]
+    payload = bytearray(path.read_bytes())
+    payload[12:16] = b"BAD!"
+    path.write_bytes(payload)
+
+
+def test_duplicate_figure_data_identity_is_rejected_after_digest_rewrite(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "duplicate-figure-data-identity"
+    shutil.copytree(source, output)
+    _duplicate_figure_data_row(output)
+    _rewrite_figure_data_contract(output)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="duplicate publication row identity"):
+        validate_publication_bundle(output)
+
+
+@pytest.mark.parametrize(
+    ("name", "mutation"),
+    (
+        (
+            "removed-scalar-figure",
+            lambda root: _remove_figure(
+                root,
+                lambda record: record["figure_id"] == "f3_normalized_correlation_by_stage",
+            ),
+        ),
+        (
+            "removed-spatial-figure",
+            lambda root: _remove_figure(
+                root,
+                lambda record: record["category"] == "f3_spatial",
+            ),
+        ),
+        ("duplicate-figure-data", _duplicate_figure_data_row),
+        ("changed-png-dimension-field", _change_png_dimension_field),
+        ("different-valid-png-dimensions", _replace_png_with_different_dimensions),
+        ("broken-png-ihdr", _corrupt_png_ihdr),
+    ),
+)
+def test_semantic_figure_tampering_is_rejected_after_completion_rehash(
+    publication_bundle: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+    name: str,
+    mutation: Callable[[Path], None],
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / name
+    shutil.copytree(source, output)
+    mutation(output)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError):
+        validate_publication_bundle(output)

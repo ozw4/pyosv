@@ -31,12 +31,20 @@ from .config import (
     CANONICAL_CELL_ORDER,
     CANONICAL_STAGE_ORDER,
     FIGURE_DATA_HEADER,
+    FIGURE_DATA_IDENTITY_FIELDS,
     F3_SEMANTICS,
+    SYNTHETIC_SKIN_FIGURE_OMISSION_REASON,
     SYNTHETIC_SCANNER_CELL_ORDER,
     SYNTHETIC_SEMANTICS,
 )
 from .models import PublicationReport
 from .registry import PUBLICATION_METRIC_REGISTRY
+from .semantic import (
+    FIGURE_DATA_FIELD_TYPES,
+    build_table_contract,
+    finite_json_normalize,
+    png_metadata,
+)
 
 
 def _finite(value: Any) -> float:
@@ -56,7 +64,12 @@ def _csv_value(value: Any) -> str:
     if isinstance(value, (float, np.floating)):
         return repr(_finite(value))
     if isinstance(value, (tuple, list, dict)):
-        return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        return json.dumps(
+            finite_json_normalize(value),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
     return str(value)
 
 
@@ -96,10 +109,22 @@ def _record(
     selection_threshold: float | None = None,
     display_scale: Mapping[str, Any] | None = None,
     figure_data_csv: str | None = None,
+    figure_data_contract: Mapping[str, Any] | None = None,
+    png_path: Path | None = None,
     caption: str,
     omitted: bool = False,
     omission_reason: str | None = None,
 ) -> dict[str, Any]:
+    if omitted:
+        if figure_data_csv is not None or figure_data_contract is not None or png_path is not None:
+            raise ValueError("omitted figures must not have PNG or figure-data metadata")
+        data_contract: Mapping[str, Any] | None = None
+        png: Mapping[str, Any] | None = None
+    else:
+        if figure_data_csv is None or figure_data_contract is None or png_path is None:
+            raise ValueError("non-omitted figures require PNG and figure-data metadata")
+        data_contract = figure_data_contract
+        png = png_metadata(png_path)
     return {
         "figure_id": figure_id,
         "relative_path": relative_path,
@@ -120,6 +145,20 @@ def _record(
         "selection_threshold": selection_threshold,
         "display_scale": None if display_scale is None else dict(display_scale),
         "figure_data_csv": figure_data_csv,
+        "figure_data_row_count": None if data_contract is None else data_contract["row_count"],
+        "figure_data_identity_fields": (
+            None if data_contract is None else list(data_contract["identity_fields"])
+        ),
+        "figure_data_identity_sha256": (
+            None if data_contract is None else data_contract["ordered_identity_sha256"]
+        ),
+        "figure_data_semantic_sha256": (
+            None if data_contract is None else data_contract["ordered_semantic_rows_sha256"]
+        ),
+        "pixel_width": None if png is None else png["pixel_width"],
+        "pixel_height": None if png is None else png["pixel_height"],
+        "png_size": None if png is None else png["png_size"],
+        "png_sha256": None if png is None else png["png_sha256"],
         "caption": caption,
         "omitted": omitted,
         "omission_reason": omission_reason,
@@ -135,11 +174,21 @@ def _matplotlib() -> tuple[Any, str, str]:
     return plt, str(matplotlib.__version__), str(matplotlib.get_backend())
 
 
-def _write_figure_data(root: Path, figure_id: str, rows: list[Mapping[str, Any]]) -> str:
+def _write_figure_data(
+    root: Path, figure_id: str, rows: list[Mapping[str, Any]]
+) -> tuple[str, Mapping[str, Any]]:
     filename = f"{figure_id}.csv"
     path = root / "figure_data" / filename
     _write_csv(path, rows)
-    return f"figure_data/{filename}"
+    return (
+        f"figure_data/{filename}",
+        build_table_contract(
+            FIGURE_DATA_HEADER,
+            rows,
+            FIGURE_DATA_IDENTITY_FIELDS,
+            FIGURE_DATA_FIELD_TYPES,
+        ),
+    )
 
 
 def _save_scalar_plot(
@@ -268,7 +317,7 @@ def _synthetic_scalar_figure(
         )
         for row in source_rows
     ]
-    data_path = _write_figure_data(root, figure_id, data_rows)
+    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
     path = root / "figures" / filename
     _save_scalar_plot(
         path,
@@ -297,6 +346,8 @@ def _synthetic_scalar_figure(
             "difference_scale": None,
         },
         figure_data_csv=data_path,
+        figure_data_contract=data_contract,
+        png_path=path,
         caption=caption,
     )
 
@@ -304,8 +355,12 @@ def _synthetic_scalar_figure(
 def _synthetic_orientation_figure(
     report: PublicationReport, root: Path, plt: Any
 ) -> dict[str, Any]:
+    from matplotlib.lines import Line2D
+
     figure_id = "synthetic_scanner_orientation_error_by_case"
     metrics = ("strike_median", "dip_median")
+    metric_colors = {"strike_median": "#4c78a8", "dip_median": "#f58518"}
+    backend_markers = {"RL-SCAN": "o", "Q-SCAN": "s"}
     rows = [
         row
         for row in report.tables["publication_metrics.csv"]
@@ -319,7 +374,7 @@ def _synthetic_orientation_figure(
     data_rows = []
     try:
         for metric_index, metric in enumerate(metrics):
-            color = ("#4c78a8", "#f58518")[metric_index]
+            color = metric_colors[metric]
             for group_index, group in enumerate(groups):
                 for cell_index, cell in enumerate(SYNTHETIC_SCANNER_CELL_ORDER):
                     values = [
@@ -339,12 +394,9 @@ def _synthetic_orientation_figure(
                         x,
                         median,
                         yerr=[[median - low], [high - median]],
-                        fmt="o",
+                        fmt=backend_markers[cell],
                         color=color,
                         capsize=3,
-                        label=metric.replace("_", " ")
-                        if group_index == 0 and cell_index == 0
-                        else None,
                     )
 
         ticks = [index * 3 + 0.5 for index in range(len(groups))]
@@ -352,7 +404,29 @@ def _synthetic_orientation_figure(
         ax.set_ylabel("orientation error (degree)")
         ax.set_title("Synthetic scanner orientation error by case")
         ax.grid(axis="y", alpha=0.25)
-        ax.legend()
+        metric_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=metric_colors[metric],
+                marker="_",
+                markersize=10,
+                label=f"metric: {metric.replace('_', ' ')}",
+            )
+            for metric in metrics
+        ]
+        backend_handles = [
+            Line2D(
+                [0],
+                [0],
+                color="#333333",
+                marker=backend_markers[cell],
+                linestyle="None",
+                label=f"scanner backend: {cell}",
+            )
+            for cell in SYNTHETIC_SCANNER_CELL_ORDER
+        ]
+        ax.legend(handles=metric_handles + backend_handles, fontsize="small", ncol=2)
         for row in rows:
             data_rows.append(
                 _data_row(
@@ -374,7 +448,7 @@ def _synthetic_orientation_figure(
         fig.savefig(root / "figures" / f"{figure_id}.png", dpi=150)
     finally:
         plt.close(fig)
-    data_path = _write_figure_data(root, figure_id, data_rows)
+    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
     return _record(
         figure_id=figure_id,
         relative_path=f"figures/{figure_id}.png",
@@ -390,10 +464,16 @@ def _synthetic_orientation_figure(
             "scale_policy": "shared degree axis; IQR for stochastic cases",
             "vmin": None,
             "vmax": None,
-            "colormap": "condition markers",
+            "colormap": "metric colors and scanner-backend markers",
             "difference_scale": None,
+            "series_encoding": {
+                "metric_color": metric_colors,
+                "scanner_backend_marker": backend_markers,
+            },
         },
         figure_data_csv=data_path,
+        figure_data_contract=data_contract,
+        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "Synthetic known-truth scanner strike and dip error from the two scanner-only "
             "cells; stochastic cases show median and IQR without a significance test."
@@ -452,7 +532,7 @@ def _synthetic_heatmap(report: PublicationReport, root: Path, plt: Any) -> dict[
                     direction=entry.direction,
                 )
             )
-    data_path = _write_figure_data(root, figure_id, data_rows)
+    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
     fig, ax = plt.subplots(
         figsize=(max(9.0, 1.4 * len(entries)), max(3.5, 0.8 * len(report.synthetic.case_order))),
         constrained_layout=True,
@@ -494,6 +574,8 @@ def _synthetic_heatmap(report: PublicationReport, root: Path, plt: Any) -> dict[
             "difference_scale": "zero-centered divergent",
         },
         figure_data_csv=data_path,
+        figure_data_contract=data_contract,
+        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "End-to-end delta heatmap; column-normalized. Positive means direction-aware "
             "improvement. This is not a significance test."
@@ -537,6 +619,12 @@ def _f3_scalar_figure(
 
     data_rows: list[Mapping[str, Any]] = []
     colors = ("#4c78a8", "#f58518", "#54a24b", "#e45756")
+    condition_colors = dict(zip(CANONICAL_CELL_ORDER, colors, strict=True))
+    distance_hatches = {
+        "candidate_to_reference_p95": "///",
+        "reference_to_candidate_p95": "\\\\",
+    }
+    is_sparse_distance = figure_id == "f3_sparse_distance_p95_by_stage"
     stage_stride = len(CANONICAL_CELL_ORDER) + 1.0
     fig, ax = plt.subplots(figsize=(10.5, 5.2), constrained_layout=True)
     try:
@@ -573,6 +661,7 @@ def _f3_scalar_figure(
                         height,
                         width=width * 0.92,
                         color=colors[cell_index],
+                        hatch=distance_hatches.get(metric, "") if is_sparse_distance else "",
                         label=cell if stage_index == 0 and metric_index == 0 else None,
                     )
             ax.axvline(base + len(CANONICAL_CELL_ORDER) - 0.5, color="#bbbbbb", lw=0.7)
@@ -595,14 +684,32 @@ def _f3_scalar_figure(
             if metric not in seen_metrics:
                 seen_metrics.add(metric)
                 metric_labels.append(metric)
-        metric_handles = [
-            Patch(facecolor="white", edgecolor="black", label=metric) for metric in metric_labels
-        ]
+        metric_handles = (
+            [
+                Patch(
+                    facecolor="white",
+                    edgecolor="black",
+                    hatch=distance_hatches[metric],
+                    label=(
+                        "candidate to public reference p95"
+                        if metric == "candidate_to_reference_p95"
+                        else "public reference to candidate p95"
+                    ),
+                )
+                for metric in metric_labels
+            ]
+            if is_sparse_distance
+            else [
+                Patch(facecolor="white", edgecolor="black", label=metric)
+                for metric in metric_labels
+                if len(metric_labels) > 1
+            ]
+        )
         ax.legend(handles=condition_handles + metric_handles, fontsize="small", ncol=2)
         fig.savefig(root / "figures" / f"{figure_id}.png", dpi=150)
     finally:
         plt.close(fig)
-    data_path = _write_figure_data(root, figure_id, data_rows)
+    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
     return _record(
         figure_id=figure_id,
         relative_path=f"figures/{figure_id}.png",
@@ -618,10 +725,20 @@ def _f3_scalar_figure(
             "scale_policy": "raw scalar metric; one full-volume evaluation unit",
             "vmin": None,
             "vmax": None,
-            "colormap": "condition bars",
+            "colormap": "condition-colored bars",
             "difference_scale": None,
+            "series_encoding": (
+                {
+                    "cell_condition_color": condition_colors,
+                    "distance_direction_hatch": distance_hatches,
+                }
+                if is_sparse_distance
+                else None
+            ),
         },
         figure_data_csv=data_path,
+        figure_data_contract=data_contract,
+        png_path=root / "figures" / f"{figure_id}.png",
         caption=caption,
     )
 
@@ -631,7 +748,7 @@ def _runtime_figure(
 ) -> dict[str, Any]:
     figure_id = f"{dataset}_runtime_breakdown"
     rows = [row for row in report.tables["runtime_summary.csv"] if row["dataset"] == dataset]
-    labels = [f"{row['stage']}:{row['cell_label'] or 'shared'}" for row in rows]
+    labels = [_runtime_panel_label(row) for row in rows]
     values = [float(row["elapsed_seconds"]) for row in rows]
     fig, ax = plt.subplots(figsize=(max(8.0, 0.42 * len(rows)), 4.8), constrained_layout=True)
     try:
@@ -649,17 +766,20 @@ def _runtime_figure(
             figure_id,
             dataset=dataset,
             evaluation_semantics=SYNTHETIC_SEMANTICS if dataset == "synthetic" else F3_SEMANTICS,
+            source_metric=row["stage"],
             source_stage="runtime",
             case_or_region=row["case_or_region"],
             trial_id=row["trial_id"],
             seed=row["seed"],
             cell_label=row["cell_label"],
+            panel_label=_runtime_panel_label(row),
+            metric="elapsed_seconds",
             value=row["elapsed_seconds"],
             unit="second",
         )
         for row in rows
     ]
-    data_path = _write_figure_data(root, figure_id, data_rows)
+    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
     semantics = SYNTHETIC_SEMANTICS if dataset == "synthetic" else F3_SEMANTICS
     return _record(
         figure_id=figure_id,
@@ -668,8 +788,12 @@ def _runtime_figure(
         category="runtime",
         figure_role="main",
         evaluation_semantics=semantics,
-        source_metric=None,
+        source_metric="runtime stage name",
         source_stage="runtime",
+        cell_labels=tuple(
+            dict.fromkeys(str(row["cell_label"]) for row in rows if row["cell_label"])
+        ),
+        panel_labels=tuple(labels),
         display_scale={
             "scale_policy": "stage-level within-experiment attribution",
             "vmin": 0.0,
@@ -678,6 +802,8 @@ def _runtime_figure(
             "difference_scale": None,
         },
         figure_data_csv=data_path,
+        figure_data_contract=data_contract,
+        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "Runtime is a within-experiment attribution of shared and cell-owned stages; "
             "it is not an isolated-process benchmark."
@@ -685,13 +811,51 @@ def _runtime_figure(
     )
 
 
+def _runtime_panel_label(row: Mapping[str, Any]) -> str:
+    """Encode a source runtime event without losing shared-stage ownership."""
+
+    owner = row["cell_label"] or "shared"
+    pieces = [str(row["stage"]), str(owner), "shared" if row["shared_stage"] else "cell-owned"]
+    scanner_backend = row.get("scanner_backend")
+    if scanner_backend:
+        pieces.append(str(scanner_backend))
+    fingerprint = row.get("fingerprint")
+    if fingerprint:
+        pieces.append(str(fingerprint))
+    call_count = row.get("call_count")
+    if call_count is not None:
+        pieces.append(f"calls={call_count}")
+    state = row.get("state")
+    if state:
+        pieces.append(str(state))
+    return ":".join(pieces)
+
+
 def _axis_number(axis: str) -> int:
     return {"i3": 0, "i2": 1, "i1": 2}[axis]
 
 
 def _slice(array: np.ndarray, axis: str, index: int) -> np.ndarray:
-    number = _axis_number(axis)
-    return np.take(array, index, axis=number)
+    if axis == "i3":
+        return array[index, :, :]
+    if axis == "i2":
+        return array[:, index, :]
+    if axis == "i1":
+        return array[:, :, index]
+    raise ValueError(f"unknown spatial axis {axis!r}")
+
+
+def _signed_difference_slice(
+    left: np.ndarray,
+    right: np.ndarray,
+    axis: str,
+    index: int,
+) -> np.ndarray:
+    """Return one signed 2D difference without materializing a 3D difference."""
+
+    left_slice = np.asarray(_slice(left, axis, index), dtype=np.float32)
+    right_slice = np.asarray(_slice(right, axis, index), dtype=np.float32)
+    return left_slice - right_slice
 
 
 def _open_stage_volume(
@@ -815,8 +979,8 @@ def _difference_peak_index(
     best_index = 0
     best_score = -1.0
     for index in range(shape[number]):
-        difference = np.asarray(_slice(left, axis, index), dtype=np.float64) - np.asarray(
-            _slice(right, axis, index), dtype=np.float64
+        difference = np.asarray(
+            _signed_difference_slice(left, right, axis, index), dtype=np.float64
         )
         score = float(np.sum(np.abs(difference), dtype=np.float64))
         if score > best_score:
@@ -982,7 +1146,7 @@ def _spatial_figure(
         fig.savefig(path, dpi=150)
     finally:
         plt.close(fig)
-    data_path = _write_figure_data(root, figure_id, data_rows)
+    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
     normal_vmin, normal_vmax = normal_scale
     observed_difference, difference_vmin, difference_vmax = difference_scale
     return _record(
@@ -1014,6 +1178,8 @@ def _spatial_figure(
             "difference_scale": "symmetric around zero",
         },
         figure_data_csv=data_path,
+        figure_data_contract=data_contract,
+        png_path=path,
         caption=caption,
     )
 
@@ -1091,7 +1257,7 @@ def _overlay_figure(
         fig.savefig(root / "figures" / f"{figure_id}.png", dpi=150)
     finally:
         plt.close(fig)
-    data_path = _write_figure_data(root, figure_id, data_rows)
+    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
     return _record(
         figure_id=figure_id,
         relative_path=f"figures/{figure_id}.png",
@@ -1117,6 +1283,8 @@ def _overlay_figure(
             "difference_scale": None,
         },
         figure_data_csv=data_path,
+        figure_data_contract=data_contract,
+        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "F3 public-reference ridge overlay: public-reference only, candidate only, "
             "exact overlap, and buffered match."
@@ -1207,9 +1375,9 @@ def _generate_f3_spatial(report: PublicationReport, root: Path, plt: Any) -> lis
                                 ),
                                 (
                                     "quality - reference-like signed difference",
-                                    _slice(
-                                        candidate_arrays[stage]["Q-REF"]
-                                        - candidate_arrays[stage]["RL-REF"],
+                                    _signed_difference_slice(
+                                        candidate_arrays[stage]["Q-REF"],
+                                        candidate_arrays[stage]["RL-REF"],
                                         axis,
                                         index,
                                     ),
@@ -1232,9 +1400,9 @@ def _generate_f3_spatial(report: PublicationReport, root: Path, plt: Any) -> lis
                                 ),
                                 (
                                     "Q-QUAL - RL-REF signed difference",
-                                    _slice(
-                                        candidate_arrays[stage]["Q-QUAL"]
-                                        - candidate_arrays[stage]["RL-REF"],
+                                    _signed_difference_slice(
+                                        candidate_arrays[stage]["Q-QUAL"],
+                                        candidate_arrays[stage]["RL-REF"],
                                         axis,
                                         index,
                                     ),
@@ -1316,7 +1484,7 @@ def _omitted_skin_figures(report: PublicationReport) -> list[dict[str, Any]]:
                 panel_labels=CANONICAL_CELL_ORDER,
                 caption="Skin figure omitted because the validated synthetic source run disabled skinning.",
                 omitted=True,
-                omission_reason="source synthetic skinning is disabled",
+                omission_reason=SYNTHETIC_SKIN_FIGURE_OMISSION_REASON,
             )
         )
     return output

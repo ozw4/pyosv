@@ -333,11 +333,20 @@ def _summary_table(
 
 
 def _diagnostic_unit(metric: str) -> str:
-    if metric.endswith("fraction") or "ratio" in metric or metric in {"precision", "recall"}:
+    if metric == "normalized_correlation":
+        return "correlation"
+    if "ratio" in metric:
+        return "ratio"
+    if metric.endswith(("_fraction", "_precision", "_recall", "_f1", "_jaccard")) or metric in {
+        "precision",
+        "recall",
+        "f1",
+        "jaccard",
+    }:
         return "fraction"
-    if metric.endswith("count") or metric in {"voxel_count", "candidate_count", "reference_count"}:
+    if metric.endswith("_count") or metric == "voxel_count":
         return "count"
-    if "distance" in metric:
+    if "_distance_" in metric or metric.endswith("_distance"):
         return "voxel"
     return "value"
 
@@ -410,7 +419,9 @@ def _runtime_table(
                 "trial_id": row.trial_id,
                 "seed": row.seed,
                 "stage": row.stage,
-                "fingerprint": "",
+                "fingerprint": None,
+                "scanner_backend": row.scanner_backend,
+                "call_count": row.call_count,
                 "cell_label": row.cell_label,
                 "cell_consumers": (),
                 "state": "shared" if row.shared_stage else "cell-owned",
@@ -432,6 +443,8 @@ def _runtime_table(
                 "seed": None,
                 "stage": row.stage_kind,
                 "fingerprint": row.fingerprint,
+                "scanner_backend": None,
+                "call_count": 1,
                 "cell_label": row.cell,
                 "cell_consumers": consumers,
                 "state": row.state,

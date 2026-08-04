@@ -27,6 +27,12 @@ from ..synthetic_mode_comparison.experiment import RuntimeRow
 from ..synthetic_mode_comparison.metrics import MetricRow
 
 from .models import F3SourceBundle, SyntheticSourceBundle
+from .semantic import (
+    F3_SOURCE_IDENTITY_FIELDS,
+    SYNTHETIC_SOURCE_IDENTITY_FIELDS,
+    canonical_digest,
+    source_identity_object,
+)
 
 
 def _read_json(path: Path) -> Any:
@@ -47,11 +53,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _identity_digest(value: Mapping[str, Any]) -> str:
-    payload = json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _records(path: Path) -> tuple[dict[str, str], ...]:
@@ -256,7 +257,7 @@ def load_synthetic_source(path: str | Path) -> SyntheticSourceBundle:
         manifest,
         identity["completion_sha256"],
         identity["manifest_sha256"],
-        _identity_digest(identity),
+        canonical_digest(source_identity_object(identity, SYNTHETIC_SOURCE_IDENTITY_FIELDS)),
         metric_rows,
         contrast_rows,
         runtime_rows,
@@ -387,7 +388,7 @@ def load_f3_source(
         manifest,
         identity["completion_sha256"],
         identity["manifest_sha256"],
-        _identity_digest(identity),
+        canonical_digest(source_identity_object(identity, F3_SOURCE_IDENTITY_FIELDS)),
         result,
         evidence,
         dataset_identity,

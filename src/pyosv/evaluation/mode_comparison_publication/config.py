@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Final
 
-PUBLICATION_ARTIFACT_SCHEMA_VERSION: Final = 1
+PUBLICATION_ARTIFACT_SCHEMA_VERSION: Final = 2
 PUBLICATION_COMPLETION_SCHEMA_VERSION: Final = 1
-PUBLICATION_FIGURE_CONTRACT_VERSION: Final = 1
+PUBLICATION_FIGURE_CONTRACT_VERSION: Final = 2
 PUBLICATION_METRIC_SELECTION_VERSION: Final = 1
+PUBLICATION_TABLE_CONTRACT_VERSION: Final = 1
 
 PUBLICATION_INTERPRETATION: Final = (
     "derived_publication_report_from_validated_source_bundles; "
@@ -114,6 +115,8 @@ RUNTIME_SUMMARY_HEADER: Final = (
     "seed",
     "stage",
     "fingerprint",
+    "scanner_backend",
+    "call_count",
     "cell_label",
     "cell_consumers",
     "state",
@@ -144,6 +147,14 @@ FIGURE_MANIFEST_FIELDS: Final = (
     "selection_threshold",
     "display_scale",
     "figure_data_csv",
+    "figure_data_row_count",
+    "figure_data_identity_fields",
+    "figure_data_identity_sha256",
+    "figure_data_semantic_sha256",
+    "pixel_width",
+    "pixel_height",
+    "png_size",
+    "png_sha256",
     "caption",
     "omitted",
     "omission_reason",
@@ -179,6 +190,67 @@ FIGURE_DATA_HEADER: Final = (
     "difference_vmin",
     "difference_vmax",
 )
+
+# Figure-data rows are semantic evidence, not a byte-for-byte rendering
+# snapshot.  The identity deliberately describes the source datum/panel rather
+# than using a CSV row position, so a duplicated datum remains visible to the
+# validator.
+FIGURE_DATA_IDENTITY_FIELDS: Final = (
+    "figure_id",
+    "dataset",
+    "source_metric",
+    "source_stage",
+    "case_or_region",
+    "trial_id",
+    "seed",
+    "cell_label",
+    "panel_label",
+    "metric",
+    "axis",
+    "slice_index",
+    "slice_selection_policy",
+)
+
+# The v2 contract has a fixed scalar coverage set.  The skin figure remains a
+# required record when skinning is disabled, but is represented as an omitted
+# record with no PNG or figure-data CSV.
+FIXED_SCALAR_FIGURE_IDS: Final = (
+    "synthetic_end_to_end_improvement_heatmap",
+    "synthetic_fvt_buffered_f1_by_case",
+    "synthetic_fvt_hausdorff_p95_by_case",
+    "synthetic_scanner_orientation_error_by_case",
+    "synthetic_skin_buffered_f1_by_case",
+    "synthetic_runtime_breakdown",
+    "f3_normalized_correlation_by_stage",
+    "f3_buffered_f1_by_stage",
+    "f3_sparse_distance_p95_by_stage",
+    "f3_nonzero_fraction_ratio_by_stage",
+    "f3_runtime_breakdown",
+)
+
+F3_SPATIAL_FIGURE_SLOTS: Final = tuple(
+    (stage, policy, axis)
+    for stage, policies in (
+        ("ft", ("center", "public_reference_peak")),
+        ("fv", ("center", "public_reference_peak")),
+        ("fvt", ("center", "public_reference_peak", "end_to_end_difference_peak")),
+    )
+    for policy in policies
+    for axis in ("i3", "i2", "i1")
+)
+
+F3_RIDGE_OVERLAY_SLOTS: Final = tuple(
+    (policy, axis)
+    for policy in ("public_reference_peak", "end_to_end_difference_peak")
+    for axis in ("i3", "i2", "i1")
+)
+
+SYNTHETIC_SKIN_FIGURE_OMISSION_REASON: Final = "source synthetic skinning is disabled"
+
+# A publication PNG is a rendered diagnostic, not a source volume.  This
+# generous upper bound rejects malformed IHDRs while allowing normal high-DPI
+# report figures without a Pillow dependency.
+PNG_MAX_DIMENSION: Final = 100_000
 
 FIGURE_SELECTION_POLICY: Final = {
     "slice_policies": (
