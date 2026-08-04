@@ -663,9 +663,10 @@ runner is a manual, potentially slow, reference-like baseline full-volume
 scan/vote path. It exposes scanner and voter thinning separately, but does not
 implement `workflow_mode`, the quality scanner backend, the quality skinner, or
 the canonical 2×2 scanner-backend/workflow comparison. In particular, a quality
-workflow does not imply a quality scanner backend. The planned full-volume
-`RL-REF`, `RL-QUAL`, `Q-REF`, and `Q-QUAL` runner is future work; the labels and
-separate axes are defined in
+workflow does not imply a quality scanner backend. The separate
+`pyosv.evaluation.f3d_mode_comparison` package and its CLI provide the current
+full-volume four-cell implementation; the legacy command above remains a
+single-path baseline. The labels and separate axes are defined in
 [Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
 The complete publication protocol and current/planned boundary are documented
 in [F3 3D Reference Data Validation](f3d_validation.md).

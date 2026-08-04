@@ -164,11 +164,13 @@ def _controlled_discarding_workflow(**kwargs: Any) -> Any:
     )
 
 
-def test_comparison_implementation_identity_tracks_direct_artifact_modules() -> None:
+def test_comparison_implementation_identity_tracks_direct_modules() -> None:
     modules = comparison_module._comparison_implementation_identity()["algorithm_modules"]
 
     assert {
         "evaluation/f3d_mode_comparison/artifacts.py",
+        "evaluation/f3d_mode_comparison/data.py",
+        "evaluation/f3d_mode_comparison/result.py",
         "evaluation/f3d_mode_comparison/runtime_identity.py",
         "evaluation/f3d_mode_comparison/skin_artifacts.py",
     } <= modules.keys()
@@ -200,6 +202,62 @@ def test_skin_artifact_source_change_changes_comparison_implementation_digest(
         != changed_identity_payload["algorithm_modules"][skin_module]
     )
     assert canonical_fingerprint(source_identity) != canonical_fingerprint(changed_identity_payload)
+
+
+def test_result_source_change_changes_comparison_implementation_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_identity = comparison_module._comparison_implementation_identity()
+    source_path = Path(result_module.__file__)
+    changed_source = tmp_path / "result.py"
+    changed_source.write_bytes(source_path.read_bytes() + b"\n# changed comparison source\n")
+
+    original_implementation_identity = comparison_module.implementation_identity
+
+    def changed_identity(*, source_files: Any = None) -> dict[str, Any]:
+        assert source_files is not None
+        files = dict(source_files)
+        files["evaluation/f3d_mode_comparison/result.py"] = changed_source
+        return original_implementation_identity(source_files=files)
+
+    monkeypatch.setattr(comparison_module, "implementation_identity", changed_identity)
+    changed_identity_payload = comparison_module._comparison_implementation_identity()
+
+    result_module_name = "evaluation/f3d_mode_comparison/result.py"
+    assert (
+        source_identity["algorithm_modules"][result_module_name]
+        != changed_identity_payload["algorithm_modules"][result_module_name]
+    )
+    assert canonical_fingerprint(source_identity) != canonical_fingerprint(changed_identity_payload)
+
+
+def test_comparison_resume_rejects_identity_without_current_result_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        output_root,
+        _source,
+        _runtime_identity,
+        paths,
+        completion_path,
+        report,
+        completion,
+    ) = _comparison_fixture(tmp_path, monkeypatch)
+    stale_report = deepcopy(report)
+    stale_completion = deepcopy(completion)
+    result_module_name = "evaluation/f3d_mode_comparison/result.py"
+    del stale_report["comparison_implementation_identity"]["algorithm_modules"][
+        result_module_name
+    ]
+    stale_completion["comparison_implementation_identity_sha256"] = canonical_fingerprint(
+        stale_report["comparison_implementation_identity"]
+    )
+    _write_rehashed_comparison(stale_report, paths, completion_path, stale_completion)
+
+    with pytest.raises(ValueError, match="implementation identity mismatch"):
+        compare_reskin_policies_from_bundle(output_root, resume=True)
 
 
 def test_comparison_resume_rejects_stale_implementation_identity(

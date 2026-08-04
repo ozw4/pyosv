@@ -1,373 +1,286 @@
-# Scanner, Workflow, Thinning, and F3 Reference Comparison
+# Mode Comparison Contract
 
-This document defines the canonical terminology for public synthetic-data and
-F3 full-volume comparisons. It separates configuration choices from comparison
-targets; none of the terms below are interchangeable.
+## 1.1 Purpose and scope
 
-## 1. Scope and terminology
+This document defines the mode names and comparison conditions used for public
+synthetic/F3 comparisons. It is the canonical terminology and configuration
+contract for those comparisons.
 
-1. **Scanner backend** selects how fault likelihood, strike, and dip are
-   scanned. Its report/config label is `scanner_backend`; the comparison values
-   are `reference-like` and `quality`. The public API entry points are
-   `FaultOrientScanner3.scan()`, `scan_reference_like()`, and `scan_quality()`.
-2. **Workflow mode** selects downstream defaults for voting, voter thinning,
-   skinning, and diagnostics. Its report/config label is `workflow_mode`, with
-   values `reference`, `quality`, and `diagnostic`.
-3. **Thinning mode** is a stage-specific choice. `scanner_thin_mode` controls
-   scanner-output thinning, while `voter_thin_mode` controls vote-volume
-   thinning. The value `reference` therefore names two distinct operations.
-4. **Reference target** means the public F3 `fl.dat`, `fv.dat`, and `fvt.dat`
-   outputs used for agreement comparisons. It is a comparison target, not a
-   mode and not independent geological ground truth.
+The scanner backend and the downstream workflow mode are independent axes. A
+scanner backend selects the scanner implementation; a workflow mode resolves
+downstream defaults. Scanner thinning and voter thinning are also separate,
+stage-specific choices.
 
-Do not use the phrases “reference mode” or “quality mode” without a qualifier.
-Use, for example, “reference workflow,” “quality scanner backend,” “scanner
-reference thinning,” or “F3 public reference target.” Python API names use
-underscores, such as `scan_reference_like()`. Existing report values retain
-their spelling, including the hyphen in `reference-like`.
+The F3 public reference is a comparison target, not a processing mode. The
+public `fl.dat`, `fv.dat`, and `fvt.dat` files are not an independent
+geological ground truth.
 
-The `fast` scanner backend and the report-local `ensemble` scanner backend also
-exist, but they are diagnostics outside the primary public comparison defined
-here.
+This contract work does not add an algorithm, change a default, or add a new
+runner. In particular, there is no single cross-domain runner that combines a
+synthetic experiment and an F3 public comparison into one report. Existing
+domain-specific comparison APIs, when available, remain separate from this
+terminology contract. The current implementation facts and the future public
+comparison naming contract are described separately below.
 
-## 2. Canonical naming table
+Do not infer that a condition ID means that a particular runner has already
+been implemented. The ID fixes the intended effective configuration; section
+1.7 records which existing paths can currently produce it.
 
-| Concept | Canonical label | Current code/report value | Implementation entry point | What it changes | What it does not change |
-| --- | --- | --- | --- | --- | --- |
-| Reference-like scanner backend | reference-like scanner backend | `scanner_backend=reference-like` | `FaultOrientScanner3.scan()` / `scan_reference_like()` | The angle samples and scanner execution that produce `ft`, `pt`, and `tt` | Workflow defaults, either thinning stage, or the F3 target |
-| Quality scanner backend | quality scanner backend | `scanner_backend=quality` | `FaultOrientScanner3.scan_quality()` | Refines the reference-like angle grid and can return scanner confidence | The scoring path, downstream workflow, either thinning stage, or guaranteed accuracy |
-| Reference workflow | reference workflow | `workflow_mode=reference` | Synthetic workflow profile resolution | Downstream voter-thinning and skinning defaults | Scanner backend and scanner thinning |
-| Quality workflow | quality workflow | `workflow_mode=quality` | Synthetic workflow profile resolution | Downstream `hybrid_v2` voter thinning and quality-skinner defaults | Scanner backend and scanner thinning |
-| Diagnostic workflow | diagnostic workflow | `workflow_mode=diagnostic` | Synthetic workflow profile resolution | Reference-workflow defaults plus thinning diagnostics | Scanner backend, scanner thinning, or a third production algorithm |
-| Scanner reference thinning | scanner reference thinning | `scanner_thin_mode=reference` | `FaultOrientScanner3.thin(..., mode="reference")` | Non-maximum suppression of scanner attributes before voting | Voter thinning or workflow selection |
-| Voter reference thinning | voter reference thinning | `voter_thin_mode=reference` | `OptimalSurfaceVoter.thin(..., mode="reference")` | Non-maximum suppression of the vote volume | Scanner thinning or workflow selection |
-| F3 public reference outputs | F3 public reference target | `fl.dat`, `fv.dat`, `fvt.dat` | F3 data loading and comparison metrics | The external outputs against which agreement is measured | Any algorithm setting or independent accuracy truth |
+## 1.2 Terminology
 
-In Python, `SyntheticScannerConfig.backend` stores the scanner backend within
-the nested scanner configuration, while public comparison reports and CLI
-configuration identify the concept as `scanner_backend`.
-
-## 3. Scanner implementation differences
-
-`FaultOrientScanner3.scan()` is the current default reference-like scanner
-path and delegates directly to `scan_reference_like()`. The reference-like
-scanner backend uses a Java-inspired strike grid beginning at 0 degrees, with
-20-degree spacing and 18 samples before clipping to the requested range. A
-narrow requested range containing no fixed-grid sample falls back to its lower
-endpoint. Its dip grid preserves the requested endpoints and uses approximately
-5-degree spacing.
-
-`scan_quality()` uses the same reference-like scoring path. It subdivides every
-interval in the base reference-like strike and dip grids by
-`refinement_factor`; it does not replace the score with another algorithm. The
-factor must be an integer from 1 through 4 and defaults to 2. Factor 1 is
-equivalent to a reference-like scan when the backend and all other options are
-the same. With `return_confidence=True`, the quality scanner backend also
-returns a normalized confidence map derived from the gap between the best and
-second-best sampled orientation scores.
-
-Orientation backend, interpolation backend and order, smoothing sigma, and
-normalization are common scanner controls. The canonical F3 comparison applies
-their resolved values identically to both the reference-like and quality
-scanner backends. `refinement_factor` is different: it changes only the quality
-backend's sampling refinement and is not passed to the reference-like scanner.
-The official defaults for all of these controls remain unchanged.
-
-The name `quality` alone is not evidence of higher accuracy. Accuracy must be
-measured on controlled synthetic truth and practical behavior must be reviewed
-on real data. `scan_fast()` remains an explicit legacy derivative-bank scanner
-backend, and the synthetic report has a diagnostic `ensemble` scanner backend;
-neither is a primary axis of the public comparison matrix in this document.
-See [3D Orientation Scanning](orient3d.md) for the scanner algorithm and API
-details.
-
-## 4. Workflow implementation differences
-
-The following table gives the effective defaults resolved by the synthetic
-workflow profiles and `SyntheticSkinningConfig`:
-
-| Setting | Reference workflow | Quality workflow | Diagnostic workflow |
-| --- | --- | --- | --- |
-| Voter thinning | `reference` | `hybrid_v2` | `reference` |
-| Skinner method | `reference` | `quality` | `reference` |
-| Skinner minimum likelihood | `0.5` | `None` / adaptive | `0.5` |
-| Growth source | `thinned` | `pre_thin` | `thinned` |
-| Accepted occupancy radius | `None` (effective `5` in report) | `1` | `None` (effective `5` in report) |
-| Boundary fallback | `false` | `true`, policy `empty_primary` | `false` |
-| Thinning diagnostics | off | off | on |
-
-Explicit CLI or configuration values override workflow defaults. Workflow mode
-does not select a scanner backend and does not select `scanner_thin_mode`.
-Conversely, choosing the `quality` scanner backend does not implicitly choose
-the quality workflow. These choices must be recorded separately.
-
-For boundary fallback, omitting both CLI controls retains these workflow
-defaults. `--skinner-boundary-fallback` explicitly enables the configured
-fallback, while `--no-skinner-boundary-fallback` explicitly disables it and
-therefore overrides the quality-workflow default. The configured fallback
-policy is preserved in either case.
-
-The diagnostic workflow is the reference workflow with thinning diagnostics
-enabled. It is not a third production-quality algorithm. The quality workflow
-uses adaptive skin likelihood when no explicit minimum is supplied, grows from
-the pre-thin vote volume, uses an accepted-occupancy radius of 1, and enables
-the `empty_primary` boundary fallback. Further workflow and benchmark details
-remain in [Quality Workflow Mode](quality_mode.md) and
-[Controlled Synthetic Quality](synthetic_quality.md).
-
-## 5. Comparison matrix and labels
-
-Public figures and tables use this canonical 2×2 matrix:
-
-| Short label | Scanner backend | Workflow mode |
-| --- | --- | --- |
-| `RL-REF` | `reference-like` | `reference` |
-| `RL-QUAL` | `reference-like` | `quality` |
-| `Q-REF` | `quality` | `reference` |
-| `Q-QUAL` | `quality` | `quality` |
-
-The short labels are figure/table conveniences only. They do not rename fields
-or values in the report schema. Synthetic reports can currently specify the
-scanner backend and workflow mode independently, so those dimensions can be
-evaluated as separate configuration axes. The library F3 full-volume runner
-implements the corresponding 2×2 stage and result contracts, as described in
-section 7.
-
-When presenting results, expand the two axes in a caption or table header; do
-not infer either axis from a bare `reference` or `quality` value.
-
-### Initial F3 publication controls
-
-The initial F3 full-volume publication protocol permits variation only in the
-two named matrix axes. The following controls are fixed before any matrix cell
-is run. “Held constant” means that the resolved value, including any explicit
-override, is identical in all four cells unless the row explicitly assigns the
-value to one scanner backend.
-
-| Control | Fixed contract |
+| Term | Definition and contract |
 | --- | --- |
-| Input | The same `ep.dat` full volume with shape `(420, 400, 100)` and the same file identity and checksum in every cell |
-| Scanner thinning | `scanner_thin_mode=reference` in every cell |
-| Scanner edge policy | Edge-effect removal is requested and effective: `remove_edge_effects=true` and `effective_remove_edge_effects=true` |
-| Common scanner options | Angle-range bounds, `sigma1`, `sigma2`, interpolation, normalization, dtype (`float32`), and every scanner option other than the backend definition are held constant |
-| Reference-like backend sampling | The base strike/dip sampling contract described in section 3 is fixed for both `RL-*` cells and is also the base grid refined by both `Q-*` cells |
-| Quality backend refinement | The resolved value is `refinement_factor=2` in every cell; the quality backend uses it in both `Q-*` cells, while it has no effect on `RL-*`, and workflow cannot change it |
-| Common voting options | Voting radii, seed distance and threshold, strain limits, attribute smoothing, surface smoothing, surface-orientation smoothing, and final normalization are held constant unless a setting is explicitly listed as workflow-owned below |
-| Explicit workflow-comparison overrides | Any override added for the comparison is supplied with the same resolved value to all four cells; it must not create another cell-specific difference |
+| scanner backend | The scanner implementation that produces fault likelihood, strike, and dip attributes. The public comparison values are `reference-like` and `quality`; the existing implementation also has other diagnostic backends. |
+| workflow mode | A downstream profile that resolves voting, voter thinning, skinning, and diagnostic defaults. Synthetic code accepts `reference`, `quality`, and `diagnostic`; the F3 crop workflow accepts `reference` and `quality`. |
+| scanner thinning mode | The policy applied after scanner output and before voting. The synthetic scanner config accepts `reference`, `normal`, and `none`; the F3 crop CLI exposes `reference` and `normal`. |
+| voter thinning mode | The policy applied to the vote volume after voting. The relevant public values are `reference`, `normal`, and `hybrid_v2`; the voter implementation also retains other explicit diagnostic values. |
+| F3 public reference | The public F3 output files `fl.dat`, `fv.dat`, and `fvt.dat`, used as external comparison targets. This is not a workflow, scanner backend, or ground truth. |
+| synthetic truth | The generated truth surface and truth orientation field owned by a synthetic case. These are independent ground-truth sources for synthetic evaluation. |
+| oracle input | Synthetic pipeline input made directly from the case's truth orientation attributes (`ft_oracle`, `pt_oracle`, and `tt_oracle`), so scanner behavior is bypassed. |
+| scanner-inclusive input | Synthetic pipeline input generated from the case's scanner input and passed through a selected scanner backend before downstream processing. `input_mode="scanner"` selects this path; the comparison runner can prepare both oracle and scanner inputs. |
+| diagnostic workflow | The synthetic `diagnostic` profile, based on reference workflow defaults with additional thinning diagnostics enabled. It is not one of the four publication conditions and is not a primary performance mode. |
 
-Only these downstream settings may differ because of `workflow_mode` in the
-initial protocol:
+Bare `reference mode` and `quality mode` are ambiguous and should not be used
+in public reporting. Use qualified terms instead:
 
-| Workflow-owned setting | Reference workflow | Quality workflow |
+- `reference-like scanner backend`
+- `quality scanner backend`
+- `reference workflow`
+- `quality workflow`
+- `reference scanner thinning`
+- `reference voter thinning`
+- `F3 public reference`
+
+Existing machine-facing identifiers are unchanged. In particular, the scanner
+backend value remains the hyphenated `reference-like`; this document does not
+introduce an identifier such as `reference_like_mode`.
+
+## 1.3 Pipeline stages
+
+The stage order is:
+
+```text
+input -> scanner -> scanner thinning -> voting -> voter thinning -> skinning
+```
+
+| Stage | Configuration that acts at the stage |
+| --- | --- |
+| input | `input_mode`, synthetic case/input configuration, or the F3 `ep.dat` crop input |
+| scanner | `scanner_backend`; scanner angles, sigma, interpolation, and related scanner controls |
+| scanner thinning | `scanner_thin_mode`, scanner reference-thinning sigma, and scanner edge cleanup |
+| voting | Voting radii, strain/smoothing settings, and surface-support policy |
+| voter thinning | `voter_thin_mode` and voter reference-thinning controls |
+| skinning | Skinner method, likelihood, seed, growth, occupancy, and boundary-fallback settings |
+
+`workflow_mode` is a profile that resolves several downstream defaults; it is
+not a stage-local scanner switch. `scanner_backend` acts at the scanner stage,
+`scanner_thin_mode` at scanner thinning, `voter_thin_mode` at voter thinning,
+and skinner settings at skinning.
+
+The current F3 crop workflow stops at `fvt`: it runs through voter thinning and
+does not run skinning. Therefore, synthetic skinner differences are not part
+of the F3 crop workflow comparison.
+
+## 1.4 Scanner backend contract
+
+### `reference-like`
+
+On the synthetic side, `FaultOrientScanner3.scan()` is used. The current
+`scan()` implementation delegates to `scan_reference_like()` with the default
+`rotate_shear` reference-like path. That path uses Java-inspired strike/dip
+sampling and rotate, shear, smoothing, and unrotate operations approximated in
+Python/SciPy.
+
+This is a practical reference-like implementation, not a bit-exact port of
+Mines JTK or the Java implementation. Scanner thinning is a later, independent
+axis and must not be inferred from the backend name.
+
+`SyntheticScannerConfig` contains `refinement_factor` for reporting and for
+the quality backend. The reference-like dispatch does not pass it to
+`FaultOrientScanner3.scan()`; it is therefore not effective in a
+reference-like scan even though it appears in the report configuration.
+
+### `quality`
+
+On the synthetic side, `FaultOrientScanner3.scan_quality()` is used. It keeps
+the reference-like scoring path and refines the strike and dip sampling grids
+by `refinement_factor`. The current synthetic scanner configuration default is
+`refinement_factor=2`.
+
+The synthetic quality dispatch requests `return_confidence=True`. The scanner
+returns a normalized confidence volume derived from the gap between the best
+and second-best sampled orientation responses; the report records it as a
+scanner diagnostic and the volume is available to scanner-side diagnostic or
+ensemble logic. Confidence is not a workflow setting and is not geological
+ground truth. The direct scanner API can omit that output by leaving
+`return_confidence=False`.
+
+The quality scanner backend is not the quality workflow. Selecting
+`scanner_backend=quality` does not select `workflow_mode=quality`, and a
+quality workflow does not select the quality scanner backend.
+
+## 1.5 Workflow contract
+
+The same workflow name covers different processing ranges in synthetic and F3
+code. Synthetic workflow resolution includes skinning settings. The current
+F3 crop resolver only resolves voter thinning and surface-support values; its
+pipeline has no skinning stage.
+
+### Synthetic reference workflow
+
+The following are the effective defaults from the synthetic profile resolver
+and report dictionaries:
+
+| Setting | Effective default |
+| --- | --- |
+| voter thinning mode | `reference` |
+| skinner method | `reference` |
+| skinner minimum likelihood | `0.5` |
+| adaptive minimum likelihood | `false` |
+| skinner seed planarity threshold | `0.8` (`seed_min_ep`) |
+| skin growth source | `thinned` |
+| accepted occupancy radius | `None` (configured value) |
+| effective accepted occupancy radius | `5` |
+| boundary skinner fallback | `false` |
+| boundary skinner fallback policy | `empty_primary` |
+| surface support policy | minimum fraction `0.0`, exponent `0.0` |
+
+### Synthetic quality workflow
+
+| Setting | Effective default |
+| --- | --- |
+| voter thinning mode | `hybrid_v2` |
+| skinner method | `quality` |
+| skinner minimum likelihood | `None`; the quality skinner uses its adaptive threshold when no explicit value is supplied |
+| adaptive minimum likelihood | `true` |
+| skinner seed planarity threshold | `0.5` (`seed_min_ep`), lower than the reference workflow default |
+| skin growth source | `pre_thin` |
+| accepted occupancy radius | `1` |
+| effective accepted occupancy radius | `1` |
+| boundary skinner fallback | `true` |
+| boundary skinner fallback policy | `empty_primary` |
+| surface support policy | minimum fraction `0.0`, exponent `0.0` |
+
+Explicit configuration values can override these defaults. The scanner backend
+and scanner thinning mode are not filled by workflow resolution.
+
+### F3 reference / quality workflow
+
+For the current `run_3d_f3d_crop_validation.py` and
+`report_3d_f3d_multicrop.py` crop pipeline, `resolve_workflow_options()` changes
+the following effective values:
+
+| Setting | Reference workflow | Quality workflow |
 | --- | --- | --- |
-| Effective `voter_thin_mode` | `reference` | `hybrid_v2` |
-| Skinner method | `reference` | `quality` |
-| Minimum likelihood | `0.5` | `None` / adaptive |
-| Growth source | `thinned` | `pre_thin` |
-| Accepted occupancy radius | `None` (effective `5` in reports) | `1` |
-| Boundary fallback and policy | disabled | enabled with `empty_primary` policy |
+| workflow label | `reference` | `quality` |
+| default voter thinning | `reference` | `hybrid_v2` |
+| default surface-support minimum fraction | `0.0` | `0.0` |
+| default surface-support exponent | `0.0` | `0.0` |
 
-The scanner backend is the scanner axis, and scanner thinning is a held
-constant preprocessing stage; neither is a workflow-owned difference. Settings
-not named in the workflow-owned table are held constant, including all resolved
-voting settings named above. An explicit override can suppress a workflow
-default only when that same override is applied to every cell. The canonical
-F3 config exposes this for voter thinning as
-`voter_thin_mode_override`.
+An explicit voter-thinning or surface-support value is passed identically to
+both branches and takes precedence over the workflow default. The scanner
+backend is not selected by this resolver: both branches call
+`FaultOrientScanner3.scan()`. `scanner_thin_mode`, scanner sigma, angle range,
+edge cleanup, and the other scanner-side arguments are supplied independently
+and remain unchanged when only `workflow_mode` changes.
 
-For each scanner backend, compute raw `ft`, `pt`, and `tt` exactly once. Apply
-the fixed scanner reference thinning, including the fixed edge policy, exactly
-once to obtain `fet`, `fpt`, and `ftt`. The reference and quality workflows for
-that backend must share those same `fet`, `fpt`, and `ftt` volumes. A workflow
-comparison must not rerun either scanning or scanner thinning.
+The crop runner executes the scanner separately in each workflow branch; it is
+not a shared-scan comparison. It produces `ft`, `fv`, and `fvt`-path outputs,
+but it does not execute skinning. Consequently, the synthetic quality
+workflow's quality-skinner, adaptive likelihood, occupancy, and boundary
+fallback differences are outside this F3 crop comparison.
 
-The runner manifest records more than the matrix label. It records
-the scanner backend, workflow mode, `scanner_thin_mode`, requested and effective
-edge policy, refinement factor, the resolved value of every fixed scanner and
-voting control above, every workflow-owned resolved value and explicit
-override, and the input path/identity/checksum and shape. This evidence is
-required to establish that a reported contrast differs only on the intended
-axes.
+### Diagnostic workflow
 
-Scanner-thinning comparisons such as `scanner_thin_mode=normal` are separate
-ablations, or an explicitly declared third matrix axis. They must not be
-encoded or reported with only a 2×2 label such as `RL-REF`; the ablation axis
-and its resolved edge policy must appear in its label and manifest.
+`diagnostic` is not one of the four publication conditions. It is a synthetic
+workflow based on reference settings that enables additional thinning
+diagnostics. Treat it as an investigation aid, not as a primary performance
+mode.
 
-## 6. Synthetic and F3 evaluation roles
+## 1.6 Publication comparison IDs
 
-Synthetic data provides known truth. It can therefore evaluate scanner
-orientation and likelihood accuracy, downstream vote/skin recovery, and
-topology. These controlled tests are the source for accuracy claims.
+The public condition IDs are:
 
-For publication comparisons on F3, the evaluation unit is only the full
-`(420, 400, 100)` volume. Existing F3 crop, large-crop, and multi-crop paths are
-legacy or internal diagnostics; crops are not publication samples, independent
-replicates, or repeated experiments. The public F3 `fl.dat`, `fv.dat`, and
-`fvt.dat` volumes support reference-agreement measurements, but they are not
-independent geological ground truth and must not be labeled as accuracy truth.
+| ID | Scanner backend | Workflow | Intended interpretation |
+| --- | --- | --- | --- |
+| `RL-REF` | `reference-like` | `reference` | Reference-oriented end-to-end condition |
+| `RL-QUAL` | `reference-like` | `quality` | Isolates downstream workflow changes relative to `RL-REF` |
+| `Q-REF` | `quality` | `reference` | Isolates scanner backend changes relative to `RL-REF` |
+| `Q-QUAL` | `quality` | `quality` | Combined quality scanner and quality workflow |
+| `PUBLIC-REF` | N/A | N/A | F3 public comparison target, not a processing mode |
 
-If a future implementation uses internal chunking to make full-volume
-execution practical, it must reconstruct results in full-volume coordinates
-before computing metrics or producing figures. Chunk boundaries or overlapping
-chunks must not become evaluation samples. See
-[F3 3D Reference Data Validation](f3d_validation.md) for data layout and the
-existing operational validation paths.
+The intended contrasts are:
 
-## 7. Current implementation and remaining work
+- `RL-REF` versus `RL-QUAL` measures the workflow effect at a fixed
+  reference-like scanner backend.
+- `RL-REF` versus `Q-REF` measures the scanner effect at a fixed reference
+  workflow.
+- All four processing conditions provide the scanner/workflow main effects
+  and their interaction.
+- `PUBLIC-REF` comparisons measure F3 public-output agreement. They are not
+  accuracy claims.
 
-### Current implementation
+`PUBLIC-REF` names the published `fl.dat`, `fv.dat`, and `fvt.dat` outputs as a
+single comparison target. It is not a fifth algorithm and must not be encoded
+as a workflow or scanner backend.
 
-- The synthetic report can specify `scanner_backend` and `workflow_mode`
-  separately. It can therefore run a selected scanner/workflow pairing without
-  treating the two choices as one mode.
-- `pyosv.evaluation.synthetic_mode_comparison` exposes the immutable
-  `SyntheticModeComparisonConfig`, `SyntheticModeComparisonPlan`,
-  `ModeCellSpec`, and `SyntheticTrialSpec` contracts. Call
-  `build_mode_comparison_plan(config)` to validate case selection, seeded
-  trials, fixed scanner controls, resolved reference/quality workflows, and the
-  canonical cell order without running scans, metrics, or artifact writers.
-  Each trial records its case ID, validated 3D shape, optional case-generation
-  seed, and deterministic trial ID.
-  The plan uses `current_default`; its cells are `RL-SCAN`, `Q-SCAN`, optional
-  `ORACLE-REF` and `ORACLE-QUAL`, followed by the four 2x2 cells in the table
-  above. Deterministic cases have one trial with `seed=None`; only registered
-  stochastic cases expand in configured `trial_seeds` order.
-- `run_mode_comparison(config)` executes that plan sequentially and returns a
-  `SyntheticModeComparisonResult` containing JSON-safe cell reports,
-  long-format metrics, paired contrasts, case-local aggregates, cache counters,
-  and runtime rows. Shared scanner-input and backend scan/thinning costs are
-  recorded once per trial rather than copied into workflow-cell runtimes; the
-  returned object retains no full-volume arrays or fault skin/cell objects.
-  Array nonzero fractions use the legacy synthetic-quality epsilon contract
-  (strictly greater than `1e-6` in magnitude), and an empty configured
-  truth-surface support mask is rejected after case generation but before any
-  scanner work. Non-finite or negative truth-metric scalars are rejected even
-  earlier, during configuration and before experiment timing or case
-  generation.
-- The package CLI and thin example entry point described in [Synthetic Mode
-  Comparison](synthetic_mode_comparison.md) run the canonical synthetic plan,
-  atomically write its scalar artifact bundle, validate completion, and print
-  the completed output path. `validate_completed_bundle()` checks cross-file
-  scalar semantics in addition to hashes and syntax. The authoritative writer
-  emits artifact schema v3 with independently versioned scalar-evidence and
-  runtime contracts (currently scalar-evidence version 7 and runtime version
-  4). Each trial has one canonical truth-evidence object, and scanner, voting,
-  thinning, and enabled-skin reports bind their fault-band and thin-surface
-  truth counts to it. Schema-v1 bundles lack complete scanner evidence, while
-  schema-v2 bundles do not uniquely identify runtime coverage; both must be
-  regenerated. Enabled-skin component topology persists both duplicate-inclusive
-  per-skin truth-component counts and per-skin unique coverage counts for each
-  truth component. Its qualification threshold and all dominant, qualifying,
-  over-merge, over-split, purity, and recall summaries are recomputed from
-  those incidence tables. Truth-component totals are bound to trial truth
-  evidence, and covered totals are bound to the exact skin-overlap
-  intersection. Scalar-evidence v1-v4 bundles lack part of this current
-  evidence contract and are rejected without upgrade. Scanner publication metrics are joined totally to
-  the persisted registry-ordered evidence. This scanner evidence is prepared
-  once per trial and backend, reused by scanner-only and end-to-end cells, and
-  attributed to a shared runtime stage. Runtime and validation derive cache
-  hit/miss expectations from the same resolved semantic stage keys. Voting and
-  thinning scalar evidence, seed selection, voting volume, base thinning, and
-  primary skinning are attributed by trial-local semantic-key reference count.
-  Keys referenced by multiple cells use a shared row; successfully built keys
-  referenced by one cell use owner-labelled rows. Cache hits add neither calls
-  nor elapsed time. `cell_execution` contains only the remaining
-  cell-exclusive time. Mode-owned runtime is that residual plus the cell's
-  owner-labelled rows; shared rows are not apportioned.
-  Runtime rows are one within-experiment breakdown, not isolated-process
-  benchmarks. Their disjoint stage sum may not exceed `trial_total`, and the
-  sum of trial totals may not exceed `experiment_total`. Validation
-  binds top-count selections to truth-surface cardinality, enforces empty-mask,
-  radius-zero, fractional-radius, and full-volume buffered-overlap rules, caps
-  every mask-derived count at the canonical volume capacity (except validated
-  duplicate skin cells), caps every distance summary at the volume diagonal,
-  and recomputes largest/small-skin summaries from per-skin arrays and the
-  effective configuration. It also validates orientation, edge,
-  and component-topology algebra and compares shared scanner, voting, and
-  conditionally shared thinning evidence across cells. Passing it demonstrates
-  consistency of the recorded scalar evidence, not an independent
-  recomputation, proof of any volume stage, or tamper-prevention signature.
-  This is separate from F3 full-volume execution.
-- `pyosv.evaluation.f3d_mode_comparison` implements the canonical F3
-  full-volume plan, checksum-bound run workspace, shared reference-like and
-  quality scanner stages, all four workflow cells, exact stage validation and
-  resume, public-reference agreement metrics, 2×2 contrasts, regional and
-  orientation diagnostics, and runtime/resource rows. Exact resume also
-  requires the numerical runtime identity in `run_manifest.json` to match,
-  including acceleration, Numba controls, platform, CPU dispatch, NumPy's
-  loaded BLAS implementation and effective thread count, SciPy build identity,
-  thread environment, `PYTHONHASHSEED`, and the NumPy BLAS/LAPACK build digest.
-  Official runs set `PYTHONHASHSEED=0`, `OMP_NUM_THREADS=1`,
-  `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and
-  `NUMEXPR_NUM_THREADS=1`, and explicitly set `PYOSV_ACCEL`, before Python
-  starts. Preserve `run_manifest.json`, which records this normalized identity,
-  with `completion.json` and the report files. This identity keeps
-  numerical generations from being mixed; it is neither a cryptographic
-  signature nor proof of bitwise reproducibility on arbitrary hardware or of
-  geological correctness. Cell
-  references point to shared content-addressed stages instead of duplicating
-  full-volume artifacts. F3 metric artifact schema version 2 identifies the
-  epsilon-aware contract: continuous candidate and public-reference volumes
-  use `abs(value) > 1e-6` for nonzero metrics. This is not strict IEEE nonzero
-  testing: negative values beyond the threshold count, while interpolation or
-  smoothing tails at or below it do not. Positive percentile candidates use
-  `value > 1e-6` and exclude negative values. Every all-selection metric
-  evidence item records `nonzero_epsilon=1e-6`. Schema version 1 represents the
-  incompatible legacy strict-nonzero contract, so its metric artifacts must be
-  regenerated rather than implicitly upgraded. The CSV header, row identity,
-  units, directions, and contrast formulas are unchanged in version 2.
-- `python -m pyosv.cli.f3d_mode_comparison` runs, resumes, or validates that
-  canonical matrix. It always targets all four cells. A run without `--resume`
-  requires a new output path; exact resume reuses only matching validated
-  stages, and a valid complete bundle is validated without recomputation.
-  Root completion is published only after the fixed reports and referenced
-  stages pass semantic validation. `--skinner-reskin-policy` selects
-  `existing_cells_v1` or `reference_dense_v1`; resume recovers the recorded
-  policy when the option is omitted. `--deep-validate` recomputes every scanner
-  array summary from its persisted DAT artifact, re-derives scanner sampling
-  counts from the resolved configuration, recomputes full-volume metric
-  evidence, and reruns only the final skinning phase from the persisted scanner,
-  voting, and thinning parents. The rerun exactly checks every final
-  cell's subvoxel geometry, voxel index, likelihood, strike, dip, ordering, and
-  duplicate occurrence against `skins.json`, while retaining the mask and
-  topology cross-checks. Format-version-2 cell comparison includes generation
-  and dense reskin support. The recorded final-cell provenance distinguishes
-  primary nearest samples, existing-cell reskinning, dense reskinning, and
-  connected-component fallback cells. Parent nearest-sample checks apply to
-  the first and fallback paths;
-  exact skin-only replay is authoritative for reskinned values. It therefore
-  requires the current fixed publication
-  runtime to match the manifest. This establishes internal numerical
-  consistency, not artifact authenticity or geological truth. Shallow
-  `--validate-only` validates only the recorded contract and does not impose
-  that requirement on the current process.
-  Runtime rows are within-run attribution, not isolated benchmarks.
-- [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) is a single
-  legacy full-volume scan/vote command. It calls `FaultOrientScanner3.scan()`,
-  then performs separately configurable scanner and voter thinning. This
-  command does not implement `workflow_mode`, the quality skinner, skinning
-  comparisons, or the canonical 2×2 matrix; those capabilities are provided
-  by the library APIs above.
+## 1.7 Current implementation support
 
-### Remaining work
+The following table distinguishes existing paths from the use of the public
+IDs in the different runners:
 
-Publication figure generation remains planned separately. The F3 comparison
-CLI deliberately does not import visualization dependencies or generate the
-PR4 publication figure set. The synthetic CLI remains separate, and the legacy
-F3 command does not adopt the canonical workspace or stage cache.
+| Capability | Current support |
+| --- | --- |
+| Express a synthetic scanner/backend and workflow pairing independently | Yes. `SyntheticScannerConfig` and `resolve_workflow_settings()` are independent; the report configuration records both when scanner input is used. |
+| Emit all four synthetic processing conditions from the basic synthetic-quality CLI in one report | No. `pyosv.cli.synthetic_quality` builds one selected configuration per invocation. |
+| Run a separate synthetic mode-comparison API/CLI over canonical cells | The repository has a separate `synthetic_mode_comparison` implementation. It is not a cross-domain synthetic+F3 report and is not changed by this contract work. |
+| `report_3d_f3d_multicrop.py --compare-workflows` conditions | Two branches: reference-like scanner behavior with the `reference` workflow and the `quality` workflow, corresponding to an RL-REF/RL-QUAL-style crop comparison. |
+| Scanner execution in those F3 branches | The scanner is run independently in each branch; scanner output is not shared. |
+| Scanner-side settings across those branches | The same scanner thinning mode, sigma, angle range, edge cleanup, and other scanner arguments are passed to both branches. |
+| Quality scanner backend selectable through that F3 crop comparison path | No. The crop `run_pipeline()` calls `FaultOrientScanner3.scan()` and has no quality-backend selector. A separate F3 full-volume comparison package has its own backend matrix; it is not the crop `--compare-workflows` path. |
+| Skinning in the current F3 crop pipeline | No. The crop pipeline ends at voter thinning and `fvt`; it does not produce skins. |
+| One cross-domain synthetic/F3 integrated publication report | Not implemented by this contract work. The IDs define the conditions for future/report-specific use; they do not add a new runner or schema. |
 
-## 8. Source map
+The dedicated scanner-thinning policy comparison is a different experiment:
+it holds the intended downstream workflow fixed and varies
+`scanner_thin_mode`. A thinning ablation is likewise a stage-specific
+experiment. Neither should be described as the generic workflow comparison or
+as the canonical scanner-backend × workflow matrix.
 
-| Area | Source paths | Responsibility |
-| --- | --- | --- |
-| Scanner API and angle grids | [`src/pyosv/_orient3d/scanner.py`](../src/pyosv/_orient3d/scanner.py), [`sampling.py`](../src/pyosv/_orient3d/sampling.py) | Scanner entry points, reference-like scoring path, confidence, sampling, and scanner thinning |
-| Synthetic scanner selection | [`src/pyosv/evaluation/synthetic_quality/scanner.py`](../src/pyosv/evaluation/synthetic_quality/scanner.py) | Maps report scanner-backend values to scanner API calls |
-| Synthetic configuration | [`config.py`](../src/pyosv/evaluation/synthetic_quality/config.py), [`profiles.py`](../src/pyosv/evaluation/synthetic_quality/profiles.py), [`application.py`](../src/pyosv/evaluation/synthetic_quality/application.py) | Configuration fields, effective workflow defaults, overrides, and diagnostics |
-| Synthetic comparison planning | [`src/pyosv/evaluation/synthetic_mode_comparison/`](../src/pyosv/evaluation/synthetic_mode_comparison/) | Canonical cells, validated execution-free plans, and deterministic/seeded trial expansion |
-| F3 full-volume comparison | [`src/pyosv/evaluation/f3d_mode_comparison/`](../src/pyosv/evaluation/f3d_mode_comparison/) | Canonical 2×2 plan and stages, exact resume, reference-agreement metrics, contrasts, diagnostics, and resources |
-| F3 comparison CLI | [`src/pyosv/cli/f3d_mode_comparison.py`](../src/pyosv/cli/f3d_mode_comparison.py), [`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py) | Full-volume four-cell run, exact resume, strict/deep validation, and thin example entry point |
-| Voter thinning | [`src/pyosv/voting3d.py`](../src/pyosv/voting3d.py) | Stage-specific voter thinning, including `reference` and `hybrid_v2` |
-| Skinning | [`src/pyosv/_skinner/reference.py`](../src/pyosv/_skinner/reference.py), [`seeds.py`](../src/pyosv/_skinner/seeds.py) | Reference and quality skinner behavior, adaptive threshold, seed gates, and effective occupancy |
-| Legacy F3 full runner | [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py) | Separate single-path full-volume scan/vote pipeline and F3 output comparison |
-| Supporting documentation | [3D Orientation Scanning](orient3d.md), [Quality Workflow Mode](quality_mode.md), [Controlled Synthetic Quality](synthetic_quality.md), [Synthetic Mode Comparison](synthetic_mode_comparison.md), [F3 Validation](f3d_validation.md) | Detailed algorithm, benchmark, and operational context without redefining these canonical terms |
+## 1.8 Evaluation targets and interpretation
+
+For synthetic data, the truth surface and truth orientation are independent
+ground-truth sources. Scanner and downstream metrics may therefore be
+interpreted against known synthetic truth, subject to the metric definition.
+
+For F3, `fl.dat`, `fv.dat`, and `fvt.dat` are public workflow outputs. They are
+not an independent geological ground truth. Use the following terms for F3
+comparisons:
+
+- `public-reference agreement`
+- `output difference`
+- `ridge displacement`
+- `density/stability diagnostic`
+- `visual geological review`
+
+Avoid calling these F3 measures accuracy or correctness unless an independent
+ground truth is introduced and documented. A mismatch with the public
+reference alone does not establish a quality regression. Agreement with the
+public reference alone does not establish a geological improvement.
+
+## 1.9 Source-of-truth references
+
+The implementation is authoritative for effective values. The relevant source
+files and existing documentation are:
+
+| Area | References |
+| --- | --- |
+| Scanner and sampling | [`src/pyosv/_orient3d/scanner.py`](../src/pyosv/_orient3d/scanner.py), [`src/pyosv/_orient3d/sampling.py`](../src/pyosv/_orient3d/sampling.py) |
+| Synthetic configuration and resolution | [`config.py`](../src/pyosv/evaluation/synthetic_quality/config.py), [`profiles.py`](../src/pyosv/evaluation/synthetic_quality/profiles.py), [`application.py`](../src/pyosv/evaluation/synthetic_quality/application.py), [`scanner.py`](../src/pyosv/evaluation/synthetic_quality/scanner.py) |
+| Voting and voter thinning | [`src/pyosv/voting3d.py`](../src/pyosv/voting3d.py) |
+| Skinning | [`src/pyosv/_skinner/reference.py`](../src/pyosv/_skinner/reference.py), [`src/pyosv/_skinner/seeds.py`](../src/pyosv/_skinner/seeds.py) |
+| F3 crop workflow | [`run_3d_f3d_crop_validation.py`](../examples/run_3d_f3d_crop_validation.py), [`report_3d_f3d_multicrop.py`](../examples/report_3d_f3d_multicrop.py), [`report_3d_f3d_scanner.py`](../examples/report_3d_f3d_scanner.py) |
+| Related documentation | [`quality_mode.md`](quality_mode.md), [`f3d_validation.md`](f3d_validation.md), [`f3d_visual_diagnostics.md`](f3d_visual_diagnostics.md), [`orient3d.md`](orient3d.md), [`reference_like_thinning.md`](reference_like_thinning.md), [`reference_mapping_orient3d.md`](reference_mapping_orient3d.md) |
+
+This document intentionally contains no source line numbers so that the
+contract remains useful as implementation files evolve.

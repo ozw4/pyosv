@@ -581,11 +581,20 @@ passed. The prerequisite large crop was not run, human geological review is
 pending, and no quality-workflow or public scanner-thinning default changes.
 
 Use `examples/report_3d_f3d_scanner_thinning_policy.py` for this comparison.
-The existing `report_3d_f3d_multicrop.py --compare-workflows` path changes both
-scanner and voter thinning and runs the scanner separately for the reference
-and quality workflows. The thinning-ablation report shares the raw scan, but it
-does not hold voter thinning at the quality-workflow `hybrid_v2` policy. Neither
-therefore isolates scanner thinning in the way required here.
+The generic `report_3d_f3d_multicrop.py --compare-workflows` path is a
+reference-like-scanner workflow comparison: it runs the scanner separately for
+the `reference` and `quality` branches, while passing the same scanner-side
+settings, including `scanner_thin_mode`, to both branches. Its workflow
+resolver changes the default voter thinning from `reference` to `hybrid_v2`
+and leaves both surface-support defaults at `0.0`. It is not a shared-scan
+comparison and it is not a scanner-thinning policy experiment.
+
+The dedicated scanner-thinning policy comparison changes scanner thinning while
+holding the downstream quality workflow fixed. A thinning ablation is another
+stage-specific experiment with its own policy and evidence contract. Neither
+should be conflated with the canonical scanner-backend × workflow comparison;
+the terminology and condition IDs are defined in
+[Mode Comparison Contract](mode_comparison.md).
 
 The dedicated comparison profile and policy IDs are:
 

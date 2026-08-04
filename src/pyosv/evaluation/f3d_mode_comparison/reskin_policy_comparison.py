@@ -1641,6 +1641,11 @@ def _comparison_implementation_identity() -> dict[str, Any]:
         "_skinner/transforms.py",
         "_skinner/validation.py",
         "evaluation/f3d_mode_comparison/artifacts.py",
+        # The comparison reads completed bundles through result.py and uses
+        # data.py's official dataset ID to select the publication runtime
+        # contract, so both modules are part of comparison input provenance.
+        "evaluation/f3d_mode_comparison/data.py",
+        "evaluation/f3d_mode_comparison/result.py",
         "evaluation/f3d_mode_comparison/runtime_identity.py",
         "evaluation/f3d_mode_comparison/skin_artifacts.py",
         "evaluation/workflow3d.py",

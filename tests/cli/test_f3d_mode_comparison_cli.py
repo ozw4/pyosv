@@ -195,6 +195,66 @@ def test_completed_bundle_comparison_only_cli_uses_real_artifacts(
         require_deep=True,
     )
 
+    # State 4: a second comparison-only deep CLI invocation starts from an
+    # already deep-complete comparison. It must reuse the saved comparison
+    # evidence, then perform only the explicit current-runtime replay.
+    deep_before = _file_snapshot(output_root)
+    parent_reads: Counter[str] = Counter()
+    comparison_writes: Counter[str] = Counter()
+    source_writes: Counter[str] = Counter()
+    source_runtime_gets: Counter[str] = Counter()
+    comparison_runtime_gets: Counter[str] = Counter()
+
+    original_open_parent = comparison_module._open_parent_dat
+
+    def tracked_open_parent(*args: object, **kwargs: object) -> object:
+        parent_reads["DAT"] += 1
+        return original_open_parent(*args, **kwargs)
+
+    original_comparison_writer = comparison_module.atomic_write_artifact
+
+    def tracked_comparison_writer(*args: object, **kwargs: object) -> object:
+        comparison_writes["artifact"] += 1
+        return original_comparison_writer(*args, **kwargs)
+
+    original_source_writer = result_module.atomic_write_artifact
+
+    def tracked_source_writer(*args: object, **kwargs: object) -> object:
+        source_writes["artifact"] += 1
+        return original_source_writer(*args, **kwargs)
+
+    original_source_runtime_getter = result_module.numerical_runtime_identity
+
+    def tracked_source_runtime_getter() -> dict[str, object]:
+        source_runtime_gets["get"] += 1
+        return original_source_runtime_getter()
+
+    original_comparison_runtime_getter = comparison_module.numerical_runtime_identity
+
+    def tracked_comparison_runtime_getter() -> dict[str, object]:
+        comparison_runtime_gets["get"] += 1
+        return original_comparison_runtime_getter()
+
+    monkeypatch.setattr(comparison_module, "_open_parent_dat", tracked_open_parent)
+    monkeypatch.setattr(comparison_module, "atomic_write_artifact", tracked_comparison_writer)
+    monkeypatch.setattr(result_module, "atomic_write_artifact", tracked_source_writer)
+    monkeypatch.setattr(result_module, "numerical_runtime_identity", tracked_source_runtime_getter)
+    monkeypatch.setattr(
+        comparison_module,
+        "numerical_runtime_identity",
+        tracked_comparison_runtime_getter,
+    )
+
+    assert f3d_mode_comparison.main([*pair, "--resume", "--deep-validate"]) == 0
+    deep_after = _file_snapshot(output_root)
+
+    assert deep_after == deep_before
+    assert parent_reads == Counter({"DAT": 5})
+    assert not comparison_writes
+    assert not source_writes
+    assert source_runtime_gets == Counter({"get": 1})
+    assert comparison_runtime_gets == Counter({"get": 1})
+
     manifest = json.loads((output_root / "run_manifest.json").read_text(encoding="utf-8"))
     report = json.loads(
         (comparison_dir / "reskin_policy_comparison.json").read_text(encoding="utf-8")
