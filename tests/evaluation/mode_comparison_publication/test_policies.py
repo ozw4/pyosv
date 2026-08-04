@@ -7,6 +7,8 @@ import pytest
 
 from pyosv.evaluation.mode_comparison_publication.figures import (
     _difference_scale,
+    _exact_overlap_count,
+    _overlay_slice_rgb,
     _signed_difference_slice,
     _shared_scale,
     _slice_selection,
@@ -27,6 +29,76 @@ def test_public_reference_slice_tie_uses_smallest_index() -> None:
         difference=None,
     )
     assert (index, score) == (0, 1.0)
+
+
+def test_ridge_overlay_uses_the_cell_specific_candidate_threshold() -> None:
+    reference = np.zeros((1, 1, 1), dtype=np.float32)
+    candidate = np.full((1, 1, 1), 0.6, dtype=np.float32)
+
+    rgb = _overlay_slice_rgb(
+        reference,
+        candidate,
+        axis="i3",
+        index=0,
+        reference_threshold=0.8,
+        candidate_threshold=0.4,
+        radius=2.0,
+    )
+
+    # With the obsolete shared 0.8 threshold, the 0.6 candidate would vanish.
+    np.testing.assert_array_equal(rgb[0, 0], np.array((0.0, 0.25, 1.0), dtype=np.float32))
+
+
+def test_ridge_overlay_exact_overlap_uses_the_cell_specific_candidate_threshold() -> None:
+    reference = np.full((1, 1, 1), 0.9, dtype=np.float32)
+    candidate = np.full((1, 1, 1), 0.6, dtype=np.float32)
+
+    rgb = _overlay_slice_rgb(
+        reference,
+        candidate,
+        axis="i3",
+        index=0,
+        reference_threshold=0.8,
+        candidate_threshold=0.4,
+        radius=2.0,
+    )
+
+    np.testing.assert_array_equal(rgb[0, 0], np.ones(3, dtype=np.float32))
+    assert (
+        _exact_overlap_count(
+            reference,
+            candidate,
+            reference_threshold=0.8,
+            candidate_threshold=0.4,
+        )
+        == 1
+    )
+
+
+def test_public_reference_peak_is_independent_of_candidate_thresholds() -> None:
+    reference = np.zeros((3, 1, 2), dtype=np.float32)
+    reference[1, 0, :] = 0.9
+    reference[2, 0, 0] = 0.9
+
+    # Candidate data and their thresholds intentionally do not enter this
+    # policy: public_reference_peak is selected only from public reference.
+    candidate_variants = (
+        (np.zeros_like(reference), 0.4),
+        (np.ones_like(reference), 0.99),
+    )
+    results = [
+        _slice_selection(
+            "public_reference_peak",
+            "i3",
+            reference.shape,
+            reference,
+            threshold=0.8,
+            difference=None,
+        )
+        for _candidate, _candidate_threshold in candidate_variants
+    ]
+
+    assert results == [(1, 2.0), (1, 2.0)]
 
 
 def test_difference_peak_tie_uses_smallest_index() -> None:

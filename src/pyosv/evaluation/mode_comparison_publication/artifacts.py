@@ -33,7 +33,7 @@ from .config import (
     PUBLICATION_TABLE_CONTRACT_VERSION,
     ROOT_TABLE_FILES,
 )
-from .figures import generate_figures
+from .figures import build_f3_ridge_threshold_contract, generate_figures
 from .models import PublicationReport
 from .registry import PUBLICATION_METRIC_REGISTRY
 from .summary import TABLE_HEADERS
@@ -579,7 +579,7 @@ def _build_report_markdown(
             "",
             "## F3 full-volume spatial comparisons",
             "",
-            "Spatial figures use deterministic center, public-reference-peak, and end-to-end-difference-peak slice policies. Normal panels share a validated full-volume scale; signed differences use a separate zero-centered scale. Ridge overlays use the source positive-p99 and radius-2 contract.",
+            "Spatial figures use deterministic center, public-reference-peak, and end-to-end-difference-peak slice policies. Normal panels share a validated full-volume scale; signed differences use a separate zero-centered scale. Ridge overlays use source positive-p99/radius-2 thresholds: public reference uses the stage reference threshold and each candidate uses its own cell threshold.",
             "",
             "## Runtime and resource interpretation",
             "",
@@ -655,6 +655,7 @@ def write_publication_bundle(
                 TABLE_HEADERS[filename],
                 tuple(report.tables[filename]),
             )
+        f3_ridge_threshold_contract = build_f3_ridge_threshold_contract(report.f3).as_dict()
         records, matplotlib = generate_figures(report, temporary_path)
         figure_manifest = {
             "publication_figure_contract_version": PUBLICATION_FIGURE_CONTRACT_VERSION,
@@ -664,6 +665,7 @@ def write_publication_bundle(
             "fixed_scalar_figure_ids": list(FIXED_SCALAR_FIGURE_IDS),
             "f3_spatial_figure_slots": [list(slot) for slot in F3_SPATIAL_FIGURE_SLOTS],
             "f3_ridge_overlay_slots": [list(slot) for slot in F3_RIDGE_OVERLAY_SLOTS],
+            "f3_ridge_threshold_contract": f3_ridge_threshold_contract,
             "figures": list(records),
         }
         manifest = _build_manifest(report, matplotlib=matplotlib)

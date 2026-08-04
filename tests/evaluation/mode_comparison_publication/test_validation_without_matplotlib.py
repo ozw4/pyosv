@@ -19,7 +19,13 @@ from typing import Any, Mapping
 import pytest
 
 from pyosv.evaluation import synthetic_mode_comparison
-from pyosv.evaluation.f3d_mode_comparison import F3_BUFFERED_PERCENTILE, F3_BUFFER_RADIUS
+from pyosv.evaluation.f3d_mode_comparison import (
+    F3_BUFFERED_PERCENTILE,
+    F3_BUFFER_RADIUS,
+    F3_METRIC_SCHEMA_VERSION,
+    F3_REFERENCE_STAGE_FILES,
+    MetricEvidence,
+)
 from pyosv.evaluation.mode_comparison_publication import artifacts
 from pyosv.evaluation.mode_comparison_publication.config import (
     CANONICAL_CELL_ORDER,
@@ -72,6 +78,12 @@ _SCANNER_AXES = {
     "RL-SCAN": ("reference-like", None),
     "Q-SCAN": ("quality", None),
 }
+_F3_REFERENCE_SELECTION_THRESHOLDS = {"ft": 0.50, "fv": 0.50, "fvt": 0.50}
+_F3_CANDIDATE_SELECTION_THRESHOLDS = {
+    "ft": {"RL-REF": 0.40, "RL-QUAL": 0.45, "Q-REF": 0.50, "Q-QUAL": 0.55},
+    "fv": {"RL-REF": 0.40, "RL-QUAL": 0.45, "Q-REF": 0.50, "Q-QUAL": 0.55},
+    "fvt": {"RL-REF": 0.40, "RL-QUAL": 0.45, "Q-REF": 0.50, "Q-QUAL": 0.55},
+}
 
 
 class _MinimalDatasetSpec:
@@ -85,6 +97,34 @@ class _MinimalDatasetSpec:
 
     def filename_for(self, role: str) -> str:
         return self._FILENAMES[role]
+
+
+def _f3_ridge_metric_evidence() -> tuple[MetricEvidence, ...]:
+    return tuple(
+        MetricEvidence(
+            schema_version=F3_METRIC_SCHEMA_VERSION,
+            dataset_id="minimal-f3",
+            cell_label=cell,
+            stage=stage,
+            region="full",
+            selection="positive_p99_radius2",
+            reference_file=F3_REFERENCE_STAGE_FILES[stage],
+            source_stage_fingerprint="a" * 64,
+            reference_sha256="b" * 64,
+            shape=(1, 1, 1),
+            thresholds=(
+                ("percentile", F3_BUFFERED_PERCENTILE),
+                ("radius", F3_BUFFER_RADIUS),
+                ("reference_threshold", _F3_REFERENCE_SELECTION_THRESHOLDS[stage]),
+                (
+                    "candidate_threshold",
+                    _F3_CANDIDATE_SELECTION_THRESHOLDS[stage][cell],
+                ),
+            ),
+        )
+        for stage in CANONICAL_STAGE_ORDER
+        for cell in CANONICAL_CELL_ORDER
+    )
 
 
 def _metric_tables() -> tuple[list[dict[str, Any]], list[SimpleNamespace], list[SimpleNamespace]]:
@@ -449,6 +489,7 @@ def _write_figure_record(
     axis: str | None = None,
     policy: str | None = None,
     selection_threshold: float | None = None,
+    candidate_selection_thresholds: Mapping[str, float] | None = None,
     display_scale: Mapping[str, Any] | None = None,
     figure_role_override: str | None = None,
 ) -> dict[str, Any]:
@@ -476,6 +517,7 @@ def _write_figure_record(
         selection_percentile=F3_BUFFERED_PERCENTILE if axis is not None else None,
         buffer_radius=F3_BUFFER_RADIUS if axis is not None else None,
         selection_threshold=selection_threshold,
+        candidate_selection_thresholds=candidate_selection_thresholds,
         display_scale=display_scale,
         figure_data_csv=f"figure_data/{figure_id}.csv",
         figure_data_contract=_figure_data_contract(data_rows),
@@ -499,6 +541,7 @@ def _figure_row(
     axis: str | None = None,
     policy: str | None = None,
     selection_threshold: float | None = None,
+    candidate_selection_threshold: float | None = None,
     scale_policy: str | None = None,
     difference: bool = False,
     case_or_region: str | None = None,
@@ -526,6 +569,7 @@ def _figure_row(
         slice_selection_policy=policy,
         slice_score=1.0 if axis is not None else None,
         selection_threshold=selection_threshold,
+        candidate_selection_threshold=candidate_selection_threshold,
         vmin=-1.0 if difference else (0.0 if axis is not None else None),
         vmax=1.0 if axis is not None else None,
         scale_policy=scale_policy,
@@ -566,6 +610,7 @@ def _stdlib_figure_records(
         panels: tuple[str, ...],
         data: list[dict[str, Any]],
         contrast_name: str | None = None,
+        candidate_selection_thresholds: Mapping[str, float] | None = None,
         display_scale: Mapping[str, Any] | None = None,
     ) -> None:
         records.append(
@@ -581,6 +626,7 @@ def _stdlib_figure_records(
                 panel_labels=panels,
                 data_rows=data,
                 contrast_name=contrast_name,
+                candidate_selection_thresholds=candidate_selection_thresholds,
                 display_scale=display_scale,
                 caption=f"minimal {figure_id} figure",
             )
@@ -854,6 +900,7 @@ def _stdlib_figure_records(
         )
 
     for stage, policy, axis in F3_SPATIAL_FIGURE_SLOTS:
+        reference_threshold = _F3_REFERENCE_SELECTION_THRESHOLDS[stage]
         if stage == "ft":
             panels = (
                 "PUBLIC-REF fl.dat",
@@ -890,7 +937,7 @@ def _stdlib_figure_records(
                     panel_label=panel,
                     axis=axis,
                     policy=policy,
-                    selection_threshold=0.5,
+                    selection_threshold=reference_threshold,
                     scale_policy=(
                         "symmetric_zero_centered_difference"
                         if "signed difference" in panel
@@ -917,10 +964,12 @@ def _stdlib_figure_records(
         records[-1]["slice_selection_policy"] = policy
         records[-1]["selection_percentile"] = F3_BUFFERED_PERCENTILE
         records[-1]["buffer_radius"] = F3_BUFFER_RADIUS
-        records[-1]["selection_threshold"] = 0.5
+        records[-1]["selection_threshold"] = reference_threshold
 
     for policy, axis in F3_RIDGE_OVERLAY_SLOTS:
         figure_id = f"f3_fvt_ridge_overlay_{policy}_{axis}_0"
+        reference_threshold = _F3_REFERENCE_SELECTION_THRESHOLDS["fvt"]
+        candidate_thresholds = _F3_CANDIDATE_SELECTION_THRESHOLDS["fvt"]
         panels = tuple(f"PUBLIC-REF vs {cell}" for cell in CANONICAL_CELL_ORDER)
         scalar_record(
             figure_id,
@@ -944,7 +993,8 @@ def _stdlib_figure_records(
                     unit="count",
                     axis=axis,
                     policy=policy,
-                    selection_threshold=0.5,
+                    selection_threshold=reference_threshold,
+                    candidate_selection_threshold=candidate_thresholds[cell],
                 )
                 for cell, panel in zip(CANONICAL_CELL_ORDER, panels, strict=True)
             ],
@@ -955,13 +1005,14 @@ def _stdlib_figure_records(
                 "colormap": "categorical",
                 "difference_scale": None,
             },
+            candidate_selection_thresholds=candidate_thresholds,
         )
         records[-1]["axis"] = axis
         records[-1]["slice_index"] = 0
         records[-1]["slice_selection_policy"] = policy
         records[-1]["selection_percentile"] = F3_BUFFERED_PERCENTILE
         records[-1]["buffer_radius"] = F3_BUFFER_RADIUS
-        records[-1]["selection_threshold"] = 0.5
+        records[-1]["selection_threshold"] = reference_threshold
 
     assert {record["figure_id"] for record in records} == set(FIXED_SCALAR_FIGURE_IDS) | {
         f"f3_{stage}_comparison_{policy}_{axis}_0"
@@ -1080,7 +1131,7 @@ def _minimal_report(root: Path) -> PublicationReport:
         f3_manifest_sha,
         f3_identity,
         f3_result,
-        (),
+        _f3_ridge_metric_evidence(),
         dataset_identity,
         1,
     )
@@ -1105,7 +1156,7 @@ def _minimal_report(root: Path) -> PublicationReport:
     return PublicationReport(synthetic, f3, tables, {})
 
 
-def _build_minimal_v2_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _build_minimal_v3_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Use the production writer with a stdlib-only fixed-slot renderer."""
 
     report = _minimal_report(root)
@@ -1116,7 +1167,7 @@ def _build_minimal_v2_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
 def test_validate_only_cli_does_not_import_matplotlib_or_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bundle = _build_minimal_v2_bundle(tmp_path, monkeypatch)
+    bundle = _build_minimal_v3_bundle(tmp_path, monkeypatch)
     assert validate_publication_bundle(bundle)
     source_root = Path(__file__).parents[3] / "src"
     script = """

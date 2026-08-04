@@ -15,6 +15,7 @@ from pyosv.evaluation.mode_comparison_publication import (
 )
 from pyosv.evaluation.mode_comparison_publication import artifacts as publication_artifacts
 from pyosv.evaluation.mode_comparison_publication import validation as publication_validation
+from pyosv.evaluation.mode_comparison_publication.config import CANONICAL_CELL_ORDER
 from pyosv.evaluation.mode_comparison_publication.semantic import (
     FIGURE_DATA_FIELD_TYPES,
     ROOT_TABLE_FIELD_TYPES,
@@ -67,6 +68,48 @@ def test_generation_preserves_sources_and_has_fixed_artifact_set(
     completion = json.loads((output / "completion.json").read_text(encoding="utf-8"))
     assert "completion.json" not in completion["required_files"]
     assert all(set(item) == {"path", "size", "sha256"} for item in completion["files"])
+
+
+def test_f3_ridge_threshold_metadata_matches_records_and_figure_data(
+    publication_bundle: tuple[Path, dict[str, Any]],
+) -> None:
+    output, _sources = publication_bundle
+    figure_manifest = read_json(output / "figure_manifest.json")
+    contract = figure_manifest["f3_ridge_threshold_contract"]
+
+    assert contract["selection"] == "positive_p99_radius2"
+    assert contract["percentile"] == 99.0
+    assert contract["buffer_radius"] == 2.0
+    assert set(contract["stages"]) == {"ft", "fv", "fvt"}
+    for stage, stage_contract in contract["stages"].items():
+        assert isinstance(stage_contract["reference_threshold"], float)
+        assert set(stage_contract["candidate_thresholds"]) == set(CANONICAL_CELL_ORDER)
+
+    for record in figure_manifest["figures"]:
+        if record["category"] == "f3_spatial":
+            assert (
+                record["selection_threshold"]
+                == contract["stages"][record["source_stage"]]["reference_threshold"]
+            )
+            assert record["candidate_selection_thresholds"] is None
+        elif record["category"] == "f3_ridge_overlay":
+            expected = contract["stages"]["fvt"]
+            assert record["selection_threshold"] == expected["reference_threshold"]
+            assert record["candidate_selection_thresholds"] == expected["candidate_thresholds"]
+            header, rows = read_csv_rows(output / record["figure_data_csv"])
+            assert "candidate_selection_threshold" in header
+            assert [row["cell_label"] for row in rows] == list(CANONICAL_CELL_ORDER)
+            for row in rows:
+                assert float(row["selection_threshold"]) == expected["reference_threshold"]
+                assert (
+                    float(row["candidate_selection_threshold"])
+                    == expected["candidate_thresholds"][row["cell_label"]]
+                )
+        else:
+            assert record["candidate_selection_thresholds"] is None
+            if not record["omitted"]:
+                _header, rows = read_csv_rows(output / record["figure_data_csv"])
+                assert all(row["candidate_selection_threshold"] == "" for row in rows)
 
 
 def test_publication_source_runner_functions_are_never_called(
@@ -338,12 +381,16 @@ def _rewrite_root_table_contract(root: Path, filename: str) -> None:
     write_json(manifest_path, manifest)
 
 
-def _rewrite_figure_data_contract(root: Path) -> None:
+def _rewrite_figure_data_contract(root: Path, figure_id: str | None = None) -> None:
     """Rebuild one figure-data digest to reach duplicate-identity validation."""
 
     manifest_path = root / "figure_manifest.json"
     manifest = read_json(manifest_path)
-    record = next(record for record in manifest["figures"] if not record["omitted"])
+    record = next(
+        record
+        for record in manifest["figures"]
+        if not record["omitted"] and (figure_id is None or record["figure_id"] == figure_id)
+    )
     header, rows = read_csv_rows(root / record["figure_data_csv"])
     from pyosv.evaluation.mode_comparison_publication.config import (
         FIGURE_DATA_HEADER,
@@ -647,6 +694,103 @@ def test_v1_figure_contract_is_not_implicitly_upgraded(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="predates the semantic figure-data contract"):
+        validate_publication_bundle(output)
+
+
+@pytest.mark.parametrize("filename", ("manifest.json", "figure_manifest.json"))
+def test_v2_figure_contract_is_not_implicitly_upgraded(
+    publication_bundle: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / f"legacy-v2-{filename.removesuffix('.json')}"
+    shutil.copytree(source, output)
+    path = output / filename
+    document = read_json(path)
+    document["publication_figure_contract_version"] = 2
+    write_json(path, document)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="predates the per-candidate ridge-threshold contract"):
+        validate_publication_bundle(output)
+
+
+def _ridge_overlay_record(root: Path) -> dict[str, Any]:
+    figure_manifest = read_json(root / "figure_manifest.json")
+    return next(
+        record for record in figure_manifest["figures"] if record["category"] == "f3_ridge_overlay"
+    )
+
+
+def test_ridge_record_candidate_threshold_tampering_is_rejected_after_completion_rehash(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "ridge-record-candidate-threshold"
+    shutil.copytree(source, output)
+    path = output / "figure_manifest.json"
+    figure_manifest = read_json(path)
+    record = next(
+        item for item in figure_manifest["figures"] if item["category"] == "f3_ridge_overlay"
+    )
+    record["candidate_selection_thresholds"]["RL-REF"] += 0.125
+    write_json(path, figure_manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="candidate selection thresholds"):
+        validate_publication_bundle(output)
+
+
+def test_ridge_figure_data_candidate_threshold_tampering_is_rejected_after_digest_and_completion_rehash(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "ridge-figure-data-candidate-threshold"
+    shutil.copytree(source, output)
+    record = _ridge_overlay_record(output)
+    header, rows = read_csv_rows(output / record["figure_data_csv"])
+    row = next(item for item in rows if item["cell_label"] == "RL-REF")
+    row["candidate_selection_threshold"] = repr(float(row["candidate_selection_threshold"]) + 0.125)
+    write_csv_rows(output / record["figure_data_csv"], header, rows)
+    _rewrite_figure_data_contract(output, record["figure_id"])
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="figure-data candidate selection threshold"):
+        validate_publication_bundle(output)
+
+
+def test_top_level_candidate_threshold_tampering_is_rejected_after_completion_rehash(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "ridge-contract-candidate-threshold"
+    shutil.copytree(source, output)
+    path = output / "figure_manifest.json"
+    figure_manifest = read_json(path)
+    figure_manifest["f3_ridge_threshold_contract"]["stages"]["fvt"]["candidate_thresholds"][
+        "RL-REF"
+    ] += 0.125
+    write_json(path, figure_manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="candidate selection thresholds"):
+        validate_publication_bundle(output)
+
+
+def test_top_level_reference_threshold_tampering_is_rejected_after_completion_rehash(
+    publication_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    source, _sources = publication_bundle
+    output = tmp_path / "ridge-contract-reference-threshold"
+    shutil.copytree(source, output)
+    path = output / "figure_manifest.json"
+    figure_manifest = read_json(path)
+    figure_manifest["f3_ridge_threshold_contract"]["stages"]["ft"]["reference_threshold"] += 0.125
+    write_json(path, figure_manifest)
+    rewrite_completion(output)
+    assert_completion_matches(output)
+    with pytest.raises(ValueError, match="selection threshold"):
         validate_publication_bundle(output)
 
 

@@ -56,6 +56,7 @@ FIGURE_DATA_FIELD_TYPES: dict[str, CSVType] = {
     "slice_selection_policy": "nullable_string",
     "slice_score": "nullable_number",
     "selection_threshold": "nullable_number",
+    "candidate_selection_threshold": "nullable_number",
     "vmin": "nullable_number",
     "vmax": "nullable_number",
     "scale_policy": "nullable_string",

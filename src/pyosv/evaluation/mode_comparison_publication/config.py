@@ -6,7 +6,7 @@ from typing import Final
 
 PUBLICATION_ARTIFACT_SCHEMA_VERSION: Final = 2
 PUBLICATION_COMPLETION_SCHEMA_VERSION: Final = 1
-PUBLICATION_FIGURE_CONTRACT_VERSION: Final = 2
+PUBLICATION_FIGURE_CONTRACT_VERSION: Final = 3
 PUBLICATION_METRIC_SELECTION_VERSION: Final = 1
 PUBLICATION_TABLE_CONTRACT_VERSION: Final = 1
 
@@ -145,6 +145,7 @@ FIGURE_MANIFEST_FIELDS: Final = (
     "selection_percentile",
     "buffer_radius",
     "selection_threshold",
+    "candidate_selection_thresholds",
     "display_scale",
     "figure_data_csv",
     "figure_data_row_count",
@@ -182,6 +183,7 @@ FIGURE_DATA_HEADER: Final = (
     "slice_selection_policy",
     "slice_score",
     "selection_threshold",
+    "candidate_selection_threshold",
     "vmin",
     "vmax",
     "scale_policy",
@@ -211,7 +213,7 @@ FIGURE_DATA_IDENTITY_FIELDS: Final = (
     "slice_selection_policy",
 )
 
-# The v2 contract has a fixed scalar coverage set.  The skin figure remains a
+# The v3 contract has a fixed scalar coverage set.  The skin figure remains a
 # required record when skinning is disabled, but is represented as an omitted
 # record with no PNG or figure-data CSV.
 FIXED_SCALAR_FIGURE_IDS: Final = (

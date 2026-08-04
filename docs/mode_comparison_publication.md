@@ -28,12 +28,26 @@ canonical workflow-cell figures.
 F3 stage order is `ft`, `fv`, `fvt`. Spatial slice selection is deterministic:
 center index, public-reference positive-p99 ridge-count maximum, or the
 positive difference peak for `abs(Q-QUAL - RL-REF)` on `fvt`; ties choose the
-smallest index. The p99 threshold and radius 2 are taken from the validated F3
-metric contract. Normal panels in one spatial figure share a scale derived from
-validated full-volume min/max evidence. Signed difference panels use a separate
-finite range centered on zero. The signed differences themselves are formed
-only after reading each selected 2-D slice; publication generation does not
-materialize a full-volume candidate-minus-reference array.
+smallest index. The positive-p99/radius-2 threshold metadata is taken directly
+from validated F3 `MetricEvidence` with selection `positive_p99_radius2`; it is
+not recalculated by publication generation. Each stage records one shared
+public-reference threshold and one candidate threshold for each canonical cell.
+`public_reference_peak` uses only the public reference and that stage's
+public-reference threshold, so candidate values and candidate thresholds cannot
+change its selected slice. `end_to_end_difference_peak` remains the
+threshold-free `abs(Q-QUAL - RL-REF)` policy.
+
+For F3 ridge overlays, `selection_threshold` always means the public-reference
+threshold. The public-reference mask uses it, while each candidate mask uses
+that candidate cell's own source-recorded p99 threshold. Thus exact overlap,
+buffered match, public-reference-only, candidate-only, and
+`exact_overlap_count` use the same separate reference/candidate mask contract.
+The percentile remains 99 and the buffer radius remains 2. Normal panels in
+one spatial figure share a scale derived from validated full-volume min/max
+evidence. Signed difference panels use a separate finite range centered on
+zero. The signed differences themselves are formed only after reading each
+selected 2-D slice; publication generation does not materialize a full-volume
+candidate-minus-reference array.
 
 Synthetic source bundles are scalar-only, so synthetic figures are metric,
 contrast, and runtime figures. Synthetic spatial replay is not performed.
@@ -45,10 +59,12 @@ and public reference files. Public DAT files are never copied to the output.
 The output directory contains `manifest.json`, the publication CSV tables,
 `figure_manifest.json`, `report.md`, `figure_data/`, `figures/`, and a final
 `completion.json`. Publication artifact schema version 2 introduces a semantic
-table contract version 1; figure contract version 2 adds fixed figure-slot
-coverage, figure-data semantic metadata, and PNG dimensions. Completion and
-metric-selection contracts remain version 1. A version-1 publication artifact
-or figure contract is not upgraded implicitly: regenerate the publication bundle.
+table contract version 1; figure contract version 3 adds the source-derived,
+per-candidate F3 ridge-threshold contract to the existing fixed figure-slot,
+figure-data semantic metadata, and PNG-dimension contract. Completion,
+metric-selection, and table contracts remain version 1. A figure contract
+version 2 predates the per-candidate ridge-threshold contract and is explicitly
+rejected; regenerate the publication bundle rather than treating it as v3.
 
 `completion.json` checks exact file bytes, sizes, and SHA-256 values. In
 addition, `manifest.json` records a typed semantic contract for every root CSV:
@@ -71,12 +87,24 @@ tamper-proof commitment: a coherent rewrite of all related metadata is outside
 their threat model.
 
 Figure validation requires the fixed scalar and spatial slot set, including an
-explicit omitted synthetic-skin record when skinning is disabled. Every
-non-omitted figure records its typed figure-data row contract, PNG byte hash,
-PNG size, and IHDR width/height. The validator reads the PNG signature and
-first IHDR chunk with the standard library and rejects invalid, zero, or
-unreasonably large dimensions (over 100,000 pixels in either direction)
-without requiring Pillow.
+explicit omitted synthetic-skin record when skinning is disabled. The top-level
+`f3_ridge_threshold_contract` in `figure_manifest.json` records source
+`MetricEvidence` thresholds by stage and canonical candidate cell. F3 spatial
+records must use their stage's public-reference `selection_threshold` and have
+null `candidate_selection_thresholds`; F3 ridge-overlay records must match the
+`fvt` public-reference threshold and complete candidate-threshold mapping. Each
+overlay figure-data row repeats its cell's
+`candidate_selection_threshold`; non-overlay rows leave it null. Validate-only
+cross-checks the top-level contract, records, and typed figure-data rows in
+addition to their semantic SHA-256 digests. This is an internal semantic
+consistency check, not a cryptographic signature: a coherent rewrite of every
+related artifact remains outside the threat model.
+
+Every non-omitted figure also records its typed figure-data row contract, PNG
+byte hash, PNG size, and IHDR width/height. The validator reads the PNG
+signature and first IHDR chunk with the standard library and rejects invalid,
+zero, or unreasonably large dimensions (over 100,000 pixels in either
+direction) without requiring Pillow.
 
 The directory is built privately, validated internally, and renamed atomically
 only after completion; an existing output directory is an error. Source bundles

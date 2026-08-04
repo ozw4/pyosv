@@ -9,7 +9,10 @@ import csv
 import json
 import math
 from collections import defaultdict
+from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
 
 import numpy as np
@@ -25,7 +28,7 @@ from ..f3d_mode_comparison import (
     thinning_stage_artifacts,
     voting_stage_artifacts,
 )
-from ..f3d_mode_comparison.metrics import F3_REFERENCE_STAGE_ROLES
+from ..f3d_mode_comparison.metrics import F3_REFERENCE_STAGE_ROLES, MetricEvidence
 
 from .config import (
     CANONICAL_CELL_ORDER,
@@ -52,6 +55,56 @@ def _finite(value: Any) -> float:
     if not np.isfinite(result):
         raise ValueError("figure metadata values must be finite")
     return result
+
+
+def _finite_threshold(value: Any, name: str) -> float:
+    """Return one finite source threshold without accepting bool as a number."""
+
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class F3RidgeStageThresholdContract:
+    """Source-recorded ridge thresholds for one F3 processing stage."""
+
+    stage: str
+    reference_threshold: float
+    candidate_thresholds: Mapping[str, float]
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the JSON-safe stage object in canonical condition order."""
+
+        return {
+            "reference_threshold": self.reference_threshold,
+            "candidate_thresholds": {
+                cell: self.candidate_thresholds[cell] for cell in CANONICAL_CELL_ORDER
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class F3RidgeThresholdContract:
+    """Source-derived, per-candidate F3 ridge-selection contract."""
+
+    selection: str
+    percentile: float
+    buffer_radius: float
+    stages: Mapping[str, F3RidgeStageThresholdContract]
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the top-level figure-manifest threshold contract."""
+
+        return {
+            "selection": self.selection,
+            "percentile": self.percentile,
+            "buffer_radius": self.buffer_radius,
+            "stages": {stage: self.stages[stage].as_dict() for stage in CANONICAL_STAGE_ORDER},
+        }
 
 
 def _csv_value(value: Any) -> str:
@@ -107,6 +160,7 @@ def _record(
     selection_percentile: float | None = None,
     buffer_radius: float | None = None,
     selection_threshold: float | None = None,
+    candidate_selection_thresholds: Mapping[str, float] | None = None,
     display_scale: Mapping[str, Any] | None = None,
     figure_data_csv: str | None = None,
     figure_data_contract: Mapping[str, Any] | None = None,
@@ -116,7 +170,12 @@ def _record(
     omission_reason: str | None = None,
 ) -> dict[str, Any]:
     if omitted:
-        if figure_data_csv is not None or figure_data_contract is not None or png_path is not None:
+        if (
+            figure_data_csv is not None
+            or figure_data_contract is not None
+            or png_path is not None
+            or candidate_selection_thresholds is not None
+        ):
             raise ValueError("omitted figures must not have PNG or figure-data metadata")
         data_contract: Mapping[str, Any] | None = None
         png: Mapping[str, Any] | None = None
@@ -143,6 +202,14 @@ def _record(
         "selection_percentile": selection_percentile,
         "buffer_radius": buffer_radius,
         "selection_threshold": selection_threshold,
+        "candidate_selection_thresholds": (
+            None
+            if candidate_selection_thresholds is None
+            else {
+                cell: _finite_threshold(threshold, f"candidate selection threshold for {cell}")
+                for cell, threshold in candidate_selection_thresholds.items()
+            }
+        ),
         "display_scale": None if display_scale is None else dict(display_scale),
         "figure_data_csv": figure_data_csv,
         "figure_data_row_count": None if data_contract is None else data_contract["row_count"],
@@ -915,17 +982,117 @@ def _difference_scale(values: np.ndarray) -> tuple[float, float, float]:
     return observed, -limit, limit
 
 
-def _threshold_for(source: Any, stage: str) -> float:
-    for evidence in source.metric_evidence:
-        if (
-            evidence.cell_label == "RL-REF"
-            and evidence.stage == stage
-            and evidence.selection == "positive_p99_radius2"
-        ):
-            thresholds = dict(evidence.thresholds)
-            if "reference_threshold" in thresholds:
-                return float(thresholds["reference_threshold"])
-    raise ValueError(f"validated F3 evidence has no positive-p99 threshold for {stage}")
+def _evidence_thresholds(evidence: MetricEvidence, *, stage: str, cell: str) -> dict[str, Any]:
+    """Read one validated evidence threshold mapping without recomputing it."""
+
+    try:
+        pairs = tuple(evidence.thresholds)
+        thresholds = dict(pairs)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"F3 ridge threshold evidence is malformed for {stage}/{cell}") from error
+    if len(thresholds) != len(pairs):
+        raise ValueError(f"F3 ridge threshold evidence has duplicate thresholds for {stage}/{cell}")
+    return thresholds
+
+
+def build_f3_ridge_threshold_contract(source: Any) -> F3RidgeThresholdContract:
+    """Build the figure ridge contract from validated F3 ``MetricEvidence``.
+
+    The source metric evidence is authoritative: this helper deliberately does
+    not recalculate percentile thresholds from any F3 volume.  Its strict
+    coverage checks prevent a candidate threshold from one condition being
+    silently reused for another condition.
+    """
+
+    try:
+        evidence_items = tuple(source.metric_evidence)
+    except (AttributeError, TypeError) as error:
+        raise ValueError("F3 ridge threshold contract requires validated MetricEvidence") from error
+    if not all(isinstance(item, MetricEvidence) for item in evidence_items):
+        raise ValueError("F3 ridge threshold contract requires validated MetricEvidence")
+
+    selection = "positive_p99_radius2"
+    selected = tuple(item for item in evidence_items if item.selection == selection)
+    observed_stages = {item.stage for item in selected}
+    expected_stages = set(CANONICAL_STAGE_ORDER)
+    if observed_stages != expected_stages:
+        raise ValueError(
+            f"F3 ridge threshold evidence stages must be exactly {list(CANONICAL_STAGE_ORDER)!r}"
+        )
+
+    stages: dict[str, F3RidgeStageThresholdContract] = {}
+    expected_cells = set(CANONICAL_CELL_ORDER)
+    for stage in CANONICAL_STAGE_ORDER:
+        by_cell: dict[str, MetricEvidence] = {}
+        for evidence in selected:
+            if evidence.stage != stage:
+                continue
+            cell = evidence.cell_label
+            if cell not in expected_cells:
+                raise ValueError(f"F3 ridge threshold evidence has unknown cell {cell!r}")
+            if cell in by_cell:
+                raise ValueError(f"F3 ridge threshold evidence is duplicated for {stage}/{cell}")
+            by_cell[cell] = evidence
+        if set(by_cell) != expected_cells:
+            missing = tuple(cell for cell in CANONICAL_CELL_ORDER if cell not in by_cell)
+            unknown = tuple(cell for cell in by_cell if cell not in expected_cells)
+            detail = []
+            if missing:
+                detail.append(f"missing cells {list(missing)!r}")
+            if unknown:
+                detail.append(f"unknown cells {list(unknown)!r}")
+            raise ValueError(
+                f"F3 ridge threshold evidence cells for {stage} must be exactly "
+                f"{list(CANONICAL_CELL_ORDER)!r}; {', '.join(detail)}"
+            )
+
+        reference_values: list[float] = []
+        candidate_thresholds: dict[str, float] = {}
+        for cell in CANONICAL_CELL_ORDER:
+            thresholds = _evidence_thresholds(by_cell[cell], stage=stage, cell=cell)
+            for name in ("percentile", "radius", "reference_threshold", "candidate_threshold"):
+                if name not in thresholds:
+                    raise ValueError(
+                        f"F3 ridge threshold evidence is missing {name!r} for {stage}/{cell}"
+                    )
+            percentile = _finite_threshold(
+                thresholds["percentile"], f"F3 ridge percentile for {stage}/{cell}"
+            )
+            if percentile != F3_BUFFERED_PERCENTILE:
+                raise ValueError(
+                    f"F3 ridge percentile for {stage}/{cell} must be {F3_BUFFERED_PERCENTILE}"
+                )
+            radius = _finite_threshold(thresholds["radius"], f"F3 ridge radius for {stage}/{cell}")
+            if radius != F3_BUFFER_RADIUS:
+                raise ValueError(f"F3 ridge radius for {stage}/{cell} must be {F3_BUFFER_RADIUS}")
+            reference_values.append(
+                _finite_threshold(
+                    thresholds["reference_threshold"],
+                    f"F3 ridge reference threshold for {stage}/{cell}",
+                )
+            )
+            candidate_thresholds[cell] = _finite_threshold(
+                thresholds["candidate_threshold"],
+                f"F3 ridge candidate threshold for {stage}/{cell}",
+            )
+
+        reference_threshold = reference_values[0]
+        if any(value != reference_threshold for value in reference_values[1:]):
+            raise ValueError(
+                f"F3 ridge reference thresholds are inconsistent across cells for {stage}"
+            )
+        stages[stage] = F3RidgeStageThresholdContract(
+            stage=stage,
+            reference_threshold=reference_threshold,
+            candidate_thresholds=MappingProxyType(candidate_thresholds),
+        )
+
+    return F3RidgeThresholdContract(
+        selection=selection,
+        percentile=F3_BUFFERED_PERCENTILE,
+        buffer_radius=F3_BUFFER_RADIUS,
+        stages=MappingProxyType(stages),
+    )
 
 
 def _slice_selection(
@@ -998,8 +1165,42 @@ def _ball_structure(ndim: int, radius: float) -> np.ndarray:
 
 
 def _ridge_mask(values: np.ndarray, threshold: float) -> np.ndarray:
-    mask = positive_candidate_mask(np.asarray(values), epsilon=NONZERO_EPSILON)
-    return mask & (np.asarray(values) >= threshold)
+    array = np.asarray(values)
+    mask = positive_candidate_mask(array, epsilon=NONZERO_EPSILON)
+    return mask & (array >= _finite_threshold(threshold, "ridge threshold"))
+
+
+def _paired_ridge_masks(
+    reference: np.ndarray,
+    candidate: np.ndarray,
+    *,
+    reference_threshold: float,
+    candidate_threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select public-reference and candidate ridges with their own thresholds."""
+
+    return (
+        _ridge_mask(reference, reference_threshold),
+        _ridge_mask(candidate, candidate_threshold),
+    )
+
+
+def _exact_overlap_count(
+    reference: np.ndarray,
+    candidate: np.ndarray,
+    *,
+    reference_threshold: float,
+    candidate_threshold: float,
+) -> int:
+    """Count exact overlap using the same per-volume masks as the RGB overlay."""
+
+    reference_mask, candidate_mask = _paired_ridge_masks(
+        reference,
+        candidate,
+        reference_threshold=reference_threshold,
+        candidate_threshold=candidate_threshold,
+    )
+    return int(np.count_nonzero(reference_mask & candidate_mask))
 
 
 def _overlay_rgb(
@@ -1025,7 +1226,8 @@ def _overlay_slice_rgb(
     *,
     axis: str,
     index: int,
-    threshold: float,
+    reference_threshold: float,
+    candidate_threshold: float,
     radius: float,
 ) -> np.ndarray:
     """Render one overlay slice using only a radius-sized 3D slab."""
@@ -1034,20 +1236,17 @@ def _overlay_slice_rgb(
     radius_samples = int(math.ceil(radius))
     start = max(0, index - radius_samples)
     stop = min(reference.shape[number], index + radius_samples + 1)
-    reference_slab = np.stack(
-        [
-            _ridge_mask(np.asarray(_slice(reference, axis, slab_index)), threshold)
-            for slab_index in range(start, stop)
-        ],
-        axis=0,
+    mask_pairs = tuple(
+        _paired_ridge_masks(
+            np.asarray(_slice(reference, axis, slab_index)),
+            np.asarray(_slice(candidate, axis, slab_index)),
+            reference_threshold=reference_threshold,
+            candidate_threshold=candidate_threshold,
+        )
+        for slab_index in range(start, stop)
     )
-    candidate_slab = np.stack(
-        [
-            _ridge_mask(np.asarray(_slice(candidate, axis, slab_index)), threshold)
-            for slab_index in range(start, stop)
-        ],
-        axis=0,
-    )
+    reference_slab = np.stack(tuple(pair[0] for pair in mask_pairs), axis=0)
+    candidate_slab = np.stack(tuple(pair[1] for pair in mask_pairs), axis=0)
     center = index - start
     reference_mask = reference_slab[center]
     candidate_mask = candidate_slab[center]
@@ -1192,7 +1391,8 @@ def _overlay_figure(
     index: int,
     policy: str,
     score: float,
-    threshold: float,
+    reference_threshold: float,
+    candidate_thresholds: Mapping[str, float],
     reference: np.ndarray,
     candidates: Mapping[str, np.ndarray],
     plt: Any,
@@ -1200,16 +1400,29 @@ def _overlay_figure(
     from matplotlib.patches import Patch
 
     labels = tuple(CANONICAL_CELL_ORDER)
+    if set(candidate_thresholds) != set(labels):
+        raise ValueError("ridge overlay candidate thresholds must cover the canonical cells")
+    reference_threshold = _finite_threshold(
+        reference_threshold, "ridge overlay reference threshold"
+    )
+    thresholds_by_cell = {
+        cell: _finite_threshold(
+            candidate_thresholds[cell], f"ridge overlay candidate threshold for {cell}"
+        )
+        for cell in labels
+    }
     fig, axes = plt.subplots(1, 4, figsize=(16.0, 4.2), squeeze=False, constrained_layout=True)
     data_rows = []
     try:
         for panel_index, cell in enumerate(labels):
+            candidate_threshold = thresholds_by_cell[cell]
             rgb = _overlay_slice_rgb(
                 reference,
                 candidates[cell],
                 axis=axis,
                 index=index,
-                threshold=threshold,
+                reference_threshold=reference_threshold,
+                candidate_threshold=candidate_threshold,
                 radius=F3_BUFFER_RADIUS,
             )
             ax = axes[0, panel_index]
@@ -1231,12 +1444,13 @@ def _overlay_figure(
                         slice_index=index,
                         slice_selection_policy=policy,
                         slice_score=score,
-                        selection_threshold=threshold,
-                        value=int(
-                            np.count_nonzero(
-                                _ridge_mask(_slice(reference, axis, index), threshold)
-                                & _ridge_mask(_slice(candidates[cell], axis, index), threshold)
-                            )
+                        selection_threshold=reference_threshold,
+                        candidate_selection_threshold=candidate_threshold,
+                        value=_exact_overlap_count(
+                            _slice(reference, axis, index),
+                            _slice(candidates[cell], axis, index),
+                            reference_threshold=reference_threshold,
+                            candidate_threshold=candidate_threshold,
                         ),
                         unit="count",
                         metric="exact_overlap_count",
@@ -1274,7 +1488,8 @@ def _overlay_figure(
         slice_selection_policy=policy,
         selection_percentile=F3_BUFFERED_PERCENTILE,
         buffer_radius=F3_BUFFER_RADIUS,
-        selection_threshold=threshold,
+        selection_threshold=reference_threshold,
+        candidate_selection_thresholds=thresholds_by_cell,
         display_scale={
             "vmin": 0.0,
             "vmax": 1.0,
@@ -1294,6 +1509,7 @@ def _overlay_figure(
 
 def _generate_f3_spatial(report: PublicationReport, root: Path, plt: Any) -> list[dict[str, Any]]:
     f3 = report.f3
+    ridge_threshold_contract = build_f3_ridge_threshold_contract(f3)
     root_path = f3.path
     manifest = f3.run_manifest
     workspace = F3RunWorkspace(root_path, f3.result.run_fingerprint, manifest, resumed=True)
@@ -1340,7 +1556,8 @@ def _generate_f3_spatial(report: PublicationReport, root: Path, plt: Any) -> lis
             }
             for stage in CANONICAL_STAGE_ORDER:
                 reference = references[stage]
-                threshold = _threshold_for(f3, stage)
+                stage_thresholds = ridge_threshold_contract.stages[stage]
+                reference_threshold = stage_thresholds.reference_threshold
                 for policy in policies_by_stage[stage]:
                     for axis in ("i3", "i2", "i1"):
                         if policy == "end_to_end_difference_peak":
@@ -1356,7 +1573,9 @@ def _generate_f3_spatial(report: PublicationReport, root: Path, plt: Any) -> lis
                                 axis,
                                 shape,
                                 reference,
-                                threshold=threshold,
+                                # This policy remains intentionally independent of every
+                                # candidate volume and candidate-specific threshold.
+                                threshold=reference_threshold,
                                 difference=None,
                             )
                         if stage == "ft":
@@ -1425,7 +1644,7 @@ def _generate_f3_spatial(report: PublicationReport, root: Path, plt: Any) -> lis
                                 axis=axis,
                                 index=index,
                                 score=score,
-                                threshold=threshold,
+                                threshold=reference_threshold,
                                 panels=panels,
                                 normal_scale=normal_scale,
                                 difference_scale=diff_scale,
@@ -1448,7 +1667,8 @@ def _generate_f3_spatial(report: PublicationReport, root: Path, plt: Any) -> lis
                                     index=index,
                                     policy=policy,
                                     score=score,
-                                    threshold=threshold,
+                                    reference_threshold=reference_threshold,
+                                    candidate_thresholds=stage_thresholds.candidate_thresholds,
                                     reference=reference,
                                     candidates={
                                         cell: candidate_arrays[stage][cell]
@@ -1614,4 +1834,9 @@ def generate_figures(
     return tuple(records), {"matplotlib": matplotlib_version, "backend": backend}
 
 
-__all__ = ["generate_figures"]
+__all__ = [
+    "F3RidgeStageThresholdContract",
+    "F3RidgeThresholdContract",
+    "build_f3_ridge_threshold_contract",
+    "generate_figures",
+]

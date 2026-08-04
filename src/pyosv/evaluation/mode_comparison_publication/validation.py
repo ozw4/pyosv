@@ -907,6 +907,73 @@ def _validate_runtime_figure_data(
         raise ValueError("runtime figure panels/cells do not match source runtime events")
 
 
+def _finite_number(value: Any, context: str) -> float:
+    """Return one JSON numeric contract value, rejecting bools explicitly."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{context} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{context} must be a finite number")
+    return result
+
+
+def _validate_candidate_selection_thresholds(value: Any, *, context: str) -> dict[str, float]:
+    """Validate the canonical per-cell candidate threshold mapping."""
+
+    if not isinstance(value, Mapping) or set(value) != set(CANONICAL_CELL_ORDER):
+        raise ValueError(f"{context} must contain exactly the canonical F3 candidate cells")
+    return {cell: _finite_number(value[cell], f"{context}.{cell}") for cell in CANONICAL_CELL_ORDER}
+
+
+def _validate_f3_ridge_threshold_contract(value: Any) -> dict[str, Any]:
+    """Validate and normalize source-derived F3 ridge threshold metadata."""
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "selection",
+        "percentile",
+        "buffer_radius",
+        "stages",
+    }:
+        raise ValueError("F3 ridge threshold contract field set is invalid")
+    if value["selection"] != "positive_p99_radius2":
+        raise ValueError("F3 ridge threshold contract selection is invalid")
+    percentile = _finite_number(value["percentile"], "F3 ridge threshold percentile")
+    if percentile != float(F3_BUFFERED_PERCENTILE):
+        raise ValueError("F3 ridge threshold contract percentile does not match the F3 contract")
+    buffer_radius = _finite_number(value["buffer_radius"], "F3 ridge threshold buffer radius")
+    if buffer_radius != float(F3_BUFFER_RADIUS):
+        raise ValueError("F3 ridge threshold contract buffer radius does not match the F3 contract")
+    stages = value["stages"]
+    if not isinstance(stages, Mapping) or set(stages) != set(CANONICAL_STAGE_ORDER):
+        raise ValueError("F3 ridge threshold contract stage coverage is invalid")
+
+    normalized_stages: dict[str, dict[str, Any]] = {}
+    for stage in CANONICAL_STAGE_ORDER:
+        stage_value = stages[stage]
+        if not isinstance(stage_value, Mapping) or set(stage_value) != {
+            "reference_threshold",
+            "candidate_thresholds",
+        }:
+            raise ValueError(f"F3 ridge threshold contract stage is invalid: {stage}")
+        normalized_stages[stage] = {
+            "reference_threshold": _finite_number(
+                stage_value["reference_threshold"],
+                f"F3 ridge threshold contract {stage}.reference_threshold",
+            ),
+            "candidate_thresholds": _validate_candidate_selection_thresholds(
+                stage_value["candidate_thresholds"],
+                context=f"F3 ridge threshold contract {stage}.candidate_thresholds",
+            ),
+        }
+    return {
+        "selection": value["selection"],
+        "percentile": percentile,
+        "buffer_radius": buffer_radius,
+        "stages": normalized_stages,
+    }
+
+
 def _validate_figures(
     root: Path,
     manifest: Mapping[str, Any],
@@ -921,6 +988,11 @@ def _validate_figures(
             "publication figure contract version 1 predates the semantic figure-data contract; "
             "regenerate the publication bundle"
         )
+    if figure_version == 2:
+        raise ValueError(
+            "publication figure contract version 2 predates the per-candidate "
+            "ridge-threshold contract; regenerate the publication bundle"
+        )
     if figure_version != PUBLICATION_FIGURE_CONTRACT_VERSION:
         raise ValueError("figure contract version mismatch")
     if set(figure_manifest) != {
@@ -931,6 +1003,7 @@ def _validate_figures(
         "fixed_scalar_figure_ids",
         "f3_spatial_figure_slots",
         "f3_ridge_overlay_slots",
+        "f3_ridge_threshold_contract",
         "figures",
     }:
         raise ValueError("figure_manifest field set mismatch")
@@ -948,6 +1021,9 @@ def _validate_figures(
         list(slot) for slot in F3_RIDGE_OVERLAY_SLOTS
     ]:
         raise ValueError("figure ridge-overlay slot coverage contract mismatch")
+    threshold_contract = _validate_f3_ridge_threshold_contract(
+        figure_manifest["f3_ridge_threshold_contract"]
+    )
     shape = tuple(figure_manifest.get("volume_shape", ()))
     if len(shape) != 3 or any(
         isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in shape
@@ -1000,6 +1076,7 @@ def _validate_figures(
         if record["figure_role"] not in {"main", "supplementary"}:
             raise ValueError("figure role is invalid")
         category = record["category"]
+        record_candidate_thresholds: dict[str, float] | None = None
         if category not in {
             "synthetic_scalar",
             "synthetic_contrast",
@@ -1109,6 +1186,20 @@ def _validate_figures(
             if record["cell_labels"] != expected_cells:
                 raise ValueError("spatial figure cell labels are invalid")
             observed_spatial_slots.append((record["source_stage"], policy, axis))
+            expected_reference_threshold = threshold_contract["stages"][record["source_stage"]][
+                "reference_threshold"
+            ]
+            if (
+                _finite_number(
+                    record["selection_threshold"],
+                    "spatial figure selection threshold",
+                )
+                != expected_reference_threshold
+            ):
+                raise ValueError(
+                    "spatial figure selection threshold does not match the F3 ridge threshold "
+                    "contract"
+                )
         if category == "f3_ridge_overlay":
             if (
                 dataset != "f3"
@@ -1121,6 +1212,29 @@ def _validate_figures(
             ):
                 raise ValueError("ridge-overlay figure fixed slot identity is invalid")
             observed_ridge_slots.append((policy, axis))
+            expected_stage_thresholds = threshold_contract["stages"]["fvt"]
+            if (
+                _finite_number(
+                    record["selection_threshold"],
+                    "ridge-overlay figure selection threshold",
+                )
+                != expected_stage_thresholds["reference_threshold"]
+            ):
+                raise ValueError(
+                    "ridge-overlay figure selection threshold does not match the F3 ridge "
+                    "threshold contract"
+                )
+            record_candidate_thresholds = _validate_candidate_selection_thresholds(
+                record["candidate_selection_thresholds"],
+                context="ridge-overlay figure candidate selection thresholds",
+            )
+            if record_candidate_thresholds != expected_stage_thresholds["candidate_thresholds"]:
+                raise ValueError(
+                    "ridge-overlay candidate selection thresholds do not match the F3 ridge "
+                    "threshold contract"
+                )
+        elif record["candidate_selection_thresholds"] is not None:
+            raise ValueError("non-overlay figure has candidate selection thresholds")
         omitted = record["omitted"]
         if not isinstance(omitted, bool):
             raise ValueError("figure omitted must be boolean")
@@ -1226,6 +1340,7 @@ def _validate_figures(
                     "normalized_value",
                     "slice_score",
                     "selection_threshold",
+                    "candidate_selection_threshold",
                     "vmin",
                     "vmax",
                     "difference_limit",
@@ -1250,6 +1365,23 @@ def _validate_figures(
                     expected_threshold is not None and actual_threshold != float(expected_threshold)
                 ):
                     raise ValueError("figure data selection threshold does not match the manifest")
+                actual_candidate_threshold = _optional_float(
+                    row["candidate_selection_threshold"],
+                    f"{data_path}.candidate_selection_threshold",
+                )
+                if category == "f3_ridge_overlay":
+                    cell = row["cell_label"]
+                    if (
+                        record_candidate_thresholds is None
+                        or cell not in record_candidate_thresholds
+                        or actual_candidate_threshold != record_candidate_thresholds[cell]
+                    ):
+                        raise ValueError(
+                            "ridge-overlay figure-data candidate selection threshold does not "
+                            "match the figure record"
+                        )
+                elif actual_candidate_threshold is not None:
+                    raise ValueError("non-overlay figure-data has a candidate selection threshold")
                 scale = record["display_scale"]
                 if isinstance(scale, Mapping):
                     row_vmin = _optional_float(row["vmin"], f"{data_path}.vmin")
@@ -1550,6 +1682,11 @@ def validate_publication_bundle(path: str | Path) -> bool:
         raise ValueError(
             "publication figure contract version 1 predates the semantic figure-data contract; "
             "regenerate the publication bundle"
+        )
+    if manifest_figure_version == 2:
+        raise ValueError(
+            "publication figure contract version 2 predates the per-candidate "
+            "ridge-threshold contract; regenerate the publication bundle"
         )
     if manifest_figure_version != PUBLICATION_FIGURE_CONTRACT_VERSION:
         raise ValueError("publication figure contract version mismatch")
