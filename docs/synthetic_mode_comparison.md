@@ -1,5 +1,9 @@
 # Synthetic Mode Comparison
 
+The derived publication tables and scalar figures built from a completed
+synthetic bundle are documented in
+[mode_comparison_publication.md](mode_comparison_publication.md).
+
 The synthetic mode-comparison command runs the canonical scanner and workflow
 comparison against controlled 3D truth. It needs no F3 data or network access.
 It fixes the scanner thinning, edge policy, quality refinement factor,

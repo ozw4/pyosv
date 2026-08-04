@@ -1168,3 +1168,10 @@ exact fvt ridge overlap F1/Jaccard = 0.0
 Do not claim success until actual ablation results are generated and reviewed.
 
 No bitwise equality with Java, Jython, or Mines JTK output is expected.
+
+# Publication-derived reporting
+
+The read-only publication bundle built from a completed full-volume F3 result
+is documented in [mode_comparison_publication.md](mode_comparison_publication.md).
+It uses the public F3 data identity and existing stage artifacts without
+rerunning the experiment.

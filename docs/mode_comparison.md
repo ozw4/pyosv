@@ -270,6 +270,10 @@ public reference alone does not establish a geological improvement.
 
 ## 1.9 Source-of-truth references
 
+The derived publication bundle is documented in
+[mode_comparison_publication.md](mode_comparison_publication.md). It consumes
+completed source bundles and does not add a cross-domain experiment runner.
+
 The implementation is authoritative for effective values. The relevant source
 files and existing documentation are:
 

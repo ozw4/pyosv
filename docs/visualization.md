@@ -1,5 +1,9 @@
 # Optional Visualization Helpers
 
+The fixed mode-comparison publication report uses lazy visualization imports
+and shared-scale renderers described in
+[mode_comparison_publication.md](mode_comparison_publication.md).
+
 `pyosv.viz` provides optional, static matplotlib-based helpers for writing PNG
 diagnostics from NumPy volumes. The helpers are intended for validation and
 inspection workflows, not for core OSV computation.
