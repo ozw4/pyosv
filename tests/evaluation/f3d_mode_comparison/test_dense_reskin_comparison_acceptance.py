@@ -248,9 +248,7 @@ def test_comparison_resume_rejects_identity_without_current_result_loader(
     stale_report = deepcopy(report)
     stale_completion = deepcopy(completion)
     result_module_name = "evaluation/f3d_mode_comparison/result.py"
-    del stale_report["comparison_implementation_identity"]["algorithm_modules"][
-        result_module_name
-    ]
+    del stale_report["comparison_implementation_identity"]["algorithm_modules"][result_module_name]
     stale_completion["comparison_implementation_identity_sha256"] = canonical_fingerprint(
         stale_report["comparison_implementation_identity"]
     )

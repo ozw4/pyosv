@@ -13,6 +13,22 @@ workflow, an approximate 3D orientation scanner, and a synthetic-test-covered
 default for thinned 3D vote volumes, with connected-component grouping
 available only as an explicit fallback or diagnostic path.
 
+## Fault-Warping Contract (Contract Only)
+
+`pyosv.fault_warping` currently exposes an Atlas-independent typed contract for
+future apparent sample-axis shift estimation across a known fault surface. It
+does not yet sample sides, calculate similarity, warp signals, or estimate
+shifts, and it has no concrete estimator or artifact/I/O integration. See the
+[Fault-warping contract](docs/fault_warping.md) for its coordinate, side,
+validity, and public-type semantics.
+
+## NumPy Support
+
+PyOSV officially supports the NumPy 1.x line, declared as `numpy<2`, matching
+the effective Atlas development and test environment. NumPy 2 support is not
+currently declared; do not update byte-level fixtures or relax regressions to
+absorb NumPy 2 differences.
+
 ## DAT I/O
 
 `pyosv.io.read_dat` and `pyosv.io.write_dat` read and write raw scalar `.dat` files. The array shape convention is:

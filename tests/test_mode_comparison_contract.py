@@ -69,9 +69,7 @@ def _synthetic_contract_fields(config: dict[str, Any]) -> dict[str, Any]:
         "seed_minimum_planarity": skinning["seed_min_ep"],
         "growth_source": skinning["growth_source"],
         "accepted_occupancy_radius": skinning["accepted_occupancy_radius"],
-        "effective_accepted_occupancy_radius": skinning[
-            "effective_accepted_occupancy_radius"
-        ],
+        "effective_accepted_occupancy_radius": skinning["effective_accepted_occupancy_radius"],
         "boundary_skinner_fallback": skinning["boundary_skinner_fallback"],
         "boundary_skinner_fallback_policy": skinning["boundary_skinner_fallback_policy"],
     }
@@ -202,7 +200,9 @@ def test_synthetic_condition_axes_are_independent() -> None:
     )
 
     def selected(fields: tuple[str, ...], condition_id: str) -> tuple[Any, ...]:
-        return tuple(_synthetic_contract_fields(conditions[condition_id])[field] for field in fields)
+        return tuple(
+            _synthetic_contract_fields(conditions[condition_id])[field] for field in fields
+        )
 
     assert selected(workflow_fields, "RL-REF") == selected(workflow_fields, "Q-REF")
     assert selected(workflow_fields, "RL-QUAL") == selected(workflow_fields, "Q-QUAL")
@@ -215,13 +215,15 @@ def test_synthetic_condition_axes_are_independent() -> None:
 
     assert SyntheticScannerConfig(backend="quality").as_report_dict()["refinement_factor"] == 2
     assert (
-        SyntheticScannerConfig(backend="reference-like", scanner_thin_mode="normal")
-        .as_report_dict()["scanner_thin_mode"]
+        SyntheticScannerConfig(
+            backend="reference-like", scanner_thin_mode="normal"
+        ).as_report_dict()["scanner_thin_mode"]
         == "normal"
     )
     assert (
-        SyntheticScannerConfig(backend="quality", scanner_thin_mode="normal")
-        .as_report_dict()["scanner_thin_mode"]
+        SyntheticScannerConfig(backend="quality", scanner_thin_mode="normal").as_report_dict()[
+            "scanner_thin_mode"
+        ]
         == "normal"
     )
 
@@ -270,7 +272,9 @@ def test_f3_workflow_resolution_defaults_and_overrides(
     }
 
 
-def _synthetic_f3_reference_arrays(shape: tuple[int, int, int] = (8, 8, 8)) -> dict[str, np.ndarray]:
+def _synthetic_f3_reference_arrays(
+    shape: tuple[int, int, int] = (8, 8, 8),
+) -> dict[str, np.ndarray]:
     arrays = {
         name: np.zeros(shape, dtype=np.float32)
         for name in ("ep.dat", "fl.dat", "fv.dat", "fvt.dat")
@@ -352,8 +356,6 @@ def test_f3_compare_workflow_branches_keep_scanner_configuration_identical(
     assert received_kwargs[1]["surface_support_exponent"] == 0.0
 
     differing_keys = {
-        key
-        for key in received_kwargs[0]
-        if received_kwargs[0][key] != received_kwargs[1][key]
+        key for key in received_kwargs[0] if received_kwargs[0][key] != received_kwargs[1][key]
     }
     assert differing_keys == {"voter_thin_mode"}

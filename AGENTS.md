@@ -20,3 +20,9 @@
 - 1 issue では1つの機能単位だけを実装する。大規模な横断リファクタを混ぜない。
 - 公開API、shape規約、実用一致基準を変える場合は docs も同じPRで更新する。
 - この bootstrap issue ではアルゴリズム実装を追加してはいけない。
+- orientation、voting、skinningに加え、PyOSV は PyOSV の `FaultSkin` または同等の型付き配列契約を入力とする純粋な数値後処理を所有できる。
+- 数値後処理は NumPy、SciPy、および optional Numba だけで動作しなければならない。Atlas、viewer、artifact、I/O、path、manifest、checksum、job管理を PyOSV に取り込んではいけない。
+- `reference_osv` に対応物がない PyOSV native extension は許可する。ただし reference-compatible 機能と native extension は文書上で明確に区別する。
+- fault-warping のような native extension に対し、reference implementation との同一性を要件として偽ってはならない。
+- この拡張は `reference_osv/` の read-only、非 vendoring、非 runtime dependency の方針を一切変更しない。
+- 正式な NumPy 対応範囲は NumPy 1.x（依存指定 `numpy<2`）とする。NumPy 2 対応、fixture の更新、または既存回帰テストの緩和は別 issue で扱う。
