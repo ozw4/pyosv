@@ -112,6 +112,22 @@ def test_builder_sorts_artifacts_and_input_order_does_not_change_output() -> Non
     assert _build(first) == _build(second)
 
 
+def test_f3_file_order_does_not_change_publication_id() -> None:
+    first = _parts()
+    first["datasets"]["f3"]["files"].append(  # type: ignore[index]
+        {
+            "role": "reference_fault_votes",
+            "filename": "fp.dat",
+            "size": 67_200_000,
+            "sha256": SHA_C,
+        }
+    )
+    second = deepcopy(first)
+    second["datasets"]["f3"]["files"].reverse()  # type: ignore[index]
+
+    assert _build(first)["publication_id"] == _build(second)["publication_id"]
+
+
 @pytest.mark.parametrize("field", ["created_at_utc", "derived"])
 def test_timestamp_and_derived_artifacts_do_not_change_publication_id(field: str) -> None:
     original = _build()

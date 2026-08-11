@@ -300,6 +300,7 @@ def _normalize_datasets(value: object) -> dict[str, object]:
                 "sha256": _require_sha256(file_source["sha256"], f"{item_path}.sha256"),
             }
         )
+    normalized_files.sort(key=lambda item: item["role"])
 
     return {
         "f3": {
