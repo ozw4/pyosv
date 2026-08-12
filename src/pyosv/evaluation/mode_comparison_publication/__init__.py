@@ -58,6 +58,9 @@ def generate_publication_bundle(
     return write_publication_bundle(report, destination, pretty=pretty)
 
 
+from .v1_bundle import generate_publication_bundle_v1  # noqa: E402
+
+
 __all__ = [
     "PUBLICATION_ARTIFACT_SCHEMA_VERSION",
     "PUBLICATION_COMPLETION_SCHEMA_VERSION",
@@ -69,6 +72,7 @@ __all__ = [
     "PublicationReport",
     "build_publication_report",
     "generate_publication_bundle",
+    "generate_publication_bundle_v1",
     "validate_publication_bundle",
     "write_publication_bundle",
 ]
