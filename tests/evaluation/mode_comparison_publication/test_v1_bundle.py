@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pyosv.evaluation import mode_comparison_publication as publication
 from pyosv.evaluation.f3d_mode_comparison import F3DatasetSpec
 from pyosv.evaluation.mode_comparison_publication import v1_bundle
 from pyosv.evaluation.mode_comparison_publication.models import (
@@ -39,6 +40,20 @@ _ROOT_TABLES = {
     "f3_orientation_summary.csv",
     "runtime_summary.csv",
 }
+
+
+def test_package_default_exports_are_v1() -> None:
+    assert publication.generate_publication_bundle is v1_bundle.generate_publication_bundle_v1
+    assert publication.validate_publication_bundle is validate_publication_directory
+    assert publication.validate_publication_bundle_v1 is validate_publication_directory
+    assert (
+        publication.generate_legacy_publication_bundle
+        is not publication.generate_publication_bundle
+    )
+    assert (
+        publication.validate_legacy_publication_bundle
+        is not publication.validate_publication_bundle
+    )
 
 
 def _report(root: Path) -> PublicationReport:

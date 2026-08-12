@@ -76,10 +76,10 @@ def source_bundles(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 def publication_bundle(
     source_bundles: dict[str, Any], tmp_path_factory: pytest.TempPathFactory
 ) -> tuple[Path, dict[str, Any]]:
-    from pyosv.evaluation.mode_comparison_publication import generate_publication_bundle
+    from pyosv.evaluation.mode_comparison_publication import generate_legacy_publication_bundle
 
     output = tmp_path_factory.mktemp("mode-comparison-publication") / "publication"
-    generate_publication_bundle(
+    generate_legacy_publication_bundle(
         source_bundles["synthetic"],
         source_bundles["f3"],
         source_bundles["data_root"],

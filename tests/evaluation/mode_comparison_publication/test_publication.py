@@ -10,8 +10,8 @@ import pytest
 
 from pyosv.evaluation import f3d_mode_comparison, synthetic_mode_comparison
 from pyosv.evaluation.mode_comparison_publication import (
-    generate_publication_bundle,
-    validate_publication_bundle,
+    generate_legacy_publication_bundle,
+    validate_legacy_publication_bundle,
 )
 from pyosv.evaluation.mode_comparison_publication import artifacts as publication_artifacts
 from pyosv.evaluation.mode_comparison_publication import validation as publication_validation
@@ -47,7 +47,7 @@ def test_generation_preserves_sources_and_has_fixed_artifact_set(
     publication_bundle: tuple[Path, dict[str, Any]],
 ) -> None:
     output, sources = publication_bundle
-    assert validate_publication_bundle(output)
+    assert validate_legacy_publication_bundle(output)
     assert {item.name for item in output.iterdir()} == {
         "manifest.json",
         "publication_metrics.csv",
@@ -128,13 +128,13 @@ def test_publication_source_runner_functions_are_never_called(
     monkeypatch.setattr(workflow_module, "execute_workflow3d", fail)
 
     output = tmp_path / "publication"
-    generate_publication_bundle(
+    generate_legacy_publication_bundle(
         source_bundles["synthetic"],
         source_bundles["f3"],
         source_bundles["data_root"],
         output,
     )
-    assert validate_publication_bundle(output)
+    assert validate_legacy_publication_bundle(output)
 
 
 def test_existing_output_and_failed_generation_leave_no_completed_bundle(
@@ -145,7 +145,7 @@ def test_existing_output_and_failed_generation_leave_no_completed_bundle(
     output = tmp_path / "publication"
     output.mkdir()
     with pytest.raises(FileExistsError):
-        generate_publication_bundle(
+        generate_legacy_publication_bundle(
             source_bundles["synthetic"],
             source_bundles["f3"],
             source_bundles["data_root"],
@@ -161,7 +161,7 @@ def test_existing_output_and_failed_generation_leave_no_completed_bundle(
 
     monkeypatch.setattr(publication_artifacts, "validate_publication_bundle", fail_validation)
     with pytest.raises(ValueError, match="forced publication"):
-        generate_publication_bundle(
+        generate_legacy_publication_bundle(
             source_bundles["synthetic"],
             source_bundles["f3"],
             source_bundles["data_root"],
@@ -186,7 +186,7 @@ def test_completion_is_present_before_atomic_rename(
         original(source, destination)
 
     monkeypatch.setattr(publication_artifacts, "_rename_new", check_then_rename)
-    generate_publication_bundle(
+    generate_legacy_publication_bundle(
         source_bundles["synthetic"],
         source_bundles["f3"],
         source_bundles["data_root"],
@@ -210,7 +210,7 @@ def test_validate_only_needs_no_matplotlib_or_sources(
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", track_import)
-    assert validate_publication_bundle(output)
+    assert validate_legacy_publication_bundle(output)
     assert imported == []
 
 
@@ -226,7 +226,7 @@ def test_data_identity_mismatch_fails_before_output(
     target.write_bytes(payload)
     output = tmp_path / "publication"
     with pytest.raises(ValueError, match="identity|SHA-256|checksum"):
-        generate_publication_bundle(
+        generate_legacy_publication_bundle(
             source_bundles["synthetic"],
             source_bundles["f3"],
             bad_data_root,
@@ -258,7 +258,7 @@ def test_completion_detects_publication_tampering(
     shutil.copytree(source, output)
     mutation(output / filename)
     with pytest.raises(ValueError, match="hash|size|completion"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_png_set_tampering_is_rejected(
@@ -270,7 +270,7 @@ def test_png_set_tampering_is_rejected(
     png = next((output / "figures").glob("*.png"))
     png.unlink()
     with pytest.raises(ValueError):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_disabled_synthetic_skinning_omits_skin_figure(
@@ -289,7 +289,7 @@ def test_disabled_synthetic_skinning_omits_skin_figure(
         config=config,
     )
     output = tmp_path / "publication"
-    generate_publication_bundle(
+    generate_legacy_publication_bundle(
         source,
         source_bundles["f3"],
         source_bundles["data_root"],
@@ -314,7 +314,7 @@ def test_disabled_synthetic_skinning_omits_skin_figure(
         "png_sha256",
     ):
         assert omitted[field] is None
-    assert validate_publication_bundle(output)
+    assert validate_legacy_publication_bundle(output)
 
     tampered = tmp_path / "omitted-skin-record-removed"
     shutil.copytree(output, tampered)
@@ -328,7 +328,7 @@ def test_disabled_synthetic_skinning_omits_skin_figure(
     rewrite_completion(tampered)
     assert_completion_matches(tampered)
     with pytest.raises(ValueError):
-        validate_publication_bundle(tampered)
+        validate_legacy_publication_bundle(tampered)
 
 
 def _snapshot(root: Path) -> dict[str, tuple[bytes, int, int, str]]:
@@ -584,7 +584,7 @@ def test_semantic_table_tampering_is_rejected_after_completion_rehash(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 @pytest.mark.parametrize(
@@ -614,7 +614,7 @@ def test_duplicate_root_row_identity_is_rejected_after_digest_rewrite(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="duplicate publication row identity"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_header_only_contrasts_are_rejected_after_contract_rewrite(
@@ -636,7 +636,7 @@ def test_header_only_contrasts_are_rejected_after_contract_rewrite(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="header-only"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 @pytest.mark.parametrize(
@@ -662,7 +662,7 @@ def test_source_identity_tampering_is_rejected_after_completion_rehash(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_v1_publication_artifact_is_not_implicitly_upgraded(
@@ -678,7 +678,7 @@ def test_v1_publication_artifact_is_not_implicitly_upgraded(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="predates the semantic table contract"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_v1_figure_contract_is_not_implicitly_upgraded(
@@ -694,7 +694,7 @@ def test_v1_figure_contract_is_not_implicitly_upgraded(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="predates the semantic figure-data contract"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 @pytest.mark.parametrize("filename", ("manifest.json", "figure_manifest.json"))
@@ -713,7 +713,7 @@ def test_v2_figure_contract_is_not_implicitly_upgraded(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="predates the per-candidate ridge-threshold contract"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def _ridge_overlay_record(root: Path) -> dict[str, Any]:
@@ -739,7 +739,7 @@ def test_ridge_record_candidate_threshold_tampering_is_rejected_after_completion
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="candidate selection thresholds"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_ridge_figure_data_candidate_threshold_tampering_is_rejected_after_digest_and_completion_rehash(
@@ -757,7 +757,7 @@ def test_ridge_figure_data_candidate_threshold_tampering_is_rejected_after_diges
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="figure-data candidate selection threshold"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_top_level_candidate_threshold_tampering_is_rejected_after_completion_rehash(
@@ -775,7 +775,7 @@ def test_top_level_candidate_threshold_tampering_is_rejected_after_completion_re
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="candidate selection thresholds"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_top_level_reference_threshold_tampering_is_rejected_after_completion_rehash(
@@ -791,7 +791,7 @@ def test_top_level_reference_threshold_tampering_is_rejected_after_completion_re
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="selection threshold"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 def test_source_paths_are_provenance_not_source_identity(
@@ -807,7 +807,7 @@ def test_source_paths_are_provenance_not_source_identity(
     write_json(manifest_path, manifest)
     rewrite_completion(output)
     assert_completion_matches(output)
-    assert validate_publication_bundle(output)
+    assert validate_legacy_publication_bundle(output)
 
 
 def _remove_figure(root: Path, predicate: Callable[[dict[str, Any]], bool]) -> None:
@@ -867,7 +867,7 @@ def test_duplicate_figure_data_identity_is_rejected_after_digest_rewrite(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError, match="duplicate publication row identity"):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)
 
 
 @pytest.mark.parametrize(
@@ -906,4 +906,4 @@ def test_semantic_figure_tampering_is_rejected_after_completion_rehash(
     rewrite_completion(output)
     assert_completion_matches(output)
     with pytest.raises(ValueError):
-        validate_publication_bundle(output)
+        validate_legacy_publication_bundle(output)

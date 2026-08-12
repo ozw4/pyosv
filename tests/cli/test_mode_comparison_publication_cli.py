@@ -16,12 +16,23 @@ def test_validate_only_ignores_missing_sources(
     publication_bundle: tuple[Path, dict[str, Any]],
 ) -> None:
     output, _sources = publication_bundle
-    assert mode_comparison_publication.main(["--validate-only", "--output-dir", str(output)]) == 0
+    assert (
+        mode_comparison_publication.main(
+            [
+                "--publication-contract",
+                "legacy",
+                "--validate-only",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
 
 
-def test_default_publication_contract_is_legacy() -> None:
+def test_default_publication_contract_is_v1() -> None:
     args = mode_comparison_publication.build_parser().parse_args(["--output-dir", "output"])
-    assert args.publication_contract == "legacy"
+    assert args.publication_contract == "v1"
 
 
 def test_normal_generation_requires_all_source_arguments(tmp_path: Path) -> None:
@@ -36,6 +47,8 @@ def test_cli_generation_accepts_pretty_and_fixed_sources(
     assert (
         mode_comparison_publication.main(
             [
+                "--publication-contract",
+                "legacy",
                 "--pretty",
                 "--synthetic-bundle",
                 str(source_bundles["synthetic"]),
@@ -52,7 +65,7 @@ def test_cli_generation_accepts_pretty_and_fixed_sources(
     assert (output / "completion.json").is_file()
 
 
-def test_v1_generation_routes_code_controls_and_lock(
+def test_default_v1_generation_routes_code_controls_and_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -74,8 +87,6 @@ def test_v1_generation_routes_code_controls_and_lock(
 
     result = mode_comparison_publication.main(
         [
-            "--publication-contract",
-            "v1",
             "--pretty",
             "--synthetic-bundle",
             str(tmp_path / "synthetic"),
@@ -104,7 +115,7 @@ def test_v1_generation_routes_code_controls_and_lock(
     ]
 
 
-def test_v1_validate_only_routes_only_to_directory_validator(
+def test_default_v1_validate_only_routes_only_to_directory_validator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -129,21 +140,17 @@ def test_v1_validate_only_routes_only_to_directory_validator(
         ),
     )
 
-    assert (
-        mode_comparison_publication.main(
-            ["--publication-contract", "v1", "--validate-only", "--output-dir", str(output)]
-        )
-        == 0
-    )
+    assert mode_comparison_publication.main(["--validate-only", "--output-dir", str(output)]) == 0
     assert calls == [output]
 
 
-def test_v1_generation_requires_environment_lock(tmp_path: Path) -> None:
+def test_default_v1_generation_requires_environment_lock(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     assert (
         mode_comparison_publication.main(
             [
-                "--publication-contract",
-                "v1",
                 "--synthetic-bundle",
                 str(tmp_path / "synthetic"),
                 "--f3-bundle",
@@ -156,12 +163,15 @@ def test_v1_generation_requires_environment_lock(tmp_path: Path) -> None:
         )
         == 1
     )
+    assert "v1 generation requires --environment-lock" in capsys.readouterr().err
 
 
 def test_legacy_rejects_environment_lock(tmp_path: Path) -> None:
     assert (
         mode_comparison_publication.main(
             [
+                "--publication-contract",
+                "legacy",
                 "--validate-only",
                 "--environment-lock",
                 str(tmp_path / "uv.lock"),

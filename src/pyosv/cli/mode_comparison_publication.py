@@ -35,9 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--publication-contract",
-        choices=("legacy", "v1"),
-        default="legacy",
-        help="Publication bundle contract (default: legacy).",
+        choices=("v1", "legacy"),
+        default="v1",
+        help="Publication bundle contract (default: v1).",
     )
     parser.add_argument(
         "--environment-lock",
@@ -137,16 +137,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.environment_lock is not None:
                 raise ValueError("--environment-lock is only valid with --publication-contract v1")
             from pyosv.evaluation.mode_comparison_publication import (
-                generate_publication_bundle,
-                validate_publication_bundle,
+                generate_legacy_publication_bundle,
+                validate_legacy_publication_bundle,
             )
 
             if args.validate_only:
-                if not validate_publication_bundle(args.output_dir):
+                if not validate_legacy_publication_bundle(args.output_dir):
                     raise ValueError("publication bundle validation failed")
             else:
                 sources = _required_generation_sources(args)
-                generate_publication_bundle(
+                generate_legacy_publication_bundle(
                     *sources,
                     args.output_dir,
                     pretty=args.pretty,

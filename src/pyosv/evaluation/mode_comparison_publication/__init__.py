@@ -19,7 +19,7 @@ from .loaders import load_f3_source, load_synthetic_source
 from .models import PublicationReport
 from .registry import PUBLICATION_METRIC_REGISTRY, PublicationMetric
 from .summary import build_tables
-from .validation import validate_publication_bundle
+from .validation import validate_publication_bundle as validate_legacy_publication_bundle
 
 
 def build_publication_report(
@@ -42,7 +42,7 @@ def _assert_output_is_derived_only(report: PublicationReport, output_dir: Path) 
     ensure_output_not_in_data_root(resolved, report.f3.data_root)
 
 
-def generate_publication_bundle(
+def generate_legacy_publication_bundle(
     synthetic_bundle: str | PathLike[str],
     f3_bundle: str | PathLike[str],
     f3_data_root: str | PathLike[str],
@@ -50,7 +50,7 @@ def generate_publication_bundle(
     *,
     pretty: bool = False,
 ) -> Path:
-    """Build and atomically write the fixed publication bundle."""
+    """Build and atomically write the legacy publication bundle."""
 
     report = build_publication_report(synthetic_bundle, f3_bundle, f3_data_root)
     destination = Path(output_dir)
@@ -58,7 +58,13 @@ def generate_publication_bundle(
     return write_publication_bundle(report, destination, pretty=pretty)
 
 
+from ..publication_manifest_io import (  # noqa: E402
+    validate_publication_directory as validate_publication_bundle_v1,
+)
 from .v1_bundle import generate_publication_bundle_v1  # noqa: E402
+
+generate_publication_bundle = generate_publication_bundle_v1
+validate_publication_bundle = validate_publication_bundle_v1
 
 
 __all__ = [
@@ -73,6 +79,9 @@ __all__ = [
     "build_publication_report",
     "generate_publication_bundle",
     "generate_publication_bundle_v1",
+    "generate_legacy_publication_bundle",
     "validate_publication_bundle",
+    "validate_publication_bundle_v1",
+    "validate_legacy_publication_bundle",
     "write_publication_bundle",
 ]

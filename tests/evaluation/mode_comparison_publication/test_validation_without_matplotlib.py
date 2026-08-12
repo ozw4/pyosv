@@ -1280,7 +1280,11 @@ from pyosv.cli.mode_comparison_publication import main
 
 # No source arguments are present.  The valid stdlib-only fixture must succeed
 # through validate-only without triggering either guard.
-assert main(['--validate-only', '--output-dir', sys.argv[1]]) == 0
+assert main([
+    '--publication-contract', 'legacy',
+    '--validate-only',
+    '--output-dir', sys.argv[1],
+]) == 0
 """
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(source_root)
@@ -1352,7 +1356,6 @@ class ForbiddenEnvironment:
 subprocess.run = forbidden_git
 os.environ = ForbiddenEnvironment()
 assert main([
-    '--publication-contract', 'v1',
     '--validate-only',
     '--output-dir', sys.argv[1],
 ]) == 0
