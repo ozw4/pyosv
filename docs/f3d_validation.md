@@ -1,57 +1,81 @@
 # F3 3D Reference Data Validation
 
-This workflow validates the current Python 3D scanner and optimal-surface
-voting pipeline against the public F3 reference volumes. The F3 `.dat` files
-are external data, not repository files. Do not copy them into git; repository
-`.gitignore` rules ignore generated `.dat` files and `outputs/`.
+This document defines the current full-volume F3 comparison contract used by
+`pyosv.evaluation.f3d_mode_comparison` and
+`pyosv.cli.f3d_mode_comparison`.
 
-## Data Layout
+The workflow compares PyOSV outputs with public F3 processing outputs. It does
+not provide independent geological truth. Terms such as accuracy, fault
+recovery, and topology correctness belong to controlled synthetic experiments,
+not to F3 public-reference agreement.
 
-Use an external data root such as the local shared copy:
+## Evaluation scope
 
-```text
-/home/dcuser/public_data/field/F3/reference_osv/
-  ep.dat
-  fl.dat
-  fv.dat
-  fvt.dat
-  xs.dat
-```
+Publication-facing F3 evaluation uses one complete volume with shape
+`(420, 400, 100)` in repository order `(n3, n2, n1)`. The complete volume is
+one dataset and one evaluation unit.
 
-Point repository commands at that root with:
+Crops, regional partitions, slices, blocks, and processing tiles are diagnostic
+views within that unit. They are not independent samples, replicates, or
+repeated experiments. Primary metrics are computed over all voxels of each
+complete stage volume. Interior and boundary-shell rows are regional
+diagnostics from the same volume.
+
+The public reference-to-stage mapping is:
+
+| Public file | PyOSV stage | Interpretation |
+| --- | --- | --- |
+| `fl.dat` | scanner likelihood `ft` | Public-reference agreement for scanner likelihood. |
+| `fv.dat` | voted likelihood `fv` | Public-reference agreement for vote evidence. |
+| `fvt.dat` | thinned voted likelihood `fvt` | Public-reference agreement for thinned vote evidence. |
+
+F3 has no public strike, dip, or skin truth. Orientation rows compare PyOSV
+cells with one another, and skin rows describe output structure rather than
+truth accuracy.
+
+## Official dataset contract
+
+The official data is external to the repository. Set the data root with either
+`--data-root` or `PYOSV_F3D_DATA_ROOT`:
 
 ```bash
-export PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv
+export PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv
 ```
 
-The expected format for each file is:
+The canonical full-volume comparison requires these files:
 
 ```text
-shape = (420, 400, 100)  # (n3, n2, n1)
-dtype = big-endian float32
-expected bytes per file = 67,200,000
+ep.dat
+fl.dat
+fv.dat
+fvt.dat
 ```
 
-Files:
+Each required file has this storage layout:
 
-- `xs.dat`: signed input seismic amplitude image.
-- `ep.dat`: planarity attribute used as the scanner input; start OSV validation
-  from this file.
-- `fl.dat`: public-workflow fault-likelihood attribute.
-- `fv.dat`: public-workflow OSV voting result.
-- `fvt.dat`: public-workflow thinned OSV result.
+```text
+shape = (420, 400, 100)
+storage dtype = >f4
+bytes = 67,200,000
+```
 
-Only `xs.dat` is the input seismic image. `ep.dat`, `fl.dat`, `fv.dat`, and
-`fvt.dat` are attributes or processing results. In particular, public
-`fvt.dat` is useful for comparison but is not independent geological truth.
+The semantic roles are fixed:
 
-The current OSV validation starts from `ep.dat`; reproducing `xs.dat -> ep.dat`
-is out of scope for this workflow.
+```text
+input                              -> ep.dat
+reference_fault_likelihood         -> fl.dat
+reference_fault_votes              -> fv.dat
+reference_thinned_fault_votes      -> fvt.dat
+```
 
-### Dataset spec and plan serialization
+`ep.dat` is the scanner input. Reconstructing `ep.dat` from seismic amplitude is
+outside this workflow.
 
-`F3DatasetSpec` is the public immutable storage contract. Its constructor and
-serialized field names are:
+`xs.dat` is a signed seismic-amplitude volume used by some optional visual and
+outlier diagnostics. It is not part of `OFFICIAL_F3_DATASET_SPEC` and is not
+required by the canonical four-cell runner.
+
+`F3DatasetSpec` serializes exactly these fields:
 
 ```text
 dataset_id
@@ -61,42 +85,143 @@ files
 expected_bytes
 ```
 
-The official `OFFICIAL_F3_DATASET_SPEC` uses dataset ID
-`f3d-official-v1`, shape `(420, 400, 100)`, storage dtype `>f4`, and
-`expected_bytes=67200000`. Its ordered `files` role-to-filename pairs are:
+`OFFICIAL_F3_DATASET_SPEC` uses:
 
 ```text
-input                              -> ep.dat
-reference_fault_likelihood         -> fl.dat
-reference_fault_votes              -> fv.dat
-reference_thinned_fault_votes      -> fvt.dat
+dataset_id = f3d-official-v1
+shape = (420, 400, 100)
+storage_dtype = >f4
+expected_bytes = 67200000
 ```
 
-`F3ModeComparisonPlan.as_dict()` serializes `dataset_spec` with exactly those
-five field names. `F3DatasetSpec.input_file` and `F3DatasetSpec.dtype` are
-read-only convenience properties and are not additional serialized fields.
-Canonical plan builders always use `OFFICIAL_F3_DATASET_SPEC`; custom specs
-exist only for low-level small-fixture tests and must not be treated as
-publication datasets.
+The runner validates every required source as a regular file, checks its byte
+size, and records a path-independent SHA-256 identity together with resolved
+path provenance. The canonical plan accepts the official dataset specification;
+custom specifications are limited to low-level fixture tests.
 
-## Publication Comparison Scope: Full Volume Only
+The output directory must not be equal to or nested under the data root.
+Generated files must never be written into the external dataset directory.
 
-Publication-facing F3 mode comparison uses the complete F3 volume only. Its
-shape is `(420, 400, 100)` in repository order `(n3, n2, n1)`, and F3 is one
-dataset and one full-volume evaluation unit. Crops, multiple crops, inlines,
-blocks, boundary regions, and any future processing tiles must not be counted
-as independent replicates, samples, or repeated experiments.
+## Canonical scanner-backend × workflow matrix
 
-Crop-based runs are limited to optional legacy/internal diagnostics, smoke
-checks, debugging, and preservation of historical evidence. Their automatic
-gates do not define the publication protocol. F3 also has no independent
-geological truth labels. Public reference volumes support agreement and
-difference measurements, but not geological-accuracy claims.
+The fixed cell order is:
 
-## Full F3 Pipeline
+| Label | Scanner backend | Workflow mode |
+| --- | --- | --- |
+| `RL-REF` | `reference-like` | `reference` |
+| `RL-QUAL` | `reference-like` | `quality` |
+| `Q-REF` | `quality` | `reference` |
+| `Q-QUAL` | `quality` | `quality` |
 
-The package CLI runs the canonical, potentially slow, full-volume four-cell
-comparison with the official controls documented below:
+Scanner backend and workflow mode are independent axes. The canonical
+terminology is defined in [Mode Comparison Contract](mode_comparison.md).
+
+The stage order is:
+
+```text
+ep.dat
+  -> scanner and scanner thinning
+  -> voting
+  -> voter thinning
+  -> skinning
+  -> metrics, contrasts, diagnostics, and resources
+```
+
+### Fixed scanner controls
+
+The two scanner configurations differ only in `backend`.
+
+| Setting | Canonical value |
+| --- | --- |
+| strike range | `0.0` through `360.0` degrees |
+| dip range | `65.0` through `80.0` degrees |
+| `sigma1`, `sigma2` | `8.0`, `8.0` |
+| refinement factor | `2` |
+| orientation backend | `rotate_shear` |
+| interpolation backend | `scipy` |
+| interpolation order | `1` |
+| explicit smoothing sigma | `None` |
+| normalization | enabled |
+| output dtype | `float32` |
+| scanner thinning | `reference` |
+| scanner reference-thin sigma | `1.0` |
+| requested edge cleanup | enabled |
+| effective edge cleanup | enabled |
+
+The refinement factor is effective for the `quality` backend. It remains part
+of the complete resolved scanner configuration for both backends so the plan
+can prove that workflow selection did not alter scanner controls.
+
+### Fixed voting controls
+
+These controls are held constant across all four cells:
+
+| Setting | Canonical value |
+| --- | ---: |
+| `ru`, `rv`, `rw` | `10`, `20`, `30` |
+| seed distance | `4` |
+| seed threshold | `0.3` |
+| strain maxima | `0.25`, `0.25` |
+| attribute smoothing passes | `1` |
+| surface smoothing | `2.0`, `2.0` |
+| surface-orientation smoothing | `30.0` |
+| final normalization smoothing | `0.0` |
+| voter reference-thin sigma | `1.0` |
+| surface-support minimum fraction | `0.0` |
+| surface-support exponent | `0.0` |
+| surface-voting boundary policy | `reference` |
+
+Final vote normalization therefore performs minimum subtraction, positive
+maximum scaling, and the `1 - (1 - x) ** 8` transform without final vote-map
+smoothing.
+
+### Workflow-owned settings
+
+The workflow axis resolves only downstream settings:
+
+| Setting | `reference` workflow | `quality` workflow |
+| --- | --- | --- |
+| voter thinning | `reference` | `hybrid_v2` |
+| skinner method | `reference` | `quality` |
+| skinner minimum likelihood | `0.5` | `None` / adaptive |
+| seed planarity threshold | `0.8` | `0.5` |
+| growth source | `thinned` | `pre_thin` |
+| configured accepted-occupancy radius | `None` | `1` |
+| effective accepted-occupancy radius | `5` | `1` |
+| boundary fallback | disabled | enabled |
+| boundary fallback policy | `empty_primary` | `empty_primary` |
+
+The common skinning template enables reskinning. A new CLI run uses
+`existing_cells_v1` unless `--skinner-reskin-policy` selects another supported
+policy. The selected policy is applied consistently to all cells.
+
+`voter_thin_mode_override` exists in the library configuration for controlled
+programmatic comparisons. A canonical plan applies one override identically to
+both workflow branches; it never changes scanner configuration.
+
+### Stage sharing
+
+For each scanner backend, the runner computes raw scanner output and scanner
+thinning once and shares those attributes between its two workflow cells.
+Voting is also shared between workflows for the same scanner backend because
+voter thinning and skinning occur in later stages.
+
+With skinning enabled, the canonical stage graph contains:
+
+```text
+2 scanner stages
+2 voting stages
+4 thinning stages
+4 skinning stages
+```
+
+Every stage is content-addressed. Reuse is permitted only when its parents,
+input identities, implementation identity, runtime identity, and resolved
+settings produce the exact recorded fingerprint.
+
+## Publication runtime contract
+
+Set numerical controls before Python starts:
 
 ```bash
 PYTHONHASHSEED=0 \
@@ -112,70 +237,232 @@ python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```
 
-The command always covers `RL-REF`, `RL-QUAL`, `Q-REF`, and `Q-QUAL`; it has no
-scanner-axis or workflow-axis selector. `--no-skinning` changes one global
-setting in all four cells, and `--boundary-margin N` changes only the regional
-diagnostic partition. Primary metrics remain full-volume metrics.
+A publication-valid runtime requires:
 
-Without `--resume`, the output path must not exist. An interrupted run has no
-root `completion.json`; resume accepts it only when the immutable manifest,
-dataset identity, implementation identity, numerical runtime identity, resolved
-plan, and resulting run fingerprint match exactly. The runtime identity records
-the requested acceleration mode, effective Numba JIT state and version,
-platform, allowlisted thread settings, `PYTHONHASHSEED`, and a normalized NumPy
-BLAS/LAPACK build digest. Valid content-addressed stages are reused and missing
-stages are computed. The publication validator requires
-`effective_acceleration_state="numba_jit_enabled"`,
-`numba_jit.status="enabled"`, and `numba_jit.enabled=true`; an unavailable,
-disabled, or unknown Numba JIT is not publication-valid. It also requires
-`NUMBA_NUM_THREADS=1` when that variable is set. Shallow
-validation always applies the publication runtime policy to the identity
-recorded by an official bundle, but does not inspect or compare the current
-process identity. Deep validation and resume computation for missing stages
-require the current identity to satisfy the publication policy and exactly
-match the recorded identity. A complete bundle is accepted by `--resume` only
-after strict validation and is not recomputed:
+- `PYTHONHASHSEED=0`;
+- `OMP_NUM_THREADS=1`;
+- `OPENBLAS_NUM_THREADS=1`;
+- `MKL_NUM_THREADS=1`;
+- `NUMEXPR_NUM_THREADS=1`;
+- an explicitly selected `PYOSV_ACCEL` mode;
+- available Numba with effective JIT state `enabled`;
+- `NUMBA_DISABLE_JIT` unset, empty, or `0`;
+- `NUMBA_NUM_THREADS=1` when that variable is set;
+- available NumPy CPU, NumPy BLAS, and SciPy build identities;
+- an effective thread count of one for detected NumPy BLAS libraries.
+
+`run_manifest.json` records the requested acceleration mode, effective Numba
+state and version, Python implementation, platform, byte order, thread and
+Numba environment controls, CPU dispatch identity, NumPy build identity, BLAS
+runtime identity, and SciPy build identity.
+
+The runtime identity prevents incompatible numerical execution paths from being
+mixed during resume or deep replay. It is not a cryptographic signature and
+does not guarantee bitwise equality across arbitrary hardware.
+
+## Running the full-volume comparison
+
+The command always evaluates all four cells. It has no scanner-axis or
+workflow-axis selector.
 
 ```bash
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
+python -m pyosv.cli.f3d_mode_comparison \
+  --data-root /path/to/external/reference_osv \
+  --output-dir outputs/3d/f3d/mode_comparison_001
+```
+
+Without `--resume`, `--output-dir` must not exist. The parent directory is
+created as needed.
+
+Current top-level options include:
+
+- `--boundary-margin N`: changes only the regional boundary-shell partition;
+- `--no-skinning`: disables skinning identically in all four cells;
+- `--skinner-reskin-policy POLICY`: selects the common reskin policy;
+- `--pretty`: pretty-prints root completion JSON while fixed report files remain
+  canonical;
+- `--deep-validate`: performs deep validation during completion;
+- `--compare-reskin-policies existing_cells_v1,reference_dense_v1`: creates the
+  fixed same-parent Q-QUAL skin-only comparison after the source bundle.
+
+`--validate-only` cannot be combined with `--resume`.
+`--no-skinning` cannot be combined with `--compare-reskin-policies`.
+
+The thin entry point
+[`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)
+invokes the same package CLI.
+
+## Resume
+
+Resume an interrupted workspace with the same dataset, plan, implementation,
+and numerical runtime identity:
+
+```bash
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
 python -m pyosv.cli.f3d_mode_comparison \
   --data-root /path/to/external/reference_osv \
   --output-dir outputs/3d/f3d/mode_comparison_001 \
   --resume
 ```
 
-Validate an existing completed bundle without rebuilding dataset identity or
-running experiment stages with:
+An incomplete workspace has no valid root `completion.json`. Resume validates
+all existing content-addressed stages, reuses valid exact matches, and computes
+only missing stages. A mismatched dataset identity, plan, implementation,
+runtime identity, or run fingerprint is rejected.
+
+A complete workspace is validated rather than recomputed. The regular source
+resume path still resolves the data root. The comparison-only resume path
+described below can reuse a complete source bundle through recorded provenance
+without entering source-stage orchestration.
+
+## Bundle validation
+
+### Shallow validation
+
+Validate a completed bundle without running experiment stages:
 
 ```bash
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001 \
-  --validate-only --deep-validate
+  --validate-only
 ```
 
-Deep validation rereads full-volume reference and stage artifacts from the
-recorded provenance, recomputes every scanner summary from its corresponding
-DAT volume, re-derives scanner sampling counts from the resolved configuration,
-recomputes metric evidence, and reruns the final skinning phase from its
-persisted scanner, voting, and thinning parents. The skin-only rerun exactly
-checks final cell subvoxel coordinates, voxel indices, `fl`/`fp`/`ft`
-attributes, ordering, and duplicate occurrences together with the recorded
-mask and topology. It does not rerun scanner, voting, or base thinning
-computation. Scanner DAT volumes are mapped read-only and released one file at
-a time. This is an internal
-numerical-consistency check, not proof of artifact authenticity or geological
-truth. Only a valid root `completion.json`, written after reports and referenced
-stages pass semantic validation, marks the workspace complete.
-Output paths are rejected when they are equal to or nested under the F3 data
-root.
+Shallow validation checks the recorded publication runtime policy, run and stage
+fingerprints, manifests, completion records, artifact paths, regular-file
+status, sizes, SHA-256 values, schemas, stage bindings, report field sets, and
+cross-file scalar consistency. It does not require the current process to match
+the recorded runtime and does not replay numerical stages.
 
-The runtime identity in `run_manifest.json` is a compatibility contract that
-prevents stages produced through different numerical execution paths from
-being mixed by resume. It is not a cryptographic signature and does not prove
-bitwise reproducibility across arbitrary hardware. An official gated-run
-completion report must retain the recorded `runtime_identity` together with
-the run fingerprint.
+### Deep validation
 
-The external full-run pytest gate is opt-in and separate from normal tests:
+Run explicit numerical consistency checks with:
+
+```bash
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_001 \
+  --validate-only \
+  --deep-validate
+```
+
+Deep validation requires the recorded source data to be accessible and the
+current numerical runtime to satisfy and match the recorded publication
+identity. It:
+
+- rereads public reference and stage volumes;
+- recomputes scanner array summaries;
+- re-derives scanner sampling evidence from the resolved configuration;
+- recomputes metric evidence and published metric rows;
+- recomputes regional and orientation diagnostics;
+- reruns the final skinning phase from persisted scanner, voting, and thinning
+  parents;
+- compares complete final skin cells, including subvoxel coordinates, rounded
+  indices, likelihood, strike, dip, order, duplicates, generation provenance,
+  reskin support, mask, and topology.
+
+It does not rerun scanner computation, voting computation, or base voter
+thinning. Deep validation is an internal consistency check, not proof of data
+authenticity, geological truth, or tamper prevention.
+
+Only a valid regular root `completion.json`, written after the report and stage
+contracts succeed, marks the source bundle complete.
+
+## Bundle layout
+
+A completed source bundle has this root structure:
+
+```text
+run_manifest.json
+completion.json
+reports/
+  cells.json
+  metrics_long.csv
+  metric_evidence.json
+  contrasts.csv
+  voxel_contrast_summaries.csv
+  regional_metrics.csv
+  orientation_diagnostics.csv
+  runtime.csv
+  resources.json
+stages/
+  scanner/<fingerprint>/
+    stage_manifest.json
+    complete.json
+    ...
+  voting/<fingerprint>/
+    stage_manifest.json
+    complete.json
+    ...
+  thinning/<fingerprint>/
+    stage_manifest.json
+    complete.json
+    ...
+  skinning/<fingerprint>/
+    stage_manifest.json
+    complete.json
+    ...
+```
+
+`run_manifest.json` binds:
+
+- the immutable resolved plan;
+- path-independent dataset content identity and resolved-path provenance;
+- source and implementation identity;
+- numerical runtime identity;
+- the run fingerprint.
+
+Each stage manifest binds its kind, parent and input fingerprints, resolved
+settings, implementation contract, expected artifacts, and stage fingerprint.
+Each stage `complete.json` records artifact size and SHA-256 metadata.
+
+The root `completion.json` binds every stage completion and every root report.
+A stage directory or report not covered by the completion contract is not valid
+bundle evidence.
+
+### Report meanings
+
+- `cells.json` records resolved cell settings and stage fingerprints.
+- `metrics_long.csv` contains registry-defined full-volume and skin metrics.
+- `metric_evidence.json` stores bounded scalar evidence used to validate metric
+  algebra.
+- `contrasts.csv` contains declared pairwise matrix contrasts.
+- `voxel_contrast_summaries.csv` summarizes voxelwise matrix differences.
+- `regional_metrics.csv` contains full, interior, and boundary-shell diagnostic
+  rows bound to source stage fingerprints.
+- `orientation_diagnostics.csv` contains scanner/cell orientation comparisons
+  bound to both source stage fingerprints.
+- `runtime.csv` records stage runtime attribution.
+- `resources.json` records process RSS snapshots, storage, and resource
+  interpretation metadata.
+
+Runtime and resource rows describe this execution. They are not isolated
+cross-machine benchmarks.
+
+## External full-volume pytest gate
+
+The opt-in full-data gate exercises the current publication contract:
 
 ```bash
 PYTHONHASHSEED=0 \
@@ -188,340 +475,152 @@ NUMBA_NUM_THREADS=1 \
 PYOSV_ACCEL=auto \
 PYOSV_RUN_F3D_MODE_COMPARISON=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
-PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR='outputs/3d/f3d/mode_comparison_<NEW_SHA>' \
+PYOSV_F3D_MODE_COMPARISON_OUTPUT_DIR=outputs/3d/f3d/mode_comparison_official \
 python -m pytest -q tests/test_f3d_mode_comparison_full.py -s
 ```
 
-The official gate command above explicitly sets `PYOSV_ACCEL=auto` and verifies
-that the resulting effective acceleration state is `numba_jit_enabled`; a
-`python_only` run is not an official F3 result.
-It runs or resumes the canonical four-cell bundle, performs strict and
-mandatory deep bundle validation, generates the fixed
-`existing_cells_v1`/`reference_dense_v1` Q-QUAL comparison, deep-validates
-that comparison, and exercises complete resume without changing its six
-artifact paths, sizes, modification times, or hashes. Publication readiness
-requires the source and comparison runtime-identity digests to match and the
-comparison completion to retain `validation_level="deep"`.
+The gate:
 
-Normal CLI unit tests stub orchestration and do not require F3 files or
-full-volume computation.
+- validates the current publication runtime;
+- runs or resumes the four-cell source bundle with deep validation;
+- verifies canonical stage sharing and completion coverage;
+- validates dataset hashes and runtime identity;
+- generates and deep-validates the fixed Q-QUAL reskin-policy comparison;
+- verifies that a complete comparison resume does not change its artifact
+  paths, sizes, modification times, or hashes.
 
-The publication contract currently records runtime identity schema 3,
-fingerprint contract 4, scanner stage contract 5, skin artifact semantic
-contract 5, and metric schema 2. Skin reports record whether final cell values
-come from primary nearest samples, `existing_cells_v1` reskinning,
-`reference_dense_v1` reskinning, or the connected-component fallback.
-Canonical `skins.json` format 2 stores cell `generation` and `reskin_support`;
-semantic contract 5 also requires reskin-diagnostics contract 2, whose flat
-counts describe only persisted final skins and whose nested `attempted` counts
-describe pre-filter reskin attempts. Strict validation matches the final
-processed/output/observed/generated counts to `skins.json` and checks that
-attempted counts are not below their final counterparts. Deep validation
-recreates both namespaces by exact skin-only replay. Strict readers still
-accept historical format 1 / semantic-contract-3 bundles and format 2 /
-semantic-contract-4 bundles with the historical diagnostics meaning; writers
-emit format 2 / semantic-contract 5.
-Deep validation applies parent-volume nearest-sample checks only to the
-applicable paths; reskinned cells are instead checked authoritatively by the
-exact skin-only rerun using the recorded policy. A validated bundle provides PR4 with the validated DAT
-volumes and scanner sampling evidence, the validated skin mask, exact-recomputed
-reskin and connected-component-fallback cell payloads, metric-schema-2 rows,
-and runtime/resource diagnostics. Validation does not establish cryptographic
-authenticity, independent geological truth, or bitwise reproducibility across
-arbitrary hardware.
+Default unit tests do not require the external F3 files or full-volume
+computation.
 
-Scanner stage contract 5 records precomputed sampling evidence and verifies it
-exactly against the scanner instance before that instance produces a volume.
-The bounded strike and dip grids are stored as float32 values with exact
-bit-pattern SHA-256 digests, counts, effective refinement, and sampling-helper
-implementation identities. The legacy `sampling_count` view is derived from
-that evidence. Official CLI stages explicitly require the canonical scanner
-implementation identity and derive canonical sampling evidence without
-constructing a scanner. Consequently, an all-reuse run performs no scanner
-construction, instance sampling, source-volume read, scan, or thinning. A
-custom scanner factory must supply validated evidence for both backends; a
-computed stage checks the actual instance against that declared contract before
-reading the source volume or scanning. When only one scanner stage is missing,
-resume constructs and computes only that backend; the independently complete
-backend is validated and reused without constructing its scanner. Deep
-validation also re-derives
-canonical evidence without constructing a scanner. Injected fixture scanners
-retain their own implementation-bound evidence and are not treated as canonical
-stages.
+## Same-parent reskin-policy comparison
 
-The thin
-[`examples/run_3d_f3d_mode_comparison.py`](../examples/run_3d_f3d_mode_comparison.py)
-entry point calls this package CLI without duplicating experiment logic.
+The fixed comparison branches only Q-QUAL skinning from one immutable
+`fv`/`fvt`/`vp`/`vt` parent and scanner-target mask. All skinning controls are
+held constant except `reskin_policy`.
 
-The existing [`examples/run_3d_f3d_full.py`](../examples/run_3d_f3d_full.py)
-is the legacy manual single-path baseline. It calls the reference-like scanner,
-offers independent scanner/voter thinning controls, writes its separate
-`run_config.json`/`metrics.json`/DAT layout, and uses all-or-nothing
-`--reuse-existing`. It does not provide the quality scanner/workflow matrix,
-the canonical artifact bundle, or partial-stage resume.
+The policies are:
 
-## Full-Volume 2×2 Comparison Contract
+```text
+baseline  = existing_cells_v1
+candidate = reference_dense_v1
+```
 
-The `pyosv.evaluation.f3d_mode_comparison` library APIs and the package CLI
-implement this full-volume matrix, including shared scanner and workflow
-stages, exact stage validation and resume, reference metrics, and diagnostics.
-The legacy `examples/run_3d_f3d_full.py` command remains a separate single-path
-runner and does not expose the matrix.
-
-The canonical publication matrix is:
-
-| Label | Scanner backend | Workflow mode |
-| --- | --- | --- |
-| `RL-REF` | `reference-like` | `reference` |
-| `RL-QUAL` | `reference-like` | `quality` |
-| `Q-REF` | `quality` | `reference` |
-| `Q-QUAL` | `quality` | `quality` |
-
-Scanner backend and workflow mode are separate axes, as defined in
-[Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
-
-The initial publication protocol fixes the following controls. A resolved
-value is held constant across all four cells unless the row explicitly makes
-it part of the scanner-backend definition.
-
-| Control | Fixed contract |
-| --- | --- |
-| Input | One identical `ep.dat` full volume, shape `(420, 400, 100)`, with the same file identity and checksum in all cells |
-| Scanner thinning | `scanner_thin_mode=reference` in all cells |
-| Scanner edge policy | Edge-effect removal is requested and effective: `remove_edge_effects=true` and `effective_remove_edge_effects=true` |
-| Common scanner options | Angle-range bounds, `sigma1`, `sigma2`, interpolation, normalization, dtype (`float32`), and all other options outside the backend definition are held constant |
-| Backend sampling | The reference-like base strike/dip sampling contract is fixed for both `RL-*` cells and supplies the base grid for both `Q-*` cells |
-| Quality refinement | The resolved value is `refinement_factor=2` in every cell; both `Q-*` cells use it, it has no effect on `RL-*`, and workflow cannot change it |
-| Common voting options | Voting radii, seed distance and threshold, strain limits, attribute, surface, and surface-orientation smoothing, and final normalization are held constant unless explicitly workflow-owned below |
-| Comparison overrides | Every explicit workflow-comparison override resolves to the same value in all four cells |
-
-The permitted workflow-owned differences are:
-
-| Setting | Reference workflow | Quality workflow |
-| --- | --- | --- |
-| Effective `voter_thin_mode` | `reference` | `hybrid_v2` |
-| Skinner method | `reference` | `quality` |
-| Minimum likelihood | `0.5` | `None` / adaptive |
-| Growth source | `thinned` | `pre_thin` |
-| Accepted occupancy radius | `None` (effective `5` in reports) | `1` |
-| Boundary fallback and policy | disabled | enabled with `empty_primary` policy |
-
-Scanner backend is the scanner axis. Neither scanner backend nor
-`scanner_thin_mode` is owned by workflow mode. Any setting not listed in the
-workflow-owned table is held constant; an explicit override may suppress a
-workflow default only if it is applied identically to every cell. The canonical
-F3 config exposes this for voter thinning as
-`voter_thin_mode_override`.
-
-For each scanner backend, compute raw full-volume `ft`, `pt`, and `tt` once.
-Apply the fixed scanner reference thinning and edge policy once to produce
-`fet`, `fpt`, and `ftt`, then share those three scanner-thinned volumes between
-the reference and quality workflows for that backend. Workflow comparison must
-not rerun either the raw scanner or scanner thinning. The library runner
-persists these shared outputs in content-addressed stages and validates
-completion hashes before reuse.
-
-The run manifest and cell/stage reports record the matrix label, scanner backend,
-workflow mode, `scanner_thin_mode`, requested and effective edge policy,
-refinement factor, all fixed scanner and voting controls as resolved values,
-all workflow-owned resolved values and explicit overrides, and the input
-path/identity/checksum and shape. A matrix label alone is insufficient to prove
-that controls were held constant.
-
-Changing scanner thinning, for example to `scanner_thin_mode=normal`, is a
-separate ablation or an explicitly named third axis. Such a result must record
-that axis and its resolved edge policy and must not be represented only by a
-2×2 label such as `RL-REF`.
-
-Primary metrics must be calculated over all voxels of each fully reconstructed
-volume.
-Interior regions and the boundary shell are regional diagnostics within that
-same full-volume evaluation unit, not separate samples. Every regional result
-records the full-volume shape and resolved boundary margin so that its
-partition is self-identifying. If future execution uses internal chunking or
-tiling, every output must be completely reconstructed in global F3 coordinates
-before metrics or figures are produced. The reconstruction must be checked for
-chunk seams, duplicated voxels, and missing voxels. Process-peak RSS must be
-snapshotted explicitly at the end of stage execution; resource extraction does
-not create a later snapshot and label it as the run end.
-
-Diagnostic schema version 2 also binds every diagnostic row to its
-content-addressed source stage. `RegionalDiagnosticRow` and
-`compute_regional_reference_diagnostics()` require one lowercase SHA-256
-`source_stage_fingerprint`. `OrientationDiagnosticRow` and
-`compute_orientation_pair_diagnostic()` require the corresponding
-`left_source_stage_fingerprint` and `right_source_stage_fingerprint`;
-`compute_orientation_diagnostics()` requires a
-`source_stage_fingerprints` mapping covering exactly the four canonical cell
-labels. These values identify the scanner or voting stage whose arrays were
-used and are required fields, not optional provenance metadata.
-
-The public reference-to-stage mapping is:
-
-| Public file | pyosv stage |
-| --- | --- |
-| `fl.dat` | scanner likelihood `ft` |
-| `fv.dat` | voted likelihood `fv` |
-| `fvt.dat` | thinned voted likelihood `fvt` |
-
-These files are public reference outputs, not independent truth. Results must
-therefore be described as `reference agreement`, `consistency`, or
-`difference`, not `accuracy`, `ground-truth F1`, or `geological truth`. Because
-F3 skinning has no independent truth labels, F3 results cannot support a claim
-of skin accuracy.
-
-## Fast Smoke Validation
-
-Check that the external files are present, have the expected byte size, and can
-be read as `(420, 400, 100)` big-endian float32 volumes:
+Generate the source bundle and comparison together:
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
+python -m pyosv.cli.f3d_mode_comparison \
+  --data-root /path/to/external/reference_osv \
+  --output-dir outputs/3d/f3d/mode_comparison_reskin \
+  --compare-reskin-policies existing_cells_v1,reference_dense_v1 \
+  --deep-validate
+```
+
+Generate or resume only the comparison from a complete source bundle:
+
+```bash
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_reskin \
+  --resume \
+  --compare-reskin-policies existing_cells_v1,reference_dense_v1
+```
+
+Numerical generation and explicit deep replay require the exact
+publication-valid runtime recorded by the source bundle. A comparison-only
+resume first validates source provenance and reuses the Q-QUAL parents without
+recomputing source stages.
+
+The comparison directory contains:
+
+```text
+reskin_policy_comparison/
+  reskin_policy_comparison.json
+  reskin_policy_metrics.csv
+  reskin_policy_comparison.md
+  existing_cells_v1_skins.json
+  reference_dense_v1_skins.json
+  complete.json
+```
+
+The comparison report binds:
+
+- source run and runtime identity;
+- scanner, voting, and thinning stage fingerprints;
+- the shared parent-content fingerprint, including the scanner target mask;
+- the complete common skinning configuration;
+- a configuration fingerprint proving that the two branches differ only in
+  `reskin_policy`;
+- canonical skin artifacts, generation diagnostics, link topology, skin
+  topology, and correspondence with the positive ridge mask from parent `fvt`.
+
+Parent FVT is comparison evidence, not geological truth.
+
+Validate an existing source bundle and comparison without replay:
+
+```bash
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_reskin \
+  --validate-only \
+  --compare-reskin-policies existing_cells_v1,reference_dense_v1
+```
+
+Add `--deep-validate` to perform the same-runtime skin-only replay. Shallow
+validation checks the serialized skin containers, bounded metric evidence,
+configuration and parent bindings, completion hashes, and link-topology safety
+invariants. Exact unserialized link topology is authoritative only through deep
+replay.
+
+A comparison `complete.json` records `validation_level` as `shallow` or `deep`.
+Requiring deep completion checks saved deep evidence; explicitly requesting deep
+validation replays it in the matching current runtime.
+
+## Fast source-data checks
+
+The general F3 metadata helpers cover five external files, including optional
+`xs.dat`. Check their size, readability, ranges, and FVT sparsity with:
+
+```bash
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python -m pytest -q tests/test_f3d_reference_data.py -s
 ```
 
-Generate a summary report for the reference volumes:
+Generate finite-value summaries for the public volumes with:
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python examples/report_3d_f3d_reference.py --pretty
 ```
 
-On the local shared F3 copy, that report shows `fv.dat` max around `1.0`,
-`fvt.dat` max around `0.99`, and `fvt.dat` much sparser than `fv.dat`. Treat
-the report output as the source of truth for the exact local values.
+These checks do not create a canonical four-cell bundle.
 
-## Small Crop Practical-Equivalence Validation
+## Optional local diagnostics
 
-> **Optional diagnostic only:** This crop workflow is not publication
-> comparison evidence, and its crops are not independent statistical
-> replicates. Historical automatic gates in this workflow do not define the
-> full-volume publication protocol.
+The commands in this section operate on selected crops. They are useful for
+local debugging, visualization, and stage isolation. Their rows and automatic
+checks are not publication metrics or statistical replicates.
 
-Run one deterministic crop validation and write metrics under `outputs/`:
+### One-crop pipeline
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python examples/run_3d_f3d_crop_validation.py \
   --max-crops 1 \
-  --output-dir outputs/3d/f3d/crop_001
+  --output-dir outputs/3d/f3d/crop_001 \
+  --pretty
 ```
 
-Run the opt-in pytest wrapper for the crop pipeline:
+Add `--save-volumes` or `--save-figures` only when those artifacts are needed.
+Automatic crop selection is margin-aware. `--center i3,i2,i1` selects one
+explicit center.
 
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-PYOSV_RUN_F3D_CROP_PIPELINE=1 \
-python -m pytest -q tests/test_f3d_reference_crop_pipeline.py -s
-```
-
-By default, the crop example writes `metrics.json` only. Add `--save-volumes`
-when crop-level Python `.dat` outputs are needed.
-
-Default crop selection is margin-aware: when a crop shape is used to pick
-centers, candidates too close to the volume boundary are skipped instead of
-being silently shifted by `crop_slices()`. Automatic selection searches
-`fv.dat` through a read-only memory map, then copies only the selected regions
-from each reference file. Pass `--center i3,i2,i1` to validate a specific
-manual crop without a full-volume search; this path reads the required regions
-directly. `fl.dat` is read only when `--save-figures` is enabled.
-
-Final vote-map normalization defaults to the reference-like path with no final
-vote-map smoothing. F3 validation and report scripts record
-`final_normalization_smoothing` in their metadata. Pass
-`--final-normalization-smoothing 1.0` only when comparing against older pyosv
-runs that smoothed the final vote map before the power transform.
-
-Default reference-first comparison:
-
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/run_3d_f3d_crop_validation.py \
-  --max-crops 1 \
-  --output-dir outputs/3d/f3d/crop_reference_default
-```
-
-Older pyosv-style final-normalization comparison:
-
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/run_3d_f3d_crop_validation.py \
-  --max-crops 1 \
-  --output-dir outputs/3d/f3d/crop_final_norm_smoothing_1 \
-  --final-normalization-smoothing 1.0
-```
-
-## Reference-Like Thinning Validation
-
-> **Optional diagnostic only:** The crop and multi-crop runs in this section
-> are not publication comparison evidence or independent statistical
-> replicates. Their historical automatic gates do not define the full-volume
-> publication protocol.
-
-The 3D scanner and voter thinning steps support two modes:
-
-- `normal`: existing pyosv behavior. It uses 3D normal-vector interpolation for
-  non-maximum suppression. For scanner and voter thinning this is now the
-  legacy opt-in mode.
-- `reference`: reference-like behavior. It smooths the comparison volume, bins
-  samples by strike angle, and compares local maxima in the `i2-i3` plane.
-
-Scanner and voter thinning default to `reference`; pass
-`--scanner-thin-mode normal` or `--voter-thin-mode normal` only when comparing
-against older pyosv runs. Both modes are Pythonic approximations, not bit-exact
-Mines JTK ports. See `docs/reference_like_thinning.md` for the API-level
-details.
-
-Scanner reference thinning removes scanner-style edge effects by default. Pass
-`--keep-scanner-edge-effects` only for diagnostics that need to compare the
-pre-cleanup retained samples. Reports record this as
-`config.scanner.remove_edge_effects` or
-`config.scanner.reference_remove_edge_effects` depending on the script.
-Reports also record the surface-voting boundary policy as
-`reference-like-i2-i3-interior`, meaning vote averaging and accumulation exclude
-`i2`/`i3` face-only surface samples. This can suppress votes near crop
-boundaries compared with older all-in-bounds boundary handling.
-
-To reproduce older normal/normal thinning behavior in F3 diagnostics, pass both
-legacy flags explicitly:
-
-```bash
---scanner-thin-mode normal --voter-thin-mode normal
-```
-
-Run one crop with reference-like scanner and voter thinning:
-
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/run_3d_f3d_crop_validation.py \
-  --output-dir outputs/3d/f3d/crop_reference_thin_001 \
-  --scanner-thin-mode reference \
-  --voter-thin-mode reference \
-  --reference-thin-sigma 1.0 \
-  --pretty \
-  --save-figures
-```
-
-Run a multi-crop report with reference-like thinning:
-
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/report_3d_f3d_multicrop.py \
-  --output-json outputs/3d/f3d/multicrop_reference_thin_001/metrics.json \
-  --count 3 \
-  --crop-shape 64,64,64 \
-  --interior-margin 16 \
-  --scanner-thin-mode reference \
-  --voter-thin-mode reference \
-  --reference-thin-sigma 1.0 \
-  --pretty \
-  --save-figures \
-  --write-markdown-index
-```
-
-Run a multi-crop comparison between the reference workflow and the quality
-workflow on the same deterministic centers. This is the standard F3 external
-smoke command for quality promotion candidates:
+### Multi-crop workflow comparison
 
 ```bash
 PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
@@ -532,124 +631,22 @@ PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
   --compare-workflows \
   --save-figures \
   --write-markdown-index \
-  --output-json outputs/3d/f3d/quality_external_smoke_001/metrics.json \
+  --output-json outputs/3d/f3d/multicrop_workflows/metrics.json \
   --pretty
 ```
 
-`--compare-workflows` runs both configured workflows, `reference` and
-`quality`, for each selected crop center. F3 crops do not have independent
-truth labels. Agreement with the reference workflow therefore does not directly
-mean that the quality workflow is better. Use this report to check that the
-quality workflow has not removed visible geological signal from the
-reference-oriented path, has not introduced excess ridges or boundary
-artifacts, and has not become less stable across crops. Support-aware voting is
-inactive in both workflow defaults; enable it only with explicit
-`--surface-support-*` overrides when running a diagnostic comparison. In compare
-mode, metrics and figures are written under workflow-specific directories such
-as `volumes/reference/`, `volumes/quality/`, `figures/reference/`, and
-`figures/quality/`.
+`--compare-workflows` evaluates the `reference` and `quality` workflows at the
+same centers. It invokes the scanner separately in each workflow branch while
+holding scanner-side settings constant. It is a workflow comparison, not the
+canonical shared-scanner four-cell runner and not a scanner-thinning policy
+comparison.
 
-Compare-mode reports also include top-level `quality_validation`. This is a
-truthless external smoke summary, not a replacement for the controlled
-synthetic promotion gate. The default thresholds are conservative:
-`quality_density_not_exploding` fails when quality fvt density exceeds `2.0x`
-the reference workflow, `quality_edge_density_not_exploding` fails when the fvt
-edge-density proxy delta exceeds `0.10`, and
-`quality_sparse_distance_not_worse` fails when sparse distance p95 worsens by
-more than `5.0` samples. Finite metric failures always fail the smoke. The
-thresholds can be overridden with `--quality-density-max-ratio`,
-`--quality-edge-density-max-delta`, and
-`--quality-sparse-distance-max-delta`.
+The report's `quality_validation` block is a truthless smoke diagnostic. Its
+limits can detect finite-value failure, density expansion, edge-density change,
+large public-FVT displacement, or crop-to-crop instability. Passing those
+checks does not establish geological quality.
 
-F3 data is external. Environments without `PYOSV_F3D_DATA_ROOT` cannot run this
-smoke; CI should keep using mock/fixture structure tests instead of requiring
-the real F3 volumes.
-
-## Quality-Workflow Scanner-Thinning Policy Validation
-
-> **Optional diagnostic only:** This historical crop policy evidence is not
-> publication comparison evidence, and its crops are not independent
-> statistical replicates. Its automatic gates do not define the full-volume
-> publication protocol.
-
-The reference-like-backend 49^3 synthetic scanner-thinning gate has passed.
-The matching formal F3 64^3-by-3 shared-scan run has also been performed, but
-it failed one conservative external-smoke check. Crop 1's candidate
-public-FVT sparse-distance p95 was `8.429705` versus baseline `2.236068`, a
-`+6.193637`-sample delta above the allowed `+5.0`. The other seven checks
-passed. The prerequisite large crop was not run, human geological review is
-pending, and no quality-workflow or public scanner-thinning default changes.
-
-Use `examples/report_3d_f3d_scanner_thinning_policy.py` for this comparison.
-The generic `report_3d_f3d_multicrop.py --compare-workflows` path is a
-reference-like-scanner workflow comparison: it runs the scanner separately for
-the `reference` and `quality` branches, while passing the same scanner-side
-settings, including `scanner_thin_mode`, to both branches. Its workflow
-resolver changes the default voter thinning from `reference` to `hybrid_v2`
-and leaves both surface-support defaults at `0.0`. It is not a shared-scan
-comparison and it is not a scanner-thinning policy experiment.
-
-The dedicated scanner-thinning policy comparison changes scanner thinning while
-holding the downstream quality workflow fixed. A thinning ablation is another
-stage-specific experiment with its own policy and evidence contract. Neither
-should be conflated with the canonical scanner-backend × workflow comparison;
-the terminology and condition IDs are defined in
-[Mode Comparison Contract](mode_comparison.md).
-
-The dedicated comparison profile and policy IDs are:
-
-```text
-comparison profile:
-  quality-workflow-scanner-thinning-v1
-
-baseline:
-  quality_reference_like_scanner_thin_reference_v1
-
-candidate:
-  quality_reference_like_scanner_thin_normal_v1
-```
-
-Both policies fix the scanner backend to `reference-like`, workflow to
-`quality`, voter thinning to `hybrid_v2`, surface support minimum fraction and
-exponent to `0.0`, surface-voting boundary policy to `reference`, final
-normalization smoothing to the current quality-workflow default, and requested
-scanner edge cleanup to `true`. The sole user-configured experiment difference
-is scanner thinning, `reference` versus `normal`. The baseline applies the edge
-cleanup request and records `effective_remove_edge_effects=true`; normal
-thinning does not use that operation and records
-`effective_remove_edge_effects=null`.
-
-Each crop must execute `FaultOrientScanner3.scan()` exactly once and share its
-raw `ft`, `pt`, and `tt` volumes:
-
-```text
-ep crop
-  -> shared FaultOrientScanner3.scan()
-  -> shared ft / pt / tt
-     |-> baseline scanner.thin(mode="reference")
-     |     -> independent quality voter
-     |     -> voter.thin(mode="hybrid_v2", plateau_tie_breaker=fet_reference)
-     |
-     `-> candidate scanner.thin(mode="normal")
-           -> independent quality voter
-           -> voter.thin(mode="hybrid_v2", plateau_tie_breaker=fet_normal)
-```
-
-The two downstream voters are separate instances so branch state cannot leak
-between policies. Each branch's own scanner-thinned `fet` is mandatory as the
-`hybrid_v2` plateau tie-breaker; omitting it is not the current quality workflow.
-Every policy branch provides all of these stage outputs:
-
-```text
-ft_py.dat   pt_py.dat   tt_py.dat
-fet_py.dat  fpt_py.dat  ftt_py.dat
-fv_py.dat   vp_py.dat   vt_py.dat
-fvt_py.dat
-```
-
-### Formal 64^3 Multi-Crop Run
-
-Run three deterministic crops and retain the full local diagnostics:
+### Scanner-thinning policy diagnostic
 
 ```bash
 PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
@@ -661,243 +658,35 @@ PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
   --save-volumes \
   --save-figures \
   --write-markdown-index \
-  --fail-on-validation-failure \
-  --output-json outputs/3d/f3d/scanner_thinning_policy_64x3/metrics.json \
+  --output-json outputs/3d/f3d/scanner_thinning_policy/metrics.json \
   --pretty
 ```
 
-A successful formal run exits with code zero, selects three crops, records
-three scanner executions, has finite and nonempty required stages, and reports
-`policy_validation.passed=true` with every automatic check passing.
-
-The recorded formal run selected centers `(147, 96, 67)`, `(96, 65, 51)`, and
-`(74, 145, 64)` and exited with code 2. Seven of eight checks passed. FVT
-density ratios were `1.023707`, `1.025346`, and `1.147162`; the maximum
-edge-density increase was `0.005840`, and candidate density CV was `0.039905`.
-The sole failure was the crop-1 sparse-distance delta described above. Its
-aggregate mean delta was `-0.727719` samples, but the contract deliberately
-also gates the worst crop. Preliminary tail analysis reproduced the metric and
-found no endian, crop-coordinate, or distance-transform mismatch. It found five
-of 57 candidate top-percentile points that promoted formerly weaker public-FVT
-ridges and drove the tail. The exceedance points were approximately 19--25
-samples inward from the crop faces, but that distance does not rule out a
-crop-context effect: the voter uses `ru=10`, `rv=20`, and `rw=30`, and surface
-sampling outside a crop is clamped to its edge. Signed seismic amplitude,
-adjacent-slice continuity, and recomputation from a larger context are therefore
-required before deciding whether the ridges are plausible structure or
-crop-dependent disagreement.
-
-### Public-FVT Distance Outlier and Context Diagnostics
-
-The outlier diagnostic reconstructs the existing public-FVT sparse-distance
-metric; it does not introduce another validation check. For each base crop it:
-
-1. evaluates the same interior returned by `interior_slices()` using the formal
-   run's `interior_margin=16`;
-2. constructs public, baseline, and candidate FVT masks with
-   `top_percentile_mask(percentile=99.0, positive_only=True)`;
-3. computes unit-spacing 3D Euclidean distance from each candidate sparse-ridge
-   sample to the nearest public-FVT sparse-ridge sample;
-4. sets the allowed candidate distance to baseline candidate-to-public p95 plus
-   the unchanged `5.0`-sample allowance; and
-5. marks a candidate sparse-ridge sample as an outlier only when its distance is
-   strictly greater than that allowed value. Equality is not an outlier.
-
-The JSON records deterministic interior-local, crop-local, global, and nearest
-public-FVT coordinates, distances, amplitudes and available stage values. It
-also groups the outlier mask into 26-neighbor connected components. These are
-candidate-to-public disagreements, not automatically false detections, because
-public `fvt.dat` is not truth.
-
-Run the opt-in three-crop amplitude review as follows. The known automatic
-failure is expected, so this artifact-producing command deliberately omits
-`--fail-on-validation-failure` and exits zero after writing the report:
-
-```bash
-PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
-  --data-root "$PYOSV_F3D_DATA_ROOT" \
-  --comparison-profile quality-workflow-scanner-thinning-v1 \
-  --count 3 \
-  --crop-shape 64,64,64 \
-  --interior-margin 16 \
-  --outlier-diagnostics \
-  --save-volumes \
-  --save-figures \
-  --write-markdown-index \
-  --output-json outputs/3d/f3d/scanner_thinning_policy_64x3_outlier_review/metrics.json \
-  --pretty
-```
-
-`--outlier-diagnostics` reads signed `xs.dat` and adds
-`consensus.candidate_minus_baseline.crops[].public_fvt_distance_outliers`.
-With `--save-figures`, it writes orthogonal and adjacent-slice amplitude
-overlays at the actual component representative coordinates. The metric remains
-positive-only 99th percentile for public, baseline, and candidate FVT. Display
-masks are deliberately separate: public and baseline remain at the 99th
-percentile with `0.8`-point contours, while candidate-policy FVT uses a
-positive-only 95th-percentile `2.0`-point yellow contour so a reviewer can trace
-more of the candidate surface. The broader yellow line is a display convention,
-not the metric ridge, and does not affect points, components, persistence, or
-validation. Without this opt-in flag, the existing JSON, Markdown, and output
-layout remain unchanged.
-
-To recompute crop 1 using a larger crop while comparing exactly the original
-global `64 x 64 x 64` ROI, run:
-
-```bash
-PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
-  --data-root "$PYOSV_F3D_DATA_ROOT" \
-  --comparison-profile quality-workflow-scanner-thinning-v1 \
-  --count 3 \
-  --crop-shape 64,64,64 \
-  --interior-margin 16 \
-  --outlier-diagnostics \
-  --context-crop-index 1 \
-  --context-crop-shape 128,128,100 \
-  --save-figures \
-  --write-markdown-index \
-  --output-json outputs/3d/f3d/scanner_thinning_policy_64x3_context_review/metrics.json \
-  --pretty
-```
-
-The context crop uses the same global center, but ROI mapping is derived from
-the bounded global slice starts and stops rather than assuming a centered
-offset. This remains correct when the larger crop shifts at a source-volume
-boundary. The context pipeline scans once, shares that raw scan between its two
-branches, and records its execution in
-`context_diagnostics.context_scanner_execution_count`; the formal base
-`policy_validation.scanner_execution_count` remains three. Context output is
-then sliced to the exact base global ROI before comparing shared raw `ft`,
-scanner-thinned `fet`, voted `fv`, thinned `fvt`, and the persistence of the
-original outlier points. Context sparse percentiles are computed on that same
-base ROI, not on the full context crop.
-
-The point-detail limit does not truncate persistence totals: summary counts and
-fractions use every reconstructed base outlier. For each stored point,
-`context_candidate_to_public_distance` is evaluated at the nearest context
-candidate sparse-ridge sample (and is `null` if that sparse mask is empty),
-rather than reusing the public distance at the original base coordinate.
-
-This same-global-ROI run is a diagnostic context ablation, not the formal
-large-crop acceptance run below. It reports persistence and figures without
-automatically calling a ridge geologically valid or an artifact. At the current
-recorded state, automatic validation remains failed with seven of eight checks
-passing, adding `--fail-on-validation-failure` still exits 2, and manual
-geological review remains pending. The `+5.0` distance threshold, scanner and
-workflow defaults, and the meaning of `policy_validation.passed` are unchanged.
-Do not create a passing F3 evidence fixture from these diagnostics.
-
-### Formal Large-Crop Run
-
-After the 64^3 run passes and its figures have been reviewed, choose one
-representative center and replace `I3,I2,I1` below with its coordinates:
-
-```bash
-PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
-  --data-root "$PYOSV_F3D_DATA_ROOT" \
-  --comparison-profile quality-workflow-scanner-thinning-v1 \
-  --center I3,I2,I1 \
-  --crop-shape 128,128,100 \
-  --interior-margin 40 \
-  --save-volumes \
-  --save-figures \
-  --write-markdown-index \
-  --fail-on-validation-failure \
-  --output-json outputs/3d/f3d/scanner_thinning_policy_large_001/metrics.json \
-  --pretty
-```
-
-At least one large crop must be run and reviewed before considering a default
-change. Record both the requested center and effective crop bounds in evidence,
-especially when an axis spans most or all of the source volume.
-
-### Automatic External-Smoke Checks
-
-The report calls its result `policy_validation`, with role
-`truthless_external_smoke`; it must not call this an F3 promotion gate. Public
-F3 `fv.dat` and `fvt.dat` are useful spatial smoke references but are not
-independent truth labels.
-
-The default validation checks are:
-
-1. The shared scanner execution count equals the crop count. Running the raw
-   scanner separately for the two policies fails the contract.
-2. `ft`, `pt`, `tt`, `fet`, `fpt`, `ftt`, `fv`, `vp`, `vt`, and `fvt` are finite
-   for both policies on every crop.
-3. `fet`, `fv`, and `fvt` are nonempty for both policies on every crop. A crop
-   where both branches are empty is not comparison evidence.
-4. Candidate/baseline FVT nonzero-density ratio is within `[0.5, 2.0]` on every
-   crop and in the aggregate. Record the worst crop as well as the aggregate.
-5. Candidate minus baseline FVT edge-density proxy is at most `0.10`. Record
-   both the largest per-crop increase and the aggregate mean increase.
-6. Candidate sparse-distance p95 against public F3 `fvt.dat` is no more than
-   `5.0` samples worse than baseline on every crop and in the aggregate. This is
-   a conservative extreme-motion smoke, not a truth claim.
-7. Candidate FVT-density coefficient of variation across crops is at most
-   `2.0`. Also report its change from the baseline coefficient of variation.
-8. Recursive effective-config comparison permits only `scanner_thin_mode` and
-   the derived `effective_remove_edge_effects` value to differ. At the
-   user-specified config level, only `scanner_thin_mode` may differ.
-
-In addition to the existing normalized-correlation, top-percentile-overlap,
-buffered-ridge-overlap, sparse-distance, finite, orientation, and edge-density
-metrics, report `fet`, `fv`, and `fvt` nonzero fractions explicitly. Direct
-policy diagnostics include baseline/candidate FVT buffered overlap and sparse
-distance, candidate-only and baseline-only ridge fractions, and the
-candidate-only fraction within the edge shell. These locate changes; they do
-not by themselves rank geological quality.
-
-### Visual and Manual Review
-
-Generate the existing F3 reference-versus-policy slices, ridge overlays, MIPs,
-FV diagnostics, and center slices for each policy. Also generate direct
-baseline-versus-candidate FVT slices, a combined ridge overlay,
-candidate-only/baseline-only ridge masks, and an edge-shell ridge overlay. The
-Markdown index should place baseline and candidate views next to one another
-and tabulate FVT density, edge-density proxy, public-FVT distance p95, buffered
-precision/recall, candidate/baseline density ratio, and validation result for
-each crop.
-
-Automatic checks are necessary but not sufficient. Record a manual decision and
-notes for all of the following before considering a default change:
-
-- Major fault-surface continuity is preserved or improved.
-- Weak and small faults have not disappeared broadly.
-- Candidate-only ridges have not increased as random-looking noise.
-- Geologically implausible parallel ridges have not increased.
-- Planar artifacts do not appear near crop faces.
-- Strike and dip do not become locally discontinuous.
-- Large geologically plausible structures present only in the baseline have not
-  been removed.
-
-### Compact Evidence
-
-Generated DAT volumes, PNG figures, the full `metrics.json`, and generated
-Markdown stay under ignored `outputs/` paths and are not committed. After both
-formal runs and manual review are complete, commit only a compact manifest at:
+This diagnostic runs one shared `reference-like` scan per crop, then branches
+scanner thinning:
 
 ```text
-tests/fixtures/f3d_scanner_thinning_policy/
-  quality_reference_like_normal_v1_evidence.json
+shared ft / pt / tt
+  -> reference scanner thinning -> independent quality downstream path
+  -> normal scanner thinning    -> independent quality downstream path
 ```
 
-It should record policy IDs, source commit and clean/dirty state, Python/NumPy/
-SciPy versions, F3 input SHA-256 values or an unambiguous dataset fingerprint,
-requested centers and effective crop bounds, crop shapes, automatic validation
-results, principal aggregate metrics, explicit manual-review results, and the
-SHA-256 values of `metrics.json` and `visual_report.md`. Do not create a passing
-F3 evidence fixture before both formal runs and human review have passed. A
-compact manifest for the failed 64^3-by-3 run is committed at the path above;
-it explicitly records `manual_review=pending_human_review` and
-`large_crop=not_run_prerequisite_failed`, and is not a promotion artifact.
+Both branches use the quality workflow and `hybrid_v2` voter thinning. Each
+branch supplies its own scanner-thinned `fet` as the plateau tie-breaker. The
+report role is `truthless_external_smoke`; public FVT remains a comparison
+reference.
 
-Run the thinning ablation report to compare normal/normal, mixed, and
-reference/reference thinning cases:
+`--outlier-diagnostics` adds signed-amplitude and public-FVT displacement
+inspection. `--context-crop-index` with `--context-crop-shape` recomputes the
+same global base ROI from a larger context. Display-only ridge thresholds do
+not alter metric masks or validation.
+
+### Thinning ablation
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python examples/report_3d_f3d_thinning_ablation.py \
-  --output-json outputs/3d/f3d/thinning_ablation_001/metrics.json \
+  --output-json outputs/3d/f3d/thinning_ablation/metrics.json \
   --count 3 \
   --crop-shape 64,64,64 \
   --interior-margin 16 \
@@ -906,272 +695,78 @@ python examples/report_3d_f3d_thinning_ablation.py \
   --write-markdown-index
 ```
 
-The crop and full F3 reports also include `voting.orientation`, a report-only
-summary for `vp_py.dat` and `vt_py.dat`. It records finite and nonzero sample
-counts plus strike/dip mean, standard deviation, median, and median absolute
-deviation on the high-`fv_py.dat` mask. To inspect the effect of surface
-orientation smoothing, run the same crop twice and compare that block. Keep
-`--surface-smoothing1` and `--surface-smoothing2` unchanged for this check;
-those flags control dynamic-programming surface extraction, not orientation
-re-estimation:
+This isolates scanner and voter thinning combinations. Record scanner thinning
+and voter thinning separately when interpreting the result.
+
+### Large-crop diagnostic
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/run_3d_f3d_crop_validation.py \
-  --output-dir outputs/3d/f3d/orientation_smoothing_default \
-  --pretty
-
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/run_3d_f3d_crop_validation.py \
-  --output-dir outputs/3d/f3d/orientation_smoothing_off \
-  --surface-orientation-smoothing 0 \
-  --pretty
-```
-
-Do not commit full generated reports as fixtures. Generated JSON, PNG, Markdown,
-and `.dat` outputs belong under `outputs/` or another ignored working directory.
-A compact evidence manifest containing selected metrics, review results, and
-artifact hashes is allowed when a validation workflow explicitly requires one;
-it is not a substitute for retaining the generated files outside git.
-
-## Large Crop Manual Validation
-
-> **Optional diagnostic only:** This large-crop workflow is not publication
-> comparison evidence or an independent statistical replicate. Its historical
-> checks do not define the full-volume publication protocol.
-
-The `(128, 128, 100)` crop preset is an explicit long-running manual validation,
-not part of regular checks or CI. It runs the scanner, thinning, voting, and
-voter thinning on a substantially larger crop:
-
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python examples/run_3d_f3d_crop_validation.py \
   --large-crop-preset \
   --max-crops 1 \
   --output-dir outputs/3d/f3d/large_crop_001
 ```
 
-The opt-in pytest wrapper is also manual:
+The crop runner does not provide content-addressed partial-stage resume. Use a
+fresh output directory after interruption.
 
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-PYOSV_RUN_F3D_LARGE_CROP_PIPELINE=1 \
-python -m pytest -q tests/test_f3d_large_crop_validation.py -s
-```
+Visualization rules for full-volume and crop outputs are documented in
+[F3 Visual Diagnostics](f3d_visual_diagnostics.md).
 
-If a large crop run is interrupted, rerun the command into a fresh output
-directory. The crop validation script does not currently reuse partial scanner
-or voting stages.
+## Output policy
 
-## Dense reskin same-parent F3 evidence
+- Keep `PYOSV_F3D_DATA_ROOT` read-only.
+- Write generated bundles, crops, reports, figures, and DAT files under
+  `outputs/` or another ignored working directory.
+- Do not commit the public F3 DAT files.
+- Do not commit routine generated DAT volumes, PNG figures, or full report
+  bundles.
+- Source-controlled fixtures must be intentionally bounded test contracts; do
+  not copy individual run hashes or experiment outcomes into permanent
+  documentation.
 
-`compare_reskin_policies_from_parent()` in
-`pyosv.evaluation.f3d_mode_comparison.reskin_policy_comparison` accepts one
-immutable `fv/fvt/vp/vt` parent plus the scanner target mask used by boundary
-fallback, and branches only the skinning `reskin_policy`. Its report records
-one shared upstream SHA-256 fingerprint, both canonical skin artifacts,
-generation diagnostics, link topology, and skin topology. It also compares
-each policy's skin mask with the positive ridge mask from the shared parent
-`fvt`, using the existing buffered surface overlap and surface-distance
-metrics. The report records the source cell's shared skinning configuration,
-resolved variant, scanner-target mask source and epsilon, and both full
-effective skinning configurations. A canonical
-`comparison_config_fingerprint` binds that configuration; the two effective
-configs must differ only in `reskin_policy`. Parent FVT is comparison evidence,
-not independent geological truth.
-Use
-`SyntheticSkinningConfig(method="quality", reskin=True)` with all other
-skinning controls fixed. The complete resolved skinning configuration is
-executed for each branch, including its boundary-skinner fallback policy.
-
-Persist the returned report with
-`write_f3_reskin_policy_comparison(report, output_dir)`. The versioned
-dedicated artifact set is:
-
-```text
-reskin_policy_comparison.json
-reskin_policy_metrics.csv
-reskin_policy_comparison.md
-existing_cells_v1_skins.json
-reference_dense_v1_skins.json
-complete.json
-```
-
-Report and completion schema version 4 bind the scanner, voting, and thinning
-stage fingerprints, include the scanner target mask in the shared parent
-content fingerprint, and bind the comparison to the source run fingerprint,
-recorded numerical runtime identity, and comparison implementation identity.
-Version 3 comparisons are legacy artifacts and are rejected without implicit
-upgrade. Versioned, bounded scalar evidence records the overlap counts,
-directional distance accumulators, and the lower/upper order statistics needed
-for every published quantile. Shallow validation re-derives the public
-parent-ridge metrics and policy contrast from this evidence. Deep validation
-also regenerates the evidence from parent FVT and the canonical skin artifacts.
-
-Shallow comparison validation checks the serialized skin container together
-with the eight recorded link-topology scalars using only graph algebra and
-safety invariants. It checks non-negative integer types, zero reciprocal-link,
-cross-skin, and self-link violations, quad-closure accounting and bounds, and
-the component bounds for `N=skin_topology.cell_count`,
-`S=skin_topology.skin_count`, `Q=single-cell serialized skin count`,
-`C=linked_component_count`, and `I=isolated_cell_count`. Because `skins.json`
-does not serialize the `ca`/`cb`/`cl`/`cr` edges, shallow validation does not
-reconstruct the exact link graph and does not derive `C` or `I` from policy or
-fallback provenance. For `N=0`, it requires `S=C=I=0`; otherwise it requires
-`1 <= S <= C <= N`, `Q <= I <= C`, and
-`2 * (C - I) <= N - I`, including the corresponding all-components and
-all-isolated equalities. Explicit deep comparison validation performs the
-same-runtime skin-only replay and compares the complete report, including the
-link-topology scalars, by canonical JSON. This is the authoritative exact
-link-topology gate; the comparison remains outside cryptographic tamper
-prevention scope.
-
-The CSV is long-form and retains explicit zero-denominator status for
-generation fractions, support, and generated-likelihood summaries. The
-Markdown displays generation, support, parent-ridge correspondence, and link
-violations. Both expose the config fingerprint, metric-evidence version, and
-validation level without expanding every evidence scalar. A comparison
-generated without exact replay records `validation_level="shallow"`;
-`deep=True` promotes it to `"deep"` only after replay succeeds.
-`validate_f3_reskin_policy_comparison(..., require_deep=True)` rejects a
-shallow-only completion while checking saved deep evidence without replay.
-`validate_f3_reskin_policy_comparison(..., deep=True)` is the explicit
-current-runtime exact-replay path. In contrast, the comparison API's
-`resume=True, deep=True` on an already deep-complete comparison only reuses
-the saved deep evidence and does not reopen parent DAT files or rewrite
-comparison artifacts.
-The CLI exposes the same distinction: `--validate-only --compare-reskin-policies
-existing_cells_v1,reference_dense_v1` strictly validates the existing comparison
-without current-runtime access, while adding `--deep-validate` explicitly
-replays it in the current matching runtime. Validation never generates,
-promotes, resumes, or rewrites the comparison artifacts.
-For a completed source bundle, `--resume --compare-reskin-policies
-existing_cells_v1,reference_dense_v1` takes a comparison-only path: it first
-validates the recorded bundle provenance, file set, fingerprints, hashes, stage
-bindings, and runtime identity, then reuses the Q-QUAL parent artifacts without
-recomputing source stages. Source-run implementation identity and comparison
-implementation identity are recorded and validated as separate provenance.
-With `--deep-validate`, a new or shallow comparison performs the skin-only
-exact replay during comparison generation; an already deep-complete comparison
-also performs the explicit current-runtime deep replay before the CLI succeeds.
-
-Canonical `skins.json` permits `skin_count == 0`, but every serialized skin
-container must contain at least one cell. Shallow link validation checks the
-serialized container and link-topology scalars using graph algebra and safety
-invariants; it does not reconstruct unserialized link edges. Exact link scalar
-values remain authoritative only through explicit same-runtime deep replay.
-This dedicated evidence does not add unversioned fields to the canonical F3
-result bundle.
-
-The external full-volume F3 comparison was not run for the dense-reskin gate
-in this change. Run the reproducible same-parent comparison with:
-
-```bash
-python -m pyosv.cli.f3d_mode_comparison \
-  --data-root "$PYOSV_F3D_DATA_ROOT" \
-  --compare-reskin-policies existing_cells_v1,reference_dense_v1 \
-  --deep-validate \
-  --output-dir outputs/3d/f3d/dense_reskin_candidate
-```
-
-The CLI completes the canonical F3 run, then reads the `Q-QUAL` cell's exact
-scanner, voting, and thinning artifacts and branches only the reskin policy.
-Generating, regenerating, or deep-validating this numerical comparison requires
-the current process to have the exact same publication-valid numerical runtime
-identity recorded by the source bundle. Shallow validation and resume of an
-already complete comparison inspect saved provenance without querying the
-current runtime.
-The comparison option does not override the canonical run's reskin setting.
-It writes the six dedicated files above under
-`outputs/3d/f3d/dense_reskin_candidate/reskin_policy_comparison/`. The JSON
-records all three upstream stage fingerprints as well as the shared parent-content
-fingerprint. To regenerate the evidence from an already complete matching
-bundle, rerun the same command with `--resume`.
-
-A real-data review must retain the returned report beside the two canonical
-artifacts and perform visual review. Synthetic gate success alone must not be
-described as F3 promotion or as a default change.
-
-## Output Policy
-
-- Never write into `PYOSV_F3D_DATA_ROOT`.
-- Write generated reports and volumes under `outputs/` or another ignored
-  working directory.
-- Do not commit reference `.dat` files or generated `.dat` outputs.
-- Do not commit generated PNGs or full F3 report JSON/Markdown. Commit only an
-  explicitly documented compact evidence manifest. A passing manifest requires
-  all required runs and review; a failed-run manifest must preserve the failure
-  and unfinished-review status without implying promotion.
-
-The F3 scripts reject output paths inside the data root.
+The CLI rejects output paths inside the recorded or explicitly supplied data
+root.
 
 ## Interpretation
 
-`pyosv` uses practical approximations for Mines JTK interpolation and filtering.
-For example, interpolation is based on SciPy primitives rather than JTK sinc
-interpolation, and smoothing may use SciPy Gaussian-style filters rather than
-JTK recursive filters.
+PyOSV approximates Mines JTK interpolation and recursive filtering with
+Python/SciPy numerical kernels. Bitwise equality with Java, Jython, or Mines JTK
+is not required.
 
-F3 reference agreement measures how closely a result resembles the public
-reference outputs. It is distinct from quality: agreement alone does not
-establish more accurate geology, better topology, or better skin recovery. A
-full-volume publication comparison reports reference agreement, spatial
-continuity, density, boundary behavior, and runtime/resource cost. Interior and
-boundary results remain regional views of the one F3 evaluation unit.
+Use F3 reports to inspect:
 
-Reference comparisons should use practical metrics and visual review, such as:
+- finite-value and range summaries;
+- density and sparsity;
+- normalized correlation and public-reference agreement;
+- exact and buffered ridge overlap;
+- directional sparse-ridge distance;
+- scanner/workflow contrasts and interaction diagnostics;
+- boundary behavior;
+- orientation consistency between matrix cells;
+- skin count, size, continuity, generation, and link safety;
+- runtime, memory, and storage cost;
+- fixed, predeclared visual comparisons.
 
-- finite-value summaries
-- normalized correlation
-- top-percentile overlap
-- sparsity checks
-- visual checks of fault ridges and thinned volumes
+A high public-reference score does not prove geological correctness. A lower
+public-reference score does not by itself prove a quality regression. Interpret
+F3 with the controlled truth experiments documented in
+[Controlled Synthetic Quality](synthetic_quality.md).
 
-For general reference reports, these F3 metrics remain comparison fields rather
-than acceptance thresholds. Read them in context with targeted synthetic tests.
-The dedicated scanner-thinning policy report is the explicit exception: it
-applies the conservative truthless external-smoke limits documented above to
-detect extreme density, edge, movement, or stability failures. Passing those
-limits is not proof that public F3 volumes are truth and does not replace visual
-review. Those historical crop gates, including crop-to-crop stability, are
-diagnostic evidence and are not current publication acceptance criteria.
+The derived read-only publication report built from completed Synthetic and F3
+source bundles is documented in
+[Mode Comparison Publication Bundle](mode_comparison_publication.md).
 
-Accuracy, orientation error, skin recovery, and topology claims belong to the
-known-truth experiments documented in
-[Controlled Synthetic Quality](synthetic_quality.md), not to F3 reference
-comparison.
+## Related specifications
 
-For the canonical planned full-volume publication figure contract, and for the
-separately identified current crop PNG, ridge-overlay, MIP, histogram, and
-multi-crop diagnostic workflows, see
-[`docs/f3d_visual_diagnostics.md`](f3d_visual_diagnostics.md).
-
-For historical crop-based reference-like thinning diagnostics, the first
-expected improvements are not necessarily high voxel-wise correlation. The
-main checks are:
-
-- `fvt` `nonzero_fraction` moving closer to the reference.
-- `buffered_ridge_overlap.interior.fvt.buffered_f1` improving.
-- sparse ridge distance medians decreasing.
-- ridge overlay figures showing fewer far-away candidate-only ridges.
-- exact overlap remaining interpretable even when it is low for sparse ridges.
-
-Previous normal/normal baseline context:
-
-```text
-normalized_correlation.interior.fvt.mean ~= 0.224
-buffered_ridge_overlap.interior.fvt.buffered_f1.mean ~= 0.075
-exact fvt ridge overlap F1/Jaccard = 0.0
-```
-
-Do not claim success until actual ablation results are generated and reviewed.
-
-No bitwise equality with Java, Jython, or Mines JTK output is expected.
-
-# Publication-derived reporting
-
-The read-only publication bundle built from a completed full-volume F3 result
-is documented in [mode_comparison_publication.md](mode_comparison_publication.md).
-It uses the public F3 data identity and existing stage artifacts without
-rerunning the experiment.
+- [Mode Comparison Contract](mode_comparison.md)
+- [Mode Comparison Publication Bundle](mode_comparison_publication.md)
+- [F3 Visual Diagnostics](f3d_visual_diagnostics.md)
+- [Controlled Synthetic Quality](synthetic_quality.md)
+- [Quality Workflow Mode](quality_mode.md)
+- [3D Orientation Scanning](orient3d.md)
+- [3D Voting Conventions](3d_voting.md)
+- [Reference-Like 3D Thinning](reference_like_thinning.md)
+- [Skinning](skinning.md)
+- [Reference-First Equivalence Policy](equivalence_policy.md)
