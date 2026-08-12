@@ -124,8 +124,45 @@ def test_f3_file_order_does_not_change_publication_id() -> None:
     )
     second = deepcopy(first)
     second["datasets"]["f3"]["files"].reverse()  # type: ignore[index]
+    second_original = deepcopy(second)
 
-    assert _build(first)["publication_id"] == _build(second)["publication_id"]
+    first_manifest = _build(first)
+    second_manifest = _build(second)
+
+    assert second == second_original
+    assert [
+        item["role"]
+        for item in first_manifest["datasets"]["f3"]["files"]  # type: ignore[index]
+    ] == ["input", "reference_fault_votes"]
+    assert first_manifest["publication_id"] == second_manifest["publication_id"]
+    assert first_manifest == second_manifest
+
+
+def test_validator_normalizes_f3_files_by_role() -> None:
+    parts = _parts()
+    parts["datasets"]["f3"]["files"].append(  # type: ignore[index]
+        {
+            "role": "reference_fault_votes",
+            "filename": "fp.dat",
+            "size": 67_200_000,
+            "sha256": SHA_C,
+        }
+    )
+    manifest = _build(parts)
+    reordered = deepcopy(manifest)
+    reordered["datasets"]["f3"]["files"].reverse()  # type: ignore[index]
+    reordered_original = deepcopy(reordered)
+
+    normalized = validate_publication_manifest(reordered, verify_publication_id=False)
+
+    assert reordered == reordered_original
+    assert [
+        item["role"]
+        for item in normalized["datasets"]["f3"]["files"]  # type: ignore[index]
+    ] == ["input", "reference_fault_votes"]
+    assert validate_publication_manifest(reordered) == manifest
+    without_id = {key: value for key, value in reordered.items() if key != "publication_id"}
+    assert compute_publication_id(without_id) == manifest["publication_id"]
 
 
 @pytest.mark.parametrize("field", ["created_at_utc", "derived"])
