@@ -16,6 +16,17 @@ For orientation vectors, `u` is the fault normal, `v` is the dip vector, and
 `(x1, x2, x3)` order even when they are sampled from global volumes stored as
 `(n3, n2, n1)`.
 
+## Dynamic-Programming Surface Contract
+
+`find_surface_3d` consumes a local cost volume with shape `(nw, nv, nu)` and
+returns a surface with shape `(nw, nv)`. Each surface sample stores the selected
+`u` lag for its `(w, v)` position.
+
+Recursive smoothing from the Mines JTK reference is approximated by the
+SciPy-backed smoothing helpers in `pyosv.filters`. The contract targets
+practical behavior for synthetic and interpretation workflows, not bit-exact
+Java output.
+
 `reference_osv/` is a read-only reference implementation. It is not a runtime
 dependency of `pyosv`, and generated outputs should not be written under that
 directory.
