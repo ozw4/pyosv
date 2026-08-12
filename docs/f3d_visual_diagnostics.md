@@ -1,280 +1,410 @@
 # F3 Visual Diagnostics
 
-Publication figures for the F3 mode comparison are derived from complete,
-full-volume outputs. Crop figures are local debugging or historical diagnostics
-only: crop locations are not evaluation samples, independent replicates, or
-repeated experiments. Figure families, slice and threshold selection, and
-display rules must be fixed before reviewing mode differences; results must not
-drive which views are shown.
+F3 visualization explains differences between the canonical scanner-backend ×
+workflow cells. It does not convert public F3 processing outputs into
+independent geological truth, and it does not replace controlled synthetic
+known-truth evaluation.
 
-F3 visualization helps explain scanner, voting, thinning, and skinning
-differences. It does not turn the public reference outputs into geological
-truth, and it does not replace the known-truth synthetic evaluation.
+Publication-facing figures use the complete F3 volume with shape
+`(420, 400, 100)` in repository order `(n3, n2, n1)`. The full volume is one
+evaluation unit. Slices, regional partitions, projections, and crops are views
+of that unit, not independent samples or statistical replicates.
 
-## Current Tools
+## Visualization entry points
 
-The package CLI now runs, resumes, and validates the canonical full-volume 2×2
-scanner-backend/workflow matrix:
+The canonical F3 source runner creates and validates the full-volume stage and
+scalar bundle. It does not import Matplotlib or write publication PNG files:
 
 ```bash
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
 PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```
 
-It produces the artifact and scalar diagnostic bundle but intentionally does
-not import visualization dependencies or generate the publication figure set
-below. PR4 figure generation remains planned.
+The derived publication command reads a completed Synthetic bundle, a completed
+F3 bundle, and the matching external F3 data root. It generates the fixed
+publication tables, figure-data CSV files, PNG figures, and Markdown report
+without rerunning scanner, voting, thinning, or skinning stages.
 
-Current visual tools are the crop and multi-crop commands documented in
-[Legacy/Internal Crop Diagnostics](#legacyinternal-crop-diagnostics), plus the
-static helpers in [`pyosv.viz`](visualization.md). Those helpers write
-deterministic center-slice comparisons, pairwise MIP and histogram diagnostics,
-ridge overlays, and targeted crop outlier/context figures. The existing
-`examples/run_3d_f3d_full.py` command remains a legacy single-path baseline and
-does not execute the canonical matrix.
-
-### Data Layout
-
-Use an external F3 data root. The local shared copy is:
+Install the visualization extra before generation:
 
 ```bash
-export PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv
+python -m pip install -e ".[viz]"
 ```
 
-That directory must contain the public reference volumes:
-
-```text
-/home/dcuser/public_data/field/F3/reference_osv/
-  ep.dat
-  fl.dat
-  fv.dat
-  fvt.dat
-  xs.dat
-```
-
-The files are read as big-endian `float32` volumes with shape
-`(420, 400, 100)` in `(n3, n2, n1)` order. Generated PNGs and generated `.dat`
-volumes belong in `outputs/` or another ignored working directory, never in the
-data root or `reference_osv/`.
-
-`xs.dat` is the signed input seismic amplitude image. `ep.dat` is the planarity
-attribute used as scanner input, while `fl.dat`, `fv.dat`, and `fvt.dat` are
-public-workflow attributes or processing results. None of those derived public
-volumes is independent geological truth.
-
-### Install Visualization Support
-
-PNG diagnostics require the optional visualization dependency:
+Generate the publication bundle with:
 
 ```bash
-python -m pip install -e ".[dev,viz]"
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
+  --synthetic-bundle <completed-synthetic-bundle> \
+  --f3-bundle <completed-f3-bundle> \
+  --f3-data-root "$PYOSV_F3D_DATA_ROOT" \
+  --environment-lock uv.lock \
+  --output-dir outputs/3d/mode_comparison_publication/publication_v1
 ```
 
-The core package does not require matplotlib unless visualization helpers are
-used.
+Validate an existing publication directory without source bundles, F3 data, or
+Matplotlib:
 
-## Planned Full-Volume Publication Figures
+```bash
+PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
+  --validate-only \
+  --output-dir outputs/3d/mode_comparison_publication/publication_v1
+```
 
-> **Planned figure scope:** The canonical full-volume comparison runner is
-> current, but this section defines the still-planned PR4 figure contract. It
-> does not define a current figure-generation command or generated image set.
+Validate-only checks the recorded file set, hashes, manifest links, and
+publication identity. It does not rerender figures, parse PNG dimensions, or
+re-evaluate figure semantics.
 
-All figure families operate on fully reconstructed F3 volumes in global
-coordinates. The public reference mapping and resulting panel column order are
-stage-specific:
+## Data contract
 
-| Stage | Public reference | Panel column order |
+The canonical F3 source bundle is derived from these public-reference roles:
+
+| Stage | Public reference | PyOSV stage artifact |
 | --- | --- | --- |
-| `ft` | `fl.dat` | public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
-| `fv` | `fv.dat` | public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
-| `fvt` | `fvt.dat` | public reference, `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
-| orientation (including strike and dip), confidence, skin, and other unmapped stages | none | `RL-REF`, `RL-QUAL`, `Q-REF`, `Q-QUAL` |
+| `ft` | `fl.dat` | scanner `ft.dat` |
+| `fv` | `fv.dat` | voting `fv.dat` |
+| `fvt` | `fvt.dat` | thinning `fvt.dat` |
 
-For a stage without a public reference, do not insert an empty public-reference
-panel, a reference from another stage, or a pseudo-truth volume. The four matrix
-labels and their scanner/workflow meanings are canonicalized in
-[Scanner, Workflow, Thinning, and F3 Reference Comparison](mode_comparison.md).
+The public files are big-endian `float32` volumes with shape
+`(420, 400, 100)`. The publication generator verifies the dataset identity
+against the completed F3 source bundle before reading spatial data.
 
-### Fixed Orthogonal Slices
+`xs.dat` is signed seismic amplitude used by selected crop diagnostics. It is
+not a public-reference target for the canonical `ft`, `fv`, or `fvt` figures.
 
-Slice indices are zero-based. For an axis of `size`, the main-figure center
-index is `size // 2`, and the appendix quartile indices are `size // 4`,
-`size // 2`, and `(3 * size) // 4`. Each resolved index must satisfy
-`0 <= index < size`. For the F3 repository-order shape
-`(n3, n2, n1) = (420, 400, 100)`, these rules resolve to:
+Generated files must be written outside `PYOSV_F3D_DATA_ROOT` and outside the
+completed source bundles.
 
-| Axis | Axis size | Center index | Appendix quartile indices |
-| --- | ---: | ---: | --- |
-| `i1` | 100 | 50 | 25, 50, 75 |
-| `i2` | 400 | 200 | 100, 200, 300 |
-| `i3` | 420 | 210 | 105, 210, 315 |
+## Publication figure artifacts
 
-The main figure shows the center slice for each axis. Slice indices must be
-fixed before matrix-cell results are reviewed. Do not hand-select slices
-because they make a difference look especially favorable, unfavorable, or
-clear. Every slice family uses the stage-specific panel column order defined
-above.
-
-### Maximum-Intensity Projections
-
-Produce maximum-intensity projections (MIPs) along each global axis. These
-figures review full-network density, continuity, and structures that appear in
-only one mode. A MIP is a projection of the same full-volume evaluation unit,
-not another sample.
-
-### Direct Difference Volumes and 2×2 Contrasts
-
-For each comparable stage, show the direct end-to-end difference
-`Q-QUAL - RL-REF` and these scanner/workflow contrasts:
+A publication directory contains:
 
 ```text
-scanner effect = 0.5 * [(Q-REF - RL-REF) + (Q-QUAL - RL-QUAL)]
-workflow effect = 0.5 * [(RL-QUAL - RL-REF) + (Q-QUAL - Q-REF)]
-interaction = (Q-QUAL - Q-REF) - (RL-QUAL - RL-REF)
+figure_data/
+  <figure_id>.csv
+figures/
+  <figure_id>.png
+report.md
 ```
 
-Compute each expression voxel by voxel on aligned full-volume outputs. These
-are diagnostic contrasts for the 2×2 configuration matrix, not inferential
-effects estimated from statistical replicates. Show their fixed slices and/or
-global-axis projections under the selection and scale rules below.
+Every generated PNG has a matching figure-data CSV with the same `figure_id`.
+The CSV records the scalar source rows or spatial rendering metadata used by the
+figure, including applicable fields such as:
 
-Compute a direct difference or 2×2 contrast only between volumes with the same
-processing stage, shape, global-coordinate registration, and support/mask
-contract. Do not subtract or combine volumes that fail any of these
-comparability conditions, or label their result as a contrast.
+- dataset and evaluation semantics;
+- source metric and processing stage;
+- condition and panel labels;
+- spatial axis and zero-based slice index;
+- slice-selection policy and selection score;
+- public-reference and candidate ridge thresholds;
+- display minimum, maximum, scale policy, and colormap;
+- signed-difference limits.
 
-Use a volume in these main-effect and interaction contrasts only when its input
-identity and every held-constant resolved setting match the other three cells
-under the [full-volume 2×2 contract](f3d_validation.md).
-Scanner backend and the workflow-owned settings are the only permitted cell
-differences. Do not interpret runs with different scanner thinning, edge
-policy, refinement within one backend, scanner/voting controls, or explicit
-overrides as the same 2×2 contrast; report such runs as a separate ablation or
-an explicitly named additional axis.
+`experiment.json` records the fixed slice-selection policy for the publication
+experiment. `report.md` links the figures and supplies their captions.
 
-### Mode-Only Ridge Maps
+`figure_data/*.csv` files are primary publication artifacts and participate in
+`publication_id`. PNG files and `report.md` are derived presentation artifacts
+and do not participate in `publication_id`. Both tiers are still size- and
+SHA-256-validated by `publication_manifest.json`.
 
-For each declared baseline/candidate comparison, classify ridge voxels as
-shared, baseline/reference-side only, or candidate/quality-side only. Use one
-common absolute threshold or one common top-percentile rule across all modes in
-the family. Do not optimize a separate threshold for each mode. Captions must
-identify the two compared outputs and the common rule.
+## Fixed scalar figures
 
-### Axis Profiles
+The publication bundle generates these F3 scalar figures from validated root
+CSV tables:
 
-Define spatial profiles across the full volume by aggregating, for every
-`i1`, `i2`, and `i3` index, appropriate quantities from this candidate set:
+| Figure ID | Meaning |
+| --- | --- |
+| `f3_normalized_correlation_by_stage` | Full-volume normalized correlation with the public stage reference for `ft`, `fv`, and `fvt`. |
+| `f3_buffered_f1_by_stage` | Positive-p99, radius-2 buffered ridge agreement for all three stages. |
+| `f3_sparse_distance_p95_by_stage` | Candidate-to-public and public-to-candidate sparse-ridge distance p95. |
+| `f3_nonzero_fraction_ratio_by_stage` | Candidate/public nonzero-density ratio by stage. |
+| `f3_runtime_breakdown` | Within-experiment attribution of shared and cell-owned F3 stages. |
 
-- mean likelihood
-- nonzero fraction
-- public-reference agreement
-- mode-only fraction
-- boundary-shell density
+The four matrix cells use the canonical order:
 
-Profiles are spatial diagnostics through one full-volume evaluation unit. Their
-index values are not independent samples or a statistical series.
+```text
+RL-REF, RL-QUAL, Q-REF, Q-QUAL
+```
 
-### Distribution Plots
+Sparse-distance null values remain missing; they are not rendered as zero.
+Runtime bars describe the recorded stage attribution within the experiment and
+are not isolated-process benchmarks.
 
-The distribution family includes:
+Regional and orientation diagnostics remain machine-readable tables:
 
-- likelihood percentile curves
-- nonzero-value distributions
-- absolute mode-difference distributions
-- strike circular-difference distributions
-- dip or normal-vector angular-difference distributions
-- component-size distributions, if connected components are computed
+```text
+f3_regional_summary.csv
+f3_orientation_summary.csv
+```
 
-Each plot must state its stage, mask or support, and included matrix cells.
-Angular plots must use the orientation convention shared by the underlying
-comparison, including circular treatment of strike. Strike circular differences
-and dip or normal-vector angular differences are comparisons between matrix
-cells only; without an independent public orientation reference, do not
-describe them as F3 accuracy.
+They are not converted into additional fixed PNG families. F3 orientation rows
+compare matrix cells with one another because no public F3 strike or dip truth
+is available.
 
-### Common Display Scale and Selection
+## Fixed spatial figure set
 
-For one stage and panel family, use a common absolute display range across all
-matrix cells or a range derived from their combined percentiles. Per-panel
-automatic contrast is prohibited. When the public reference appears in the
-same panel family, either include it when deriving the common range or label
-and explain its clearly separate scale. Difference and contrast plots use a
-zero-centered, symmetric negative/positive range.
+Spatial figures are generated for the global axes `i3`, `i2`, and `i1`.
+The corresponding 2-D array views are:
 
-The figure manifest must record every threshold, percentile, MIP axis, and
-display range used. For slices, it must record the axis name, axis size,
-zero-based resolved index, selection rule, and all slice indices used in the
-family. If physical or sample coordinates are available, record them alongside
-the index, never instead of it. Fix these rules before viewing the matrix-cell
-differences, and apply them consistently to the complete family.
+| Axis | Fixed index dimension | Displayed plane |
+| --- | --- | --- |
+| `i3` | axis 0 | `(n2, n1)` |
+| `i2` | axis 1 | `(n3, n1)` |
+| `i1` | axis 2 | `(n3, n2)` |
 
-### Boundary and Chunk-Seam Views
+Figure IDs use these patterns:
 
-The boundary shell and interior are regions of the same full volume. A
-boundary-only view can diagnose edge behavior, but it does not split F3 into
-additional samples or replicates. If an implementation uses chunking, the
-publication set must add a seam diagnostic after reconstruction in global
-coordinates so discontinuities, duplicate voxels, and missing voxels at chunk
-boundaries are visible.
+```text
+f3_<stage>_comparison_<selection_policy>_<axis>_<index>
+f3_fvt_ridge_overlay_<selection_policy>_<axis>_<index>
+```
 
-### Interpretation Constraints
+### Stage and selection coverage
 
-Closeness to a public reference is reference agreement, not proof of processing
-quality or geological accuracy. Interpret F3 figures together with synthetic
-known-truth results. F3 skin figures review continuity, fragmentation, and
-orientation consistency; without independent F3 truth labels, they do not
-measure skin truth accuracy.
+The fixed spatial coverage is:
 
-## Legacy/Internal Crop Diagnostics
+| Stage | `center` | `public_reference_peak` | `end_to_end_difference_peak` |
+| --- | --- | --- | --- |
+| `ft` | all three axes | all three axes | not generated |
+| `fv` | all three axes | all three axes | not generated |
+| `fvt` | all three axes | all three axes | all three axes |
 
-The following commands and interpretation notes preserve the current crop,
-multi-crop, outlier, and historical failed-check workflows. They are useful for
-local debugging and historical evidence only. They do not implement the planned
-full-volume publication contract, and selected crops must not be presented as
-evaluation samples or replicates.
+FVT ridge overlays are generated for `public_reference_peak` and
+`end_to_end_difference_peak` on all three axes. Center-slice ridge overlays are
+not part of the fixed publication set.
 
-### Small Crop Visual Report
+### `ft` panel layout
 
-Run one deterministic crop and write metrics, crop volumes, and PNG diagnostics
-under `outputs/`:
+Scanner output is shared between workflows for the same scanner backend, so the
+`ft` figure shows each scanner backend once:
+
+```text
+PUBLIC-REF fl.dat
+reference-like scanner ft
+quality scanner ft
+quality - reference-like signed difference
+```
+
+The signed difference is the quality scanner output minus the reference-like
+scanner output. The cell metadata is represented by `RL-REF` and `Q-REF`; the
+workflow labels do not create additional scanner arrays.
+
+### `fv` and `fvt` panel layout
+
+Voting and thinning figures use:
+
+```text
+PUBLIC-REF
+RL-REF
+RL-QUAL
+Q-REF
+Q-QUAL
+Q-QUAL - RL-REF signed difference
+```
+
+The signed panel is a descriptive end-to-end contrast between two aligned
+matrix cells. It is not an inferential treatment effect or a comparison of
+independent replicates.
+
+## Slice-selection rules
+
+All indices are zero-based. Ties use the smallest index.
+
+### Center
+
+For an axis of length `n`, the center index is `n // 2`. For the official F3
+shape this resolves to:
+
+| Axis | Length | Center index |
+| --- | ---: | ---: |
+| `i3` | 420 | 210 |
+| `i2` | 400 | 200 |
+| `i1` | 100 | 50 |
+
+### Public-reference peak
+
+For each stage and axis, the generator scans the public-reference slices and
+selects the index with the largest count of positive ridge samples at the
+validated public-reference p99 threshold.
+
+The selection is deliberately independent of candidate volumes. The
+publication generator reuses the threshold recorded in validated F3 metric
+evidence and does not recalculate a percentile from the publication-time data.
+
+### End-to-end difference peak
+
+For FVT, the generator selects the slice with the largest:
+
+```text
+sum(abs(Q-QUAL - RL-REF))
+```
+
+The score is evaluated one 2-D slice at a time. The generator does not
+materialize a full-volume candidate-minus-candidate array.
+
+## Ridge threshold and overlay contract
+
+F3 ridge overlays use the validated source selection:
+
+```text
+selection = positive_p99_radius2
+percentile = 99
+buffer radius = 2 voxels
+positive epsilon = 1e-6
+```
+
+The source metric evidence supplies:
+
+- one public-reference threshold per stage, consistent across the four cells;
+- one candidate threshold for each cell and stage.
+
+Candidate-specific thresholds are retained. A threshold from one cell is not
+silently reused for another cell, and publication generation does not recompute
+thresholds from stage volumes.
+
+Each FVT overlay contains four panels:
+
+```text
+PUBLIC-REF vs RL-REF
+PUBLIC-REF vs RL-QUAL
+PUBLIC-REF vs Q-REF
+PUBLIC-REF vs Q-QUAL
+```
+
+The categorical colors are:
+
+| Color | Meaning |
+| --- | --- |
+| red | public-reference ridge only |
+| blue | candidate ridge only |
+| white | exact ridge overlap |
+| cyan | radius-2 buffered match without exact overlap |
+
+Buffering is computed from a radius-sized 3-D slab around the displayed slice,
+so the displayed match category respects neighboring samples across the slice
+axis without loading a full duplicate mask volume.
+
+## Display-scale contract
+
+Normal `ft`, `fv`, and `fvt` panels in one figure share one `viridis` scale.
+The range comes from validated full-volume minimum and maximum evidence across
+the public reference and all normal candidate panels displayed in that figure.
+Per-panel automatic contrast is not used.
+
+Signed-difference panels use `coolwarm` and a zero-centered symmetric range:
+
+```text
+[-max(abs(displayed_difference)), +max(abs(displayed_difference))]
+```
+
+The difference limit is calculated from the displayed 2-D difference slice.
+Normal and difference panels therefore use separate, explicitly recorded scale
+contracts.
+
+Ridge overlays use categorical colors and do not share the scalar likelihood
+scale.
+
+## Memory and source-access behavior
+
+Publication spatial generation opens validated public and stage DAT files as
+read-only memory maps. Candidate stage volumes are resolved from their
+content-addressed scanner, voting, or thinning stage fingerprints.
+
+The generator:
+
+- reads normal spatial data by 2-D slice;
+- calculates signed differences after reading the two selected slices;
+- searches difference peaks one slice at a time;
+- closes opened stage memory maps after figure generation;
+- does not modify source bundles or public F3 files.
+
+This keeps figure generation derived-only and avoids allocating a full-volume
+signed-difference array.
+
+## Reading the publication figures
+
+A practical review sequence is:
+
+1. Confirm the matrix, dataset identity, and full-volume interpretation in
+   `experiment.json` and `report.md`.
+2. Read normalized correlation, buffered F1, sparse distance, and density ratio
+   together; no single F3 scalar is a geological quality score.
+3. Inspect center slices for fixed-position differences.
+4. Inspect public-reference-peak slices for high-ridge-density behavior selected
+   independently of candidates.
+5. Inspect the FVT end-to-end-difference peak for the largest displayed
+   `Q-QUAL` versus `RL-REF` slice discrepancy.
+6. Use ridge overlays to distinguish exact agreement, buffered displacement,
+   public-only ridges, and candidate-only ridges.
+7. Check `f3_regional_summary.csv` for boundary/interior context and
+   `f3_orientation_summary.csv` for pairwise orientation consistency.
+8. Read runtime and storage results as resource diagnostics, not quality
+   metrics.
+
+A public-only ridge is not automatically correct, and a candidate-only ridge is
+not automatically false. F3 figures require geological interpretation and
+should be read with the controlled synthetic known-truth results.
+
+## Current publication scope
+
+The fixed publication generator currently produces scalar plots, orthogonal
+stage slices, signed-difference slices, and FVT ridge overlays.
+
+The fixed set does not produce:
+
+- F3 MIP figures;
+- axis-profile plots;
+- value-distribution or histogram plots;
+- full-volume difference DAT files;
+- F3 spatial strike/dip accuracy panels;
+- F3 skin-truth accuracy figures;
+- hand-selected slices chosen after reviewing results.
+
+MIPs, histograms, and other exploratory views remain available through the
+optional `pyosv.viz` helpers or crop diagnostics, but they are not part of the
+publication figure contract.
+
+## Optional local crop diagnostics
+
+Crop diagnostics are useful for debugging, detailed amplitude review, and
+stage isolation. Their selected locations remain views of the same F3 survey
+and are not publication samples or replicates.
+
+### One-crop visual report
 
 ```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-PYOSV_RUN_F3D_CROP_PIPELINE=1 \
+PYOSV_F3D_DATA_ROOT=/path/to/external/reference_osv \
 python examples/run_3d_f3d_crop_validation.py \
+  --max-crops 1 \
   --output-dir outputs/3d/f3d/crop_visual_001 \
-  --save-figures \
   --save-volumes \
-  --pretty
-```
-
-The `PYOSV_RUN_F3D_CROP_PIPELINE=1` flag is only needed for the pytest wrapper,
-but keeping it in the environment is harmless for the script. The script writes
-`metrics.json` plus per-crop figure directories under `--output-dir`.
-
-### Multi-Crop Visual Report
-
-Run multiple deterministic crops when a single crop is not enough to determine
-whether a difference is local or systematic:
-
-```bash
-PYOSV_F3D_DATA_ROOT=/home/dcuser/public_data/field/F3/reference_osv \
-python examples/report_3d_f3d_multicrop.py \
-  --output-json outputs/3d/f3d/multicrop_visual_001/metrics.json \
   --save-figures \
-  --write-markdown-index \
   --pretty
 ```
 
-The multi-crop script requires `--output-json` when figure or markdown output
-is requested. It writes metrics to that JSON path, writes per-crop PNGs under
-`OUTPUT_JSON.parent/crop_###/figures/`, and writes `visual_report.md` next to
-the metrics JSON when `--write-markdown-index` is set. Use the markdown index as
-the first browsing surface, then open individual PNGs for detail.
+Automatic crop selection is margin-aware. Use `--center i3,i2,i1` for an
+explicit global center. Generated files belong under the output directory, not
+under the F3 data root.
 
-To compare the reference and quality workflows on the same crop centers, add
-`--compare-workflows`:
+### Multi-crop workflow comparison
 
 ```bash
 PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
@@ -285,55 +415,16 @@ PYTHONPATH=src python examples/report_3d_f3d_multicrop.py \
   --compare-workflows \
   --save-figures \
   --write-markdown-index \
-  --output-json outputs/3d/f3d/quality_external_smoke_001/metrics.json \
+  --output-json outputs/3d/f3d/multicrop_workflows/metrics.json \
   --pretty
 ```
 
-In compare mode, the JSON contains `workflows.reference`,
-`workflows.quality`, `consensus.workflows`, and
-`workflow_delta.quality_vs_reference`, so the markdown index shows both the
-reference and quality workflow results. It also contains top-level
-`quality_validation`, a truthless external smoke summary for quality promotion
-candidates. This smoke can flag obvious density explosion, edge-density
-increase, sparse-distance regression, finite metric failures, and extreme
-crop-to-crop instability, but it is not a substitute for the synthetic
-promotion gate. The quality workflow uses `hybrid_v2` voter thinning unless
-`--voter-thin-mode` is passed explicitly. The consensus section summarizes
-truthless crop-to-crop stability from the saved crop metrics, including fvt/fv
-nonzero density, fvt reference correlation, buffered ridge overlap, sparse
-ridge distance p95, finite-check failures, and an fvt edge-density proxy from
-full-crop minus interior density. In compare mode,
-`consensus.workflow_comparison.quality_minus_reference` reports the matching
-quality-minus-reference deltas. Figure directories are split by workflow, for
-example `figures/reference/crop_001/` and `figures/quality/crop_001/`, so the
-two runs do not overwrite each other. Support-aware voting is not a quality
-default in this report; pass explicit `--surface-support-*` overrides only for
-a diagnostic comparison.
+The report keeps reference and quality workflow figures in separate output
+directories. Its crop-level density, edge, stability, and public-reference
+checks are truthless diagnostics and do not replace the full-volume or
+controlled-synthetic contracts.
 
-Default quality smoke thresholds are intentionally loose: fvt density must not
-exceed `2.0x` the reference workflow, fvt edge-density proxy delta must not
-exceed `0.10`, and sparse distance p95 must not worsen by more than `5.0`
-samples. Override them with `--quality-density-max-ratio`,
-`--quality-edge-density-max-delta`, and
-`--quality-sparse-distance-max-delta` when a diagnostic run needs a different
-tolerance.
-
-For reference-like thinning diagnostics, run the same visual reports with
-`--scanner-thin-mode reference` and `--voter-thin-mode reference`, or run the
-dedicated ablation report. Copy-pastable commands are in
-`docs/f3d_validation.md#reference-like-thinning-validation`, and the thinning
-mode behavior is summarized in `docs/reference_like_thinning.md`.
-
-### Scanner-Thinning Distance-Outlier Review
-
-The scanner-thinning policy report has an opt-in review for candidate sparse
-ridges whose distance to public FVT is strictly greater than the baseline
-candidate-to-public p95 plus the unchanged `5.0`-sample allowance. It uses the
-same positive-only 99th-percentile masks, interior ROI, and unit-spacing 3D
-Euclidean distance as the automatic sparse-distance metric. Public FVT is a
-comparison reference here, not a truth label.
-
-Generate the three-crop review with:
+### Scanner-thinning outlier and context review
 
 ```bash
 PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
@@ -345,11 +436,12 @@ PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
   --outlier-diagnostics \
   --save-figures \
   --write-markdown-index \
-  --output-json outputs/3d/f3d/scanner_thinning_policy_64x3_outlier_review/metrics.json \
+  --output-json outputs/3d/f3d/scanner_thinning_outliers/metrics.json \
   --pretty
 ```
 
-For crop 1, add the exact same-global-ROI context comparison with:
+Recompute one crop in a larger context while comparing the same global base ROI
+with:
 
 ```bash
 PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
@@ -363,129 +455,51 @@ PYTHONPATH=src python examples/report_3d_f3d_scanner_thinning_policy.py \
   --context-crop-shape 128,128,100 \
   --save-figures \
   --write-markdown-index \
-  --output-json outputs/3d/f3d/scanner_thinning_policy_64x3_context_review/metrics.json \
+  --output-json outputs/3d/f3d/scanner_thinning_context/metrics.json \
   --pretty
 ```
 
-Each crop uses one symmetric seismic display range for every outlier and every
-panel. From finite samples in `xs_crop`, the report computes
-`clip = percentile(abs(xs_crop), amplitude_clip_percentile)` (default `99.0`)
-and displays grayscale amplitude with `vmin=-clip` and `vmax=clip`; a safe
-fallback is used if the clip is zero or non-finite. Panels are never auto-scaled
-independently.
+Outlier points measure candidate-to-public-reference displacement. They are not
+truth labels. Display contours may be broader than metric ridge masks to make a
+surface traceable; display-only thresholds must not alter the metric masks,
+outlier coordinates, persistence counts, or validation result.
 
-The optional review limits default to 64 stored points, 8 stored connected
-components, a 24-sample local window radius, and 3 adjacent slices on either
-side. Adjust them with `--outlier-max-points`, `--outlier-max-components`,
-`--outlier-window-radius`, and `--outlier-adjacent-slice-radius`. Adjust the
-symmetric amplitude percentile with `--amplitude-clip-percentile`; these options
-change diagnostic detail only, not validation thresholds.
+The larger-context path derives ROI mapping from bounded global slice starts and
+stops. It does not assume that the requested crop remains centered after a
+source-volume boundary adjustment.
 
-The orthogonal review passes the representative outlier's actual `i3`, `i2`,
-and `i1` slices, rather than only the crop-center slice. Its columns separate
-amplitude-only, public-FVT, baseline-FVT, candidate-FVT, and combined overlays.
-The metric and display masks are intentionally different. Public and baseline
-use their positive-only 99th-percentile metric masks and `0.8`-point contours.
-Candidate uses a positive-only 95th-percentile display mask and a `2.0`-point
-yellow contour. This top-5% line is broader than the candidate top-1% metric
-ridge so that it can be followed across amplitude panels; it is not used for
-distance, outlier selection, components, or validation. The magenta star stays
-at the original top-1% metric outlier coordinate, and the green cross stays at
-the nearest public top-1% point. The three adjacent-slice figures show the same
-display convention from `index-R` through `index+R` for each axis (default
-`R=3`), omitting out-of-crop slices and labelling the global index actually
-shown. Use them to distinguish a continuous ridge trend from a single-slice
-speck.
+## Optional static helpers
 
-Context figures use the same seismic amplitude, representative coordinate, and
-global base ROI to compare base candidate FVT, context-derived candidate FVT,
-their combined overlay, and base-only/context-only display masks. Both are
-candidate-policy outputs, so both display masks use the positive-only 95th
-percentile and `2.0`-point contours. Context persistence itself remains based on
-the 99th-percentile metric masks. A persistent ridge within two samples is
-evidence about context sensitivity only; it is not an automatic geological
-judgment. Preliminary outliers being 19--25 samples inside a crop does not
-itself eliminate context dependence because voting uses `rw=30` and clamps
-out-of-crop surface samples to the crop edge.
+`pyosv.viz` provides reusable Matplotlib helpers for exploratory diagnostics:
 
-The generated files live under paths such as:
+- deterministic orthogonal slices;
+- reference/candidate/difference panels;
+- buffered ridge overlays;
+- maximum-intensity projections;
+- value histograms.
 
-```text
-crop_001/policy_comparison/outlier_diagnostics/component_001/
-crop_001/policy_comparison/context_diagnostics/component_001/
-```
+These helpers follow the project axis and shape conventions. Their outputs are
+not publication artifacts unless they are generated through the fixed
+publication command and recorded in its manifest.
 
-`visual_report.md` includes a `Public-FVT Distance Outlier Review` section only
-when diagnostics are enabled. It embeds the orthogonal amplitude image and links
-the adjacent-slice and context images using paths relative to `metrics.json`.
+See [Optional Visualization Helpers](visualization.md) for the API.
 
-The currently recorded formal `3 x 64^3` automatic validation still passes
-seven of eight checks and fails the crop-1 public-FVT sparse-distance p95 check.
-Manual geological review remains pending. These figures do not relax the
-threshold, change a scanner/workflow default, create passing evidence, or
-constitute formal large-crop acceptance; the `128 x 128 x 100` run above is a
-diagnostic context ablation only. In report terms,
-`manual_review.status=pending` remains separate from the failed automatic
-result.
+## Output policy
 
-### Crop Figure Interpretation
+- Keep the external F3 data root read-only.
+- Keep completed source bundles immutable while deriving figures.
+- Write generated figures, CSV files, Markdown, and DAT files under `outputs/`
+  or another ignored working directory.
+- Do not commit public F3 DAT files or routine generated PNG/DAT report trees.
+- Do not copy individual experiment outcomes or artifact hashes into permanent
+  documentation.
 
-Use the figures to localize the mismatch before comparing scalar summary
-metrics:
+## Related specifications
 
-- `scanner_fl_vs_ftpy`: compare `fl.dat` against `ft_py.dat`; this shows scanner
-  agreement before voting.
-- `fv_ref_vs_py`: compare `fv.dat` against `fv_py.dat`; this shows voting score
-  agreement and broad amplitude differences.
-- `fvt_ref_vs_py`: compare `fvt.dat` against `fvt_py.dat`; this shows thinned
-  sparse ridge agreement.
-- `fvt_ridge_overlay`: inspect exact overlap, reference-only samples,
-  pyosv-only samples, and buffered matches for shifted ridges.
-- `fv_mip.png` and `fvt_mip.png`: compare broad 3D structural trends with
-  maximum-intensity projections.
-- `fv_hist.png` and `fvt_hist.png`: compare dynamic range, sparsity, and
-  near-zero behavior.
-
-For side-by-side slice panels, first look for obvious orientation, crop, or
-boundary effects. For ridge overlays, distinguish an actual missing ridge from
-a ridge that is consistently shifted by one or two samples.
-
-### Why Correlation Is Not Enough For `fvt`
-
-`normalized_correlation` is useful for dense volumes such as `fv`, but `fvt` is
-a sparse thinned ridge volume. In sparse volumes, a small spatial shift can
-produce poor sample-wise correlation even when the geological ridge trend is
-visually close. The opposite can also happen: background zeros can make summary
-statistics look less alarming while ridge placement is still wrong.
-
-For `fvt`, always inspect ridge overlays and sparse-ridge metrics such as
-buffered overlap and ridge-distance summaries. Treat correlation as one signal,
-not as the tuning target.
-
-When comparing F3 reference and quality workflows, remember that the F3 data has
-no independent truth volume. A higher match to the reference workflow is not, by
-itself, higher processing quality. Use the side-by-side crops to check that the
-quality workflow preserves geological signal, does not add excessive ridges or
-boundary artifacts, and remains consistent across crop locations.
-
-F3 visual diagnostics require the external F3 data root. CI should exercise the
-JSON and markdown structures with mocks/fixtures only; do not make real F3
-volumes mandatory for automated tests.
-
-For reference-like thinning experiments, first look for `fvt` sparsity moving
-closer to the reference, better buffered ridge overlap, smaller sparse-ridge
-distance medians, and fewer far-away candidate-only ridges. Exact overlap may
-remain low for sparse ridges, so do not claim success until the ablation report
-has been generated and reviewed.
-
-### Recommended Crop Diagnostic Order
-
-1. Inspect scanner-only `fl_ref` versus `ft_py` figures.
-2. Inspect `fv` side-by-side slice panels and MIPs.
-3. Inspect `fvt` side-by-side panels and ridge overlays.
-4. Read buffered ridge overlap and sparse-ridge distance metrics.
-5. Repeat across the multi-crop report for consistency.
-6. Tune parameters only after the difference mode is understood.
-
-Visualization is diagnostic. These reports are meant to explain behavior and
-guide focused experiments; they are not production pass/fail thresholds.
+- [F3 3D Reference Data Validation](f3d_validation.md)
+- [Mode Comparison Contract](mode_comparison.md)
+- [Mode Comparison Publication Bundle](mode_comparison_publication.md)
+- [Controlled Synthetic Quality](synthetic_quality.md)
+- [Quality Workflow Mode](quality_mode.md)
+- [Optional Visualization Helpers](visualization.md)
+- [Reference-First Equivalence Policy](equivalence_policy.md)
