@@ -10,7 +10,6 @@ from pyosv.evaluation.publication_experiment import build_publication_experiment
 
 from .config import CANONICAL_STAGE_ORDER, FIGURE_SELECTION_POLICY
 from .models import PublicationReport
-from .registry import PUBLICATION_METRIC_REGISTRY
 
 __all__ = ["adapt_publication_sources"]
 
@@ -18,6 +17,19 @@ __all__ = ["adapt_publication_sources"]
 def adapt_publication_sources(report: PublicationReport) -> dict[str, object]:
     """Copy validated source identities into path-independent publication v1 inputs."""
     dataset = _adapt_f3_dataset(report)
+    metric_keys = sorted(
+        {
+            "/".join(
+                (
+                    str(row["dataset"]),
+                    str(row["stage"]),
+                    str(row["selection"]),
+                    str(row["metric"]),
+                )
+            )
+            for row in report.tables["publication_metrics.csv"]
+        }
+    )
     experiment = build_publication_experiment(
         synthetic=_synthetic_experiment(report),
         f3={
@@ -28,7 +40,7 @@ def adapt_publication_sources(report: PublicationReport) -> dict[str, object]:
         },
         publication={
             "stage_order": list(CANONICAL_STAGE_ORDER),
-            "metric_keys": ["/".join(entry.identity) for entry in PUBLICATION_METRIC_REGISTRY],
+            "metric_keys": metric_keys,
             "slice_selection_policy": json.loads(
                 json.dumps(FIGURE_SELECTION_POLICY, allow_nan=False)
             ),

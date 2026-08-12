@@ -18,9 +18,6 @@ from pyosv.evaluation.mode_comparison_publication.models import (
     PublicationReport,
     SyntheticSourceBundle,
 )
-from pyosv.evaluation.mode_comparison_publication.registry import (
-    PUBLICATION_METRIC_REGISTRY,
-)
 from pyosv.evaluation.mode_comparison_publication.v1_adapter import (
     adapt_publication_sources,
 )
@@ -113,7 +110,23 @@ def _report(root: Path) -> PublicationReport:
         metric_evidence=(),
         dataset_identity=dataset_identity,
     )
-    return PublicationReport(synthetic=synthetic, f3=f3, tables={})
+    tables = {
+        "publication_metrics.csv": (
+            {
+                "dataset": "synthetic",
+                "stage": "scanner_raw",
+                "selection": "top_truth_count",
+                "metric": "buffered_f1",
+            },
+            {
+                "dataset": "f3",
+                "stage": "fvt",
+                "selection": "positive_p99",
+                "metric": "jaccard",
+            },
+        )
+    }
+    return PublicationReport(synthetic=synthetic, f3=f3, tables=tables)
 
 
 def test_adapts_validated_sources_to_path_independent_v1_inputs(tmp_path: Path) -> None:
@@ -169,7 +182,10 @@ def test_adapts_validated_sources_to_path_independent_v1_inputs(tmp_path: Path) 
     assert metric_keys == sorted(set(metric_keys))
     assert experiment["publication"] == {
         "stage_order": list(CANONICAL_STAGE_ORDER),
-        "metric_keys": sorted("/".join(entry.identity) for entry in PUBLICATION_METRIC_REGISTRY),
+        "metric_keys": [
+            "f3/fvt/positive_p99/jaccard",
+            "synthetic/scanner_raw/top_truth_count/buffered_f1",
+        ],
         "slice_selection_policy": json.loads(json.dumps(FIGURE_SELECTION_POLICY)),
     }
 
@@ -177,6 +193,25 @@ def test_adapts_validated_sources_to_path_independent_v1_inputs(tmp_path: Path) 
     for path in (report.synthetic.path, report.f3.path, report.f3.data_root, tmp_path):
         assert str(path) not in serialized
     assert "runtime_identity" not in serialized
+
+
+def test_experiment_metric_keys_match_published_metric_rows_when_skinning_is_disabled(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    report = replace(
+        report,
+        synthetic=replace(report.synthetic, skinning_enabled=False),
+    )
+
+    experiment = adapt_publication_sources(report)["experiment"]
+
+    assert experiment["synthetic"]["skinning_enabled"] is False
+    assert experiment["publication"]["metric_keys"] == [
+        "f3/fvt/positive_p99/jaccard",
+        "synthetic/scanner_raw/top_truth_count/buffered_f1",
+    ]
+    assert all("/skin/" not in key for key in experiment["publication"]["metric_keys"])
 
 
 def test_adapter_does_not_mutate_sources_and_returns_new_nested_values(tmp_path: Path) -> None:

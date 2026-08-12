@@ -117,6 +117,14 @@ def _report(root: Path) -> PublicationReport:
         },
     )
     tables = {filename: ({},) for filename in TABLE_HEADERS}
+    tables["publication_metrics.csv"] = (
+        {
+            "dataset": "synthetic",
+            "stage": "scanner_raw",
+            "selection": "top_truth_count",
+            "metric": "buffered_f1",
+        },
+    )
     return PublicationReport(synthetic=synthetic, f3=f3, tables=tables)
 
 
