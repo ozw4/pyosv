@@ -358,6 +358,47 @@ The reference example scripts read `ft.dat` and `pt.dat` from `reference_osv/`
 or `PYOSV_REFERENCE_OSV`, then write generated files such as `fv_py.dat` and
 `fvt_py.dat` under `--output-dir`. Keep that directory outside `reference_osv/`.
 
+## Mode Comparison Publication
+
+The publication workflow derives a report from completed Synthetic and F3
+source bundles; it does not rerun scanning, voting, thinning, or skinning.
+Synthetic results are known-truth metrics. F3 results measure agreement with
+the public reference and must not be interpreted as geological truth or
+accuracy.
+
+Generate a publication bundle with an existing environment lock:
+
+```bash
+PYTHONHASHSEED=0 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+NUMBA_DISABLE_JIT=0 \
+NUMBA_NUM_THREADS=1 \
+PYOSV_ACCEL=auto \
+PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
+  --synthetic-bundle <completed-synthetic-bundle> \
+  --f3-bundle <completed-f3-bundle> \
+  --f3-data-root "$PYOSV_F3D_DATA_ROOT" \
+  --environment-lock uv.lock \
+  --output-dir outputs/3d/mode_comparison_publication/publication_v1
+```
+
+Validate a completed bundle using only its recorded files:
+
+```bash
+PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
+  --validate-only \
+  --output-dir outputs/3d/mode_comparison_publication/publication_v1
+```
+
+The bundle is managed by `publication_manifest.json`; its integrity and
+provenance identity are not a cryptographic signature or an end-to-end
+experiment replay. See the
+[mode comparison publication guide](docs/mode_comparison_publication.md) for
+the output layout, artifact tiers, identity rules, and validation boundary.
+
 ## Equivalence Policy
 
 `pyosv` follows a reference-first policy for fault interpretation workflows:

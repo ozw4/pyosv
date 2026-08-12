@@ -23,8 +23,8 @@ _ENVIRONMENT_CONTROL_NAMES = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate a derived publication report from completed synthetic and F3 "
-            "mode-comparison bundles."
+            "Generate a publication-manifest-v1 derived report from completed "
+            "synthetic and F3 mode-comparison bundles."
         )
     )
     parser.add_argument("--synthetic-bundle", type=Path, help="Completed synthetic source bundle.")
@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--environment-lock",
         type=Path,
-        help="Environment lock file required for v1 generation.",
+        help="Existing environment lock copied into the generated bundle.",
     )
     parser.add_argument(
         "--pretty", action="store_true", help="Pretty-print publication JSON files."
@@ -44,7 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--validate-only",
         action="store_true",
-        help="Validate only an existing publication bundle; do not access sources or matplotlib.",
+        help=(
+            "Validate an existing bundle using only its recorded files; do not access "
+            "sources or visualization modules."
+        ),
     )
     return parser
 
