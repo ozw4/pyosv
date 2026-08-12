@@ -1,377 +1,189 @@
 # Controlled Synthetic Quality
 
-Controlled synthetic cases measure truth quality, not reference agreement. They
-are for checking whether a known fault geometry is recovered by the Python
-workflow without external-data confounds. The oracle path remains the main
-report path; scanner-inclusive checks start from a controlled synthetic
-planarity input contract.
+Controlled synthetic evaluation measures PyOSV output against known 3D fault
+geometry. It isolates numerical and geological behavior without requiring F3
+volumes, `reference_osv/`, Java, Jython, or Mines JTK.
 
-These validation modes answer different questions:
+Synthetic truth and reference agreement are different evaluation domains:
+
+- controlled synthetic metrics measure recovery against generated truth;
+- Java/reference reports measure agreement with an external implementation;
+- F3 reports measure agreement and structural differences on one real-data
+  volume without independent geological truth labels.
+
+Do not combine those meanings into one score or describe F3 public-reference
+agreement as synthetic truth accuracy.
+
+## Processing contract
+
+The stage order is:
 
 ```text
-reference comparison: is the implementation close to the original?
-controlled synthetic: is the result correct against known truth?
-F3 visual/multicrop: does the workflow avoid obvious failures on real data?
+synthetic truth
+  -> input selection
+  -> scanner
+  -> scanner thinning
+  -> voting
+  -> voter thinning
+  -> skinning
+  -> truth metrics and diagnostics
 ```
 
-## Input Paths
+The oracle path bypasses the scanner. The scanner path exercises every stage.
+Scanner backend, scanner thinning, workflow mode, voter thinning, and skinning
+are separate configuration choices.
 
-The report has three public input paths:
+## Public APIs
 
-```text
-oracle:
-  voting/thinning/skinning upper-bound and isolated downstream evaluation.
-
-scanner:
-  scanner + voting + thinning + skinning end-to-end synthetic evaluation.
-
-both:
-  diagnostic mode that compares oracle and scanner on the same truth geometry.
-```
-
-Oracle mode is the default and remains the backward-compatible report shape.
-It starts from synthetic truth attributes (`ft_oracle`, `pt_oracle`,
-`tt_oracle`) and is best read as the practical upper bound for the downstream
-voting, thinning, and skinning stages when the fault likelihood and orientation
-attributes are already controlled.
-
-Scanner mode is intentionally harder. It first converts the synthetic truth
-likelihood into a low-planarity surrogate, runs `FaultOrientScanner3`, and then
-passes scanner-derived attributes into the same downstream stages. Its metrics
-therefore include scanner errors as well as downstream voting/thinning/skinning
-errors and should not be expected to match oracle-mode scores.
-
-Both mode runs both paths for each `(case_id, variant)` using the same truth
-geometry. It is a diagnostic comparison mode, not a new pass/fail contract.
-Top-level `pyosv` and `quality` alias the oracle pipeline in both mode, while
-the canonical pipeline reports live under
-`cases[].pipelines.<pipeline>.variants.<variant>`.
-
-## Current Scope
-
-The controlled synthetic API includes:
-
-- `SyntheticPlaneSpec`
-- `SyntheticCurvedSurfaceSpec`
-- `SyntheticScannerInputConfig`
-- `Synthetic3DCase`
-- `generate_single_plane_case`
-- `generate_curved_surface_case`
-- `make_scanner_input_from_case`
-- `make_boundary_plane_case`
-- `make_crossing_planes_case`
-- `make_single_dipping_plane_case`
-- `make_single_vertical_plane_case`
-- `make_curved_surface_case`
-- `make_parallel_planes_case`
-- `make_weak_noisy_plane_case`
-- `ft` / `pt` / `tt` oracle attributes
-- top-k / truth-count masks
-- buffered surface overlap
-- edge false-positive ratio
-- surface distance metrics
-- masked orientation error
-- skin metrics, including skin topology metrics
-- minimal oracle pipeline smoke test
-- scanner-inclusive report/CLI pipeline
-- `examples/report_3d_synthetic_quality.py`
-- canonical scanner/workflow comparison CLI and atomic scalar bundle; see
-  [Synthetic Mode Comparison](synthetic_mode_comparison.md)
-
-### Report application and serialization API
-
-The package-level application entry points are available without importing CLI
-or artifact-writer code:
+Synthetic geometry is defined in `pyosv.synthetic3d`:
 
 ```python
-from pyosv.evaluation.synthetic_quality import build_report, run_case
+from pyosv.synthetic3d import (
+    Synthetic3DCase,
+    SyntheticCurvedSurfaceSpec,
+    SyntheticPlaneSpec,
+    SyntheticScannerInputConfig,
+    generate_curved_surface_case,
+    generate_single_plane_case,
+    make_boundary_plane_case,
+    make_crossing_planes_case,
+    make_curved_surface_case,
+    make_parallel_planes_case,
+    make_scanner_input_from_case,
+    make_single_dipping_plane_case,
+    make_single_vertical_plane_case,
+    make_weak_noisy_plane_case,
+)
 ```
 
-`build_report(...)` returns the stable legacy `format_version=1` report mapping
-without writing files. `run_case(...)` evaluates one
-`SyntheticQualityCaseDefinition` and returns its v1 case payload and volume
-mapping. The CLI in `pyosv.cli.synthetic_quality` calls this application layer;
-the example script remains a backward-compatible command entry point and
-contains no evaluation implementation. Tests import package APIs directly.
+Reusable evaluation entry points are exposed from
+`pyosv.evaluation.synthetic_quality`:
 
-The stage ownership, config/profile/variant resolution order, scanner reuse
-scope, and public/private module boundary are documented in
-[Architecture](architecture.md).
-
-`resolve_workflow_settings(...)` is the package-level, execution-free API for
-resolving the effective `SyntheticVotingConfig`, `SyntheticSkinningConfig`, and
-thinning-diagnostic flag for a workflow. Passing `voting_config=None` selects
-workflow defaults; passing an explicit `SyntheticVotingConfig`, including its
-default constructor, preserves every supplied field. Skinner explicit flags
-have the same override meaning as the report application.
-
-`pyosv.evaluation.reporting` exposes the immutable `Report`, `ReportConfig`,
-`CaseReport`, `PipelineReport`, `VariantReport`, and `VariantComparison` models,
-along with `report_to_json`, `write_metrics_json`, `summary_csv_text`,
-`write_summary_csv`, and the declarative `SUMMARY_CSV_V1_FIELDS` field order. Artifact writers live in
-`pyosv.evaluation.reporting.artifacts`, and visual-report Markdown generation
-lives in `pyosv.evaluation.reporting.markdown_v1`. These APIs preserve the v1
-JSON/CSV schema and the existing output tree; they do not introduce a new
-report format.
-
-### Promotion comparison API
-
-`pyosv.evaluation.promotion` exposes `SummaryRow`, `read_summary_rows`,
-`compare_reports`, and `build_promotion_report` for comparing summary CSVs and
-applying the scanner-boundary gate. A `SummaryRow` preserves unknown CSV
-columns in its `values` mapping, while missing or non-finite metric values are
-treated as `None`. Match keys deliberately exclude `variant`, so baseline and
-candidate variants may be selected from the same CSV. JSON remains
-`format_version=1`; the stable Markdown formatters are
-`comparison_markdown` and `promotion_markdown` in
-`pyosv.evaluation.promotion.markdown`.
-
-#### Scanner thinning policy comparison
-
-`scanner-thinning-policy-v1` evaluates scanner thinning as a policy above the
-variant layer. Generate its reference-thinning baseline and normal-thinning
-candidate as separate reports containing the same `current_default` variant.
-
-Baseline:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 49,49,49 \
-  --workflow-mode quality \
-  --variants current_default \
-  --input-mode both \
-  --scanner-backend quality \
-  --scanner-refinement-factor 2 \
-  --scanner-thin-mode reference \
-  --scanner-downstream-diagnostics \
-  --scanner-boundary-stage-diagnostics \
-  --output-dir outputs/3d/synthetic_quality/scanner_thin_reference_49 \
-  --pretty
+```python
+from pyosv.evaluation.synthetic_quality import (
+    SyntheticScannerConfig,
+    SyntheticSkinningConfig,
+    SyntheticTruthMetricConfig,
+    SyntheticVotingConfig,
+    build_report,
+    resolve_workflow_settings,
+    run_case,
+)
 ```
 
-Candidate:
+`build_report(...)` evaluates a registered case set and returns a detached
+`format_version=1` report mapping without writing files. `run_case(...)`
+evaluates one `SyntheticQualityCaseDefinition` and returns its report payload
+and volume payloads.
 
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 49,49,49 \
-  --workflow-mode quality \
-  --variants current_default \
-  --input-mode both \
-  --scanner-backend quality \
-  --scanner-refinement-factor 2 \
-  --scanner-thin-mode normal \
-  --scanner-downstream-diagnostics \
-  --scanner-boundary-stage-diagnostics \
-  --output-dir outputs/3d/synthetic_quality/scanner_thin_normal_49 \
-  --pretty
+The typed report models and current JSON/CSV serializers are exposed from
+`pyosv.evaluation.reporting`:
+
+```python
+from pyosv.evaluation.reporting import (
+    CaseReport,
+    PipelineReport,
+    Report,
+    ReportConfig,
+    SUMMARY_CSV_V1_FIELDS,
+    VariantComparison,
+    VariantReport,
+    report_to_json,
+    summary_csv_text,
+    write_metrics_json,
+    write_summary_csv,
+)
 ```
 
-Comparison:
+These APIs are module-level interfaces and are not re-exported from
+`pyosv.__init__`.
 
-```bash
-PYTHONPATH=src python scripts/compare_quality_reports.py \
-  outputs/3d/synthetic_quality/scanner_thin_reference_49/summary.csv \
-  outputs/3d/synthetic_quality/scanner_thin_normal_49/summary.csv \
-  --baseline-metrics outputs/3d/synthetic_quality/scanner_thin_reference_49/metrics.json \
-  --candidate-metrics outputs/3d/synthetic_quality/scanner_thin_normal_49/metrics.json \
-  --baseline-variant current_default \
-  --candidate-variant current_default \
-  --comparison-profile scanner-thinning-policy-v1 \
-  --promotion-gate scanner-boundary \
-  --strict-missing-rows \
-  --fail-on-gate-failure \
-  --output-json outputs/3d/synthetic_quality/scanner_thin_normal_49/promotion_gate.json \
-  --output-markdown outputs/3d/synthetic_quality/scanner_thin_normal_49/promotion_gate.md
-```
+## Array, coordinate, and truth contracts
 
-Both reports select `current_default`. The contract identifies the baseline as
-`quality_scanner_reference_v1` and the candidate as
-`quality_scanner_thin_normal_v1`; these are scanner policy IDs, not variants.
-The row match key deliberately omits scanner mode so corresponding rows remain
-comparable. The profile instead validates the complete saved run configs and
-permits only
-`config.scanner.scanner_thin_mode` to differ, with the baseline fixed to
-`reference` and the candidate fixed to `normal`. Any other config difference
-fails the policy contract and therefore the promotion gate.
+All controlled 3D arrays use shape `(n3, n2, n1)` and are indexed as
+`array[i3, i2, i1]`. Coordinates and vectors use OSV component order
+`(x1, x2, x3)`.
 
-Before row comparison, this profile also renders each `metrics.json` through
-the canonical summary CSV v1 serializer and requires its paired `summary.csv`
-to have the exact schema header and the same complete rows. Every cell and row
-multiplicity must match; only data-row order may differ. The selected variant
-must also be declared in that report's `config.variants`. A mismatched pair is
-invalid evidence and stops comparison without producing a gate report. The
-default `variant` profile remains a summary-only comparison and does not read
-optional metrics paths.
+`Synthetic3DCase` contains matching arrays with these contracts:
 
-Both commands leave requested edge-effect removal enabled. Reference thinning
-applies it, so its effective value is `true`. Normal thinning does not use edge
-cleanup, so the comparison artifact records
-`effective_remove_edge_effects=null` rather than `false`; `null` means not
-applicable, not explicitly disabled. A gate pass evaluates the normal-thinning
-policy candidate only and does not promote it or change any workflow or public
-scanner default.
+| Field | dtype | Meaning |
+| --- | --- | --- |
+| `truth_fault_mask` | `bool` | Fault-band truth support. |
+| `truth_fault_id` | `int32` | Positive component ID on fault support and zero elsewhere. |
+| `truth_distance` | `float32` | Signed distance to the nearest truth surface. |
+| `truth_strike` | `float32` | Truth strike in the PyOSV angle convention. |
+| `truth_dip` | `float32` | Truth dip in the PyOSV angle convention. |
+| `ft_oracle` | `float32` | Truth-derived fault likelihood supplied to the oracle path. |
+| `pt_oracle` | `float32` | Truth-derived strike supplied to the oracle path. |
+| `tt_oracle` | `float32` | Truth-derived dip supplied to the oracle path. |
 
-These 49^3 commands are formal reproduction instructions. The generated
-comparison artifact, rather than the command listing itself, is the evidence
-for a measured contract and gate result.
+Every array must have the declared case shape. Floating arrays must be finite.
 
-#### Reference-like backend scanner thinning policy comparison
+Two truth supports have distinct metric roles:
 
-`quality-workflow-scanner-thinning-v1` formally evaluates normal scanner
-thinning on the quality workflow's current default, reference-like scanner
-backend. It is separate from `scanner-thinning-policy-v1`: the baseline policy
-is `quality_reference_like_scanner_thin_reference_v1`, and the candidate
-policy is `quality_reference_like_scanner_thin_normal_v1`.
+- `truth_fault_mask` is the fault band used for buffered overlap and edge
+  false-positive interpretation;
+- the thin truth surface is
+  `abs(truth_distance) <= truth_surface_half_width` and is used for surface
+  distance and truth-count selection.
 
-The `scanner-boundary-reference-like` gate is dedicated to this profile and
-requires `quality-workflow-scanner-thinning-v1`. Because the CLI defaults to
-the `variant` profile, omitting `--comparison-profile` (or explicitly selecting
-`variant`) is rejected; the required profile is not selected implicitly. The
-canonical `summary.csv` / `metrics.json` pairing, passing policy contract, and
-complete 14-row coverage are mandatory parts of formal promotion evidence,
-not optional checks around the numeric gate.
-
-Generate the reference-thinning baseline:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 49,49,49 \
-  --workflow-mode quality \
-  --variants current_default \
-  --input-mode both \
-  --scanner-backend reference-like \
-  --scanner-thin-mode reference \
-  --scanner-downstream-diagnostics \
-  --scanner-boundary-stage-diagnostics \
-  --output-dir outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49 \
-  --pretty
-```
-
-Generate the normal-thinning candidate:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 49,49,49 \
-  --workflow-mode quality \
-  --variants current_default \
-  --input-mode both \
-  --scanner-backend reference-like \
-  --scanner-thin-mode normal \
-  --scanner-downstream-diagnostics \
-  --scanner-boundary-stage-diagnostics \
-  --output-dir outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49 \
-  --pretty
-```
-
-Compare the paired reports with the reference-like gate:
-
-```bash
-PYTHONPATH=src python scripts/compare_quality_reports.py \
-  outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49/summary.csv \
-  outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/summary.csv \
-  --baseline-metrics outputs/3d/synthetic_quality/reference_like_scanner_thin_reference_49/metrics.json \
-  --candidate-metrics outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/metrics.json \
-  --baseline-variant current_default \
-  --candidate-variant current_default \
-  --comparison-profile quality-workflow-scanner-thinning-v1 \
-  --promotion-gate scanner-boundary-reference-like \
-  --strict-missing-rows \
-  --fail-on-gate-failure \
-  --output-json outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/promotion_gate.json \
-  --output-markdown outputs/3d/synthetic_quality/reference_like_scanner_thin_normal_49/promotion_gate.md
-```
-
-This compares `current_default` with itself across two separately generated
-reports. Scanner mode remains outside the summary match key; the metrics
-contract fixes the extended 49^3 quality run, reference-like backend, selected
-variant, scanner settings and input generation, voting, skinning, truth
-metrics, and diagnostics. It permits exactly one config difference:
-`config.scanner.scanner_thin_mode`. The canonical summary/metrics pairing
-validation described above applies unchanged to both reports.
-
-Both reports request `remove_edge_effects=true`. Reference thinning applies
-the request, so its effective value is `true`; normal thinning does not apply
-edge cleanup, so the artifact records `effective_remove_edge_effects=null`.
-The reference-like gate retains the scanner-boundary numeric thresholds: on
-the boundary row skin F1 is at least 0.90, skin count is at most 3, the
-skin/FVT-positive cell ratio is within [0.75, 1.25], FVT-positive F1 is at
-least 0.90, and FVT-positive distance p95 is at most 2.0. Non-boundary F1
-deltas must be at least -0.02 and distance-p95 deltas at most 2.0. Oracle
-metrics must remain unchanged, false fallback replacements and parallel or
-crossing over-merge/over-split counts must not increase, and all 14 required
-rows must match with no missing rows. Policy and summary/metrics contracts
-must also pass.
-
-The formal 49^3 evaluation has been completed and passed. All 14 required rows
-were present, neither report had missing rows, and the coverage and scanner
-policy contracts passed. On the scanner `boundary_plane` row, normal scanner
-thinning changed FVT-positive buffered F1 from `0.49764129579935323` to
-`0.9931506849315068`, FVT-positive distance p95 from `5.0` to `1.0`, skin
-buffered F1 from `0.34785274570261476` to `0.9931506849315068`, skin count from
-`29` to `1`, and the skin/FVT-positive cell ratio from
-`0.2653061224489796` to `1.0`. No material non-boundary, oracle,
-fallback-replacement, or required topology regression was reported.
-
-The SHA-256 of `promotion_gate.json` is
-`1b099e06c8900181da68a3c437573c5d83868f727d37675a206380786aca7639`.
-Exact values and hashes for all six generated evidence artifacts are retained
-in
-`tests/fixtures/synthetic_quality_refactor/reference_like_scanner_thinning_49_evidence.json`.
-The generated reports did not record a source commit, so the compact evidence
-uses `source_commit=null` with `source_provenance="not_recorded"`; it does not
-guess a commit from timestamps.
-
-This passing artifact evaluates the synthetic policy candidate only. A later
-historical F3 64^3-by-3 shared-scan crop diagnostic failed one external-smoke
-check: crop 1's public-FVT sparse-distance p95 delta was `+6.193637` samples
-against a `+5.0` limit. The prerequisite large-crop diagnostic was not run and
-human review remains pending. This crop history is not a current publication
-gate or a set of statistical replicates, so the synthetic result does not
-change the quality-workflow default, another workflow default, or the public
-scanner-thinning default.
-
-The controlled synthetic oracle path is:
+`SyntheticTruthMetricConfig` defaults to:
 
 ```text
-synthetic truth geometry
-  -> ft_oracle / pt_oracle / tt_oracle
-  -> OptimalSurfaceVoter
-  -> voter thin
-  -> FaultSkinner
-  -> truth metrics
+truth_surface_half_width = 0.5
+buffer_radius = 2.0
 ```
 
-The scanner-inclusive path is:
+`truth_fault_id` supports component-aware topology metrics for multi-fault and
+crossing cases.
 
-```text
-synthetic truth geometry
-  -> synthetic scanner input
-  -> FaultOrientScanner3
-  -> ft_scan / pt_scan / tt_scan
-  -> optional scanner thin
-  -> OptimalSurfaceVoter
-  -> voter thin
-  -> FaultSkinner
-  -> truth metrics
-```
+## Registered case sets
 
-Scanner-inclusive experiments can also generate a controlled
-`scanner_input` / `ep_synthetic` volume from any `Synthetic3DCase`:
+The report registry provides three case sets:
 
-```text
-truth geometry
-  -> ft_oracle
-  -> scanner_input / ep_synthetic
-  -> FaultOrientScanner3.scan() or scan_fast()
-  -> scanner ft/pt/tt
-```
+| Case set | Cases |
+| --- | --- |
+| `minimal` | `single_vertical_plane` |
+| `geometry` | `single_vertical_plane`, `single_dipping_plane`, `curved_surface` |
+| `extended` | all geometry cases plus `parallel_planes`, `crossing_planes`, `boundary_plane`, `weak_noisy_plane` |
 
-`make_scanner_input_from_case(case, config)` converts high-on-fault
-`case.ft_oracle` into low-on-fault planarity-like input using:
+The cases exercise different contracts:
+
+| Case | Intended diagnostic role |
+| --- | --- |
+| `single_vertical_plane` | Basic planar localization and orientation. |
+| `single_dipping_plane` | Dipping-plane localization and orientation. |
+| `curved_surface` | Spatially varying orientation and thinning sensitivity. |
+| `parallel_planes` | Separation, fragmentation, and component topology. |
+| `crossing_planes` | Intersection behavior, over-merge, and over-split. |
+| `boundary_plane` | Boundary support, edge behavior, and fallback paths. |
+| `weak_noisy_plane` | Deterministic weak-contrast and noise robustness. |
+
+`weak_noisy_plane` has a seed-aware factory for explicit deterministic
+realizations. Other registered cases are deterministic for a given shape.
+
+A case definition validates that its factory returns the registered `case_id`.
+Case IDs and case sequences must be nonempty, registered, and unique.
+
+## Input modes
+
+The public input modes are:
+
+| Mode | Evaluation path |
+| --- | --- |
+| `oracle` | `ft_oracle` / `pt_oracle` / `tt_oracle` -> voting -> voter thinning -> skinning |
+| `scanner` | synthetic scanner input -> scanner -> scanner thinning -> voting -> voter thinning -> skinning |
+| `both` | Runs the oracle and scanner paths on the same truth case and variant. |
+
+The oracle path evaluates downstream behavior from controlled attributes. The
+scanner path includes scanner localization and orientation error. Compare the
+two paths by `case_id`, pipeline, variant, and effective configuration; a drop
+in scanner mode is not automatically attributable to voting or skinning.
+
+### Scanner input
+
+`make_scanner_input_from_case(case, config)` builds a low-on-fault,
+high-background planarity-like volume:
 
 ```text
 scanner_input = background - fault_contrast * ft_oracle
@@ -379,1415 +191,249 @@ scanner_input += normal(0, noise_sigma)  # only when noise_sigma > 0
 scanner_input = clip(scanner_input, clip_min, clip_max)
 ```
 
-The default `SyntheticScannerInputConfig` uses `background=1.0`,
-`fault_contrast=0.85`, `noise_sigma=0.0`, `seed=20260706`, `clip_min=0.0`,
-and `clip_max=1.0`. This mirrors the F3 scanner convention where background
-planarity is high and fault-adjacent planarity is low.
-
-The current report CLI includes these case sets:
-
-- `minimal`: the default PR2-compatible smoke set containing only
-  `single_vertical_plane`.
-- `geometry`: the PR3 geometry set containing `single_vertical_plane`,
-  `single_dipping_plane`, and `curved_surface`.
-- `extended`: the geometry cases plus `parallel_planes`, `crossing_planes`,
-  `boundary_plane`, and `weak_noisy_plane`.
-
-Scanner mode is most useful on `geometry` and `extended` when read as a stress
-test of the scanner contract. Curved, crossing, boundary, and weak/noisy cases
-can expose orientation ambiguity, edge effects, fragmented skins, or weak
-scanner response before the voter sees the data. Compare those rows with oracle
-mode on the same case before treating a scanner-mode drop as a downstream voter
-or skinning regression.
-
-The public factory cases are:
-
-- `single_vertical_plane`: a planar fault centered near constant `x2`, with
-  constant strike and dip truth orientation.
-- `single_dipping_plane`: a planar fault generated from a strike/dip normal,
-  with constant truth orientation and nonzero dip geometry.
-- `curved_surface`: an analytic surface whose `x1` position varies with `x2`
-  and `x3`; truth strike and dip vary spatially with the local normal.
-- `parallel_planes`: close but distinct faults; tests separation and skin
-  fragmentation with component-aware skin topology metrics against truth fault
-  IDs.
-- `crossing_planes`: intersecting faults; tests crossing robustness and
-  orientation ambiguity, including component-aware over-merge and over-split
-  skin diagnostics.
-- `boundary_plane`: a fault near the `i2` boundary; tests edge artifact
-  behavior and boundary handling.
-- `weak_noisy_plane`: degraded likelihood with seeded deterministic noise;
-  tests robustness under weak contrast. `make_weak_noisy_plane_case(shape,
-  *, seed=20260707)` accepts a non-negative integer seed and preserves the
-  legacy realization when omitted. Its registered case definition exposes
-  `build_case(shape, seed=...)`; the legacy `factory(shape)` call remains
-  unchanged. Other registered cases are deterministic.
-
-## Case Classification And Findings
-
-Use controlled synthetic results to separate basic recovery checks from
-diagnostic stress signals. The current classifications are:
+`SyntheticScannerInputConfig` defaults to:
 
 ```text
-Basic pass / sanity cases:
-  - single_vertical_plane
-  - single_dipping_plane
-  - weak_noisy_plane
-
-Diagnostic / stress cases:
-  - curved_surface: model-limit / thinning-sensitivity diagnostic
-  - boundary_plane: edge/boundary stress diagnostic
-  - parallel_planes: skin separation / topology diagnostic
-  - crossing_planes: crossing / over-merge / over-split diagnostic
+background = 1.0
+fault_contrast = 0.85
+noise_sigma = 0.0
+seed = 20260706
+clip_min = 0.0
+clip_max = 1.0
 ```
 
-Observed numbers from `oracle_extended_001` are examples of the current
-implementation behavior, not fixed acceptance thresholds. In that run,
-`single_vertical_plane` was a clean basic pass (`fvt_buffered_f1_r2=1.0`,
-`fvt_distance_p95=0.0`, and zero orientation error). `single_dipping_plane`
-was also a basic pass (`fvt_buffered_f1_r2` about `0.9993`,
-`fvt_distance_p95=1.0`, and near-zero orientation error). `weak_noisy_plane`
-remained a robustness sanity case (`fvt_buffered_f1_r2` about `0.9937`) with
-good skin quality.
+### Scanner configuration
 
-`curved_surface` should not be read as a simple CI failure when current
-defaults score poorly. `OptimalSurfaceVoter` is not an arbitrary global curved
-surface tracker. It is expected to handle surfaces that remain single-valued
-and moderately varying in the seed-local coordinate system, while strong
-curvature or large orientation variation is a stress case. In the observed
-`oracle_extended_001` run, current defaults had `fvt_buffered_f1_r2` about
-`0.6546`, `fvt_distance_p95` about `14.66`, `strike_median_error` about
-`37.4` deg, and `skin_buffered_f1_r2` about `0.2915`. The
-`voter_thin_normal` variant improved the same truth case substantially
-(`fvt_buffered_f1_r2` about `0.9879`, `fvt_distance_p95=1.0`, and
-`skin_buffered_f1_r2` about `0.9753`). Treat this as a model-limit and
-thinning-sensitivity signal unless a narrower regression is demonstrated.
+`SyntheticScannerConfig` defaults to:
 
-## Workflow Modes
+| Setting | Default |
+| --- | --- |
+| backend | `reference-like` |
+| strike range | `0.0` through `180.0` degrees |
+| dip range | `45.0` through `90.0` degrees |
+| `sigma1`, `sigma2` | `2.0`, `2.0` |
+| refinement factor | `2` |
+| scanner thinning | `reference` |
+| requested edge cleanup | `true` |
 
-Controlled synthetic reports expose a downstream workflow contract through
-`--workflow-mode reference|quality|diagnostic`. A workflow profile resolves
-defaults for voting, voter thinning, skinning, and diagnostics; it does not
-select the scanner path. `--scanner-backend` independently selects the scanner
-backend. See [scanner backends, workflow modes, thinning modes, and reference
-targets](mode_comparison.md) for the canonical contract, and [Quality Workflow
-Mode](quality_mode.md) for the recommended quality-workflow benchmark matrix.
+The accepted scanner backends are `reference-like`, `quality`, `fast`, and
+`ensemble`. `quality` uses the configured refinement factor. `ensemble` is an
+explicit diagnostic backend that selects component attributes voxel by voxel.
+No workflow profile selects a scanner backend.
 
-Scanner reference thinning and voter reference thinning are also separate
-stages: `--scanner-thin-mode` controls scanner attributes before voting, while
-`--voter-thin-mode` controls the vote volume. A workflow profile does not
-implicitly change `--scanner-thin-mode`. Explicit CLI or configuration values
-win over workflow defaults at the setting they control; a selected variant's
-narrow patch is applied afterward.
+Scanner thinning accepts:
 
-The following are legal isolation or matrix-evaluation combinations, not
-recommended defaults. They demonstrate that scanner backend and workflow are
-independent axes:
+- `none`: pass raw scanner attributes to voting;
+- `reference`: apply strike-binned scanner thinning;
+- `normal`: apply fault-normal scanner thinning.
 
-```bash
---scanner-backend reference-like --workflow-mode quality
---scanner-backend quality --workflow-mode reference
-```
+Scanner edge cleanup is effective only for `reference` thinning. Reports use
+`effective_remove_edge_effects=null` when the requested setting is not
+applicable.
 
-The default workflow is `reference`, so existing reference-first runs keep
-reference voter thinning unless a run passes an explicit
-`--voter-thin-mode` override.
+`--scanner-backend-matrix` evaluates `reference-like`, `quality`, and `fast`
+under the same case, scanner-side controls, workflow, and variant. It is active
+only for `scanner` or `both` input modes.
+
+## Workflow and variant resolution
+
+Workflow profiles accept `reference`, `quality`, and `diagnostic`. Resolution
+follows this order:
+
+1. Select workflow defaults.
+2. Apply explicitly supplied voting and skinning configuration.
+3. Apply the selected variant's declarative patch.
+
+Scanner configuration is resolved independently. A supplied
+`SyntheticVotingConfig`, including its default constructor, is preserved as
+supplied. Explicit skinning flags prevent the corresponding workflow default
+from replacing that field.
+
+The effective workflow defaults, variant registry, scanner-thinning comparison
+profiles, and promotion-gate thresholds are specified in
+[Quality Workflow Mode](quality_mode.md). The canonical distinction between
+scanner backend, workflow, thinning, and reference target is specified in
+[Mode Comparison Contract](mode_comparison.md).
+
+`current_default` applies no variant patch and represents the resolved workflow
+configuration. The `default` variant preset contains only `current_default`.
+`--variants` overrides `--variant-preset` and requires a nonempty, unique list
+of registered variant names.
+
+## Execution ownership and reuse
+
+The application layer builds each case, prepares its requested inputs, resolves
+effective configuration, runs variants, and constructs immutable report
+models. Artifact writers are separate from numerical evaluation.
+
+Prepared scanner inputs and scanner outputs may be shared only within the same
+case, shape, and scanner configuration. Voting, thinning, seed selection, and
+skinning reuse is controlled by case-local semantic keys. Cached arrays are
+read-only and the cache is discarded after the case's variant loop. Array
+identity alone is not a reusable stage identity.
+
+See [Architecture](architecture.md) for the complete ownership and cache
+contract.
+
+## Truth metric contract
+
+### Candidate selection
+
+Reports use deterministic candidate masks:
+
+- `top_truth_count_mask(values, truth_surface_mask)` selects exactly the largest
+  `k` samples, where `k` is the number of thin truth-surface voxels;
+- positive truth-count selection restricts that top-k operation to values
+  strictly greater than `1e-6` and may therefore select fewer than `k` samples;
+- positive candidate counts and floating-point `nonzero_fraction` use the same
+  strict `1e-6` threshold.
+
+Equal values are ordered deterministically by flat array index.
+
+### Surface metrics
+
+For `fv`, `fvt`, scanner likelihood, and skin occupancy, reports can include:
+
+- exact intersection, union, precision, recall, F1, and Jaccard;
+- buffered precision, recall, and F1 at the configured radius;
+- directional candidate-to-truth and truth-to-candidate surface distances;
+- mean, median, p90, and p95 distance summaries;
+- masked strike and dip error summaries;
+- edge candidate and edge false-positive counts and fractions.
+
+Buffered overlap compares candidate support with `truth_fault_mask`. Surface
+distance compares candidate support with the thin truth surface. The default
+edge shell includes samples within two voxels of any volume face. An edge
+candidate is a false positive when it lies outside the configured truth buffer.
+
+Higher buffered F1 is better. Lower distance, orientation error, and edge
+false-positive fraction are better.
+
+### Scanner metrics
+
+Scanner pipeline reports separate scanner quality from downstream quality:
+
+- raw and used scanner-likelihood overlap and distance;
+- raw and used strike/dip error;
+- scanner-input association near and far from truth;
+- optional scanner-to-voting and scanner-to-thinning retention diagnostics.
+
+Scanner-input association defines near truth using the configured thin truth
+surface and far support using
+`abs(truth_distance) >= max(3.0, truth_surface_half_width + 2.0)`. Positive
+contrast means the low-on-fault input is lower near truth than far from truth.
+
+### Skin metrics
+
+When skinning is enabled, reports include:
+
+- skin count, total and unique cell counts, and duplicate counts;
+- largest-skin and small-skin summaries;
+- skin overlap, distance, orientation, and edge metrics;
+- component-aware truth/skin incidence;
+- over-merge and over-split counts;
+- purity and truth-component recall;
+- link and reskin diagnostics where applicable.
+
+`skin_count` and `skin_cell_count` have no universal better direction. Interpret
+them with the truth topology for the case.
+
+### Variant deltas
+
+When `current_default` is present, each pipeline records selected variant
+metrics as `variant_value - current_default_value`. Positive buffered-F1 deltas
+are improvements; negative distance and orientation-error deltas are
+improvements. No baseline deltas are emitted when `current_default` is absent.
+
+## Report schema
+
+The JSON root is:
 
 ```text
-reference
-  Reference workflow for alignment checks. Effective voter_thin_mode is reference unless
-  --voter-thin-mode is passed. Surface-voting boundary policy is reference.
+format_version: 1
+config: resolved report configuration
+cases: ordered case reports
+```
 
+The canonical case paths are:
+
+```text
+cases[].pipelines.oracle.variants.<variant>
+cases[].pipelines.oracle.variant_comparison
+cases[].pipelines.scanner.variants.<variant>
+cases[].pipelines.scanner.variant_comparison
+```
+
+Oracle-only reports contain `pipelines.oracle`. Scanner-only reports contain
+`pipelines.scanner`. `both` reports contain both.
+
+Each variant pipeline report contains the applicable groups:
+
+```text
+pyosv
+pyosv.voting
 quality
-  Quality workflow for controlled synthetic truth evaluation. Effective
-  voter_thin_mode is hybrid_v2 unless --voter-thin-mode is passed. Support-aware
-  surface voting remains inactive by default (`0.0, 0.0`); the quality skinner
-  is enabled by default, including the empty-primary boundary skinner fallback.
-  Omit the boundary-fallback options to retain that default; pass
-  `--no-skinner-boundary-fallback` to disable it explicitly or
-  `--skinner-boundary-fallback` to enable it explicitly.
-  Surface-voting boundary policy remains reference.
-
-diagnostic
-  Diagnostic workflow. It uses reference-workflow defaults, with effective
-  voter_thin_mode reference unless --voter-thin-mode is passed, and enables
-  reference-vs-normal thinning diagnostics. Surface-voting boundary policy
-  remains reference.
+skinning
+scanner
+scanner_quality
+scanner_downstream
+scanner_boundary_stage_diagnostics
+thinning_diagnostic
+scanner_backend_matrix
 ```
 
-Explicit `--voter-thin-mode reference|normal` always wins over the workflow
-preset. The `--thinning-diagnostics` / `--include-thinning-diagnostic` flag
-still enables reference-vs-normal thinning diagnostics in the reference or
-quality workflow. When diagnostics are enabled by the flag or by
-`--workflow-mode diagnostic`, `metrics.json` records
-`config.thinning_diagnostic.enabled: true`.
+`cases[].variants`, top-level case `pyosv` / `quality` / `skinning`, and
+case-level `variant_comparison` are current aliases for the active pipeline.
+For `both`, the active alias is the oracle pipeline and the case-level
+comparison is partitioned by pipeline. New readers should use
+`cases[].pipelines` as the canonical path.
 
-The report config always records `config.workflow_mode`. The voting config
-records the effective `config.voting.voter_thin_mode`, after applying the
-workflow preset and any explicit override. Every default workflow and
-`current_default` record `surface_voting_boundary_policy="reference"` under
-the per-variant `pyosv.voting` object. For the quality workflow,
-`current_default` records `surface_support_min_fraction=0.0` and
-`surface_support_exponent=0.0`, so the report config shows that support-aware
-voting is not part of the quality-workflow default. Explicit CLI support
-overrides and the `surface_support_weighted` variant record their effective
-values in the same config/report fields. Skinning diagnostics such as `quality_skinner_v2`
-record effective skinning values under each variant's `config.skinning`; under
-`--workflow-mode quality`, `current_default` records the same quality skinner v2
-profile (`growth_source=pre_thin`, `effective_accepted_occupancy_radius=1`,
-`boundary_skinner_fallback=true`,
-`boundary_skinner_fallback_policy=empty_primary`). `summary.csv` includes
-`workflow_mode` near `input_mode` on every row.
+`summary.csv` writes one row per `(case_id, pipeline, variant)` and uses the
+fixed `SUMMARY_CSV_V1_FIELDS` column order. Use the `pipeline`, `input_mode`,
+`workflow_mode`, scanner, thinning, and skinning columns to confirm that rows
+are comparable before interpreting metric differences.
 
-Treat oracle-input and scanner-inclusive `current_default` runs under the
-quality workflow as separate evaluations. The oracle-input run measures the
-downstream voter/skinner behavior with analytic scanner inputs. The
-scanner-inclusive run also measures scanner `ft` recovery and the downstream fvt/skinning
-response; boundary-plane scanner `ft` can be strong while fvt and skin quality
-remain degraded. Diagnostic fallback variants are compared against these evaluations,
-but promotion requires the scanner-inclusive boundary target and non-boundary
-regression tolerances to pass.
+## Artifact output
 
-No diagnostic voter or skinner variant has been promoted into the quality
-workflow's `current_default`. In the separate legacy evaluation using the
-`quality` scanner backend, the scanner-inclusive 49^3 `boundary_plane` case
-remains an open target. That promotion-candidate flow compares `boundary_aware_voter_v1`,
-`boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
-`quality_boundary_skinner_fallback_v5` against `current_default` with
-`scripts/compare_quality_reports.py` or
-`scripts/check_synthetic_quality_promotion_gate.py`. The 49^3
-`boundary_aware_voter_v1` promotion benchmark has not been run in this
-repository update, so the candidates from that legacy quality scanner backend
-evaluation remain
-unpromoted. This does not contradict the separate passing reference-like
-scanner-thinning policy gate documented above. See
-[Quality Workflow Mode](quality_mode.md) for the exact benchmark commands,
-metrics, promotion criteria, and diagnostic variant descriptions.
-
-## Boundary-aware UVW Voting Diagnostic
-
-`boundary_aware_voter_v1` is selected only with an explicit variant name. It is
-not in `DEFAULT_VARIANTS` or the `quality-matrix` preset and has not been
-promoted into `current_default`. For each workflow it keeps the same scanner
-backend, scanner thinning, seed selection, voter thinning, skinner, and support
-settings as that workflow's `current_default`; its only intended processing
-change is:
-
-```python
-voter.set_surface_voting_boundary_policy("masked_in_bounds")
-```
-
-The default `reference` boundary policy preserves reference-oriented semantics:
-UVW coordinates are Java-rounded and clamped to the image, and surface vote
-averaging/accumulation exclude `i2` and `i3` face source samples while allowing
-`i1` face samples. `masked_in_bounds` is a quality experiment, not a
-reference-equivalence mode. Its internal sampler masks every lag outside either
-`lmins` / `lmaxs` or the Java-rounded volume bounds, without converting an
-invalid state to an ordinary cost.
-
-The masked voter marks a tangential `(w, v)` column supported when it contains
-at least one valid lag. It uses the maximum-area, axis-aligned, all-supported
-rectangle containing the local origin. Equal-area choices minimize origin
-asymmetry, then use lexicographic
-`(w_start, v_start, w_stop, v_stop)` order. Explicit full-box offsets preserve
-surface-to-volume mapping after a crop. Mask-aware attribute smoothing,
-forward/reverse DP, and backtracking exclude invalid states. A strain-infeasible
-surface is skipped. After smoothing, mask validity and strain are revalidated
-in both tangential directions. If necessary, deterministic global feasibility
-recovery constructs a jointly valid surface across the selected rectangle; a
-fractional lag that remains feasible in its Java-rounding cell is not moved
-unnecessarily to an integer center. If recovery cannot find a feasible result,
-the seed records `skip_reason="no_feasible_surface"`.
-
-Only valid selected samples contribute to the surface score. Support fraction
-uses the full `(2*rw+1)*(2*rv+1)` patch area, not the cropped rectangle, before
-the existing minimum-fraction and exponent settings are applied. Center votes
-can be written on all six volume faces, and reinforcement remains bounds
-checked. A nonzero selected-invalid count prevents the vote. Full-box surfaces
-keep the existing surface orientation estimate; cropped surfaces use the seed
-strike/dip and record
-`orientation_source="seed_boundary_fallback"`. The candidate does not add a
-position-varying local orientation model.
-
-Each variant report stores the effective boundary policy, existing support
-policy, and aggregate seed diagnostics under `pyosv.voting`. Diagnostics are
-reset for every voter run. The aggregate includes seed/boundary/voted/skipped
-counts, support-fraction minimum and mean, smoothing projection count,
-selected-invalid count, and face center-vote count. Per-seed diagnostics add
-orientation source and skip reason and contain only scalar indices, counts,
-fractions, and strings; no volume or per-voxel mask is retained.
-
-The smoothing projection count is column-based:
-`surface_projection_count` compares the raw smoothed surface with the final
-mask-and-strain-feasible surface and counts each `(w, v)` column whose value
-changed once, regardless of how many global-recovery updates affected it. It is
-not a count of independent nearest-interval projections, and it is zero when
-surface smoothing is disabled.
-
-The documented 49^3 legacy quality-scanner `boundary_plane` baseline for
-`current_default` is `fvt_positive_buffered_f1_r2=0.739494`,
-`fvt_positive_distance_p95=4.0`, `skin_buffered_f1_r2=0.453890`, and
-`skin_count=17`. A candidate that changes FVT must include
-`fvt_positive_buffered_f1_r2 >= 0.90` and
-`fvt_positive_distance_p95 <= 2.0` among its promotion gates, in addition to
-the skin, non-boundary, oracle, and topology guardrails documented in
-[Quality Workflow Mode](quality_mode.md). No 49^3 result for
-`boundary_aware_voter_v1` is recorded by this documentation update. Until the
-gate passes, do not describe the candidate as higher quality than the reference
-implementation or as promoted/default behavior. The passing reference-like
-scanner-thinning gate above evaluates a different backend and policy pair; its
-failed F3 64^3-by-3 external smoke still prevents a default change.
-
-## Curved Surface Thinning Diagnostic
-
-`curved_surface` is not a basic pass/fail case for reference-first OSV. It is a
-model-limit and thinning-sensitivity diagnostic for comparing how voter
-thinning behaves on a gently curved analytic surface with spatially varying
-truth strike and dip.
-
-The diagnostic compares `reference` and `normal` voter thinning from the same
-pre-thin `fv` / `vp` / `vt` volumes. `reference` thinning is closer to the
-Java-reference style and remains the default path. `normal` thinning can score
-better against analytic truth on curved synthetic surfaces because it thins
-along the local fault-normal field instead of the reference-like strike-binned
-path. A better `normal` or `hybrid` result on `curved_surface` does not
-automatically mean the default should change; read it as evidence about
-curved-surface truth-quality behavior, not as a reference-agreement
-requirement. Use `--workflow-mode quality` when the active controlled synthetic
-report should favor this truth-quality behavior, or keep
-`--workflow-mode reference` for reference-alignment checks.
-
-Use `--workflow-mode diagnostic`, or pass `--thinning-diagnostics` explicitly,
-to compute both thinning modes from the same pre-thin voter output:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set geometry \
-  --shape 33,33,33 \
-  --input-mode oracle \
-  --workflow-mode diagnostic \
-  --variants current_default \
-  --save-volumes \
-  --save-figures \
-  --write-markdown-index \
-  --output-dir outputs/3d/synthetic_quality/curved_thinning_diag_001 \
-  --pretty
-```
-
-Inspect these outputs:
-
-```text
-summary.csv:
-  thinning_diag_* columns
-
-metrics.json:
-  cases[].variants.<variant>.thinning_diagnostic
-  cases[].pipelines.<pipeline>.variants.<variant>.thinning_diagnostic
-    for --input-mode both
-
-visual_report.md:
-  reference vs normal thinning overlays
-```
-
-The diagnostic `summary.csv` columns are written in this stable order:
-
-```text
-thinning_diag_reference_fvt_buffered_f1_r2
-thinning_diag_normal_fvt_buffered_f1_r2
-thinning_diag_normal_minus_reference_fvt_buffered_f1_r2
-thinning_diag_reference_fvt_distance_p95
-thinning_diag_normal_fvt_distance_p95
-thinning_diag_normal_minus_reference_fvt_distance_p95
-thinning_diag_reference_count
-thinning_diag_normal_count
-thinning_diag_intersection_count
-thinning_diag_reference_only_count
-thinning_diag_normal_only_count
-thinning_diag_jaccard
-```
-
-Diagnostic JSON uses the mode names `reference` and `normal`, and stores
-deltas under `delta.normal_minus_reference`. The DAT and PNG artifacts are
-written under `case_id[/variant][/pipeline]/thinning_diagnostic/` when
-`--save-volumes` or `--save-figures` is enabled. Diagnostic artifact names use
-`reference`, `normal`, `reference_only`, and `normal_only` consistently.
-
-`boundary_plane` places the true fault near a volume boundary. Poor edge
-metrics are not automatically evidence that candidates should be removed by a
-single edge-cleanup rule, because that could also erase true boundary faults.
-False-positive suppression and boundary truth preservation need to be evaluated
-separately. In the observed run, all variants had `fvt_buffered_f1_r2` about
-`0.1136`, `fvt_distance_p95=30`, `skin_count=0`, and
-`fvt_edge_false_positive_fraction` about `0.8788`; read this as an
-edge/boundary stress diagnostic.
-
-For `parallel_planes` and `crossing_planes`, FVT overlap alone is not enough.
-These cases are intended to expose skin topology behavior: separation of nearby
-truth faults for `parallel_planes`, and over-merge or over-split behavior near
-intersections for `crossing_planes`. The skin quality report includes
-`quality.skin.component_topology`, which reports coverage, over-merge, and
-over-split against `truth_fault_id` components rather than relying only on
-global overlap scores or raw skin counts.
-
-The controlled synthetic tests cover the oracle `ft` / `pt` / `tt` path for
-vertical and dipping single-plane cases and the analytic curved surface. They
-also cover the boundary, parallel, crossing, and weak/noisy generator contracts,
-and the edge false-positive metric for boundary-local candidate artifacts.
-Pipeline tests run controlled attributes through `OptimalSurfaceVoter`, apply
-thinning, and check truth-quality metrics.
-
-The current scope does not include:
-
-- synthetic seismic generation
-- scanner algorithm changes
-- FaultSeg3D loader
-
-## Shape And Convention
-
-Controlled synthetic 3D arrays use the repository 3D shape convention:
-`(n3, n2, n1)`.
-
-Coordinates are expressed as `(x1, x2, x3)`, matching the OSV geometry helpers.
-Orientation follows the same convention as `pyosv.geometry`, `FaultCell`, and
-`OptimalSurfaceVoter`.
-
-The public API is exposed through module imports such as `pyosv.synthetic3d`
-and `pyosv.synthetic_metrics`; these helpers are not re-exported from
-`pyosv.__init__`.
-
-## Minimal Usage
-
-```python
-from pyosv.synthetic3d import make_single_vertical_plane_case
-from pyosv.synthetic_metrics import top_truth_count_mask, buffered_surface_overlap
-
-case = make_single_vertical_plane_case(shape=(33, 33, 33))
-mask = top_truth_count_mask(case.ft_oracle, case.truth_fault_mask)
-metrics = buffered_surface_overlap(mask, case.truth_fault_mask, radius=2.0)
-```
-
-`edge_false_positive_ratio(candidate_mask, truth_mask, edge_margin=...,
-truth_buffer_radius=...)` reports boundary-local candidate counts and false
-positive fractions outside a buffered truth mask. The edge region is the union
-of samples within `edge_margin` voxels of any volume face. A candidate sample
-in that edge region is counted as an edge false positive when it is outside the
-truth buffer, where the buffer is the truth mask dilated by
-`truth_buffer_radius` using Euclidean distance. The main fraction,
-`edge_false_positive_fraction_of_candidates`, is the share of all candidates
-that are edge-local false positives; the companion
-`edge_false_positive_fraction_of_edge_candidates` normalizes by only edge
-candidates. This is a controlled synthetic truth metric for cases such as
-`boundary_plane`, not an F3 reference agreement metric.
-
-## Report CLI
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 33,33,33 \
-  --variant-preset quality-matrix \
-  --output-dir outputs/3d/synthetic_quality/extended_001 \
-  --pretty \
-  --save-figures \
-  --write-markdown-index
-```
-
-To smoke-test the opt-in boundary voter against the unchanged quality-workflow
-default, run:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 17,17,17 \
-  --workflow-mode quality \
-  --variants current_default,boundary_aware_voter_v1 \
-  --input-mode both \
-  --scanner-backend quality \
-  --scanner-refinement-factor 2 \
-  --scanner-downstream-diagnostics \
-  --output-dir outputs/3d/synthetic_quality/boundary_aware_voter_v1_smoke \
-  --pretty
-```
-
-This is a smoke command, not evidence that the 49^3 promotion gate was run.
-
-To compare the oracle upper-bound path with the scanner-inclusive path in one
-report, run `--input-mode both`:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set geometry \
-  --shape 33,33,33 \
-  --input-mode both \
-  --scanner-backend reference-like \
-  --scanner-thin-mode reference \
-  --variants current_default \
-  --output-dir outputs/3d/synthetic_quality/both_geometry_reference_like_001 \
-  --pretty \
-  --save-figures \
-  --write-markdown-index
-```
-
-The CLI writes these files under `--output-dir`:
+The CLI always writes:
 
 ```text
 metrics.json
 summary.csv
-visual_report.md  # only with --write-markdown-index
 ```
 
-## Review Workflow
-
-Read controlled synthetic results from the stable summary outward. The normal
-review order is:
+Optional flags add:
 
 ```text
-1. Read summary.csv first.
-2. Check fvt truth quality.
-3. Check skin quality.
-4. Check edge false-positive fraction.
-5. Check variant delta columns.
-6. Check visual_report.md and PNG overlays visually.
-7. Use metrics.json only for detailed drill-down.
+--write-markdown-index  -> visual_report.md
+--save-volumes          -> DAT volumes and skins.json
+--save-figures          -> center-slice PNG figures and overlays
 ```
 
-Start with the tabular view:
+For one variant, case artifacts are written directly under the case directory.
+For multiple variants, each variant receives a subdirectory. With
+`--input-mode both`, oracle and scanner artifacts are separated into `oracle/`
+and `scanner/` subdirectories.
 
-```bash
-column -s, -t < outputs/3d/synthetic_quality/oracle_extended_001/summary.csv | less -S
-```
-
-For a smaller comparison table, extract the important review columns:
-
-```bash
-PYTHONPATH=src python - <<'PY'
-from pathlib import Path
-import csv
-
-p = Path("outputs/3d/synthetic_quality/oracle_extended_001/summary.csv")
-cols = [
-    "case_id",
-    "input_mode",
-    "workflow_mode",
-    "variant",
-    "surface_voting_boundary_policy",
-    "voter_boundary_affected_seed_count",
-    "voter_skipped_seed_count",
-    "voter_support_fraction_mean",
-    "voter_selected_invalid_sample_count",
-    "voter_face_center_vote_count",
-    "fvt_buffered_f1_r2",
-    "fvt_distance_p95",
-    "fvt_strike_median_error",
-    "fvt_dip_median_error",
-    "skin_count",
-    "skin_cell_count",
-    "skin_largest_fraction",
-    "skin_buffered_f1_r2",
-    "skin_distance_p95",
-    "fv_edge_false_positive_fraction",
-    "fvt_edge_false_positive_fraction",
-    "scanner_ft_buffered_f1_r2",
-    "scanner_ft_distance_p95",
-    "scanner_strike_median_error",
-    "scanner_dip_median_error",
-]
-with p.open(newline="", encoding="utf-8") as f:
-    rows = list(csv.DictReader(f))
-if not rows:
-    raise SystemExit(f"no rows in {p}")
-available = [c for c in cols if c in rows[0]]
-print("\t".join(available))
-for r in rows:
-    print("\t".join(r.get(c, "") for c in available))
-PY
-```
-
-For `--input-mode both`, compare the oracle and scanner rows by grouping on
-`case_id` and reading the stable `pipeline` column:
-
-```bash
-PYTHONPATH=src python - <<'PY'
-from pathlib import Path
-import csv
-
-p = Path("outputs/3d/synthetic_quality/both_geometry_reference_like_001/summary.csv")
-metrics = [
-    "fvt_buffered_f1_r2",
-    "fvt_distance_p95",
-    "skin_count",
-    "skin_buffered_f1_r2",
-]
-rows = list(csv.DictReader(p.open(newline="", encoding="utf-8")))
-
-by_case = {}
-for row in rows:
-    by_case.setdefault(row["case_id"], {})[row["pipeline"]] = row
-
-print("case_id\tmetric\toracle\tscanner\tscanner_minus_oracle")
-for case_id, pipelines in sorted(by_case.items()):
-    oracle = pipelines.get("oracle", {})
-    scanner = pipelines.get("scanner", {})
-    for metric in metrics:
-        if metric in oracle and metric in scanner:
-            try:
-                a = float(oracle[metric])
-                b = float(scanner[metric])
-            except ValueError:
-                continue
-            print(f"{case_id}\t{metric}\t{a:.6g}\t{b:.6g}\t{b-a:.6g}")
-PY
-```
-
-The current `summary.csv` format writes one row per
-`(case_id, pipeline, variant)`. The `pipeline` column is always present:
-`oracle` for oracle-only runs, `scanner` for scanner-only runs, and both values
-for `--input-mode both`. Pipeline-specific scanner information is represented by
-`scanner_backend`, `scanner_thin_mode`, and `scanner_*` quality columns. In
-`--input-mode both`, compare the `oracle` and `scanner` rows, then inspect the
-split `oracle/` and `scanner/` artifact directories when visual or volume-level
-drill-down is needed.
-
-Important summary columns are:
+Core volume names include:
 
 ```text
-case_id
-pipeline
-input_mode
-workflow_mode
-variant
-surface_voting_boundary_policy
-voter_boundary_affected_seed_count
-voter_skipped_seed_count
-voter_support_fraction_mean
-voter_support_fraction_min
-voter_surface_projection_count
-voter_selected_invalid_sample_count
-voter_face_center_vote_count
-fvt_buffered_f1_r2
-fvt_distance_p95
-fvt_strike_median_error
-fvt_dip_median_error
-fv_positive_candidate_count
-fvt_positive_candidate_count
-fvt_positive_buffered_f1_r2
-fvt_positive_distance_p95
-fvt_positive_edge_false_positive_fraction
-skin_count
-skin_cell_count
-skin_largest_fraction
-skin_buffered_f1_r2
-skin_distance_p95
-fv_edge_false_positive_fraction
-fvt_edge_false_positive_fraction
-scanner_ft_buffered_f1_r2
-scanner_ft_distance_p95
-scanner_strike_median_error
-scanner_dip_median_error
+truth_fault_mask.dat
+truth_distance.dat
+truth_strike.dat
+truth_dip.dat
+ft_oracle.dat
+pt_oracle.dat
+tt_oracle.dat
+fv_py.dat
+vp_py.dat
+vt_py.dat
+fvt_py.dat
+skin_mask_py.dat
+skins.json
 ```
 
-Metric direction is:
-
-```text
-Higher is better:
-  - fvt_buffered_f1_r2
-  - skin_buffered_f1_r2
-  - scanner_ft_buffered_f1_r2
-  - skin_largest_fraction, but only within the same expected topology
-
-Lower is better:
-  - fvt_distance_p95
-  - skin_distance_p95
-  - fvt_strike_median_error and fvt_dip_median_error
-  - scanner_strike_median_error and scanner_dip_median_error
-  - edge_false_positive_fraction columns
-  - skin_small_cell_fraction
-```
-
-`skin_count` and `skin_cell_count` are topology context. Do not judge them
-alone: the right direction depends on whether the truth case expects one
-connected skin, multiple separated skins, crossing geometry, or no accepted
-skin.
-
-Read diagnostic variant comparison as "same case, same truth, different voter
-setting." CSV delta fields ending in `_delta_vs_baseline` use
-`variant_value - current_default_value`. Positive
-`*_buffered_f1_delta_vs_baseline` is better. Negative
-`*_distance_p95_delta_vs_baseline` is better. Negative
-`*_orientation_error_delta_vs_baseline`, including the strike and dip median
-error delta columns, is better. Delta fields are populated only when the
-`current_default` baseline variant is included.
-
-After the CSV pass, open `visual_report.md` when `--write-markdown-index` was
-used. It links the center-slice PNG overlays, including truth-vs-FVT,
-truth-vs-skin, and scanner overlays when scanner output is present. Use these
-overlays to confirm that high or low summary metrics correspond to plausible
-fault geometry rather than a misleading aggregate score.
-
-`metrics.json` is for detailed drill-down and scripted diagnostics. Prefer
-`summary.csv` for routine review, especially for `--input-mode both`. If a
-script hard-codes internal `metrics.json` paths, first check `format_version`
-and the documented schema section below. The canonical direct JSON access path
-for pipeline metrics is
-`cases[].pipelines.<pipeline>.variants.<variant>`.
-
-`--input-mode` controls the report input path:
-
-```text
-oracle   # default: oracle ft/pt/tt; downstream upper-bound/isolated evaluation
-scanner  # scanner_input -> FaultOrientScanner3 -> optional scanner thin -> voting
-both     # compare oracle and scanner pipelines on the same truth case/variant
-```
-
-Scanner mode is configured with `--scanner-backend reference-like|fast|quality`,
-`--scanner-backend-matrix`, `--scanner-phi-min`, `--scanner-phi-max`,
-`--scanner-theta-min`, `--scanner-theta-max`, `--scanner-sigma1`,
-`--scanner-sigma2`, `--scanner-thin-mode none|reference|normal`, and
-`--keep-scanner-edge-effects`. The scanner defaults are reference-like backend,
-strike range `0..180`, dip range `45..90`, `sigma1=sigma2=2`, and reference
-scanner thinning with edge-effect removal. `--scanner-backend reference-like`
-uses the reference-like scan path; `fast` uses the accelerated scanner path;
-`quality` uses refined scanner sampling.
-`--scanner-thin-mode none` passes raw scanner attributes to voting,
-`reference` applies strike-binned scanner thinning, and `normal` uses the
-legacy fault-normal scanner thinning path.
-
-`--scanner-backend-matrix` is an opt-in diagnostic for `--input-mode scanner`
-and `--input-mode both`. It runs `reference-like`, `quality`, and `fast` for
-the same case, variant, scanner angle/sigma/thinning config, and downstream
-workflow. Oracle-only mode treats the flag as a no-op and records
-`scanner_backend_matrix: false` in the report config.
-
-`--scanner-boundary-stage-diagnostics` is an independent opt-in for scanner
-and both input modes. It adds
-`scanner_boundary_stage_diagnostics` only to scanner pipeline variants; it
-does not enable or replace the existing `scanner_stage_loss` diagnostics from
-`--scanner-downstream-diagnostics`. In oracle mode the requested diagnostic is
-recorded as disabled in `config.scanner_boundary_stage_diagnostics.enabled`
-and no variant diagnostic is produced. This detailed diagnostic is intended
-for cause isolation, not as a promotion gate, and it is not added to
-`summary.csv`.
-
-For the 49^3 boundary-stage investigation, reproduce the detailed report and
-then generate a deterministic screening summary with:
-
-```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 49,49,49 \
-  --input-mode scanner \
-  --workflow-mode quality \
-  --scanner-backend quality \
-  --scanner-refinement-factor 2 \
-  --variants current_default,boundary_aware_voter_v1,boundary_edge_thin_v1,boundary_seed_retention_v1,quality_boundary_skinner_fallback_v5 \
-  --scanner-boundary-stage-diagnostics \
-  --save-volumes \
-  --write-markdown-index \
-  --pretty \
-  --output-dir outputs/3d/synthetic_quality/boundary_stage_49
-
-PYTHONPATH=src python scripts/summarize_scanner_boundary_stages.py \
-  outputs/3d/synthetic_quality/boundary_stage_49/metrics.json \
-  --case-id boundary_plane \
-  --variant current_default \
-  --retention-threshold 0.80 \
-  --output-json outputs/3d/synthetic_quality/boundary_stage_49/stage_summary.json \
-  --output-markdown outputs/3d/synthetic_quality/boundary_stage_49/stage_summary.md
-```
-
-These commands are reproduction instructions, not evidence that the 49^3 run
-was executed in a PR. The `0.80` retention threshold is an investigation-only
-screening value, not a promotion gate. The summary ranks observed transitions
-to narrow the investigation; it does not establish a root cause. Final
-decisions still use the existing scanner-boundary promotion gate together with
-the non-boundary regression checks.
-
-The diagnostic records masks in this fixed stage order:
-
-```text
-scanner_ft_positive -> scanner_fet_positive -> seed_candidate -> seed_selected
--> fv_positive -> fvt_positive -> primary_skin -> fallback_skin -> final_skin
-```
-
-`scanner_ft_positive` is the positive raw scanner likelihood and
-`scanner_fet_positive` is the positive scanner-thinned likelihood passed to
-the voter. `seed_candidate` applies the configured seed threshold, while
-`seed_selected` contains the actual seeds passed to voting. `fv_positive` and
-`fvt_positive` are respectively the positive pre-thinning vote and the final
-post-thinning/post-policy input to skinning. `primary_skin` is captured before
-fallback evaluation. `fallback_skin` is non-empty only when fallback replaces
-the primary result, and then equals `final_skin`; otherwise `final_skin` is the
-primary result. When skinning is disabled, all three skin stages are empty.
-
-Transitions report source retention, target introduction, bidirectional
-voxel-center Euclidean distances, and centroid/normal shifts. Matching uses
-`config.match_radius`, equal to the synthetic truth metric `buffer_radius`.
-Boundary and interior metrics use a boundary shell containing voxels within
-`config.edge_margin` (currently 2) voxels of any volume face. Stage profiles
-also report exact distance-to-face bins through 3 voxels, 18-neighbor
-(`edge`) connected components, and comparisons with the configured truth
-surface. The fixed transitions cover every adjacent stage plus
-`fvt_positive_to_final_skin`; fallback-specific transitions remain present
-with empty-mask metrics when fallback is unused. Each transition includes an
-`applicable` boolean and a nullable `not_applicable_reason`. Skin-stage
-transitions are recorded as non-applicable when skinning is disabled, and
-fallback-specific transitions are non-applicable when fallback is unused.
-These transitions remain in the detailed diagnostic but are excluded from the
-screening summary rankings and primary aggregates. Older reports without an
-`applicable` field are treated as applicable.
-
-With optional visual outputs enabled, each case also gets a case directory. For
-the `minimal` case set this is:
-
-```text
-single_vertical_plane/
-  truth_fault_mask.dat
-  truth_distance.dat
-  truth_strike.dat
-  truth_dip.dat
-  ft_oracle.dat
-  pt_oracle.dat
-  tt_oracle.dat
-  fv_py.dat
-  vp_py.dat
-  vt_py.dat
-  fvt_py.dat
-  skin_mask_py.dat
-  skins.json
-  figures/
-    ft_oracle_i3_center.png
-    fv_py_i3_center.png
-    fvt_py_i3_center.png
-    truth_vs_fvt_overlay_i3_center.png
-    skin_mask_py_i3_center.png
-    truth_vs_skin_overlay_i3_center.png
-```
-
-The stable minimum JSON contract stores canonical metrics under
-`cases[].pipelines.<pipeline>.variants.<variant>`. `cases[].variants`,
-`cases[].pyosv`, and `cases[].quality` remain compatibility aliases for the
-active pipeline. In single-pipeline modes, `cases[].variant_comparison` is also
-an active-pipeline alias; in `--input-mode both`, it is a `pipelines` map.
-
-```json
-{
-  "format_version": 1,
-  "config": {
-    "case_set": "minimal",
-    "workflow_mode": "reference",
-    "shape": [33, 33, 33],
-    "variants": ["current_default"],
-    "input_mode": "both",
-    "voting": {
-      "voter_thin_mode": "reference",
-      "surface_support_min_fraction": 0.0,
-      "surface_support_exponent": 0.0
-    },
-    "skinning": {
-      "enabled": true,
-      "min_likelihood": 0.5,
-      "min_skin_size": 1,
-      "d": 1,
-      "ru": 10,
-      "rv": null,
-      "rw": null,
-      "max_steps": 10,
-      "du": 5.0,
-      "max_delta_strike": 30.0,
-      "reskin": true,
-      "reskin_policy": "existing_cells_v1",
-      "small_skin_size": 10
-    }
-  },
-  "cases": [
-    {
-      "case_id": "single_vertical_plane",
-      "shape": [33, 33, 33],
-      "truth": {
-        "fault_voxel_count": 2277,
-        "surface_voxel_count": 1089
-      },
-      "pipelines": {
-        "oracle": {
-          "variants": {
-            "current_default": {
-              "pyosv": {
-                "voting": {
-                  "surface_voting_boundary_policy": "reference",
-                  "surface_support_min_fraction": 0.0,
-                  "surface_support_exponent": 0.0,
-                  "diagnostic_summary": {
-                    "policy": "reference",
-                    "seed_count": 1,
-                    "boundary_affected_seed_count": 0,
-                    "voted_seed_count": 1,
-                    "skipped_seed_count": 0,
-                    "support_fraction_mean": 1.0,
-                    "support_fraction_min": 1.0,
-                    "surface_projection_count": 0,
-                    "selected_invalid_sample_count": 0,
-                    "face_center_vote_count": 0
-                  }
-                },
-                "fv": {},
-                "fvt": {},
-                "skins": {
-                  "skin_count": 1,
-                  "cell_count": 1089,
-                  "unique_cell_count": 1089,
-                  "duplicate_cell_count": 0,
-                  "largest_skin_size": 1089,
-                  "largest_skin_fraction": 1.0,
-                  "small_skin_size": 10,
-                  "small_skin_count": 0,
-                  "small_skin_cell_count": 0,
-                  "small_skin_cell_fraction": 0.0
-                }
-              },
-              "skinning": {
-                "enabled": true
-              },
-              "quality": {
-                "fv_top_truth_count": {
-                  "buffered_overlap_radius2": {},
-                  "surface_distance": {}
-                },
-                "fvt_top_truth_count": {
-                  "buffered_overlap_radius2": {},
-                  "surface_distance": {},
-                  "orientation_error": {}
-                },
-                "edge_false_positive": {
-                  "fv_top_truth_count": {
-                    "edge_false_positive_fraction_of_candidates": 0.0
-                  },
-                  "fvt_top_truth_count": {
-                    "edge_false_positive_fraction_of_candidates": 0.0
-                  },
-                  "skin": {
-                    "edge_false_positive_fraction_of_candidates": 0.0
-                  }
-                },
-                "skin": {
-                  "topology": {},
-                  "buffered_overlap_radius2": {},
-                  "surface_distance": {},
-                  "orientation_error": {}
-                }
-              }
-            }
-          },
-          "variant_comparison": {
-            "baseline_variant": "current_default",
-            "variants": {
-              "current_default": {
-                "fvt_buffered_f1_r2_delta_vs_current": 0.0,
-                "fvt_candidate_to_truth_p95_delta_vs_current": 0.0,
-                "fvt_strike_median_error_delta_vs_current": 0.0,
-                "fvt_dip_median_error_delta_vs_current": 0.0,
-                "fv_buffered_f1_r2_delta_vs_current": 0.0
-              }
-            }
-          }
-        },
-        "scanner": {
-          "variants": {
-            "current_default": {
-              "pyosv": {
-                "fv": {},
-                "fvt": {},
-                "skins": {}
-              },
-              "scanner": {
-                "input": {},
-                "ft": {},
-                "pt": {},
-                "tt": {},
-                "fet": {},
-                "fpt": {},
-                "ftt": {}
-              },
-              "skinning": {
-                "enabled": true
-              },
-              "quality": {
-                "fv_top_truth_count": {},
-                "fvt_top_truth_count": {},
-                "edge_false_positive": {},
-                "skin": {}
-              },
-              "scanner_quality": {
-                "ft_top_truth_count": {},
-                "orientation_error": {},
-                "input_association": {}
-              }
-            }
-          },
-          "variant_comparison": {
-            "baseline_variant": "current_default",
-            "variants": {
-              "current_default": {
-                "fvt_buffered_f1_r2_delta_vs_current": 0.0,
-                "fvt_candidate_to_truth_p95_delta_vs_current": 0.0,
-                "fvt_strike_median_error_delta_vs_current": 0.0,
-                "fvt_dip_median_error_delta_vs_current": 0.0,
-                "fv_buffered_f1_r2_delta_vs_current": 0.0
-              }
-            }
-          }
-        }
-      },
-      "active_pipeline": "oracle",
-      "pyosv": {
-        "fv": {},
-        "fvt": {},
-        "skins": {}
-      },
-      "skinning": {
-        "enabled": true
-      },
-      "quality": {
-        "fv_top_truth_count": {},
-        "fvt_top_truth_count": {},
-        "edge_false_positive": {},
-        "skin": {}
-      },
-      "variants": {
-        "current_default": {
-          "active_pipeline": "oracle",
-          "pyosv": {},
-          "skinning": {},
-          "quality": {},
-          "pipelines": {
-            "oracle": {},
-            "scanner": {}
-          }
-        }
-      },
-      "variant_comparison": {
-        "pipelines": {
-          "oracle": {
-            "baseline_variant": "current_default",
-            "variants": {}
-          },
-          "scanner": {
-            "baseline_variant": "current_default",
-            "variants": {}
-          }
-        }
-      }
-    }
-  ]
-}
-```
-
-Each case stores per-variant metrics under `cases[].pipelines.*.variants`.
-For backward compatibility, the active pipeline is also exposed through
-`cases[].variants`; `current_default` is duplicated at the case top level when
-that variant is present. `cases[].pipelines.*.variant_comparison` stores
-per-variant deltas against `current_default` when that baseline variant is
-present; when it is not present, `baseline_variant` is `null` and the
-comparison map is empty. In `--input-mode both`, the top-level comparison is a
-`pipelines` map to avoid an ambiguous active-pipeline comparison.
-
-The canonical pipeline schema is:
-
-```text
-cases[].pipelines.oracle.variants.<variant>.pyosv
-cases[].pipelines.oracle.variants.<variant>.pyosv.voting.diagnostic_summary
-cases[].pipelines.oracle.variants.<variant>.quality
-cases[].pipelines.oracle.variant_comparison
-cases[].pipelines.scanner.variants.<variant>.pyosv
-cases[].pipelines.scanner.variants.<variant>.pyosv.voting.diagnostic_summary
-cases[].pipelines.scanner.variants.<variant>.quality
-cases[].pipelines.scanner.variants.<variant>.scanner_quality
-cases[].pipelines.scanner.variant_comparison
-```
-
-Oracle-only runs include only `pipelines.oracle`; scanner-only runs include only
-`pipelines.scanner`; `--input-mode both` includes both. Existing
-`cases[].variants` entries remain as compatibility aliases. In scanner-only
-mode, top-level `pyosv` and `quality` alias the scanner pipeline; in both mode
-they alias the oracle pipeline. Scanner pipeline reports include
-`scanner.input`, raw scanner `ft`/`pt`/`tt`, and used scanner
-`fet`/`fpt`/`ftt` summaries; the corresponding volume artifacts are named
-`ft_used`, `pt_used`, and `tt_used`.
-
-Every variant's `pyosv.voting` object records
-`surface_voting_boundary_policy`, `surface_support_min_fraction`,
-`surface_support_exponent`, and the JSON-scalar-only `diagnostic_summary`.
-Compatibility aliases carry the same object for their active pipeline.
-
-Scanner pipeline reports also include `scanner_quality`, which measures scanner
-outputs before voting/skinning: raw scanner `ft` top-truth-count overlap and
-surface distance, raw and used scanner `pt`/`tt` orientation errors, and
-scanner-input association with the truth surface. These metrics are separate
-from downstream `quality.*` so scanner failures can be distinguished from voter,
-thinning, or skinning failures. The input association uses
-`abs(truth_distance) <= --truth-surface-half-width` as the near-surface mask and
-`abs(truth_distance) >= max(3.0, --truth-surface-half-width + 2.0)` as the far
-mask; positive contrast means the low-on-fault scanner input is lower near truth
-than far from truth.
-
-All legacy scanner and pipeline array summaries define `nonzero_fraction` with
-`NONZERO_EPSILON = 1e-6`: floating-point magnitudes equal to or below the
-epsilon do not count, while values strictly above it do. Synthetic
-mode-comparison reuses this definition. It also rejects empty truth-surface
-support after generating a case and before starting its scanner. Its completed
-bundle validator checks cross-file scalar semantics as well as hashes and
-syntax. Invalid non-finite or negative truth-metric scalars are rejected during
-mode-comparison configuration, before the experiment starts. Cache counters
-are validated from resolved semantic stage keys, and shared scanner, voting,
-and conditionally shared thinning scalar evidence is compared across cells.
-Scanner scalar evidence is prepared once per trial and backend, reused by the
-scanner-only and end-to-end cells, and attributed to a shared runtime stage.
-Voting and thinning scalar evidence, seed selection, voting volume, base
-thinning, and primary skinning are attributed by trial-local semantic-key
-reference count. Keys referenced by multiple cells use a shared row; a
-successfully built key referenced by one cell uses an owner-labelled row.
-Cache hits add neither calls nor elapsed time. `cell_execution` contains only
-the remaining cell-exclusive time, so mode-owned runtime is that residual plus
-the cell's owner-labelled rows without any implicit share of shared rows.
-These rows are a within-experiment breakdown rather than isolated-process
-benchmarks. Their disjoint elapsed sum may not exceed
-`trial_total`, and the sum of trial totals may not exceed `experiment_total`.
-Its authoritative artifact schema is v3, with independent scalar-evidence and
-runtime contract versions (currently scalar-evidence version 7 and runtime
-version 4). Each trial persists one canonical truth-evidence object; all
-scanner, voting, thinning, and enabled-skin quality reports bind their
-fault-band and thin-surface truth counts to it. Scanner publication metrics are
-joined totally to complete persisted scanner evidence. V1 bundles lack that
-evidence, while v2 bundles do not uniquely identify runtime coverage; both must
-be regenerated.
-Array summaries and overlap, distance,
-orientation, and edge report scalars are checked for their mathematical value,
-count, and derived-summary constraints. Top-count selection cardinality is
-bound to truth-surface support; empty-mask, radius-zero, fractional-radius, and
-full-volume buffered-overlap rules are enforced; and every distance summary is
-capped at the volume diagonal. Truth evidence and mask-derived report counts
-are bounded by the canonical volume capacity; duplicate skin cells may raise
-total cell and skin orientation counts above that capacity, but unique cells
-may not. Largest/small-skin summaries are recomputed from
-per-skin arrays and the effective `small_skin_size`. Component topology stores
-the canonical qualification threshold, duplicate-inclusive truth-component
-counts per skin, and unique covered-cell counts per truth component and skin.
-Dominant incidence, qualifying incidence, over-merge/over-split, purity, and
-recall are recomputed from those tables. Truth-component cell totals must equal
-the trial fault-voxel evidence, and covered-component totals must equal the
-exact skin-overlap intersection. Scalar-evidence v1-v4 bundles do not satisfy
-this complete contract and are rejected without implicit upgrade. Success means the recorded scalar evidence is
-internally and cross-cell consistent, not that any volume calculation was
-independently rerun or proven correct, and it is not a tamper-prevention
-signature.
-
-When `--scanner-backend-matrix` is enabled, scanner pipeline variant reports
-also include `scanner_backend_matrix.backends.<backend>` for `reference-like`,
-`quality`, and `fast`. Each backend entry has the normal scanner pipeline
-report shape, including `scanner`, `scanner_quality`, `pyosv`, `quality`, and
-`skinning`. `scanner_backend_matrix.comparison` records the selected backend,
-metric values, deltas versus the selected backend, and best-backend names for
-FVT positive buffered F1, skin buffered F1, and boundary edge false positives.
-`quality.*.buffered_overlap_radius2` uses the wider `truth_fault_mask` band as
-the truth target. Its overlap report records the exact integer numerators
-`candidate_in_truth_buffer_count` and `truth_in_candidate_buffer_count` in
-addition to the existing exact counts and derived exact/buffered ratios. These
-two fields are additive report evidence; the summary CSV v1 columns are
-unchanged. `quality.*.surface_distance` uses the thin truth surface mask
-defined by
-`abs(truth_distance) <= --truth-surface-half-width`.
-`quality.edge_false_positive` stores edge false-positive metrics for
-`fv_top_truth_count`, `fvt_top_truth_count`, and, when skinning is enabled,
-`skin`.
-`quality.skin.buffered_overlap_radius2` and `quality.skin.surface_distance` use
-the same truth targets as the `fv` and `fvt` truth-count metrics. With
-`--skip-skinning`, each variant stores `"skinning": {"enabled": false}`,
-`pyosv.skins` is a zero-count topology summary, and `quality.skin` is `null`.
-
-When skinning is enabled, `quality.skin` has this stable structure:
-
-```json
-{
-  "topology": {
-    "skin_count": 1,
-    "cell_count": 1089,
-    "unique_cell_count": 1089,
-    "duplicate_cell_count": 0,
-    "largest_skin_size": 1089,
-    "largest_skin_fraction": 1.0,
-    "small_skin_size": 10,
-    "small_skin_count": 0,
-    "small_skin_cell_count": 0,
-    "small_skin_cell_fraction": 0.0
-  },
-  "buffered_overlap_radius2": {
-    "buffered_precision": 1.0,
-    "buffered_recall": 1.0,
-    "buffered_f1": 1.0
-  },
-  "surface_distance": {
-    "candidate_to_truth_p95": 0.0,
-    "truth_to_candidate_p95": 0.0,
-    "hausdorff_p95": 0.0
-  },
-  "orientation_error": {
-    "strike_median": 0.0,
-    "dip_median": 0.0
-  }
-}
-```
-
-The synthetic report default skinning configuration is intentionally small for
-controlled synthetic volumes: `--skinner-ru 10`, `--skinner-rv none`,
-`--skinner-rw none`, and `--skinner-max-steps 10`. These are report defaults,
-not the general `FaultSkinner` API defaults.
-
-Skinning can be disabled with `--skip-skinning`. Skin extraction is configured
-with `--skinner-min-likelihood`, `--skinner-min-skin-size`, `--skinner-d`,
-`--skinner-ru`, `--skinner-rv`, `--skinner-rw`, `--skinner-max-steps`,
-`--skinner-du`, `--skinner-max-delta-strike`, `--skinner-growth-source`,
-`--skinner-accepted-occupancy-radius`, `--skinner-boundary-fallback` /
-`--no-skinner-boundary-fallback`, `--no-skinner-reskin`,
-`--skinner-reskin-policy`, and `--small-skin-size`. Policy
-`existing_cells_v1` smooths and relinks accepted cells, while
-`reference_dense_v1` can regenerate missing cells on smoothed local support;
-the selected policy is still validated and recorded when reskinning is off.
-When both boundary-fallback options are omitted, the quality workflow enables
-the fallback and the reference and diagnostic workflows preserve the configured
-value. An explicit negative option overrides the quality default. Reports keep
-recording the effective fallback value and policy in the existing skinning
-fields.
-
-The `geometry` and `extended` case sets keep the same top-level JSON contract
-and write one `cases[]` entry per case plus one `summary.csv` row per
-`(case_id, pipeline, variant)`. Optional volumes and figures are split by case
-directory, for example `single_dipping_plane/`, `curved_surface/`,
-`parallel_planes/`, `crossing_planes/`, `boundary_plane/`, and
-`weak_noisy_plane/`.
-
-`--variants` accepts a comma-separated list:
-
-```text
-current_default
-boundary_aware_voter_v1
-no_surface_orientation_smoothing
-final_norm_smoothing_1
-voter_thin_normal
-voter_thin_hybrid
-voter_thin_hybrid_v2
-boundary_edge_thin_v1
-boundary_seed_retention_v1
-voter_thin_normal_plateau
-surface_support_weighted
-quality_skinner_v2
-quality_boundary_skinner_fallback
-quality_boundary_skinner_fallback_v2
-quality_boundary_skinner_fallback_v3
-quality_boundary_skinner_fallback_v4
-quality_boundary_skinner_fallback_v5
-```
-
-The default is `current_default`. Diagnostic variants do not add pass/fail
-judgments; they make the same truth metrics comparable across voter settings.
-
-`boundary_aware_voter_v1` is explicit-only and is not included in the default
-or `quality-matrix` preset. It changes only the voter boundary policy to
-`masked_in_bounds`; workflow-specific scanner, thinning, seed-selection,
-support, and skinning settings remain those of `current_default`.
-`surface_support_weighted` is included in the `quality-matrix` preset as a
-diagnostic support-aware voting experiment with `0.5, 1.0`; it is not the
-quality workflow default.
-`quality_skinner_v2` is also included in the `quality-matrix` preset as a
-diagnostic skinning experiment. It uses the quality skinner, an adaptive seed
-threshold with fixed quality grow threshold, `growth_source=pre_thin`, and
-`accepted_occupancy_radius=1`. Under `--workflow-mode quality`, this matches
-`current_default`; under `reference` and `diagnostic` workflows, it remains an
-explicit diagnostic override.
-`quality_boundary_skinner_fallback` is included in the `quality-matrix` preset
-as a diagnostic fallback experiment. It sets
-`boundary_skinner_fallback=true`; under `--workflow-mode quality`, this matches
-`current_default`, while under `reference` and `diagnostic` workflows it remains
-an explicit fallback override. The fallback is reported when it is enabled and
-only used when primary skinning returns zero skins and `fvt` has positive
-samples.
-`quality_boundary_skinner_fallback_v2` and
-`quality_boundary_skinner_fallback_v3` are diagnostic degraded-primary fallback
-candidates. v2 uses the `degraded_primary` policy and improves the
-scanner-inclusive boundary case but over-includes fallback components, so it is
-not promoted as the quality-workflow default. v3 uses the filtered
-`degraded_primary_filtered` policy. In the 49^3 scanner-inclusive extended
-quality benchmark with `--scanner-backend quality` and
-`--scanner-refinement-factor 2`, v3 kept `boundary_plane`
-`fvt_positive_buffered_f1_r2=0.739494` but only reached
-`skin_buffered_f1_r2=0.834231`, below the 0.90 default-promotion target, and
-regressed non-boundary skin F1 beyond the 0.02 tolerance on multiple cases. It
-therefore remains diagnostic. The next area to improve is better component
-filtering or voting/fvt boundary recovery.
-`boundary_edge_thin_v1` and `boundary_seed_retention_v1` are explicit
-scanner-boundary diagnostics and are not included in the default or
-`quality-matrix` presets. `quality_boundary_skinner_fallback_v5` is a
-topology-guarded degraded-primary fallback candidate, also selected only by
-explicit variant name. It remains unpromoted until a 49^3 scanner-boundary
-promotion report passes the documented gate.
-`summary.csv` writes one row per `(case_id, pipeline, variant)` and includes the
-pipeline column, variant column, baseline variant, input mode, workflow mode,
-surface-voting boundary policy and aggregate voter diagnostics,
-buffered F1, candidate-to-truth p95 distance, fvt median orientation error
-columns, `fv_edge_false_positive_fraction`, `fvt_edge_false_positive_fraction`,
-positive-only top-truth candidate and fvt metric columns, skin topology and
-truth metric columns, skin fallback diagnostic columns, and fvt and skin delta
-columns against the baseline. Scanner columns are always in the header; they
-are populated for scanner pipeline rows and empty for oracle pipeline rows.
-
-Boundary-voter columns:
-
-```text
-surface_voting_boundary_policy
-voter_boundary_affected_seed_count
-voter_skipped_seed_count
-voter_support_fraction_mean
-voter_support_fraction_min
-voter_surface_projection_count
-voter_selected_invalid_sample_count
-voter_face_center_vote_count
-```
-
-These columns are never blank. Reference-policy rows report `reference` plus
-meaningful neutral/count values such as `0` and `1.0`; masked rows report the
-diagnostics from that voter run. A valid `boundary_aware_voter_v1` run must
-report `voter_selected_invalid_sample_count=0`.
-
-Positive-only top-truth columns:
-
-```text
-fv_positive_candidate_count
-fvt_positive_candidate_count
-fvt_positive_buffered_f1_r2
-fvt_positive_distance_p95
-fvt_positive_edge_false_positive_fraction
-```
-
-Scanner columns:
-
-```text
-pipeline
-input_mode
-workflow_mode
-scanner_backend
-scanner_refinement_factor
-scanner_thin_mode
-scanner_ft_buffered_f1_r2
-scanner_ft_distance_p95
-scanner_strike_median_error
-scanner_dip_median_error
-scanner_input_contrast
-scanner_matrix_best_fvt_positive_buffered_f1_backend
-scanner_matrix_best_skin_buffered_f1_backend
-scanner_matrix_best_boundary_edge_fp_backend
-```
-
-The skin columns are written in deterministic order:
-
-```text
-skinning_enabled
-skin_enabled
-skin_count
-skin_cell_count
-skin_unique_cell_count
-skin_duplicate_cell_count
-skin_largest_size
-skin_largest_fraction
-skin_small_count
-skin_small_cell_fraction
-skin_seed_candidate_count_before_spacing
-skin_seed_count_after_spacing
-skin_seed_rejected_by_occupied
-skin_grow_attempt_count
-skin_discarded_empty_count
-skin_discarded_small_count
-skin_accepted_count
-skin_fallback_enabled
-skin_fallback_used
-skin_fallback_reason
-skin_fallback_method
-skin_fallback_input
-skin_fallback_skin_count
-skin_fallback_cell_count
-skin_buffered_f1_r2
-skin_buffered_precision_r2
-skin_buffered_recall_r2
-skin_distance_p95
-skin_distance_candidate_to_truth_p95
-skin_distance_truth_to_candidate_p95
-skin_distance_hausdorff_p95
-skin_strike_median_error
-skin_dip_median_error
-skin_buffered_f1_delta_vs_baseline
-skin_distance_p95_delta_vs_baseline
-skin_strike_median_error_delta_vs_baseline
-skin_dip_median_error_delta_vs_baseline
-skin_count_delta_vs_baseline
-```
-
-JSON delta fields under `variant_comparison.variants.*` and CSV delta fields
-ending in `_delta_vs_baseline` are only populated when `current_default` is
-included. If the baseline is omitted, `baseline_variant` is `null` in JSON,
-empty in CSV, and the delta fields are empty. Delta signs use
-`variant_value - current_default_value`.
-
-Metric direction is:
-
-```text
-buffered F1: higher is better
-distance p95: lower is better
-orientation error: lower is better
-edge false-positive fraction: lower is better
-small skin cell fraction: lower is better
-skin_count: depends on truth topology; do not judge it alone
-largest_skin_fraction: for single-fault cases, higher means less fragmentation
-```
-
-For skin deltas, `skin_buffered_f1_delta_vs_baseline` follows the same
-positive-is-better interpretation, while `skin_distance_p95_delta_vs_baseline`,
-`skin_strike_median_error_delta_vs_baseline`, and
-`skin_dip_median_error_delta_vs_baseline` are better when negative.
-`skin_count_delta_vs_baseline` is useful topology context only. The underlying
-JSON comparison fields keep the older `_delta_vs_current` names, but the sign
-definition is the same.
-
-`--save-volumes` writes float32 big-endian DAT volumes under each case
-directory, with `truth_fault_mask.dat` and `skin_mask_py.dat` stored as 0/1
-float32 values. It also writes `skins.json` with deterministic skin cell
-records, or a disabled zero-count object when `--skip-skinning` is used. With
-more than one variant, volumes, `skins.json`, and figures are written under
-`case_id/variant/`.
-
-With `--scanner-boundary-stage-diagnostics`, `--save-volumes` additionally
-writes 0/1 float32 masks under
-`case_id[/variant][/pipeline]/scanner_boundary_stage_diagnostics/`:
-
-```text
-scanner_ft_positive.dat
-scanner_fet_positive.dat
-seed_candidate.dat
-seed_selected.dat
-fv_positive.dat
-fvt_positive.dat
-primary_skin.dat
-fallback_skin.dat
-final_skin.dat
-boundary_shell.dat
-```
-
-The optional Markdown diagnostic section follows the reported stage and
-transition order. Its stage table shows truth recall at the boundary, in the
-interior, and at exact edge distances alongside component fragmentation. Its
-transition table distinguishes the fraction of source voxels retained near
-the boundary from the fraction of target voxels newly introduced there, and
-also shows distance and normal/tangential shift metrics. `fallback_skin.dat`
-is nonzero only when the fallback result is adopted.
-
-For `--input-mode scanner`, the same case or variant directory also includes
-scanner artifacts:
+Scanner outputs add:
 
 ```text
 scanner_input.dat
@@ -1797,92 +443,169 @@ tt_scan.dat
 ft_used.dat
 pt_used.dat
 tt_used.dat
+scanner_confidence.dat  # when supplied by the selected backend
 ```
 
-`ft_scan` / `pt_scan` / `tt_scan` are raw scanner outputs. `ft_used` /
-`pt_used` / `tt_used` are the attributes passed to voting after scanner
-thinning; with `--scanner-thin-mode none`, used attributes match raw scanner
-outputs. For `--input-mode both`, artifacts are split into pipeline
-subdirectories:
+Thinning diagnostics are written under `thinning_diagnostic/`. Scanner boundary
+stage volumes are written under `scanner_boundary_stage_diagnostics/`.
+
+Visualization requires the optional `viz` dependencies. Figures use fixed
+center slices and include truth-versus-FVT, truth-versus-skin, and scanner
+likelihood overlays when the corresponding volumes exist.
+
+## CLI usage
+
+A small oracle report using the resolved default is:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set minimal \
+  --shape 33,33,33 \
+  --workflow-mode reference \
+  --variants current_default \
+  --input-mode oracle \
+  --output-dir outputs/3d/synthetic_quality/minimal_oracle_33 \
+  --pretty
+```
+
+A diagnostic matrix over oracle and scanner pipelines is:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 33,33,33 \
+  --variant-preset quality-matrix \
+  --input-mode both \
+  --workflow-mode diagnostic \
+  --scanner-backend reference-like \
+  --scanner-thin-mode reference \
+  --output-dir outputs/3d/synthetic_quality/quality_matrix_33 \
+  --pretty \
+  --save-figures \
+  --write-markdown-index
+```
+
+A scanner-inclusive quality-workflow report is:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 49,49,49 \
+  --workflow-mode quality \
+  --variants current_default \
+  --input-mode scanner \
+  --scanner-backend quality \
+  --scanner-refinement-factor 2 \
+  --scanner-downstream-diagnostics \
+  --scanner-boundary-stage-diagnostics \
+  --output-dir outputs/3d/synthetic_quality/scanner_quality_current_49 \
+  --pretty
+```
+
+Add `--save-volumes` when DAT and `skins.json` artifacts are required. Add
+`--skip-skinning` when only scanner, voting, and thinning behavior should be
+evaluated.
+
+## Voter thinning diagnostics
+
+`--thinning-diagnostics` (also accepted as
+`--include-thinning-diagnostic`) computes `reference` and `normal` voter
+thinning from the same pre-thin vote output for the selected diagnostic cases.
+The default diagnostic case is `curved_surface`.
+
+Diagnostic JSON stores both modes and `delta.normal_minus_reference`. Optional
+artifacts include reference, normal, shared, and mode-only masks under
+`thinning_diagnostic/`.
+
+Use `--thinning-diagnostic-cases` to select a nonempty, unique list of
+registered case IDs.
+
+## Scanner boundary stage diagnostics
+
+`--scanner-boundary-stage-diagnostics` is active only for scanner pipelines. It
+records this fixed stage order:
 
 ```text
-case_id[/variant]/oracle/
-case_id[/variant]/scanner/
+scanner_ft_positive
+-> scanner_fet_positive
+-> seed_candidate
+-> seed_selected
+-> fv_positive
+-> fvt_positive
+-> primary_skin
+-> fallback_skin
+-> final_skin
 ```
 
-`--save-figures` writes static center-slice PNGs, including skin mask and
-truth-vs-skin overlays. Scanner mode also writes scanner input, `ft_scan`,
-`ft_used`, truth-vs-`ft_scan`, truth-vs-`ft_used`, and scanner FVT overlays.
-`--write-markdown-index` writes `visual_report.md` with relative links to the
-case figures, scanner overlays, scanner input/attribute metrics, FVT metrics,
-and skin metrics.
+Stage reports include counts, boundary/interior profiles, distance-to-face
+profiles, connected components, truth comparisons, and adjacent-stage
+transitions. Transitions record applicability explicitly; fallback transitions
+remain present but are marked not applicable when fallback is unused.
 
-## Dense reskin promotion evidence
+When `--save-volumes` is enabled, the stage masks and the boundary shell are
+written under `scanner_boundary_stage_diagnostics/`.
 
-The skin-phase-only acceptance set compares `quality + existing_cells_v1`
-against `quality + reference_dense_v1` from identical controlled parents. It
-contains the eight geometry cases required for dense reskin review, plus
-separate valid-mask and prior-occupancy barrier cases. The parallel and
-orientation-boundary cases pass both nearby surfaces through one shared
-skinning invocation. The valid-mask case is required to record at least one
-`rejected_invalid_mask` and no generated cell on the masked location. The
-prior-occupancy case similarly requires at least one
-`rejected_prior_skin_collision` and no generated cell on the occupied location.
-The volume-boundary case has a boundary-adjacent truth hole and a separate
-out-of-volume projection: it must recover the hole, record at least one
-`rejected_out_of_bounds`, and emit neither an out-of-volume cell nor a
-clamp-created boundary artifact.
-Run it without scanner or voting work:
+A deterministic scalar summary can be generated from a completed report:
 
 ```bash
-PYTHONPATH=src python -m pyosv.evaluation.dense_reskin_quality \
-  --save-figures \
-  --output-dir outputs/3d/synthetic_quality/dense_reskin_gate
+PYTHONPATH=src python scripts/summarize_scanner_boundary_stages.py \
+  outputs/3d/synthetic_quality/scanner_quality_current_49/metrics.json \
+  --case-id boundary_plane \
+  --variant current_default \
+  --retention-threshold 0.80 \
+  --output-json outputs/3d/synthetic_quality/scanner_quality_current_49/stage_summary.json \
+  --output-markdown outputs/3d/synthetic_quality/scanner_quality_current_49/stage_summary.md
 ```
 
-The output directory contains the versioned
-`dense_reskin_promotion_gate.json`, `dense_reskin_case_metrics.csv`, and
-`dense_reskin_promotion_gate.md`. Gate schema version 2 records
-`promotion_status: promotion_candidate` so a passing gate cannot be confused
-with a default promotion. With `--save-figures`, the JSON also records the
-ordered figure artifact metadata, and `figures/` contains one four-panel `i2`
-projection per case for baseline cells, candidate observed cells, candidate
-generated cells, and the truth surface. Empty generated-cell statistics remain
-JSON `null`/empty CSV fields with explicit status fields in JSON. The fixed
-practical limits are: no buffered-recall regression, no buffered-precision
-regression beyond `0.02`, no symmetric-Chamfer regression beyond `0.25` index
-unit, and no small-skin-cell-fraction increase beyond `0.05`. Practical
-aggregate quality and hard safety gates evaluate every acceptance case,
-including the prior-occupancy barrier case. The JSON records the complete
-aggregate case ID list. With the current controlled evidence, including that
-case exposes a buffered-recall regression and the promotion gate remains
-failed. This gate does not change a public default.
+The retention threshold belongs to this diagnostic summary and is not a
+promotion-gate threshold.
 
-## Test Commands
+## Reading results
 
-The focused validation command for the synthetic scanner-inclusive suite is:
+Use this review order:
 
-```bash
-PYTHONPATH=src python -m pytest -q \
-  tests/test_synthetic3d.py \
-  tests/test_synthetic_metrics.py \
-  tests/test_synthetic_oracle_pipeline.py \
-  tests/evaluation/synthetic_quality \
-  tests/evaluation/reporting \
-  tests/cli/test_synthetic_quality_cli.py
-```
+1. Confirm the effective row configuration in `summary.csv`.
+2. Review scanner metrics for scanner pipelines.
+3. Review FVT overlap, distance, orientation, and edge metrics.
+4. Review skin overlap and component topology.
+5. Review variant deltas only against the matching `current_default` row.
+6. Inspect figures and `metrics.json` for spatial and diagnostic detail.
 
-The broader synthetic voting/skinning checks are:
+Do not compare rows that differ in case, shape, input pipeline, scanner backend,
+scanner thinning, workflow, voter thinning, skinning, truth-metric settings, or
+variant scope unless that difference is the declared comparison axis.
 
-```bash
-PYTHONPATH=src python -m pytest -q \
-  tests/test_voting3d.py \
-  tests/test_skinner.py
-```
+The scanner-thinning policy comparison profiles and their promotion gates use
+paired `summary.csv` and `metrics.json` evidence. Their current commands and
+configuration contracts are documented in
+[Quality Workflow Mode](quality_mode.md).
 
-If Ruff is installed:
+## Separate canonical mode-comparison experiment
 
-```bash
-PYTHONPATH=src python -m ruff check src tests examples
-PYTHONPATH=src python -m ruff format --check src tests examples
-```
+`examples/report_3d_synthetic_mode_comparison.py` runs the canonical scanner
+backend × workflow experiment and writes its own validated scalar bundle. It is
+not an alias for this report CLI and does not combine Synthetic and F3 results.
+See [Synthetic Mode Comparison](synthetic_mode_comparison.md).
+
+## F3 boundary
+
+Controlled synthetic evaluation does not read F3 files. F3 publication
+comparison uses the complete `(420, 400, 100)` volume as one evaluation unit.
+Crops and regional partitions are diagnostics within that volume and are not
+synthetic cases or statistical replicates.
+
+Use [F3 3D Reference Data Validation](f3d_validation.md) for the F3 runner and
+artifact contract. Use [F3 Visual Diagnostics](f3d_visual_diagnostics.md) for
+display and interpretation rules.
+
+## Related specifications
+
+- [Architecture](architecture.md)
+- [Quality Workflow Mode](quality_mode.md)
+- [Mode Comparison Contract](mode_comparison.md)
+- [Synthetic Mode Comparison](synthetic_mode_comparison.md)
+- [3D Orientation Scanning](orient3d.md)
+- [3D Voting Conventions](3d_voting.md)
+- [Reference-Like 3D Thinning](reference_like_thinning.md)
+- [Skinning](skinning.md)
+- [F3 3D Reference Data Validation](f3d_validation.md)
