@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -254,6 +255,37 @@ def test_generates_self_validating_v1_bundle_with_expected_artifact_tiers(
     assert _snapshot(report.synthetic.path) == snapshots["synthetic"]
     assert _snapshot(report.f3.path) == snapshots["f3"]
     assert _snapshot(report.f3.data_root) == snapshots["data"]
+
+
+def test_real_source_fixtures_flow_through_v1_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_bundles: dict[str, Any],
+) -> None:
+    lock_file = tmp_path / "uv.lock"
+    lock_file.write_bytes(b"lock-version = 1\n")
+    output = tmp_path / "publication"
+    monkeypatch.setattr(v1_bundle, "generate_figures", _fake_figures)
+
+    result = v1_bundle.generate_publication_bundle_v1(
+        source_bundles["synthetic"],
+        source_bundles["f3"],
+        source_bundles["data_root"],
+        output,
+        environment_lock=lock_file,
+        code=_CODE,
+        environment_controls=_CONTROLS,
+    )
+
+    assert result == output
+    validate_publication_directory(output)
+    for filename, expected_header in TABLE_HEADERS.items():
+        with (output / filename).open(newline="", encoding="utf-8") as stream:
+            reader = csv.reader(stream)
+            assert tuple(next(reader)) == expected_header
+            rows = list(reader)
+        assert rows, f"{filename} must contain at least one data row"
+        assert all(len(row) == len(expected_header) and any(row) for row in rows)
 
 
 def test_publication_id_ignores_timestamp_and_png_bytes(
