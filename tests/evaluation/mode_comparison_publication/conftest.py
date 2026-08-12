@@ -18,7 +18,7 @@ from tests.evaluation.f3d_mode_comparison.test_integration import (
 )
 
 
-def snapshot_files(root: Path) -> dict[str, tuple[bytes, int, int, str]]:
+def _snapshot_files(root: Path) -> dict[str, tuple[bytes, int, int, str]]:
     snapshot = {}
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         payload = path.read_bytes()
@@ -34,16 +34,14 @@ def snapshot_files(root: Path) -> dict[str, tuple[bytes, int, int, str]]:
 
 @pytest.fixture(scope="session")
 def source_bundles(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    pytest.importorskip("matplotlib")
     root = tmp_path_factory.mktemp("mode-comparison-publication-sources")
     synthetic_config = SyntheticModeComparisonConfig(
         case_ids=("weak_noisy_plane", "single_vertical_plane"),
         trial_seeds=(20260707, 20260708),
         shape=(9, 9, 9),
     )
-    synthetic_result = run_mode_comparison(synthetic_config)
     synthetic_bundle = write_artifact_bundle(
-        synthetic_result,
+        run_mode_comparison(synthetic_config),
         root / "synthetic",
         config=synthetic_config,
     )
@@ -62,27 +60,10 @@ def source_bundles(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         )
 
     return {
-        "root": root,
         "synthetic": synthetic_bundle,
         "f3": f3_bundle,
         "data_root": data_root,
-        "synthetic_snapshot": snapshot_files(synthetic_bundle),
-        "f3_snapshot": snapshot_files(f3_bundle),
-        "data_snapshot": snapshot_files(data_root),
+        "synthetic_snapshot": _snapshot_files(synthetic_bundle),
+        "f3_snapshot": _snapshot_files(f3_bundle),
+        "data_snapshot": _snapshot_files(data_root),
     }
-
-
-@pytest.fixture(scope="session")
-def publication_bundle(
-    source_bundles: dict[str, Any], tmp_path_factory: pytest.TempPathFactory
-) -> tuple[Path, dict[str, Any]]:
-    from pyosv.evaluation.mode_comparison_publication import generate_legacy_publication_bundle
-
-    output = tmp_path_factory.mktemp("mode-comparison-publication") / "publication"
-    generate_legacy_publication_bundle(
-        source_bundles["synthetic"],
-        source_bundles["f3"],
-        source_bundles["data_root"],
-        output,
-    )
-    return output, source_bundles

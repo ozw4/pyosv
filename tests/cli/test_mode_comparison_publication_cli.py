@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -9,63 +8,24 @@ from pyosv.cli import mode_comparison_publication
 from pyosv.evaluation import publication_manifest_io
 from pyosv.evaluation.mode_comparison_publication import v1_bundle
 
-pytest_plugins = ("tests.evaluation.mode_comparison_publication.conftest",)
 
-
-def test_validate_only_ignores_missing_sources(
-    publication_bundle: tuple[Path, dict[str, Any]],
-) -> None:
-    output, _sources = publication_bundle
-    assert (
-        mode_comparison_publication.main(
-            [
-                "--publication-contract",
-                "legacy",
-                "--validate-only",
-                "--output-dir",
-                str(output),
-            ]
-        )
-        == 0
-    )
-
-
-def test_default_publication_contract_is_v1() -> None:
+def test_parser_has_single_publication_contract() -> None:
     args = mode_comparison_publication.build_parser().parse_args(["--output-dir", "output"])
-    assert args.publication_contract == "v1"
+    assert not hasattr(args, "publication_contract")
+
+
+def test_parser_rejects_removed_contract_option() -> None:
+    with pytest.raises(SystemExit):
+        mode_comparison_publication.build_parser().parse_args(
+            ["--publication-contract", "v1", "--output-dir", "output"]
+        )
 
 
 def test_normal_generation_requires_all_source_arguments(tmp_path: Path) -> None:
     assert mode_comparison_publication.main(["--output-dir", str(tmp_path / "out")]) == 1
 
 
-def test_cli_generation_accepts_pretty_and_fixed_sources(
-    source_bundles: dict[str, Any],
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "publication"
-    assert (
-        mode_comparison_publication.main(
-            [
-                "--publication-contract",
-                "legacy",
-                "--pretty",
-                "--synthetic-bundle",
-                str(source_bundles["synthetic"]),
-                "--f3-bundle",
-                str(source_bundles["f3"]),
-                "--f3-data-root",
-                str(source_bundles["data_root"]),
-                "--output-dir",
-                str(output),
-            ]
-        )
-        == 0
-    )
-    assert (output / "completion.json").is_file()
-
-
-def test_default_v1_generation_routes_code_controls_and_lock(
+def test_generation_routes_code_controls_and_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -115,7 +75,7 @@ def test_default_v1_generation_routes_code_controls_and_lock(
     ]
 
 
-def test_default_v1_validate_only_routes_only_to_directory_validator(
+def test_validate_only_routes_only_to_directory_validator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,7 +104,7 @@ def test_default_v1_validate_only_routes_only_to_directory_validator(
     assert calls == [output]
 
 
-def test_default_v1_generation_requires_environment_lock(
+def test_generation_requires_environment_lock(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -163,27 +123,10 @@ def test_default_v1_generation_requires_environment_lock(
         )
         == 1
     )
-    assert "v1 generation requires --environment-lock" in capsys.readouterr().err
+    assert "generation requires --environment-lock" in capsys.readouterr().err
 
 
-def test_legacy_rejects_environment_lock(tmp_path: Path) -> None:
-    assert (
-        mode_comparison_publication.main(
-            [
-                "--publication-contract",
-                "legacy",
-                "--validate-only",
-                "--environment-lock",
-                str(tmp_path / "uv.lock"),
-                "--output-dir",
-                str(tmp_path / "output"),
-            ]
-        )
-        == 1
-    )
-
-
-def test_git_failure_is_reported_only_by_v1_generation(
+def test_git_failure_is_reported_by_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -197,8 +140,6 @@ def test_git_failure_is_reported_only_by_v1_generation(
     assert (
         mode_comparison_publication.main(
             [
-                "--publication-contract",
-                "v1",
                 "--synthetic-bundle",
                 str(tmp_path / "synthetic"),
                 "--f3-bundle",
@@ -215,7 +156,7 @@ def test_git_failure_is_reported_only_by_v1_generation(
     )
 
 
-def test_missing_environment_control_fails_v1_generation(
+def test_missing_environment_control_fails_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -231,8 +172,6 @@ def test_missing_environment_control_fails_v1_generation(
     assert (
         mode_comparison_publication.main(
             [
-                "--publication-contract",
-                "v1",
                 "--synthetic-bundle",
                 str(tmp_path / "synthetic"),
                 "--f3-bundle",

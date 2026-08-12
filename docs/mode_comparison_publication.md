@@ -56,55 +56,24 @@ and public reference files. Public DAT files are never copied to the output.
 
 ## Output and validation
 
-The output directory contains `manifest.json`, the publication CSV tables,
-`figure_manifest.json`, `report.md`, `figure_data/`, `figures/`, and a final
-`completion.json`. Publication artifact schema version 2 introduces a semantic
-table contract version 1; figure contract version 3 adds the source-derived,
-per-candidate F3 ridge-threshold contract to the existing fixed figure-slot,
-figure-data semantic metadata, and PNG-dimension contract. Completion,
-metric-selection, and table contracts remain version 1. A figure contract
-version 2 predates the per-candidate ridge-threshold contract and is explicitly
-rejected; regenerate the publication bundle rather than treating it as v3.
+The output directory contains `publication_manifest.json`, `experiment.json`,
+the supplied environment lock, the publication CSV tables, `report.md`,
+`figure_data/`, and `figures/`. `publication_manifest.json` is the only root
+management and completion file. It records code and environment provenance,
+F3 dataset identity, source completion hashes, Synthetic/F3 evaluation
+semantics, and each artifact's path, tier, role, size, and SHA-256.
 
-`completion.json` checks exact file bytes, sizes, and SHA-256 values. In
-addition, `manifest.json` records a typed semantic contract for every root CSV:
-its header, row count, identity fields, ordered identity digest, and ordered
-semantic-row digest. The validator reparses CSV values with their declared
-types, so nullable blanks remain distinct from numeric zero and boolean values
-remain distinct from integers. It rejects duplicate identities and verifies
-canonical ordering, selected metric/contrast coverage, recomputed contrasts,
-and recomputed descriptive summaries. Supporting regional, orientation, and
-runtime tables have equivalent identity and coverage validation rather than
-being allowed to pass as header-only files.
+Validation is deliberately bundle-local. It validates the manifest contract
+and publication identity, checks every listed artifact's regular-file status,
+size, and SHA-256, binds the environment lock and `experiment.json` hashes to
+their manifest sections, and rejects unlisted regular files. It does not parse
+CSV semantics or PNG dimensions and does not access source bundles, the F3 data
+root, Git, Matplotlib, Numba, or BLAS.
 
-The manifest stores source coverage drawn from the validated source metadata:
-synthetic case/trial identities and skinning state, plus the one F3 full-volume
-evaluation unit, canonical cells, per-cell skinning state, volume shape,
-dataset identity, and run fingerprint. Source identity digests are recomputed
-from their recorded internal identity fields during validate-only operation.
-They are provenance-consistency checks, not cryptographic signatures or a
-tamper-proof commitment: a coherent rewrite of all related metadata is outside
-their threat model.
-
-Figure validation requires the fixed scalar and spatial slot set, including an
-explicit omitted synthetic-skin record when skinning is disabled. The top-level
-`f3_ridge_threshold_contract` in `figure_manifest.json` records source
-`MetricEvidence` thresholds by stage and canonical candidate cell. F3 spatial
-records must use their stage's public-reference `selection_threshold` and have
-null `candidate_selection_thresholds`; F3 ridge-overlay records must match the
-`fvt` public-reference threshold and complete candidate-threshold mapping. Each
-overlay figure-data row repeats its cell's
-`candidate_selection_threshold`; non-overlay rows leave it null. Validate-only
-cross-checks the top-level contract, records, and typed figure-data rows in
-addition to their semantic SHA-256 digests. This is an internal semantic
-consistency check, not a cryptographic signature: a coherent rewrite of every
-related artifact remains outside the threat model.
-
-Every non-omitted figure also records its typed figure-data row contract, PNG
-byte hash, PNG size, and IHDR width/height. The validator reads the PNG
-signature and first IHDR chunk with the standard library and rejects invalid,
-zero, or unreasonably large dimensions (over 100,000 pixels in either
-direction) without requiring Pillow.
+`experiment.json` is a deterministic snapshot of the resolved Synthetic and F3
+plans, case/trial order, stage order, selected metric keys, and slice-selection
+policy. Source paths, host/runtime diagnostics, and artifact hashes are not
+duplicated into that snapshot.
 
 The directory is built privately, validated internally, and renamed atomically
 only after completion; an existing output directory is an error. Source bundles
@@ -115,7 +84,7 @@ visualization imports:
 
 ```bash
 PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
-  --output-dir outputs/3d/mode_comparison_publication/publication_v2 \
+  --output-dir outputs/3d/mode_comparison_publication/publication_v1 \
   --validate-only
 ```
 
@@ -126,7 +95,8 @@ PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
   --synthetic-bundle <completed-synthetic-bundle> \
   --f3-bundle <completed-f3-bundle> \
   --f3-data-root "$PYOSV_F3D_DATA_ROOT" \
-  --output-dir outputs/3d/mode_comparison_publication/publication_v2
+  --environment-lock uv.lock \
+  --output-dir outputs/3d/mode_comparison_publication/publication_v1
 ```
 
 Figures require the optional visualization extra:

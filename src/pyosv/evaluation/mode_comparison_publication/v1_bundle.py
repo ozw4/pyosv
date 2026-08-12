@@ -47,11 +47,8 @@ _RESERVED_ROOT_NAMES = {
     _MANIFEST_NAME,
     _EXPERIMENT_NAME,
     _REPORT_NAME,
-    "completion.json",
     "figure_data",
-    "figure_manifest.json",
     "figures",
-    "manifest.json",
     *ROOT_TABLE_FILES,
 }
 _SEMANTICS = {
@@ -131,7 +128,7 @@ def generate_publication_bundle_v1(
                 )
             )
 
-        figure_records, _renderer_identity = generate_figures(report, temporary_path)
+        figure_records = generate_figures(report, temporary_path)
         artifacts.extend(
             _records_below(
                 temporary_path,

@@ -60,8 +60,6 @@ def _report(root: Path) -> PublicationReport:
         path=root / "synthetic-source",
         manifest=synthetic_manifest,
         completion_sha256="a" * 64,
-        manifest_sha256="b" * 64,
-        identity_digest="c" * 64,
         metric_rows=(),
         contrast_rows=(),
         runtime_rows=(),
@@ -111,14 +109,11 @@ def _report(root: Path) -> PublicationReport:
         dataset_spec=spec,
         run_manifest=f3_manifest,
         completion_sha256="f" * 64,
-        manifest_sha256="1" * 64,
-        identity_digest="2" * 64,
         result=result,
         metric_evidence=(),
         dataset_identity=dataset_identity,
-        result_schema_version=1,
     )
-    return PublicationReport(synthetic=synthetic, f3=f3, tables={}, manifest={})
+    return PublicationReport(synthetic=synthetic, f3=f3, tables={})
 
 
 def test_adapts_validated_sources_to_path_independent_v1_inputs(tmp_path: Path) -> None:
@@ -182,8 +177,6 @@ def test_adapts_validated_sources_to_path_independent_v1_inputs(tmp_path: Path) 
     for path in (report.synthetic.path, report.f3.path, report.f3.data_root, tmp_path):
         assert str(path) not in serialized
     assert "runtime_identity" not in serialized
-    assert "manifest_sha256" not in serialized
-    assert "identity_digest" not in serialized
 
 
 def test_adapter_does_not_mutate_sources_and_returns_new_nested_values(tmp_path: Path) -> None:

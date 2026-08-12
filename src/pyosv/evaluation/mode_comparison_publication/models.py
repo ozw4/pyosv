@@ -14,8 +14,6 @@ class SyntheticSourceBundle:
     path: Path
     manifest: Mapping[str, Any]
     completion_sha256: str
-    manifest_sha256: str
-    identity_digest: str
     metric_rows: tuple[Any, ...]
     contrast_rows: tuple[Any, ...]
     runtime_rows: tuple[Any, ...]
@@ -32,12 +30,9 @@ class F3SourceBundle:
     dataset_spec: Any
     run_manifest: Mapping[str, Any]
     completion_sha256: str
-    manifest_sha256: str
-    identity_digest: str
     result: Any
     metric_evidence: tuple[Any, ...]
     dataset_identity: Mapping[str, Any]
-    result_schema_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,4 +42,3 @@ class PublicationReport:
     synthetic: SyntheticSourceBundle
     f3: F3SourceBundle
     tables: Mapping[str, tuple[Mapping[str, Any], ...]]
-    manifest: Mapping[str, Any]

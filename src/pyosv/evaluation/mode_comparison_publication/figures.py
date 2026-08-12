@@ -34,7 +34,6 @@ from .config import (
     CANONICAL_CELL_ORDER,
     CANONICAL_STAGE_ORDER,
     FIGURE_DATA_HEADER,
-    FIGURE_DATA_IDENTITY_FIELDS,
     F3_SEMANTICS,
     SYNTHETIC_SKIN_FIGURE_OMISSION_REASON,
     SYNTHETIC_SCANNER_CELL_ORDER,
@@ -42,12 +41,6 @@ from .config import (
 )
 from .models import PublicationReport
 from .registry import PUBLICATION_METRIC_REGISTRY
-from .semantic import (
-    FIGURE_DATA_FIELD_TYPES,
-    build_table_contract,
-    finite_json_normalize,
-    png_metadata,
-)
 
 
 def _finite(value: Any) -> float:
@@ -118,12 +111,19 @@ def _csv_value(value: Any) -> str:
         return repr(_finite(value))
     if isinstance(value, (tuple, list, dict)):
         return json.dumps(
-            finite_json_normalize(value),
+            value,
             ensure_ascii=False,
             allow_nan=False,
             separators=(",", ":"),
+            default=_json_default,
         )
     return str(value)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"figure CSV value is not JSON serializable: {type(value).__name__}")
 
 
 def _write_csv(path: Path, rows: list[Mapping[str, Any]]) -> None:
@@ -163,27 +163,15 @@ def _record(
     candidate_selection_thresholds: Mapping[str, float] | None = None,
     display_scale: Mapping[str, Any] | None = None,
     figure_data_csv: str | None = None,
-    figure_data_contract: Mapping[str, Any] | None = None,
-    png_path: Path | None = None,
     caption: str,
     omitted: bool = False,
     omission_reason: str | None = None,
 ) -> dict[str, Any]:
     if omitted:
-        if (
-            figure_data_csv is not None
-            or figure_data_contract is not None
-            or png_path is not None
-            or candidate_selection_thresholds is not None
-        ):
+        if figure_data_csv is not None or candidate_selection_thresholds is not None:
             raise ValueError("omitted figures must not have PNG or figure-data metadata")
-        data_contract: Mapping[str, Any] | None = None
-        png: Mapping[str, Any] | None = None
-    else:
-        if figure_data_csv is None or figure_data_contract is None or png_path is None:
-            raise ValueError("non-omitted figures require PNG and figure-data metadata")
-        data_contract = figure_data_contract
-        png = png_metadata(png_path)
+    elif figure_data_csv is None:
+        raise ValueError("non-omitted figures require figure-data metadata")
     return {
         "figure_id": figure_id,
         "relative_path": relative_path,
@@ -212,50 +200,24 @@ def _record(
         ),
         "display_scale": None if display_scale is None else dict(display_scale),
         "figure_data_csv": figure_data_csv,
-        "figure_data_row_count": None if data_contract is None else data_contract["row_count"],
-        "figure_data_identity_fields": (
-            None if data_contract is None else list(data_contract["identity_fields"])
-        ),
-        "figure_data_identity_sha256": (
-            None if data_contract is None else data_contract["ordered_identity_sha256"]
-        ),
-        "figure_data_semantic_sha256": (
-            None if data_contract is None else data_contract["ordered_semantic_rows_sha256"]
-        ),
-        "pixel_width": None if png is None else png["pixel_width"],
-        "pixel_height": None if png is None else png["pixel_height"],
-        "png_size": None if png is None else png["png_size"],
-        "png_sha256": None if png is None else png["png_sha256"],
         "caption": caption,
         "omitted": omitted,
         "omission_reason": omission_reason,
     }
 
 
-def _matplotlib() -> tuple[Any, str, str]:
+def _matplotlib() -> Any:
     from pyosv.viz import require_matplotlib
 
     plt = require_matplotlib()
-    import matplotlib
-
-    return plt, str(matplotlib.__version__), str(matplotlib.get_backend())
+    return plt
 
 
-def _write_figure_data(
-    root: Path, figure_id: str, rows: list[Mapping[str, Any]]
-) -> tuple[str, Mapping[str, Any]]:
+def _write_figure_data(root: Path, figure_id: str, rows: list[Mapping[str, Any]]) -> str:
     filename = f"{figure_id}.csv"
     path = root / "figure_data" / filename
     _write_csv(path, rows)
-    return (
-        f"figure_data/{filename}",
-        build_table_contract(
-            FIGURE_DATA_HEADER,
-            rows,
-            FIGURE_DATA_IDENTITY_FIELDS,
-            FIGURE_DATA_FIELD_TYPES,
-        ),
-    )
+    return f"figure_data/{filename}"
 
 
 def _save_scalar_plot(
@@ -384,7 +346,7 @@ def _synthetic_scalar_figure(
         )
         for row in source_rows
     ]
-    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
+    data_path = _write_figure_data(root, figure_id, data_rows)
     path = root / "figures" / filename
     _save_scalar_plot(
         path,
@@ -413,8 +375,6 @@ def _synthetic_scalar_figure(
             "difference_scale": None,
         },
         figure_data_csv=data_path,
-        figure_data_contract=data_contract,
-        png_path=path,
         caption=caption,
     )
 
@@ -515,7 +475,7 @@ def _synthetic_orientation_figure(
         fig.savefig(root / "figures" / f"{figure_id}.png", dpi=150)
     finally:
         plt.close(fig)
-    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
+    data_path = _write_figure_data(root, figure_id, data_rows)
     return _record(
         figure_id=figure_id,
         relative_path=f"figures/{figure_id}.png",
@@ -539,8 +499,6 @@ def _synthetic_orientation_figure(
             },
         },
         figure_data_csv=data_path,
-        figure_data_contract=data_contract,
-        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "Synthetic known-truth scanner strike and dip error from the two scanner-only "
             "cells; stochastic cases show median and IQR without a significance test."
@@ -599,7 +557,7 @@ def _synthetic_heatmap(report: PublicationReport, root: Path, plt: Any) -> dict[
                     direction=entry.direction,
                 )
             )
-    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
+    data_path = _write_figure_data(root, figure_id, data_rows)
     fig, ax = plt.subplots(
         figsize=(max(9.0, 1.4 * len(entries)), max(3.5, 0.8 * len(report.synthetic.case_order))),
         constrained_layout=True,
@@ -641,8 +599,6 @@ def _synthetic_heatmap(report: PublicationReport, root: Path, plt: Any) -> dict[
             "difference_scale": "zero-centered divergent",
         },
         figure_data_csv=data_path,
-        figure_data_contract=data_contract,
-        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "End-to-end delta heatmap; column-normalized. Positive means direction-aware "
             "improvement. This is not a significance test."
@@ -776,7 +732,7 @@ def _f3_scalar_figure(
         fig.savefig(root / "figures" / f"{figure_id}.png", dpi=150)
     finally:
         plt.close(fig)
-    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
+    data_path = _write_figure_data(root, figure_id, data_rows)
     return _record(
         figure_id=figure_id,
         relative_path=f"figures/{figure_id}.png",
@@ -804,8 +760,6 @@ def _f3_scalar_figure(
             ),
         },
         figure_data_csv=data_path,
-        figure_data_contract=data_contract,
-        png_path=root / "figures" / f"{figure_id}.png",
         caption=caption,
     )
 
@@ -846,7 +800,7 @@ def _runtime_figure(
         )
         for row in rows
     ]
-    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
+    data_path = _write_figure_data(root, figure_id, data_rows)
     semantics = SYNTHETIC_SEMANTICS if dataset == "synthetic" else F3_SEMANTICS
     return _record(
         figure_id=figure_id,
@@ -869,8 +823,6 @@ def _runtime_figure(
             "difference_scale": None,
         },
         figure_data_csv=data_path,
-        figure_data_contract=data_contract,
-        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "Runtime is a within-experiment attribution of shared and cell-owned stages; "
             "it is not an isolated-process benchmark."
@@ -1345,7 +1297,7 @@ def _spatial_figure(
         fig.savefig(path, dpi=150)
     finally:
         plt.close(fig)
-    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
+    data_path = _write_figure_data(root, figure_id, data_rows)
     normal_vmin, normal_vmax = normal_scale
     observed_difference, difference_vmin, difference_vmax = difference_scale
     return _record(
@@ -1377,8 +1329,6 @@ def _spatial_figure(
             "difference_scale": "symmetric around zero",
         },
         figure_data_csv=data_path,
-        figure_data_contract=data_contract,
-        png_path=path,
         caption=caption,
     )
 
@@ -1471,7 +1421,7 @@ def _overlay_figure(
         fig.savefig(root / "figures" / f"{figure_id}.png", dpi=150)
     finally:
         plt.close(fig)
-    data_path, data_contract = _write_figure_data(root, figure_id, data_rows)
+    data_path = _write_figure_data(root, figure_id, data_rows)
     return _record(
         figure_id=figure_id,
         relative_path=f"figures/{figure_id}.png",
@@ -1498,8 +1448,6 @@ def _overlay_figure(
             "difference_scale": None,
         },
         figure_data_csv=data_path,
-        figure_data_contract=data_contract,
-        png_path=root / "figures" / f"{figure_id}.png",
         caption=(
             "F3 public-reference ridge overlay: public-reference only, candidate only, "
             "exact overlap, and buffered match."
@@ -1710,15 +1658,13 @@ def _omitted_skin_figures(report: PublicationReport) -> list[dict[str, Any]]:
     return output
 
 
-def generate_figures(
-    report: PublicationReport, root: str | Path
-) -> tuple[tuple[Mapping[str, Any], ...], dict[str, str]]:
+def generate_figures(report: PublicationReport, root: str | Path) -> tuple[Mapping[str, Any], ...]:
     """Generate all fixed publication figures and their source CSVs."""
 
     output = Path(root)
     (output / "figures").mkdir(parents=True, exist_ok=True)
     (output / "figure_data").mkdir(parents=True, exist_ok=True)
-    plt, matplotlib_version, backend = _matplotlib()
+    plt = _matplotlib()
     records: list[dict[str, Any]] = []
     records.append(_synthetic_heatmap(report, output, plt))
     records.append(
@@ -1831,7 +1777,7 @@ def generate_figures(
     records.extend(_generate_f3_spatial(report, output, plt))
     # Stable order is part of the publication contract and independent of file-system order.
     records.sort(key=lambda item: item["figure_id"])
-    return tuple(records), {"matplotlib": matplotlib_version, "backend": backend}
+    return tuple(records)
 
 
 __all__ = [

@@ -27,12 +27,6 @@ from ..synthetic_mode_comparison.experiment import RuntimeRow
 from ..synthetic_mode_comparison.metrics import MetricRow
 
 from .models import F3SourceBundle, SyntheticSourceBundle
-from .semantic import (
-    F3_SOURCE_IDENTITY_FIELDS,
-    SYNTHETIC_SOURCE_IDENTITY_FIELDS,
-    canonical_digest,
-    source_identity_object,
-)
 
 
 def _read_json(path: Path) -> Any:
@@ -244,20 +238,10 @@ def load_synthetic_source(path: str | Path) -> SyntheticSourceBundle:
         not isinstance(item, str) for item in case_order_value
     ):
         raise ValueError("synthetic manifest case_order is invalid")
-    identity = {
-        "artifact_schema_version": manifest.get("artifact_schema_version"),
-        "scalar_evidence_contract_version": manifest.get("scalar_evidence_contract_version"),
-        "runtime_contract_version": manifest.get("runtime_contract_version"),
-        "metric_schema_version": manifest.get("metric_schema_version"),
-        "manifest_sha256": _sha256(manifest_path),
-        "completion_sha256": _sha256(completion_path),
-    }
     return SyntheticSourceBundle(
         bundle.resolve(),
         manifest,
-        identity["completion_sha256"],
-        identity["manifest_sha256"],
-        canonical_digest(source_identity_object(identity, SYNTHETIC_SOURCE_IDENTITY_FIELDS)),
+        _sha256(completion_path),
         metric_rows,
         contrast_rows,
         runtime_rows,
@@ -368,31 +352,15 @@ def load_f3_source(
     if not all(isinstance(item, MetricEvidence) for item in evidence):
         raise ValueError("F3 metric evidence has an invalid type")
     completion_path = bundle / RUN_COMPLETION_FILE
-    completion = _read_json(completion_path)
-    if not isinstance(completion, dict) or not isinstance(
-        completion.get("result_schema_version"), int
-    ):
-        raise ValueError("F3 completion result schema version is missing")
-    identity = {
-        "artifact_schema_version": manifest.get("artifact_schema_version"),
-        "result_schema_version": completion["result_schema_version"],
-        "run_fingerprint": manifest.get("run_fingerprint"),
-        "dataset_identity": dataset_identity,
-        "manifest_sha256": _sha256(manifest_path),
-        "completion_sha256": _sha256(completion_path),
-    }
     return F3SourceBundle(
         bundle.resolve(),
         root,
         spec,
         manifest,
-        identity["completion_sha256"],
-        identity["manifest_sha256"],
-        canonical_digest(source_identity_object(identity, F3_SOURCE_IDENTITY_FIELDS)),
+        _sha256(completion_path),
         result,
         evidence,
         dataset_identity,
-        completion["result_schema_version"],
     )
 
 

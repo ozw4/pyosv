@@ -45,15 +45,6 @@ _ROOT_TABLES = {
 def test_package_default_exports_are_v1() -> None:
     assert publication.generate_publication_bundle is v1_bundle.generate_publication_bundle_v1
     assert publication.validate_publication_bundle is validate_publication_directory
-    assert publication.validate_publication_bundle_v1 is validate_publication_directory
-    assert (
-        publication.generate_legacy_publication_bundle
-        is not publication.generate_publication_bundle
-    )
-    assert (
-        publication.validate_legacy_publication_bundle
-        is not publication.validate_publication_bundle
-    )
 
 
 def _report(root: Path) -> PublicationReport:
@@ -79,8 +70,6 @@ def _report(root: Path) -> PublicationReport:
             ],
         },
         completion_sha256="b" * 64,
-        manifest_sha256="c" * 64,
-        identity_digest="d" * 64,
         metric_rows=(),
         contrast_rows=(),
         runtime_rows=(),
@@ -101,8 +90,6 @@ def _report(root: Path) -> PublicationReport:
         dataset_spec=spec,
         run_manifest={"plan": {"stages": ["ft", "fv", "fvt"]}},
         completion_sha256="e" * 64,
-        manifest_sha256="f" * 64,
-        identity_digest="1" * 64,
         result=SimpleNamespace(
             dataset_id="fixture-f3",
             volume_shape=shape,
@@ -128,10 +115,9 @@ def _report(root: Path) -> PublicationReport:
                 },
             ],
         },
-        result_schema_version=1,
     )
     tables = {filename: ({},) for filename in TABLE_HEADERS}
-    return PublicationReport(synthetic=synthetic, f3=f3, tables=tables, manifest={})
+    return PublicationReport(synthetic=synthetic, f3=f3, tables=tables)
 
 
 def _fake_figures(
@@ -139,7 +125,7 @@ def _fake_figures(
     root: str | Path,
     *,
     png_bytes: bytes = b"fixture-png",
-) -> tuple[tuple[dict[str, object], ...], dict[str, str]]:
+) -> tuple[dict[str, object], ...]:
     output = Path(root)
     (output / "figure_data").mkdir()
     (output / "figures").mkdir()
@@ -148,15 +134,12 @@ def _fake_figures(
     )
     (output / "figures" / "fixture.png").write_bytes(png_bytes)
     return (
-        (
-            {
-                "figure_id": "fixture",
-                "relative_path": "figures/fixture.png",
-                "caption": "Fixture figure.",
-                "omitted": False,
-            },
-        ),
-        {"matplotlib": "test", "backend": "test"},
+        {
+            "figure_id": "fixture",
+            "relative_path": "figures/fixture.png",
+            "caption": "Fixture figure.",
+            "omitted": False,
+        },
     )
 
 
@@ -232,11 +215,6 @@ def test_generates_self_validating_v1_bundle_with_expected_artifact_tiers(
         "figures",
         "report.md",
     }
-    assert not ({"manifest.json", "figure_manifest.json", "completion.json"} & set(manifest))
-    assert not (output / "manifest.json").exists()
-    assert not (output / "figure_manifest.json").exists()
-    assert not (output / "completion.json").exists()
-
     artifacts = {item["path"]: item for item in manifest["artifacts"]}
     assert artifacts["uv.lock"]["tier"] == "primary"
     assert artifacts["uv.lock"]["role"] == "environment_lock"

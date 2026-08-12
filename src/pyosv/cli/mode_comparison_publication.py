@@ -34,12 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path, required=True, help="New publication output directory."
     )
     parser.add_argument(
-        "--publication-contract",
-        choices=("v1", "legacy"),
-        default="v1",
-        help="Publication bundle contract (default: v1).",
-    )
-    parser.add_argument(
         "--environment-lock",
         type=Path,
         help="Environment lock file required for v1 generation.",
@@ -108,49 +102,30 @@ def _collect_environment_controls() -> dict[str, str]:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.publication_contract == "v1":
-            if args.validate_only:
-                from pyosv.evaluation.publication_manifest_io import (
-                    validate_publication_directory,
-                )
-
-                validate_publication_directory(args.output_dir)
-            else:
-                sources = _required_generation_sources(args)
-                if args.environment_lock is None:
-                    raise ValueError("v1 generation requires --environment-lock")
-                code = _collect_code_identity()
-                controls = _collect_environment_controls()
-                from pyosv.evaluation.mode_comparison_publication.v1_bundle import (
-                    generate_publication_bundle_v1,
-                )
-
-                generate_publication_bundle_v1(
-                    *sources,
-                    args.output_dir,
-                    environment_lock=args.environment_lock,
-                    code=code,
-                    environment_controls=controls,
-                    pretty=args.pretty,
-                )
-        else:
-            if args.environment_lock is not None:
-                raise ValueError("--environment-lock is only valid with --publication-contract v1")
-            from pyosv.evaluation.mode_comparison_publication import (
-                generate_legacy_publication_bundle,
-                validate_legacy_publication_bundle,
+        if args.validate_only:
+            from pyosv.evaluation.publication_manifest_io import (
+                validate_publication_directory,
             )
 
-            if args.validate_only:
-                if not validate_legacy_publication_bundle(args.output_dir):
-                    raise ValueError("publication bundle validation failed")
-            else:
-                sources = _required_generation_sources(args)
-                generate_legacy_publication_bundle(
-                    *sources,
-                    args.output_dir,
-                    pretty=args.pretty,
-                )
+            validate_publication_directory(args.output_dir)
+        else:
+            sources = _required_generation_sources(args)
+            if args.environment_lock is None:
+                raise ValueError("generation requires --environment-lock")
+            code = _collect_code_identity()
+            controls = _collect_environment_controls()
+            from pyosv.evaluation.mode_comparison_publication.v1_bundle import (
+                generate_publication_bundle_v1,
+            )
+
+            generate_publication_bundle_v1(
+                *sources,
+                args.output_dir,
+                environment_lock=args.environment_lock,
+                code=code,
+                environment_controls=controls,
+                pretty=args.pretty,
+            )
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
