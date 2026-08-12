@@ -16,9 +16,8 @@ bitwise equality with Java, Jython, or Mines JTK output.
 SciPy to approximate the reference rotate, separable smooth, unrotate, and
 likelihood-scoring flow. It can differ from Java/JTK in interpolation, filter
 kernels, boundary handling, angle tie-breaking, and floating-point
-accumulation. The legacy derivative-bank scanner remains available as
-`scan_fast()` only for explicit fallback use, diagnostics, and comparisons
-against the older practical backend.
+accumulation. `scan_fast()` selects the derivative-bank backend for explicit
+fallback use, diagnostics, and practical comparisons.
 
 ## Angle Convention
 
@@ -52,13 +51,9 @@ With the default `normalize=True` reference-like path, nonconstant inputs are
 linearly scaled to `[0, 1]` before the `1 - smoothed**4` likelihood score is
 computed. Constant images return zero likelihood and a finite angle image.
 
-`FaultOrientScanner2.scan_fast(theta_min, theta_max, g)` exposes the older
-derivative-bank scanner with the same output contract. It is not the default
-backend and should be selected only when a caller specifically wants the faster
-legacy scoring path for diagnosis or fallback behavior.
-
-Migration note: callers that used the old derivative-bank `scan()` behavior
-should call `scan_fast()` explicitly.
+`FaultOrientScanner2.scan_fast(theta_min, theta_max, g)` selects the
+derivative-bank scanner with the same output contract. It is an explicit
+backend for diagnosis, fallback behavior, or practical comparisons.
 
 `FaultOrientScanner2.scan_dip(theta_min, theta_max, g)` follows the reference
 API shape by scanning both feature-angle branches, `90 - theta_max` to
@@ -82,6 +77,9 @@ ft, pt = scanner.scan(-75.0, 75.0, image)
 voter = OptimalPathVoter(ru=2, rv=5)
 fv, w1, w2 = voter.apply_voting(d=3, fm=0.45, ft=ft, pt=pt)
 ```
+
+The downstream voter, local `uv` sampling, and dynamic-programming path mapping
+are documented in [2D Voter Reference Mapping](reference_mapping_voting2d.md).
 
 ## Synthetic Validation
 
@@ -107,5 +105,5 @@ limitations include:
 Use the scanner for deterministic Python workflows and synthetic regression
 coverage. Treat optional reference-data comparisons as reports using finite
 value summaries, correlation, ridge-overlap, or similar practical metrics
-rather than fixed pass/fail thresholds, unless a future issue defines
+rather than fixed pass/fail thresholds unless the repository defines
 feature-specific acceptance thresholds.
