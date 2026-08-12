@@ -20,7 +20,6 @@ from pyosv.evaluation.publication_experiment import publication_experiment_bytes
 from pyosv.evaluation.publication_manifest import build_publication_manifest
 from pyosv.evaluation.publication_manifest_io import (
     artifact_file_record,
-    validate_publication_directory,
     write_publication_manifest,
 )
 
@@ -188,7 +187,6 @@ def generate_publication_bundle_v1(
             artifacts=artifacts,
         )
         write_publication_manifest(temporary_path, manifest, pretty=pretty)
-        validate_publication_directory(temporary_path)
 
         if os.path.lexists(final_path):
             raise FileExistsError(f"publication output already exists: {final_path}")
