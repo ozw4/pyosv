@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Existing environment lock copied into the generated bundle.",
     )
     parser.add_argument(
-        "--pretty", action="store_true", help="Pretty-print publication JSON files."
+        "--pretty", action="store_true", help="Pretty-print publication_manifest.json."
     )
     parser.add_argument(
         "--validate-only",

@@ -111,7 +111,7 @@ def generate_publication_bundle_v1(
         experiment = cast(Mapping[str, object], adapted["experiment"])
         _write_bytes(
             temporary_path / _EXPERIMENT_NAME,
-            publication_experiment_bytes(experiment, pretty=pretty),
+            publication_experiment_bytes(experiment, pretty=False),
         )
         experiment_record = artifact_file_record(
             temporary_path,

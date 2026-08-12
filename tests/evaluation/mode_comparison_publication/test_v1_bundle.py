@@ -327,6 +327,31 @@ def test_publication_id_ignores_timestamp_and_png_bytes(
     assert first_png["sha256"] != second_png["sha256"]
 
 
+def test_pretty_formatting_does_not_change_publication_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _report(tmp_path / "sources")
+    lock_file = tmp_path / "uv.lock"
+    lock_file.write_bytes(b"same lock\n")
+    compact_output = tmp_path / "compact"
+    pretty_output = tmp_path / "pretty"
+    monkeypatch.setattr(v1_bundle, "_created_at_utc", lambda: "2026-08-09T00:00:00Z")
+
+    _generate(monkeypatch, report, compact_output, lock_file, pretty=False)
+    _generate(monkeypatch, report, pretty_output, lock_file, pretty=True)
+
+    compact_manifest = validate_publication_directory(compact_output)
+    pretty_manifest = validate_publication_directory(pretty_output)
+    assert compact_manifest["publication_id"] == pretty_manifest["publication_id"]
+    assert (compact_output / "experiment.json").read_bytes() == (
+        pretty_output / "experiment.json"
+    ).read_bytes()
+    assert (compact_output / "publication_manifest.json").read_bytes() != (
+        pretty_output / "publication_manifest.json"
+    ).read_bytes()
+
+
 @pytest.mark.parametrize("location", ["synthetic", "f3", "data"])
 def test_rejects_output_inside_source_or_data_root(
     tmp_path: Path,
