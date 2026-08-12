@@ -116,9 +116,12 @@ def _report(root: Path) -> PublicationReport:
             ],
         },
     )
-    tables = {filename: ({},) for filename in TABLE_HEADERS}
+    tables = {
+        filename: ({field: None for field in header},) for filename, header in TABLE_HEADERS.items()
+    }
     tables["publication_metrics.csv"] = (
         {
+            **{field: None for field in TABLE_HEADERS["publication_metrics.csv"]},
             "dataset": "synthetic",
             "stage": "scanner_raw",
             "selection": "top_truth_count",
@@ -344,6 +347,80 @@ def test_rejects_existing_output_before_loading_sources(
             code=_CODE,
             environment_controls=_CONTROLS,
         )
+
+
+@pytest.mark.parametrize(
+    ("missing_table", "unknown_table"),
+    [
+        ("runtime_summary.csv", None),
+        (None, "unexpected.csv"),
+    ],
+)
+def test_rejects_root_table_file_set_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_table: str | None,
+    unknown_table: str | None,
+) -> None:
+    report = _report(tmp_path / "sources")
+    tables = dict(report.tables)
+    if missing_table is not None:
+        del tables[missing_table]
+    if unknown_table is not None:
+        tables[unknown_table] = ()
+    invalid_report = PublicationReport(
+        synthetic=report.synthetic,
+        f3=report.f3,
+        tables=tables,
+    )
+    lock_file = tmp_path / "uv.lock"
+    lock_file.write_bytes(b"lock\n")
+    output = tmp_path / "publication"
+    monkeypatch.setattr(
+        v1_bundle,
+        "build_publication_report",
+        lambda *_args: invalid_report,
+    )
+
+    with pytest.raises(ValueError, match="publication root table set mismatch"):
+        v1_bundle.generate_publication_bundle_v1(
+            report.synthetic.path,
+            report.f3.path,
+            report.f3.data_root,
+            output,
+            environment_lock=lock_file,
+            code=_CODE,
+            environment_controls=_CONTROLS,
+        )
+
+    assert not output.exists()
+    assert list(tmp_path.glob(".publication.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        (
+            ({"first": "value"},),
+            r"table\.csv row 0 field mismatch: missing=\['second'\], unknown=\[\]",
+        ),
+        (
+            ({"first": "value", "second": 2, "extra": 3},),
+            r"table\.csv row 0 field mismatch: missing=\[\], unknown=\['extra'\]",
+        ),
+    ],
+)
+def test_write_csv_rejects_row_field_mismatch_before_creating_file(
+    tmp_path: Path,
+    rows: tuple[dict[str, object], ...],
+    message: str,
+) -> None:
+    path = tmp_path / "table.csv"
+
+    with pytest.raises(ValueError, match=message):
+        v1_bundle._write_csv(path, ("first", "second"), rows)
+
+    assert not path.exists()
 
 
 @pytest.mark.parametrize("failure", ["table", "figure"])

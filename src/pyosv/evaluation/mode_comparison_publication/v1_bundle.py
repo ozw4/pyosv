@@ -82,6 +82,14 @@ def generate_publication_bundle_v1(
     lock_source, lock_name = _environment_lock_source(environment_lock)
     report = build_publication_report(synthetic_bundle, f3_bundle, f3_data_root)
     _assert_output_is_derived_only(report, final_path)
+    actual_table_files = set(report.tables)
+    expected_table_files = set(ROOT_TABLE_FILES)
+    if actual_table_files != expected_table_files:
+        missing = sorted(expected_table_files - actual_table_files)
+        unknown = sorted(actual_table_files - expected_table_files)
+        raise ValueError(
+            f"publication root table set mismatch: missing={missing}, unknown={unknown}"
+        )
 
     final_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = Path(
@@ -231,11 +239,21 @@ def _write_csv(
     header: tuple[str, ...],
     rows: tuple[Mapping[str, Any], ...],
 ) -> None:
+    expected_fields = set(header)
+    for index, row in enumerate(rows):
+        actual_fields = set(row)
+        if actual_fields != expected_fields:
+            missing = sorted(expected_fields - actual_fields)
+            unknown = sorted(actual_fields - expected_fields)
+            raise ValueError(
+                f"{path.name} row {index} field mismatch: missing={missing}, unknown={unknown}"
+            )
+
     with path.open("x", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(header)
         for row in rows:
-            writer.writerow(_csv_value(row.get(field)) for field in header)
+            writer.writerow(_csv_value(row[field]) for field in header)
         stream.flush()
         os.fsync(stream.fileno())
 
