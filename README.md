@@ -1,42 +1,68 @@
 # pyosv
 
-`pyosv` is a Python package scaffold for reimplementing reference-first OSV (Optimal Surface Voting / Optimal Path Voting) workflows.
+`pyosv` is a Python implementation of reference-first Optimal Surface Voting
+and Optimal Path Voting workflows for seismic fault interpretation.
 
-The project uses the local `reference_osv/` directory as a read-only reference implementation. That directory is expected to be a bind mount and is not part of this repository.
+The external `reference_osv/` directory is used only as a read-only comparison
+reference. It is not part of the package, is not committed, and is not a runtime
+dependency.
 
-## Status
+## Capabilities
 
-This repository has the package scaffold plus DAT I/O, reference dataset
-metadata, the implemented 2D orientation scanner and optimal-path voting
-workflow, an approximate 3D orientation scanner, and a synthetic-test-covered
-3D voting MVP with current 3D thinning helpers. Reference-like skinning is the
-default for thinned 3D vote volumes, with connected-component grouping
-available only as an explicit fallback or diagnostic path.
+The package provides:
 
-## Fault-Warping Contract (Contract Only)
+- raw scalar DAT I/O and reference dataset metadata;
+- 2D fault-orientation scanning, optimal-path voting, and thinning;
+- 3D fault-orientation scanning, optimal-surface voting, scanner/voter thinning,
+  and fault skinning;
+- controlled synthetic quality evaluation and canonical scanner/workflow mode
+  comparison;
+- full-volume F3 mode comparison and validated publication-bundle generation;
+- typed numerical contracts for fault apparent-shift estimation across a known
+  fault surface.
 
-`pyosv.fault_warping` currently exposes an Atlas-independent typed contract for
-future apparent sample-axis shift estimation across a known fault surface. It
-does not yet sample sides, calculate similarity, warp signals, or estimate
-shifts, and it has no concrete estimator or artifact/I/O integration. See the
-[Fault-warping contract](docs/fault_warping.md) for its coordinate, side,
-validity, and public-type semantics.
+## Installation
 
-## NumPy Support
+Python 3.10 or later is required. Core dependencies are NumPy 1.x, SciPy, and
+threadpoolctl.
 
-PyOSV officially supports the NumPy 1.x line, declared as `numpy<2`, matching
-the effective Atlas development and test environment. NumPy 2 support is not
-currently declared; do not update byte-level fixtures or relax regressions to
-absorb NumPy 2 differences.
+```bash
+python -m pip install -e .
+```
 
-## DAT I/O
+Install development, optional Numba acceleration, or visualization support as
+needed:
 
-`pyosv.io.read_dat` and `pyosv.io.write_dat` read and write raw scalar `.dat` files. The array shape convention is:
+```bash
+python -m pip install -e ".[dev]"
+python -m pip install -e ".[accel]"
+python -m pip install -e ".[dev,accel,viz]"
+```
 
-- 2D arrays: `(n2, n1)`
-- 3D arrays: `(n3, n2, n1)`
+Verify the package import:
 
-`reference_osv` `.dat` files are treated as big-endian `float32` by default. Use the reference metadata helpers to keep paths, shapes, and endian settings aligned:
+```bash
+python -c "import pyosv; print(pyosv.__version__)"
+```
+
+PyOSV supports the NumPy 1.x line through the dependency bound `numpy<2`.
+Byte-level fixtures and numerical regression contracts must be evaluated in a
+supported NumPy 1.x environment.
+
+## Data and numerical conventions
+
+Global arrays use these shapes:
+
+- 2D: `(n2, n1)`, indexed as `array[i2, i1]`;
+- 3D: `(n3, n2, n1)`, indexed as `array[i3, i2, i1]`.
+
+Vector components retain OSV coordinate order: `(x1, x2)` in 2D and
+`(x1, x2, x3)` in 3D. Numerical arrays are generally represented as
+`np.float32`.
+
+Reference DAT files are interpreted as big-endian `float32` unless their
+metadata specifies otherwise. Generated outputs must be written outside the
+external reference directory.
 
 ```python
 from pyosv.io import read_dat
@@ -47,25 +73,21 @@ path = resolve_reference_file(dataset, "ft.dat")
 ft = read_dat(path, dataset.shape, endian=dataset.endian)
 ```
 
-The local `reference_osv/` directory is a read-only bind mount and is not committed. Set `PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master` if the mount is not located at `./reference_osv`.
-
-See `docs/dat_io.md` for detailed I/O behavior and reference fixture test policy.
-
-## 2D Orientation Scanning And Voting
-
-Install the package in development mode before running examples:
+Set `PYOSV_REFERENCE_OSV` when the read-only reference checkout is not mounted
+at `./reference_osv`:
 
 ```bash
-python -m pip install -e ".[dev]"
+export PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master
 ```
 
-The normal 2D workflow scans a finite image shaped `(n2, n1)` and passes the
-result directly to optimal-path voting. `FaultOrientScanner2.scan()` is the
-reference-like default: it approximates the reference rotate, separable smooth,
-unrotate, and likelihood-scoring flow with NumPy and SciPy. The output `pt`
-angle convention is compatible with `FaultCell2` and `OptimalPathVoter`.
-Nonconstant finite inputs are linearly scaled to `[0, 1]` before the
-reference-like likelihood score is computed.
+See [DAT I/O](docs/dat_io.md) for storage and metadata details.
+
+## 2D orientation scanning and voting
+
+`FaultOrientScanner2.scan()` is the reference-like 2D scanner. It approximates
+the reference rotate, separable-smooth, unrotate, and likelihood-scoring flow
+with NumPy and SciPy. `scan_fast()` selects the derivative-bank backend, and
+`scan_dip()` evaluates the two reference-style dip-angle branches.
 
 ```python
 from pyosv.orient2d import FaultOrientScanner2
@@ -79,98 +101,151 @@ fv, w1, w2 = voter.apply_voting(d=3, fm=0.45, ft=ft, pt=pt)
 fvt = voter.thin(fv, w1, w2)
 ```
 
-`scan_fast()` exposes the older derivative-bank backend only as an explicit
-fallback or diagnostic path. Use `scan()` for reference-first examples and
-normal scanner-to-voting workflows. `scan_dip()` follows the reference API
-shape by running the two dip-angle scan branches and keeping the stronger
-sample at each location.
+`apply_voting()` returns normalized `float32` vote evidence and its strongest
+local vector field. `thin()` retains strict local maxima along that field using
+the SciPy-backed interpolation adapter.
 
-The 2D voting workflow can also run from existing reference `ft.dat` and
-`pt.dat` files. `reference_osv/` is a read-only bind mount for reference inputs
-only; it is optional for normal tests and must not be used for generated
-outputs.
-
-```python
-from pyosv.io import read_dat
-from pyosv.reference import REFERENCE_DATASETS_2D, resolve_reference_file
-from pyosv.voting2d import OptimalPathVoter
-
-dataset = REFERENCE_DATASETS_2D["f3d2d"]
-ft = read_dat(resolve_reference_file(dataset, "ft.dat"), dataset.shape, endian=dataset.endian)
-pt = read_dat(resolve_reference_file(dataset, "pt.dat"), dataset.shape, endian=dataset.endian)
-
-voter = OptimalPathVoter(15, 30)
-voter.set_strain_max(0.25)
-voter.set_path_smoothing(2)
-fv, w1, w2 = voter.apply_voting(d=4, fm=0.3, ft=ft, pt=pt)
-fvt = voter.thin(fv, w1, w2)
-```
-
-`OptimalPathVoter.apply_voting` runs deterministic 2D optimal-path voting over
-the selected seeds and returns `(fv, w1, w2)` arrays with the same `(n2, n1)`
-shape. `fv` is the normalized float32 vote image, and `w1`/`w2` are the vector
-components associated with the strongest local vote at each image sample.
-
-`OptimalPathVoter.thin` keeps local maxima from the vote image along the
-returned vector field and returns a thinned float32 vote image with the same
-shape. The thinning interpolation uses the package SciPy adapter
-(`scipy.ndimage.map_coordinates` through `pyosv.interp.sample2`) rather than
-Mines JTK sinc interpolation.
-
-Run the `f3d2d` reference workflow from the command line with an explicit output
-directory:
+Reference-input and self-contained examples are available through:
 
 ```bash
 python examples/run_2d_f3d2d.py --output-dir outputs/f3d2d
-```
-
-For other supported 2D reference datasets, use:
-
-```bash
 python examples/run_2d_reference.py --dataset campos --output-dir outputs/campos
-```
-
-The scanner-to-voting workflow can also run without external data:
-
-```bash
 python examples/run_2d_synthetic_scan_vote.py
 ```
 
-Pass `--output-dir` to that synthetic example only when generated DAT outputs
-should be written. Detailed 2D scanner behavior is documented in
-`docs/orient2d.md`.
+Detailed contracts are documented in [2D Orientation Scanning](docs/orient2d.md)
+and [2D Voter Reference Mapping](docs/reference_mapping_voting2d.md).
 
-The approximate 3D scanner is documented in `docs/orient3d.md`, with a small
-self-contained example:
+## 3D scanning, voting, thinning, and skinning
+
+`FaultOrientScanner3.scan()` uses the reference-like rotate/shear scanner with
+Java-style strike and dip sampling. `scan_reference_like()` exposes the same
+scanner explicitly and permits the `directional` scoring backend.
+`scan_quality()` refines the reference-like orientation grid.
+`scan_fast()` selects the derivative-bank backend.
+
+Scanner backend selection is independent of downstream workflow selection. A
+quality scanner does not select the quality workflow, and a quality workflow
+does not select a scanner backend.
+
+```python
+from pyosv.orient3d import FaultOrientScanner3
+from pyosv.skinner import FaultSkinner
+from pyosv.voting3d import OptimalSurfaceVoter
+
+scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+ft, pt, tt = scanner.scan(
+    phi_min=0.0,
+    phi_max=90.0,
+    theta_min=45.0,
+    theta_max=90.0,
+    g=image,
+)
+
+fet, fpt, ftt = scanner.thin(ft, pt, tt)
+
+voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
+fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=fet, pt=fpt, tt=ftt)
+fvt = voter.thin(fv, vp, vt)
+
+skinner = FaultSkinner(min_likelihood=0.7, min_skin_size=20)
+skins = skinner.find_skins(
+    fvt,
+    vp,
+    vt,
+    ep=fvt,
+    ft=fvt,
+    pt=vp,
+    tt=vt,
+)
+```
+
+Scanner thinning defaults to reference-like strike-binned suppression with
+scanner edge-effect removal. Voter thinning defaults to reference-like
+strike-binned suppression with voter-specific retained-sample reinforcement and
+without scanner edge cleanup. `mode="normal"` selects fault-normal thinning.
+Voter diagnostics also expose `hybrid`, `hybrid_v2`, and `normal_plateau`.
+
+```python
+fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
+fvt = voter.thin(fv, vp, vt, mode="normal")
+```
+
+`OptimalSurfaceVoter.apply_voting()` normalizes accumulated vote evidence by
+subtracting its minimum, dividing by its positive maximum, and applying
+`1 - (1 - x) ** 8`. Final vote-map smoothing is disabled unless
+`set_final_normalization_smoothing(...)` is called explicitly. Extracted local
+surfaces are smoothed before vote strike and dip are recomputed; use
+`set_surface_orientation_smoothing(0.0)` only when unsmoothed surface
+orientation is required.
+
+`FaultSkinner()` uses the reference-like skinning backend. `method="quality"`
+selects the quality skinning profile. `method="connected_component"` and
+`find_connected_component_skins(...)` select connected-component grouping
+explicitly.
+
+Self-contained 3D examples are available through:
 
 ```bash
 python examples/run_3d_synthetic_scan_vote.py
+python examples/run_3d_synthetic_skinning.py
 ```
 
-`FaultOrientScanner3.scan()` is the reference-like default and uses the
-rotate/shear scanner path with Java-style strike and dip sampling for normal
-scanner-to-voting workflows. `scan_reference_like()` remains as an explicit
-compatible alias and exposes `backend="directional"` for the previous
-fault-parallel smoothing approximation, while `scan_fast()` exposes the older
-derivative-bank backend for diagnostics or practical comparisons.
+See [3D Orientation Scanning](docs/orient3d.md),
+[3D Voting Conventions](docs/3d_voting.md),
+[Reference-Like 3D Thinning](docs/reference_like_thinning.md), and
+[Skinning](docs/skinning.md).
 
-`scan_quality()` selects the quality scanner backend: it uses the same scoring
-path with a refined reference-like sampling grid. Scanner backend selection is
-independent of the synthetic report's downstream workflow selection, so neither
-`scan()` nor `scan_quality()` implicitly selects `--workflow-mode quality`.
-See [Scanner backends, workflow modes, thinning modes, and reference
-targets](docs/mode_comparison.md) for the canonical distinction.
+## Controlled synthetic evaluation
 
-Publication-facing F3 3D reference comparison uses the complete
-`(420, 400, 100)` volume as one evaluation unit. See
-[F3 3D Reference Data Validation](docs/f3d_validation.md) for that protocol and
-[Scanner, Workflow, Thinning, and F3 Reference Comparison](docs/mode_comparison.md)
-for the canonical scanner/workflow matrix and terminology. Existing crop and
-multi-crop commands are optional legacy/internal diagnostics and historical
-validation paths; crops are not publication samples or statistical replicates.
+Controlled synthetic cases provide independent truth geometry for evaluating
+scanner, voting, thinning, and skinning behavior. The input modes are:
 
-Run the canonical full-volume four-cell comparison with an external F3 data
-root and an ignored output path:
+- `oracle`: evaluates downstream stages from truth-derived attributes;
+- `scanner`: evaluates scanner and downstream stages end to end;
+- `both`: evaluates both paths on the same truth geometry.
+
+A diagnostic quality matrix can be generated with:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
+  --case-set extended \
+  --shape 33,33,33 \
+  --variant-preset quality-matrix \
+  --input-mode both \
+  --workflow-mode diagnostic \
+  --output-dir outputs/3d/synthetic_quality/quality_matrix_001 \
+  --pretty \
+  --save-figures \
+  --write-markdown-index
+```
+
+The canonical scanner-backend × workflow comparison has a separate command and
+bundle contract. A small execution check is:
+
+```bash
+PYTHONPATH=src python examples/report_3d_synthetic_mode_comparison.py \
+  --case-set minimal \
+  --shape 9,9,9 \
+  --skip-skinning \
+  --output-dir outputs/3d/synthetic_mode_comparison/smoke_9
+```
+
+See [Controlled Synthetic Quality](docs/synthetic_quality.md) and
+[Synthetic Mode Comparison](docs/synthetic_mode_comparison.md) for case sets,
+metrics, artifact schemas, validation, and runtime attribution.
+
+## F3 full-volume mode comparison
+
+Publication-facing F3 comparison uses the complete `(420, 400, 100)` volume as
+one evaluation unit. The public `fl.dat`, `fv.dat`, and `fvt.dat` files are
+comparison targets, not independent geological truth. Crops and regional
+partitions are diagnostics within the same volume and are not statistical
+replicates.
+
+The F3 data root must contain the official big-endian `float32` volumes. Run the
+canonical four-cell matrix with the publication runtime controls set before
+Python starts:
 
 ```bash
 PYTHONHASHSEED=0 \
@@ -186,187 +261,49 @@ python -m pyosv.cli.f3d_mode_comparison \
   --output-dir outputs/3d/f3d/mode_comparison_001
 ```
 
-Set these variables before starting Python so NumPy, SciPy, and their loaded
-BLAS runtime use the recorded publication environment. The run saves the
-normalized CPU dispatch, BLAS runtime, SciPy build, effective Numba JIT state,
-Numba controls, and thread identity in `run_manifest.json`; preserve that
-manifest with the completion report. Official F3 publication requires enabled
-Numba JIT; an unavailable, disabled, or unknown JIT is rejected. Shallow
-`--validate-only` checks the recorded bundle without
-requiring the current process to reproduce this environment, but it still
-requires an official bundle's recorded identity to satisfy the publication
-runtime policy. Deep validation and resume computation for missing stages
-require the current runtime to satisfy that policy and match the recorded
-identity exactly.
+The matrix contains `RL-REF`, `RL-QUAL`, `Q-REF`, and `Q-QUAL`. Scanner output
+and scanner thinning are shared between workflows for the same scanner backend.
+Official bundles require enabled Numba JIT and a publication-valid recorded
+runtime identity.
 
-To validate an existing Q-QUAL reskin-policy comparison without generating it,
-add `--validate-only --compare-reskin-policies
-existing_cells_v1,reference_dense_v1`. This is shallow and reads no current
-runtime; adding `--deep-validate` performs the explicit current-runtime exact
-replay of the comparison. This differs from deep-complete `--resume`, which
-reuses saved deep evidence without replay.
-
-The thin
-[`examples/run_3d_f3d_mode_comparison.py`](examples/run_3d_f3d_mode_comparison.py)
-entry point invokes the same package CLI. The existing
-[`examples/run_3d_f3d_full.py`](examples/run_3d_f3d_full.py) remains the legacy
-reference-like single-path baseline; it does not run the canonical 2×2 matrix
-or use its fingerprinted workspace and exact-resume contract.
-
-Controlled synthetic 3D truth checks are documented in
-`docs/synthetic_quality.md`, including the default `minimal` case set and the
-`geometry` and `extended` case sets for vertical, dipping, curved, parallel,
-crossing, boundary, and weak/noisy faults, voter variants, and skinning
-metrics. That document also explains downstream workflow modes, independently
-of scanner backend selection: `reference` selects the default reference
-workflow, while `quality` defaults voter
-thinning to the truth-quality-favored `hybrid_v2` path with support-aware surface
-voting inactive, the quality skinner v2 profile, and the empty-primary boundary
-skinner fallback. Degraded-primary fallback variants remain diagnostic after
-the legacy 49^3 scanner-inclusive boundary benchmark using the quality scanner
-backend: v2
-over-includes fallback components, filtered v3 did not reach the boundary skin
-F1 promotion target or the non-boundary regression tolerances, and skeletonized
-v4 still missed the scanner boundary skin target while regressing oracle
-boundary skin.
-
-The separate reference-like scanner backend 49^3 scanner-thinning policy
-evaluation has
-been completed. `quality_reference_like_scanner_thin_normal_v1` passed the
-`scanner-boundary-reference-like` gate against
-`quality_reference_like_scanner_thin_reference_v1`, with all 14 required rows,
-no missing evidence rows, and a passing configuration contract. Compact values
-and hashes are recorded in
-`tests/fixtures/synthetic_quality_refactor/reference_like_scanner_thinning_49_evidence.json`.
-This is synthetic candidate evidence only. A historical 64^3-by-3 F3 crop
-diagnostic later failed one conservative external-smoke check: crop 1 worsened
-public-FVT sparse-distance p95 by `6.193637` samples against the allowed `5.0`.
-The other seven historical diagnostic checks passed, including shared scanning,
-finite/nonempty stages, density, edge, crop stability, and configuration
-contracts. The prerequisite large-crop diagnostic was therefore not run and
-human geological review remains pending. This failed crop check is preserved as
-historical diagnostic evidence, not a current publication gate or a set of
-statistical replicates. The scanner-thinning default remains unchanged,
-independently of the unchanged workflow default and other public defaults.
-Compact failed-run evidence is recorded in
-`tests/fixtures/f3d_scanner_thinning_policy/quality_reference_like_normal_v1_evidence.json`.
-
-The legacy quality scanner backend promotion-candidate flow for
-`boundary_edge_thin_v1`, `boundary_seed_retention_v1`, and
-`quality_boundary_skinner_fallback_v5` is reported with
-`scripts/compare_quality_reports.py` or
-`scripts/check_synthetic_quality_promotion_gate.py`; no new 49^3
-`promotion_candidates_49` result is recorded for that separate flow.
-The diagnostic workflow keeps reference-workflow defaults while enabling
-reference-vs-normal thinning diagnostics.
-The current quality workflow profile and guardrails are summarized in
-`docs/quality_mode.md`. A typical extended report run is:
+Validate an existing bundle without recomputation:
 
 ```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set extended \
-  --shape 33,33,33 \
-  --variant-preset quality-matrix \
-  --output-dir outputs/3d/synthetic_quality/extended_001 \
-  --pretty \
-  --save-figures \
-  --write-markdown-index
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_001 \
+  --validate-only
 ```
 
-The default report path remains oracle input. To compare the downstream oracle
-upper-bound path with the scanner-inclusive end-to-end path on the same
-synthetic truth geometry, use `--input-mode both`:
+Deep validation requires a matching publication runtime and rechecks persisted
+numerical evidence:
 
 ```bash
-PYTHONPATH=src python examples/report_3d_synthetic_quality.py \
-  --case-set geometry \
-  --shape 33,33,33 \
-  --input-mode both \
-  --output-dir outputs/3d/synthetic_quality/scanner_inclusive_001 \
-  --pretty \
-  --save-figures \
-  --write-markdown-index
+python -m pyosv.cli.f3d_mode_comparison \
+  --output-dir outputs/3d/f3d/mode_comparison_001 \
+  --validate-only \
+  --deep-validate
 ```
 
-Reference-like 3D thinning is documented in
-`docs/reference_like_thinning.md`. `FaultOrientScanner3.thin()` now defaults
-to reference-like strike-binned thinning with scanner edge-effect removal; pass
-`remove_edge_effects=False` only for diagnostics, or `mode="normal"` for the
-legacy fault-normal scanner path. `OptimalSurfaceVoter.thin()` also defaults
-to reference-like strike-binned thinning, with voter-specific retained-sample
-reinforcement and no scanner edge-effect cleanup. Use `mode="normal"` for the
-legacy fault-normal voter path. Voter diagnostics can also use `mode="hybrid"`,
-`mode="hybrid_v2"`, or `mode="normal_plateau"` to compare reference-like,
-fault-normal, and plateau-aware thinning behavior without changing defaults.
-
-Backward-compatible 3D thinning calls are explicit:
-
-```python
-fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
-fvt = voter.thin(fv, vp, vt, mode="normal")
-
-# Diagnostic opt-out for scanner edge cleanup:
-fet, fpt, ftt = scanner.thin(ft, pt, tt, remove_edge_effects=False)
-```
-
-`OptimalSurfaceVoter` smooths extracted local surfaces before recomputing vote
-strike/dip, matching the reference-first surface-orientation path. Use
-`set_surface_orientation_smoothing(0.0)` only for diagnostics that require the
-older raw-surface behavior.
-
-`OptimalSurfaceVoter.apply_voting()` now uses reference-style final vote-map
-normalization by default: subtract the global minimum, divide by the global
-maximum when it is positive, then apply `1 - (1 - x) ** 8` without final
-vote-map smoothing. This is separate from input fault-likelihood smoothing and
-surface-orientation smoothing. Reference-first workflows should leave it
-unset. Use `set_final_normalization_smoothing(1.0)` to opt into the older
-practical smoothed final-normalization behavior, or pass
-`--final-normalization-smoothing 1.0` in the F3 validation examples.
-
-Migration note: code that relied on the older derivative-bank scanner should
-call `scan_fast()` explicitly. Code that relied on old 3D scanner
-fault-normal thinning should pass `mode="normal"` explicitly, or use
-`--scanner-thin-mode normal` in F3 validation examples. Code that relied on
-old 3D voter fault-normal thinning should pass `mode="normal"` explicitly, or
-use `--voter-thin-mode normal` in F3 validation examples. Code that relied on
-old final vote-map smoothing should call
-`set_final_normalization_smoothing(1.0)` explicitly, or use
-`--final-normalization-smoothing 1.0` in F3 validation examples. Code following
-the reference-first default should not configure final normalization smoothing.
-
-F3 figure-based diagnostics and interpretation order are documented in
-`docs/f3d_visual_diagnostics.md`.
-
-Optional static visualization helpers are documented in `docs/visualization.md`.
-Install `pyosv[viz]` only when PNG diagnostics such as slice panels, ridge
-overlays, MIPs, or value histograms are needed.
-
-Reference-like skinning is documented in `docs/skinning.md`, with a small
-self-contained example:
+Resume a matching interrupted workspace with:
 
 ```bash
-python examples/run_3d_synthetic_skinning.py
+python -m pyosv.cli.f3d_mode_comparison \
+  --data-root /path/to/external/reference_osv \
+  --output-dir outputs/3d/f3d/mode_comparison_001 \
+  --resume
 ```
 
-Normal skinning workflows should use `FaultSkinner()` or module-level
-`pyosv.skinner.find_skins(...)`, both of which use the reference-like backend.
-Use `FaultSkinner(method="connected_component")` or
-`pyosv.skinner.find_connected_component_skins(...)` only for fallback or
-diagnostic connected-component grouping.
+See [F3 3D Reference Data Validation](docs/f3d_validation.md) for dataset
+identity, runtime identity, stage reuse, artifact validation, metrics, and
+regional diagnostics. Figure interpretation rules are documented in
+[F3 Visual Diagnostics](docs/f3d_visual_diagnostics.md).
 
-The reference example scripts read `ft.dat` and `pt.dat` from `reference_osv/`
-or `PYOSV_REFERENCE_OSV`, then write generated files such as `fv_py.dat` and
-`fvt_py.dat` under `--output-dir`. Keep that directory outside `reference_osv/`.
+## Mode comparison publication bundle
 
-## Mode Comparison Publication
-
-The publication workflow derives a report from completed Synthetic and F3
-source bundles; it does not rerun scanning, voting, thinning, or skinning.
-Synthetic results are known-truth metrics. F3 results measure agreement with
-the public reference and must not be interpreted as geological truth or
-accuracy.
-
-Generate a publication bundle with an existing environment lock:
+The publication command derives tables, figures, and a report from completed
+Synthetic and F3 source bundles. It does not rerun scanner, voting, thinning, or
+skinning stages. Synthetic results retain known-truth semantics; F3 results
+retain public-reference-agreement semantics.
 
 ```bash
 PYTHONHASHSEED=0 \
@@ -385,7 +322,7 @@ PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
   --output-dir outputs/3d/mode_comparison_publication/publication_v1
 ```
 
-Validate a completed bundle using only its recorded files:
+Validate a completed publication directory from its recorded files:
 
 ```bash
 PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
@@ -393,60 +330,45 @@ PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
   --output-dir outputs/3d/mode_comparison_publication/publication_v1
 ```
 
-The bundle is managed by `publication_manifest.json`; its integrity and
-provenance identity are not a cryptographic signature or an end-to-end
-experiment replay. See the
-[mode comparison publication guide](docs/mode_comparison_publication.md) for
-the output layout, artifact tiers, identity rules, and validation boundary.
+`publication_manifest.json` defines artifact integrity and provenance identity.
+It is not a cryptographic signature or an end-to-end experiment replay. See
+[Mode Comparison Publication Bundle](docs/mode_comparison_publication.md).
 
-## Equivalence Policy
+## Fault-warping numerical contract
 
-`pyosv` follows a reference-first policy for fault interpretation workflows:
-Python implementations should preserve the reference control flow and geometric
-semantics where practical. Bit-exact comparison with Java, Jython, or Mines JTK
-outputs is not a goal.
+`pyosv.fault_warping` defines typed, Atlas-independent input, configuration,
+result, and estimator protocol contracts for apparent sample-axis shift
+estimation across a known fault surface. The package contains no concrete
+estimator, artifact writer, workflow integration, or physical slip conversion.
 
-Mines JTK `SincInterpolator` behavior is approximated with SciPy interpolation
-primitives such as `scipy.ndimage.map_coordinates`. Mines JTK
-`RecursiveExponentialFilter` and `RecursiveGaussianFilterP` behavior is
-approximated with SciPy Gaussian smoothing. These approximations may differ in
-kernel details, boundary handling, and floating-point accumulation order.
-Faster, simpler, or more robust variants should be explicit opt-in modes rather
-than silent replacements for reference-like defaults.
+See [Fault-warping contract](docs/fault_warping.md) for coordinate, side,
+validity, topology, slope, and result semantics.
 
-The shape convention is 2D `(n2, n1)` and 3D `(n3, n2, n1)`. The
-`reference_osv/` directory is a read-only bind mount for reference only; it is
-not part of the package and is not distributed. Default tests skip optional
-reference cases clearly when the mount or required `.dat` files are absent.
+## Reference alignment policy
 
-## Setup
+PyOSV preserves reference control flow and geometric semantics where practical.
+Bit-exact output matching with Java, Jython, or Mines JTK is not required.
 
-```bash
-python -m pip install -e ".[dev]"
-```
+Mines JTK interpolation and recursive filters are represented by SciPy-backed
+interpolation and Gaussian or separable smoothing. Differences in kernels,
+boundary behavior, and floating-point accumulation are expected and are
+assessed with deterministic Python regression tests and practical localization
+or agreement metrics.
 
-Visualization dependencies are optional and are not required for the core
-package or default tests:
+The external `reference_osv/` directory remains read-only. Default tests do not
+require it or the F3 data root. See
+[Reference-First Equivalence Policy](docs/equivalence_policy.md) and
+[3D Reference Alignment](docs/reference_alignment_3d.md).
 
-```bash
-python -m pip install -e ".[dev,viz]"
-```
+## Development checks
 
-Verify the package import:
-
-```bash
-python -c "import pyosv; print(pyosv.__version__)"
-```
-
-## Checks
-
-Run all default checks with:
+Run the repository check wrapper:
 
 ```bash
 ./.issue_forge/checks/run_changed.sh
 ```
 
-The script runs:
+The underlying default checks are:
 
 ```bash
 python -m pytest -q
@@ -454,13 +376,32 @@ python -m ruff check src tests examples
 python -m ruff format --check src tests examples
 ```
 
-## Development Notes
+Core numerical runtime code must not depend on JVM, Jython, Mines JTK, Gradle,
+Atlas workflow packages, viewers, artifact publication, or job-management
+systems.
 
-- Core runtime dependencies are limited to NumPy and SciPy at this stage.
-- Runtime must not depend on JVM, Jython, Mines JTK, or Gradle.
-- Reference-first alignment with `reference_osv` is the goal; bitwise equivalence is not.
-- `vendor/issue_forge` is an external symlink or bind mount and must not be committed.
+## Documentation index
 
-## ライセンス
+- [Architecture](docs/architecture.md)
+- [DAT I/O](docs/dat_io.md)
+- [2D Orientation Scanning](docs/orient2d.md)
+- [2D Voter Reference Mapping](docs/reference_mapping_voting2d.md)
+- [3D Orientation Scanning](docs/orient3d.md)
+- [3D Scanner Reference Mapping](docs/reference_mapping_orient3d.md)
+- [3D Voting Conventions](docs/3d_voting.md)
+- [3D Voter Reference Mapping](docs/reference_mapping_voting3d.md)
+- [Reference-Like 3D Thinning](docs/reference_like_thinning.md)
+- [Skinning](docs/skinning.md)
+- [Mode Comparison Contract](docs/mode_comparison.md)
+- [Controlled Synthetic Quality](docs/synthetic_quality.md)
+- [Synthetic Mode Comparison](docs/synthetic_mode_comparison.md)
+- [F3 3D Reference Data Validation](docs/f3d_validation.md)
+- [F3 Visual Diagnostics](docs/f3d_visual_diagnostics.md)
+- [Mode Comparison Publication Bundle](docs/mode_comparison_publication.md)
+- [Fault-warping contract](docs/fault_warping.md)
+- [Reference-First Equivalence Policy](docs/equivalence_policy.md)
 
-`reference_osv` のライセンスと、Python 再実装としての `pyosv` の配布ライセンスは別途確認・決定してください。
+## License
+
+The distribution license for the Python implementation and the license of the
+external `reference_osv` implementation must be evaluated independently.
