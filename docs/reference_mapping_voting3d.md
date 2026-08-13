@@ -1,144 +1,276 @@
 # 3D Voter Reference Mapping
 
-This document maps selected
-`reference_osv/src/osv/OptimalSurfaceVoter.java` methods to the current
-`pyosv` 3D voting implementation. It is an audit guide, not an equivalence
-claim. The current Python implementation keeps repository conventions:
-global arrays are `(n3, n2, n1)`, local voting costs are `(nw, nv, nu)`, and
-values are normalized to `np.float32` where practical.
+This document maps concepts from
+`reference_osv/src/osv/OptimalSurfaceVoter.java` to the Python implementation
+exposed as `pyosv.voting3d.OptimalSurfaceVoter`.
 
-`pyosv` follows a reference-first policy for fault interpretation workflows,
-using practical agreement metrics to measure remaining differences. It does not
-add runtime dependencies on JVM, Jython, Mines JTK, or Gradle. Java
-`SincInterpolator`, `RecursiveExponentialFilter`, and related JTK filters are
-therefore approximation targets for Python/SciPy code, not dependencies.
+The Python voter preserves the reference processing structure where practical,
+but it is not a bit-exact Mines JTK port. PyOSV uses NumPy, SciPy, and optional
+Numba kernels and has no JVM, Jython, Gradle, or Mines JTK runtime dependency.
 
-## Current Migration Notes
+Global image volumes use shape `(n3, n2, n1)` and indexing
+`array[i3, i2, i1]`. Local voting costs use shape `(nw, nv, nu)` and indexing
+`cost[kw, kv, ku]`. Geometric vectors use component order `(x1, x2, x3)`:
 
-- `OptimalSurfaceVoter.thin(...)` defaults to `mode="reference"`: a
-  reference-like, strike-binned thinning path. Pass `mode="normal"` to reproduce
-  the older fault-normal voter thinning behavior.
-- Voter reference-like thinning includes voter-specific retained-sample
-  reinforcement and does not apply scanner edge-effect cleanup.
-- Surface voting defaults to `surface_voting_boundary_policy="reference"`.
-  This preserves both reference-style UVW image-coordinate clamping and the
-  Java-like target-point condition: `i1` may touch either face, but `i2` and
-  `i3` source samples must be interior for averaging and accumulation.
-- `surface_voting_boundary_policy="masked_in_bounds"` is an opt-in Python
-  quality experiment. It masks out-of-volume UVW lags before surface extraction
-  and allows center votes on all six faces. It is not a Java-equivalence mode
-  and is not enabled by any default workflow.
-- `OptimalSurfaceVoter.apply_voting()` defaults to reference-style final
-  normalization with no final vote-map smoothing: subtract min, divide by max
-  when `max > 0`, then apply `1 - (1 - x) ** 8`. Leave
-  `set_final_normalization_smoothing(...)` unset for reference-first workflows;
-  call `set_final_normalization_smoothing(1.0)` only to compare with older
-  pyosv runs that smoothed the final vote map before normalization.
-- The mapping below is reference-first, not bit-exact. F3 reports and local
-  regression tests are comparison evidence, not acceptance thresholds for Java
-  equivalence.
+```text
+u = fault normal
+v = fault-dip vector
+w = fault-strike vector
+```
 
-## Method-Level Mapping
+A local point maps to global coordinates as:
 
-| Java method | Python equivalent / status | Reference summary | Current Python summary | Known differences | Audit status | Suggested future parity test |
-| --- | --- | --- | --- | --- | --- | --- |
-| `OptimalSurfaceVoter(int ru, int rv, int rw)` constructor | `OptimalSurfaceVoter.__init__` | Stores local radii, initializes lag bounds from `ru`, default strain inverse values of 4, one attribute smoothing, surface smoothing extents of 2.0, a recursive Gaussian filter sized by `max(rv, rw)` for surface orientation, JTK smoothing filters, and `_lmins` / `_lmaxs`. | Validates nonnegative radii, stores `lmin`, `lmax`, `nl`, default `bstrain1` / `bstrain2`, surface-extraction smoothing settings, `surface_orientation_smoothing=float(max(rv, rw))`, and generates `lmins` / `lmaxs` with `dp.update_shift_ranges_3d`. | Python has explicit validation and no JTK filter objects; surface-orientation smoothing is a stored scalar applied with SciPy-backed surface smoothing when strike/dip are re-estimated; shift-range generation is Python code and only approximates the reference contract. | `partially covered` | Add a Java-derived fixture for several `(ru, rv, rw)` combinations, including edge radii, and compare `lmin`, `lmax`, `nl`, `lmins`, `lmaxs`, and default orientation smoothing. |
-| no Java equivalent | `set_surface_voting_boundary_policy` | The reference has one boundary behavior: rounded UVW image samples are clamped, then `i2`/`i3` face source samples are excluded during voting. | Accepts exactly `"reference"` and `"masked_in_bounds"`; the constructor default is `"reference"`. The masked policy selects a separate quality path and does not change `samples_in_uvw_box`. | `masked_in_bounds` deliberately departs from reference behavior, so its tests are Python regression and synthetic-quality evidence rather than Java parity evidence. | `python-regression covered` | Keep constructor/default/report tests proving that reference workflows never select the masked path implicitly. |
-| `setStrainMax(double strainMax1, double strainMax2)` | `set_strain_max` | Converts maximum surface strains to integer inverse strain bounds with ceiling-like behavior. | Uses `dp.strain_to_bstrain`, validating `0 < strain_max <= 1`, and updates only `bstrain1` / `bstrain2`. | Python validation is explicit; no Java parity fixture verifies all rounding cases. | `partially covered` | Compare Java and Python conversion for representative values near reciprocal boundaries, including values that should round up. |
-| `setAttributeSmoothing(int esmooth)` / smoothing config | `set_attribute_smoothing` | Sets the number of nonlinear fault-attribute smoothing passes. | Validates a nonnegative integer and stores `attribute_smoothing`. | Java may allow values Python rejects by validation; smoothing implementation differs downstream. | `partially covered` | Check that zero, one, and multiple smoothing passes affect a small cost volume at the same stage as Java. |
-| `setSurfaceSmoothing(double usmooth1, double usmooth2)` / smoothing config | `set_surface_smoothing` | Sets surface smoothing extents and rebuilds recursive exponential filters. | Validates nonnegative finite extents and stores `surface_smoothing1` / `surface_smoothing2`; smoothing is applied later through `dp.smooth_surface_2d`. | Python does not maintain JTK filter instances; SciPy smoothing response and edge behavior differ. | `partially covered` | Compare extracted surface smoothing on impulse, step, and sloped synthetic surfaces, focusing on axis order and edge behavior. |
-| `surfaceStrikeAndDip(...)` / surface-orientation smoothing config | `_surface_strike_and_dip` / `set_surface_orientation_smoothing` | Constructor creates a `RecursiveGaussianFilter(max(rv,rw))` and `surfaceStrikeAndDip` applies it to the extracted surface before strike/dip are recomputed. | Defaults to `float(max(rv, rw))`, validates nonnegative finite values, and passes the value to `_surface_strike_and_dip`; `0.0` disables orientation-only surface smoothing and keeps the older raw-surface diagnostic path. | Python stores a scalar instead of a filter object and approximates the smoothing with `dp.smooth_surface_2d`; SciPy boundary and kernel behavior is not expected to be a bit-exact Mines JTK clone. | `python-regression covered` | Compare noisy and stair-step Java-derived surfaces before/after smoothing to verify practical orientation-jitter reduction and sign conventions. |
-| `pickSeeds(...)` | `pick_seeds` | Selects seed candidates above the thinned fault-attribute threshold, sorts by likelihood, and suppresses nearby lower candidates within a distance box. | Builds `FaultCell` objects from `(n3, n2, n1)` arrays, sorts descending by likelihood, suppresses candidates inside the distance box, and returns a Python list. | Java object ordering and equal-likelihood tie behavior are not audited; Python validates finite matching arrays. | `partially covered` | Build a fixture with equal likelihoods, boundary candidates, and suppression overlaps; compare selected seed coordinates and order. |
-| `getSeeds(...)` | `get_seeds` | Reference utility for selecting one seed at a requested sample. | Returns a single `FaultCell` at `(c1, c2, c3)` after bounds and shape validation. | Python exposes a narrow helper; no Java parity fixture confirms reference call semantics. | `partially covered` | Compare one-sample seed extraction for valid and boundary coordinates, including stored strike and dip. |
-| `updateVectorMap(...)` | `update_vector_map` | Fills displacement vectors for offsets in `[-radius, radius]` along the supplied local axis vector. | Returns a `(3, 2 * radius + 1)` `float32` array from vector components multiplied by offsets. | Java writes into caller-provided arrays and uses Java float arithmetic; Python allocates and returns a new array. | `partially covered` | Compare vector maps for non-axis-aligned unit and non-unit vectors, including negative components. |
-| `samplesInUvwBox(...)` | `samples_in_uvw_box` plus the private masked sampler | Samples `1 - fx` in a seed-centered local UVW box using normal, dip, and strike axes; invalid lag cells stay at default cost and image samples are rounded/clamped. | The public method retains the reference path and returns `(nw, nv, nu)` costs using Java-style `floor(x + 0.5)` rounding and clamping. The private masked path returns `float32` costs, a boolean mask requiring both lag-range admission and an in-volume rounded sample, full-box offsets, and lag counts; it never clamps masked samples. | The public path remains the Java approximation target. The masked sampler is a Python quality extension with Python/Numba parity coverage across faces, corners, oblique axes, and rounding boundaries. | `partially covered` | Keep masked-path evidence separate from Java parity fixtures so the opt-in extension cannot weaken reference-clamping audits. |
-| `findSurface(float[][][] fx)` | `dp.find_surface_3d` plus a private masked surface extractor | Repeatedly smooths local costs, solves optimal paths across local slices with strain bounds, and smooths the final surface. | The public finite-cost path is unchanged. The masked path excludes invalid states during attribute smoothing, forward/reverse accumulation, and backtracking. After surface smoothing it revalidates mask membership and strain in both tangential directions, then performs deterministic global feasibility recovery when necessary. A value already inside a valid Java-rounding cell is not moved to the integer center unnecessarily; failure to recover a jointly feasible surface is reported safely. `surface_projection_count` is the number of `(w, v)` columns changed between the raw smoothed surface and the final mask-and-strain-feasible surface, counted once per column. | Masked DP is not present in the reference. Python and accelerated results are compared within `float32` tolerance, including infeasible and recovery/projection cases. | `partially covered` | Continue Java fixtures against `find_surface_3d`; treat mask/recovery/projection tests as quality-extension regression coverage. |
-| `smoothFaultAttributes(float[][][] fx, float[][][] fs)` | `dp.smooth_fault_attributes_3d` | Applies nonlinear dynamic-programming smoothing in the two surface dimensions and normalizes within the reference workflow. | Smooths local costs along `v` by applying 2D smoothing per `w`, then along `w` by applying 2D smoothing per `v`; returns `float32`. | Java method mutates caller arrays and uses reference accumulation/backtracking helpers; Python returns a new array and does not include all Java normalization side effects. | `partially covered` | Compare constant, impulse, and synthetic surface-valley volumes after one and multiple smoothing passes. |
-| `surfaceVoting(...)` | `_surface_voting` | For one seed, builds local axes, samples the UVW cost box, finds an optimal surface, computes average fault attribute and smoothed-surface strike/dip, then accumulates votes and orientation maps. Vote surface points are accepted only when `0 <= i1 < n1`, `0 < i2 < n2 - 1`, and `0 < i3 < n3 - 1`. | The `reference` branch keeps those helpers and predicates unchanged. The masked branch selects the deterministic maximum supported rectangle containing the origin, maps it with explicit full-box offsets, uses only valid selected samples, permits center writes on all six faces, and emits immutable per-seed diagnostics. Full-box orientation uses `_surface_strike_and_dip`; a cropped box uses seed strike/dip with `orientation_source="seed_boundary_fallback"`. | The masked rectangle, mask-aware DP, face-center votes, and crop orientation fallback are quality extensions, not reference parity. Support fraction is measured against the full tangential patch; any selected invalid sample skips the vote. | `partially covered` | Compare the reference branch with Java-derived single-seed fixtures and audit the masked branch with face, padding/crop, axis-permutation, and diagnostic regression tests. |
-| update orientation / vector maps | `_update_orientation_if_stronger` via `_add_surface_vote` | Updates strike/dip maps where the new surface vote is stronger than the stored map value, while accumulating fault evidence. | `_add_surface_vote` adds to `fe`; `_update_orientation_if_stronger` updates `vp`, `vt`, and `vm` only when the new vote is stronger. | Exact Java tie behavior and parallel update ordering are not audited. | `reference-audit covered` | Add Java-derived equal-vote fixtures to confirm strict greater-than tie behavior under reference ordering. |
-| `normalization(float[][][] fx)` / post-vote normalization | `_normalize_and_power_3d` / `set_final_normalization_smoothing` | Normalizes vote evidence and applies the reference post-processing transform before returning fault volume. | Copies the array, subtracts the global minimum, divides by the global maximum when nonzero, applies `1 - (1 - x) ** power`, clips, and returns `float32`. The default is no final vote-map smoothing; `set_final_normalization_smoothing(sigma)` opts into Python's older practical smoothing before normalization. | Smoothing remains opt-in and uses a SciPy-backed approximation, so smoothed diagnostics are not bit-exact Mines JTK output. Current reference-audit tests cover finite output, `[0, 1]` range, zero dynamic-range input, negative offsets, default versus smoothed synthetic ridges, and setter wiring. | `partially covered` | Compare zero, constant, impulse, and mixed vote volumes from Java before and after min subtraction, max scaling, and power transform. |
-| `thin(float[][][][] flpt)` | `OptimalSurfaceVoter.thin` / `thinning3d` | Static reference thinning smooths voting likelihoods, keeps strike-binned maxima in the `i2-i3` plane, and handles retained values/orientations according to Java flow. | Default `mode="reference"` calls `reference_like_3d_thin_values`, which approximates strike-binned thinning and voter-specific vertical-strike reinforcement. Explicit `mode="normal"` keeps the legacy maxima along sampled fault normals. | Default Python behavior now follows the reference-like target, but remains an approximation with SciPy smoothing, repository shape conventions, and known reinforcement differences from scanner thinning. Current reference-audit tests cover folded-strike boundary reinforcement for the voter and verify scanner reference thinning does not apply voter reinforcement. | `partially covered` | Compare Java `thin()` against Python voter reference thinning on strike bins, boundary samples, flat regions, and retained-value copying from smoothed versus original arrays. |
+```text
+seed + iw * strike + iv * dip + iu * normal
+```
 
-## 3D Thinning And Boundary Audit
+## Equivalence boundary
 
-| Reference behavior | Python status | Follow-up decision |
+The reference-oriented path retains these structural stages:
+
+```text
+seed selection
+  -> seed-local UVW cost sampling
+  -> dynamic-programming surface extraction
+  -> surface likelihood and orientation estimation
+  -> vote and orientation accumulation
+  -> final vote normalization
+  -> voter thinning
+```
+
+Numerical equality with Java is not required. The principal implementation
+boundaries are:
+
+- SciPy Gaussian smoothing instead of JTK recursive filters;
+- Python and optional Numba kernels instead of Java array kernels;
+- explicit `float32`, shape, finiteness, and scalar validation;
+- Python-defined deterministic tie ordering and defensive bounds checks;
+- a mask-aware boundary policy and additional thinning policies that have no
+  direct Java method counterpart.
+
+Reference agreement is assessed through deterministic regression tests,
+controlled Synthetic truth metrics, and F3 public-reference metrics. F3 public
+outputs are comparison targets, not geological truth or method-level Java
+fixtures.
+
+## Constructor and configuration mapping
+
+| Java symbol or operation | Python symbol | Python contract | Equivalence boundary | Test coverage |
+| --- | --- | --- | --- | --- |
+| `OptimalSurfaceVoter(int ru, int rv, int rw)` | `OptimalSurfaceVoter.__init__` | Requires nonnegative integer radii. Sets `lmin=-ru`, `lmax=ru`, `nl=2*ru+1`, `bstrain1=bstrain2=4`, `attribute_smoothing=1`, surface smoothing `(2.0, 2.0)`, orientation smoothing `max(rv, rw)`, orientation backend `full_surface`, final-normalization smoothing `0.0`, support policy `(0.0, 0.0)`, and boundary policy `reference`. It builds `(2*rw+1, 2*rv+1)` `lmins` and `lmaxs`. | Python stores scalar configuration rather than JTK filter objects and validates every public setting explicitly. | Constructor defaults, invalid radii, lag bounds, shift arrays, and per-instance state are covered in `tests/test_voting3d.py`. |
+| `setStrainMax(double, double)` | `set_strain_max()` | Converts each maximum strain with `ceil(1 / strain_max)`. Each value must satisfy `0 < strain_max <= 1`. Only `bstrain1` and `bstrain2` change. | Python exposes the reciprocal spacing directly and rejects invalid values before execution. | Reciprocal boundaries, defaults, invalid values, and unchanged shift ranges are covered in `tests/test_voting3d.py` and `tests/test_dp.py`. |
+| `setAttributeSmoothing(int)` | `set_attribute_smoothing()` | Stores a nonnegative integer number of nonlinear cost-smoothing passes used before surface extraction. | The smoothing kernels are Python/Numba DP accumulation kernels rather than Java/JTK kernels. | Zero, one, multiple passes, invalid values, and cost-volume behavior are covered in `tests/test_voting3d.py` and `tests/test_dp.py`. |
+| `setSurfaceSmoothing(double, double)` | `set_surface_smoothing()` | Stores two nonnegative finite surface-smoothing extents. For a surface shaped `(nw, nv)`, `surface_smoothing1` acts on the `v` axis and `surface_smoothing2` acts on the `w` axis through `smooth_surface_2d`. | Smoothing uses SciPy-backed Gaussian filters and nearest-edge behavior. | Setter validation, axis behavior, constant and sloped surfaces, and deterministic output are covered in `tests/test_voting3d.py` and `tests/test_dp.py`. |
+| `surfaceStrikeAndDip(...)` and its constructor filter | `_surface_strike_and_dip()` and `set_surface_orientation_smoothing()` | Re-estimates strike and dip from centered `du/dv` and `du/dw` differences on a finite `(nw, nv)` surface. The default smoothing is `float(max(rv, rw))`. `0.0` uses the unsmoothed surface. | Java recursive Gaussian filtering is represented by SciPy-backed smoothing. The Python API also exposes the `full_surface` and `center_separable` computation backends. | Flat, planar, noisy, stair-step, invalid-size, backend-agreement, and nonmutation behavior are covered in `tests/test_voting3d.py`. |
+| final vote normalization configuration | `set_final_normalization_smoothing()` | Stores a nonnegative finite sigma applied only to accumulated vote evidence before final unit-range normalization. The default `0.0` performs no smoothing. | This optional smoothing is a Python configuration axis; the reference-oriented default remains unsmoothed. | Setter validation, wiring, bounded output, and unchanged orientation arrays are covered in `tests/test_voting3d.py`. |
+| no direct Java setter | `set_surface_support_policy()` | Stores `min_fraction` in `[0, 1]` and a nonnegative finite exponent. A seed is skipped below the minimum; otherwise its average vote is multiplied by `support_fraction ** exponent` when the exponent is positive. Defaults are a no-op. | Support-aware skipping and weighting are Python voting controls. | Validation, no-op defaults, threshold skipping, and down-weighting are covered in `tests/test_voting3d.py`. |
+| one reference boundary behavior | `set_surface_voting_boundary_policy()` | Accepts exactly `reference` or `masked_in_bounds`; the default is `reference`. The selection is snapshotted into each seed execution and its diagnostics. | `masked_in_bounds` is a Python-specific policy with a separate sampling, DP, and accumulation contract. | Policy validation, dispatch, state isolation, reference behavior, masked behavior, and diagnostic reporting are covered in `tests/test_voting3d.py`. |
+
+## Method and helper mapping
+
+| Java symbol or operation | Python symbol | Python contract | Equivalence boundary | Test coverage |
+| --- | --- | --- | --- | --- |
+| `pickSeeds(...)` | `pick_seeds()` | Selects samples with `ft > fm`, orders them by descending likelihood, and applies exact greedy Chebyshev-box suppression with radius `d`. Equal likelihoods use descending flat-index order. Returned `FaultCell` objects retain `(i1, i2, i3)`, likelihood, strike, and dip. | Python makes tie ordering and bounds normalization explicit. The seed loop may use a Numba suppression kernel, with the same accepted-index contract. | Threshold strictness, ordering, suppression, boundaries, dtype conversion, nonmutation, and Python/Numba agreement are covered by seed and voter tests. |
+| `getSeeds(...)` | `get_seeds()` | Validates one `(c1, c2, c3)` sample and returns a one-element list containing its `FaultCell`. No likelihood threshold is applied. | The helper is deliberately narrow and follows the Python list-based API. | Coordinate mapping, stored values, shape checks, and bounds errors are covered in `tests/test_voting3d.py`. |
+| `updateVectorMap(...)` | `update_vector_map()` | Returns a `float32` array with shape `(3, 2*radius+1)` containing the supplied vector multiplied by offsets from `-radius` through `radius`. | Python allocates and returns the map instead of mutating caller-owned arrays. | Symmetry, shape, dtype, values, and invalid inputs are covered in `tests/test_voting3d.py`. |
+| `samplesInUvwBox(...)` | `samples_in_uvw_box()` and reference sampling kernels | Produces `(nw, nv, nu)` costs initialized to `1.0`. Only lags admitted by `lmins/lmaxs` are sampled. Coordinates use `floor(x + 0.5)`, then each global index is clamped to the volume before storing `1 - fx`. | Java-style rounding and clamping are retained; arithmetic is explicitly staged through `float32`. A support-aware internal sampler records pre-clamp in-bounds counts without changing costs. | Axis order, oblique frames, shift masks, face/corner clamping, half-boundary rounding, support counts, and Python/Numba agreement are covered in `tests/test_voting3d.py` and `tests/test_voting_accel.py`. |
+| lag-range initialization | `shift_range()` and `update_shift_ranges_3d()` | Uses `[-ru, ru]` normal lags. For tangential offset radius `sqrt(iw**2 + iv**2) <= 2`, the admissible normal lag is zero. Outside that radius, the absolute bound is `floor(radius + 0.5)`, clipped to `ru`. | Python emits explicit `int32` `(nw, nv)` arrays. | Shape, symmetry, radial cutoff, Java rounding, and clipping are covered in `tests/test_voting3d.py` and `tests/test_dp.py`. |
+| `findSurface(float[][][] fx)` | `find_surface_3d()` | Accepts finite `(nw, nv, nu)` costs. It applies the configured number of 3-D attribute-smoothing passes, finds one optimal lag path for each `w` row, optionally smooths the `(nw, nv)` surface, and returns `float32` lags. Flat-cost path ties prefer the center lag. | DP accumulation, backtracking, and smoothing are Python/Numba implementations. The unmasked path does not carry a validity mask. | Straight, sloped, noisy, bounded-strain, flat-tie, smoothing, shape, dtype, and Python/Numba behavior are covered in `tests/test_dp.py` and `tests/test_dp_accel.py`. |
+| `smoothFaultAttributes(float[][][] fx, float[][][] fs)` | `smooth_fault_attributes_3d()` | Applies forward/reverse DP smoothing along `v`, transposes the volume, then applies the corresponding smoothing along `w`. It returns a new `float32` cost volume. | Java mutation and JTK internals are replaced by explicit returned arrays and Python/Numba batch kernels. | Constant, impulse, path-valley, direction, shape, and acceleration-equivalence behavior are covered in DP tests. |
+| `surfaceVoting(...)` | reference policy in `SURFACE_VOTING_POLICY_REGISTRY` | For one seed, samples reference-clamped costs, extracts a surface, averages valid surface likelihoods, applies support controls, re-estimates orientation, and accumulates center and reinforcement votes. It records one immutable diagnostic result. | The seed loop is sequential and deterministic. Numerical kernels and defensive write bounds are Python-specific. | Plane voting, deterministic repeatability, source-boundary exclusion, support weighting, orientation smoothing, accumulation, and diagnostics are covered in `tests/test_voting3d.py`. |
+| `screenPoints(...)` and surface-point acceptance | `_is_valid_surface_vote_sample()` in scoring and accumulation | A reference-policy center sample is valid when `0 <= i1 < n1`, `0 < i2 < n2-1`, and `0 < i3 < n3-1`. Thus `i1` faces are permitted while `i2` and `i3` faces are excluded. Scoring and accumulation use the same predicate. | Neighbor reinforcement writes use defensive full-volume bounds checks after an accepted center sample. | Face behavior, zero valid support, scoring/accumulation agreement, and bounded reinforcement are covered in `tests/test_voting3d.py`. |
+| strongest-vote orientation update | `_add_surface_vote()` and `_update_orientation_if_stronger()` | Every accepted write adds `fa` to `fe`. `vp`, `vt`, and the internal maximum map `vm` change only when `fa > vm`; equal or weaker votes retain the earlier orientation. | Python makes the strict comparison and write bounds explicit. | Stronger, weaker, equal-threshold, neighbor, and Python/Numba accumulation behavior are covered in voter tests. |
+| `normalization(float[][][] fx)` | `_normalize_and_power_3d()` | Optionally smooths when sigma is positive, subtracts the global minimum, divides by the post-subtraction maximum when positive, applies `1 - (1 - x) ** power`, clips to `[0, 1]`, and returns `float32`. `apply_voting()` uses sigma `0.0` and power `8` by default. Constant input becomes zero. | SciPy smoothing is optional and separate from the reference-oriented normalization formula. | Negative offsets, constant input, monotonic ramps, exact formula, optional smoothing, output bounds, and nonmutation are covered in `tests/test_voting3d.py`. |
+| `thin(float[][][][] flpt)` | `OptimalSurfaceVoter.thin(..., mode="reference")` | Smooths `fv` only along `i3` and `i2`, applies strict strike-binned nonmaximum suppression in the `i2-i3` plane, and writes the smoothed retained values. Voter thinning enables one-sided retained-sample reinforcement for folded strikes strictly between 60 and 120 degrees. | SciPy Gaussian smoothing replaces JTK filtering. The Python method returns only the thinned value volume and applies no scanner edge cleanup. | Strike bins, retained values, reinforcement, flat regions, input preservation, and separation from scanner cleanup are covered in `tests/test_voting3d.py` and `tests/test_thinning3d.py`. |
+
+## Reference surface-voting contract
+
+The `reference` policy uses the following fixed behavior.
+
+1. `apply_voting()` validates matching finite `ft`, `pt`, and `tt` volumes.
+2. Seed selection uses the input `ft`, `pt`, and `tt`.
+3. Before seed-local voting, `ft` is smoothed with sigma `1.0` and normalized to
+   `[0, 1]`. The smoothed normalized array is the local evidence volume.
+4. UVW costs use `1 - evidence` at admitted lags. Rounded image coordinates are
+   clamped independently on all three axes.
+5. The extracted surface is scored and accumulated only at points satisfying
+   the reference target predicate. A surface with no valid point is skipped.
+6. The reference support fraction is `valid_surface_point_count / surface.size`.
+7. Surface orientation is computed from the extracted surface with the
+   configured smoothing and backend.
+8. Each accepted center write is reinforced on `i3-1` and `i3+1` when
+   `abs(normal[2]) > abs(normal[1])`; otherwise it is reinforced on `i2-1` and
+   `i2+1`.
+9. Final `fv` normalization uses the configured final-normalization sigma and
+   power `8`. `vp` and `vt` are the orientations of the strongest individual
+   local vote, not the orientation of accumulated `fe`.
+
+The public `samples_in_uvw_box()` method always implements reference clamping.
+Selecting another surface-voting policy does not change that public helper.
+
+## Masked in-bounds policy
+
+`masked_in_bounds` is a Python-specific boundary policy. It has this contract:
+
+- UVW lags are valid only when they satisfy `lmins/lmaxs` and their
+  Java-rounded global coordinates are inside the volume.
+- Out-of-bounds lags are not clamped. Their cost remains `1.0` and their mask is
+  false.
+- A tangential column is supported when at least one normal lag is valid.
+- The selected domain is the largest all-supported axis-aligned rectangle
+  containing the local origin. Ties prefer lower origin asymmetry and then
+  lexicographically smaller `(w_start, v_start, w_stop, v_stop)`.
+- Cropped rectangles retain explicit full-box `w_offset` and `v_offset`.
+- Masked attribute smoothing, accumulation, and backtracking exclude invalid
+  states.
+- After optional surface smoothing, mask membership and strain feasibility are
+  checked in both tangential directions. Deterministic global recovery is used
+  when the smoothed surface is not jointly feasible.
+- A fractional lag already inside a valid Java-rounding cell is retained when
+  it satisfies the mask and strain constraints.
+- Scoring and accumulation validate every selected lag. A detected invalid
+  sample skips the seed without partially committing votes.
+- Support fraction is measured against the full tangential area
+  `(2*rw+1)*(2*rv+1)`, not the cropped rectangle.
+- Center writes may occur on all six volume faces; reinforcement writes remain
+  bounds checked.
+- A full surface of at least `3 x 3` uses surface-derived orientation. A cropped
+  surface uses the seed orientation and records
+  `orientation_source="seed_boundary_fallback"`. A smaller full surface records
+  `orientation_source="seed_small_surface_fallback"`.
+
+A seed can be skipped with one of these stable reasons:
+
+```text
+no_supported_origin
+no_feasible_surface
+no_valid_surface_samples
+support_below_min_fraction
+invalid_selected_sample
+```
+
+`surface_projection_count` is the number of `(w, v)` columns whose value differs
+between the raw smoothed surface and the final mask-and-strain-feasible surface.
+Each changed column is counted once.
+
+The immutable per-seed diagnostic records:
+
+```text
+seed_index
+policy
+full_tangential_column_count
+selected_tangential_column_count
+admissible_lag_count
+in_bounds_lag_count
+support_fraction
+surface_center_lag
+surface_projection_count
+selected_invalid_sample_count
+center_vote_write_count
+face_center_vote_count
+orientation_source
+skipped
+skip_reason
+```
+
+`surface_voting_diagnostic_summary()` returns JSON-safe aggregate fields for the
+most recent run and uses explicit left-to-right support-fraction accumulation so
+its serialized result is stable across supported Python versions.
+
+## Dynamic-programming contract
+
+The unmasked and masked surface extractors share the local shape contract:
+
+```text
+cost shape    = (nw, nv, nu)
+surface shape = (nw, nv)
+surface value = selected u lag
+```
+
+`bstrain1` and `bstrain2` are positive integer reciprocal-strain spacings.
+Three-dimensional attribute smoothing uses both values. The unmasked extractor
+finds each `w` row through the `v-u` cost image and optionally smooths the final
+surface.
+
+The masked extractor additionally guarantees that selected Java-rounded lag
+states are valid and that the final surface satisfies the configured strain
+limits in both tangential directions. It returns `None` when no joint feasible
+surface exists. Its projection count describes post-smoothing correction, not
+the number of search iterations.
+
+## Python thinning policies without direct Java method mapping
+
+The public voter accepts these additional policies:
+
+| Mode | Contract |
+| --- | --- |
+| `normal` | Smooths `fv` with sigma `1.0`, samples the smoothed volume one fault-normal step in both directions with linear nearest-boundary interpolation, keeps strict maxima, and writes original `fv` values. |
+| `normal_plateau` | Uses non-strict normal comparisons within `plateau_tolerance`, groups candidates along each sample's dominant normal axis, and retains the largest `plateau_tie_breaker` value; an all-equal run retains its center sample. |
+| `hybrid` | Computes orientation roughness on positive vote support and selects reference thinning in stable regions and normal-thinning output in rough regions. |
+| `hybrid_v2` | Uses support above `1e-6`, starts from reference thinning, adopts positive normal candidates in rough regions, and uses plateau candidates near all volume faces when normal output is absent or locally sparse. |
+
+These modes are explicit voter-thinning settings. They do not select a scanner
+backend, scanner thinning mode, surface-voting boundary policy, or workflow by
+themselves.
+
+## Scanner and voter thinning distinction
+
+Scanner and voter reference thinning share the strike-binned NMS helper but
+have different public contracts.
+
+| Property | Scanner reference thinning | Voter reference thinning |
 | --- | --- | --- |
-| `FaultOrientScanner3.thin(...)` smooths only the `i3` and `i2` axes, applies strike-binned strict local maxima in the `i2-i3` plane, writes retained smoothed likelihoods with retained input strike/dip, assigns Java `NO_STRIKE` / `NO_DIP` to rejected orientations, then calls `removeEdgeEffects(...)`. | `FaultOrientScanner3.thin(mode="reference")` uses `reference_like_3d_thin_values(..., reinforce_vertical=False)`, returns zero orientation sentinels at rejected samples, and applies scanner edge-effect removal by default. | Edge-effect removal is scanner-specific in the Java reference. Keep it as a scanner-compatible post-thinning cleanup and do not apply it to voter thinning by default. Keep Python's public zero orientation sentinel for compatibility instead of introducing Java `-0.00001` sentinels into returned arrays. |
-| `FaultOrientScanner3.removeEdgeEffects(...)` zeros likelihood, strike, and dip within five samples of the `i3` faces when the squared fault-normal `w3` component exceeds `cos(30 deg)^2`, and within five samples of the `i2` faces when `w2^2` exceeds the same threshold. It does not remove `i1` face samples. | `remove_reference_edge_effects_3d` implements this cleanup, and `FaultOrientScanner3.thin(mode="reference")` applies it by default unless `remove_edge_effects=False` is passed. | Treat this as a post-thinning scanner cleanup, not as part of the shared NMS mask. Tests cover `i2` and `i3` faces separately and leave `i1` faces unaffected. |
-| `OptimalSurfaceVoter.thin(...)` uses the same strike-binned NMS structure but does not call `removeEdgeEffects(...)`. It writes Java sentinels only at rejected orientations and includes the voter-only neighbor write for retained near-vertical folded strikes; the audited Java horizontal condition is unreachable as written (`p000 < 30 && p000 > 150`). | `OptimalSurfaceVoter.thin(...)` defaults to `mode="reference"` and calls the shared helper with `reinforce_vertical=True`; explicit `mode="normal"` remains the legacy Python normal-vector thinning path. The public method returns only thinned values, so Java rejected-orientation sentinels are not exposed. | Keep scanner and voter reference-like thinning as separate call sites over the shared helper because the voter has reinforcement behavior and no edge-effect removal. |
-| `OptimalSurfaceVoter.surfaceVoting(...)` accepts vote surface points only when `0 <= i1 < n1`, `0 < i2 < n2 - 1`, and `0 < i3 < n3 - 1`; neighbor reinforcement then writes `i2 +/- 1` or `i3 +/- 1` without additional edge checks. `samplesInUvwBox(...)` and `screenPoints(...)` use the same interior `i2`/`i3` condition for their in-box checks. | `_surface_vote_average_python/_numba` and `_accumulate_surface_votes_python/_numba` now use the same Java-style target-point predicate. `_add_surface_vote` still bounds-checks reinforced neighbors as defensive Python behavior. | Keep the average and accumulation point sets narrowed together; do not treat write-side bounds checks as permission to average or accumulate from `i2`/`i3` face source samples. |
-| No reference counterpart exists for masked UVW evidence or boundary-face center votes. | `surface_voting_boundary_policy="masked_in_bounds"` uses only lag-range-admissible, in-volume samples, selects the deterministic maximum supported origin-containing rectangle, preserves its full-box crop offsets, extracts a mask-feasible surface, and permits center writes on all six faces. | Keep this path opt-in and separately audited. Do not reinterpret its synthetic-quality results as Java equivalence, and do not replace it with scanner, thinning, or skinner boundary fallback behavior. |
+| Input | scanner `ft`, `pt`, `tt` | voter `fv`, `vp`, `vt` |
+| Retained value | smoothed scanner likelihood | smoothed vote likelihood |
+| Vertical-strike reinforcement | disabled | enabled |
+| Edge cleanup | applied by default on selected `i2` and `i3` faces | not applied |
+| Returned data | likelihood, strike, and dip volumes | thinned likelihood volume only |
+| Rejected orientation value | zero in returned strike/dip arrays | not exposed |
 
-## High-risk differences to audit first
+The voter must not inherit scanner edge cleanup implicitly. A comparison that
+changes voter thinning must record that setting independently of scanner
+thinning.
 
-- Java rounding versus Python/Numba rounding. `samples_in_uvw_box`,
-  `_surface_vote_average`, and vote accumulation use `floor(x + 0.5)`;
-  parity tests should verify ties, negative coordinates, and Numba/Python
-  agreement.
-- `(n3, n2, n1)` global shape versus local `(nw, nv, nu)`. Global volumes
-  index samples as `[i3, i2, i1]`, while local costs index `[kw, kv, ku]`.
-- Local UVW coordinate sign and axis order. The Python local coordinate formula
-  combines `iw * strike + iv * dip + iu * normal`; Java parity should verify
-  sign and component order for oblique frames.
-- Fault normal / strike / dip vector sign convention. `FaultCell` delegates to
-  `geometry` vector helpers; downstream surface orientation and thinning are
-  sensitive to sign choices even when scalar angles look plausible.
-- `lmins` / `lmaxs` generation. Python uses `update_shift_ranges_3d` with a
-  fixed inner radius and Java-style rounding; more reference-derived fixtures
-  are needed for multiple radii.
-- Boundary handling in `samplesInUvwBox`. The public/reference policy clamps
-  sampled image indices after rounding and leaves disallowed lag positions at
-  cost `1.0`; Java behavior should be checked at all volume faces and corners.
-  The separate masked policy must preserve its boolean validity mask through
-  sampling, smoothing, accumulation, and backtracking instead of encoding an
-  invalid state as an ordinary numeric cost.
-- Cropped masked surfaces. Volume mapping must use explicit full-box `w` / `v`
-  offsets. Equal-area origin-containing supported rectangles are resolved by
-  origin asymmetry and then lexicographic bounds, so Python and accelerated
-  paths cannot choose different boundary support.
-- Masked surface feasibility and smoothing. A supported column set can still
-  be infeasible under strain limits. After smoothing, mask validity and strain
-  are checked again in both tangential directions, with global feasibility
-  recovery when a per-column choice would not form a valid surface. Values that
-  remain feasible within their Java-rounding cells are not snapped to integer
-  centers. Failure is a diagnosed `no_feasible_surface` skip.
-- Masked surface projection diagnostics. `surface_projection_count` compares
-  the raw smoothed surface with the final mask-and-strain-feasible surface and
-  counts each `(w, v)` column whose value changed exactly once; it is not a
-  count of recovery iterations or nearest-interval operations. It remains zero
-  when surface smoothing is disabled.
-- Surface smoothing axes. Python treats local surface arrays as `(nw, nv)` and
-  maps `surface_smoothing1` / `surface_smoothing2` to `smooth_surface_2d`
-  axes; Java recursive filter axes and edge behavior need direct fixtures.
-- Surface orientation smoothing. Python smooths extracted `(nw, nv)` surfaces
-  before center-difference strike/dip re-estimation when
-  `surface_orientation_smoothing > 0.0`; this maps to the reference
-  `surfaceStrikeAndDip` use of `RecursiveGaussianFilter(max(rv,rw))`, but
-  Java recursive Gaussian behavior and boundary handling need direct fixtures.
-- Final normalization smoothing. Python does not smooth the final vote map by
-  default. The optional `set_final_normalization_smoothing(sigma)` path smooths
-  accumulated `fe` before min/max normalization and the `1 - (1 - x) ** 8`
-  transform; it is a practical comparison mode, not the reference default.
-- Surface-voting boundaries. Java permits all in-range `i1` samples but
-  excludes `i2` and `i3` face samples before averaging and accumulating votes;
-  Python voting helpers now use the same target-point predicate.
-- Final `thin()` behavior. Scanner and voter defaults now use reference-like
-  strike-binned thinning, but the implementation remains an approximation
-  target rather than bit-exact Java behavior.
-- Normalization and power transform. Smoothing, max scaling, zero-volume
-  behavior, clipping, dtype conversion, and exponent defaults can all change F3
-  metrics without changing seed or surface picking logic.
+## Verification boundary
 
-## Current audit entry points
+The Python suite verifies:
 
-- `src/pyosv/voting3d.py`: public 3D voter API, UVW sampling, seed voting,
-  vote accumulation, normalization, and voter thinning wrapper.
-- `src/pyosv/dp.py`: lag ranges, strain conversion, 2D/3D dynamic programming,
-  cost smoothing, and surface smoothing.
-- `src/pyosv/thinning3d.py`: reference-like strike-binned 3D thinning helpers.
-- `src/pyosv/geometry.py` and `src/pyosv/cells.py`: fault-vector and cell
-  conventions used by voter seeds.
-- `tests/test_voting3d.py`, `tests/test_dp.py`, and `tests/test_thinning3d.py`:
-  current Python regression coverage. These are not a substitute for
-  method-level Java parity fixtures unless they explicitly compare Java-derived
-  expected values.
+- constructor defaults, setters, validation, and state isolation;
+- lag ranges, Java-style rounding, coordinate order, and UVW costs;
+- exact greedy seed ordering and suppression;
+- unmasked DP paths, surfaces, smoothing, strain behavior, and tie handling;
+- mask-aware DP validity, bidirectional strain feasibility, deterministic
+  recovery, and projection accounting;
+- reference target-point boundaries, vote reinforcement, and strict
+  strongest-orientation updates;
+- reference and masked policy routing, support controls, all-face masked writes,
+  crop offsets, axis permutations, and immutable diagnostics;
+- normalization, surface orientation, and all voter-thinning modes;
+- Python and Numba agreement for accelerated kernels;
+- Synthetic and F3 configuration, evidence, and bundle contracts that consume
+  voter outputs.
+
+The suite does not require bit-exact Java or Mines JTK arrays. F3 tests measure
+public-reference agreement and bundle consistency; they do not establish
+geological truth or Java method identity.
+
+## Authoritative implementation surfaces
+
+- `src/pyosv/voting3d.py`
+- `src/pyosv/_voting3d/`
+- `src/pyosv/dp.py`
+- `src/pyosv/_dp/`
+- `src/pyosv/thinning3d.py`
+- `src/pyosv/_seed_selection.py`
+- `src/pyosv/geometry.py`
+- `src/pyosv/cells.py`
+
+## Related specifications
+
+- [3D Voting Conventions](3d_voting.md)
+- [Reference-Like 3D Thinning](reference_like_thinning.md)
+- [3D Scanner Reference Mapping](reference_mapping_orient3d.md)
+- [3D Reference Alignment Audit](reference_alignment_3d.md)
+- [Mode Comparison Contract](mode_comparison.md)
+- [Controlled Synthetic Quality](synthetic_quality.md)
+- [F3 3D Reference Data Validation](f3d_validation.md)
