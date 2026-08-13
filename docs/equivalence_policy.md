@@ -1,175 +1,218 @@
 # Reference-First Equivalence Policy
 
-Bitwise equivalence with Java, Jython, or Mines JTK is not a goal for `pyosv`.
-The implementation goal is reference-first alignment: Python code should follow
-the reference implementation's control flow and geometric semantics unless the
-reference behavior has a clear quality problem.
+`pyosv` targets reference-oriented semantic alignment for functionality mapped
+to `reference_osv`. Bitwise equality with Java, Jython, or Mines JTK is not a
+package requirement.
 
-Practical equivalence remains useful as a measurement policy for numerical
-differences, but it is not the final design target. Python outputs should
-preserve the geological signal and workflow behavior needed for fault
-interpretation while staying as close as practical to reference sampling,
-normalization, thinning, seed selection, and skinning semantics.
+The required result is a deterministic Python implementation that preserves the
+documented scientific meaning, geometry, stage responsibilities, and public API
+contract. Numerical differences caused by interpolation kernels, smoothing
+kernels, boundary treatment, and floating-point evaluation are accepted only
+inside an explicitly documented equivalence boundary.
 
-When implementation choices conflict, use this priority order:
+PyOSV-native functionality that has no corresponding `reference_osv` feature is
+governed by its own public contract. It must not be described as
+reference-equivalent.
 
-1. Preserve reference control flow and geometric meaning.
-2. Approximate Mines JTK numerical kernels when needed, while documenting which
-   reference kernel is being approximated.
-3. Put faster, more robust, or simpler behavior behind explicit opt-in modes
-   such as `fast`, `practical`, or `connected_component`.
-4. Deviate from the reference default only for clear quality problems, including
-   unreachable conditions, broken boundary behavior, or behavior that is
-   unusable for the documented fault-interpretation workflow.
+## Required invariants
 
-Mines JTK interpolation and recursive filtering are intentionally approximated
-with Pythonic tools:
+Reference-oriented implementations preserve the following unless a more
+specific public contract states otherwise:
 
-- JTK `SincInterpolator` behavior may be approximated with
-  `scipy.ndimage.map_coordinates` or another SciPy interpolation primitive.
-- JTK `RecursiveExponentialFilter` and `RecursiveGaussianFilterP` behavior may
-  be approximated with SciPy Gaussian smoothing, such as
-  `scipy.ndimage.gaussian_filter1d`, or with explicit separable smoothing.
+- global array shape and indexing conventions;
+- geometric component order and angle conventions;
+- processing-stage order and ownership;
+- public parameter meanings and defaults;
+- lag, strain, threshold, and normalization semantics;
+- rounding, clamping, boundary inclusion, and tie-breaking rules;
+- output shape, dtype, sentinel, and nonmutation contracts;
+- deterministic ordering for seeds, candidates, cells, and artifacts.
 
-These substitutions are allowed to differ in boundary handling, interpolation
-kernels, recursive filter response, and floating-point accumulation order.
-They do not justify changing the surrounding algorithm structure by default.
+Repository-wide array conventions are:
 
-## FaultSkinner Direction
+```text
+2D arrays:        (n2, n1), indexed as array[i2, i1]
+3D arrays:        (n3, n2, n1), indexed as array[i3, i2, i1]
+2D components:    (x1, x2)
+3D components:    (x1, x2, x3)
+local 3D voting:  (w, v, u), with u normal, v dip, and w strike
+```
 
-`FaultSkinner` defaults to geometry-aware, reference-like growth aligned with
-the reference `findSeeds`, `findSkin`, and `reskin` semantics. Generic
-connected-component grouping remains available as an explicit fallback or
-diagnostic opt-in mode.
+A numerical optimization or alternate backend must preserve these invariants or
+be exposed as a separate, explicitly named contract.
 
-Future skinning changes should prefer reference-like seed selection, neighbor
-growth, linking, pruning, and reskinning behavior over generic connected
-components unless a specific reference behavior is shown to be defective.
+## Decision order
 
-## Current 3D Thinning Direction
+When implementation choices conflict, apply this order:
 
-`FaultOrientScanner3.thin` defaults to `mode="reference"`, the reference-like
-strike-binned non-maximum suppression path. Its legacy fault-normal path remains
-available with `mode="normal"`.
+1. Preserve the current public Python contract.
+2. Preserve the mapped reference control flow and geometric meaning.
+3. Represent unavailable Mines JTK numerical operations with a documented
+   Python numerical contract.
+4. Keep materially different algorithms behind explicit backend, mode, policy,
+   or workflow selections.
+5. Evaluate quality-oriented behavior with evidence appropriate to its stated
+   semantics.
 
-`OptimalSurfaceVoter.thin` defaults to `mode="reference"`, the reference-like
-strike-binned non-maximum suppression path with voter-specific reinforcement.
-Its legacy fault-normal path remains available with `mode="normal"`.
+A faster or more robust implementation does not become equivalent merely
+because its final image appears similar. The implementation must preserve the
+stage-specific inputs, outputs, and decisions named by its contract.
 
-## Testing Policy
+## Python numerical substitutions
 
-Tests should prioritize:
+PyOSV does not require a JVM, Jython, Gradle, or Mines JTK at runtime. Reference
+numerical operations are represented with NumPy, SciPy, and optional Numba
+kernels.
 
-- shape correctness
-- finite values
-- value range sanity
-- synthetic localization
-- correlation and ridge-overlap metrics for reference comparisons
+Typical substitutions include:
 
-Tests should not require exact per-sample equality with Java outputs.
+- JTK sinc interpolation represented by SciPy coordinate interpolation or a
+  documented structured interpolation kernel;
+- JTK recursive exponential or Gaussian filters represented by SciPy Gaussian
+  or explicit separable smoothing;
+- Java array kernels represented by deterministic Python or Numba kernels.
 
-All array APIs should use the repository shape convention: 2D arrays are
-`(n2, n1)`, and 3D arrays are `(n3, n2, n1)`.
+These substitutions may differ in interpolation response, recursive-filter
+response, edge handling, floating-point accumulation order, and the last bits of
+returned values. Each numerical call site must still define the applicable axes,
+sigma or scale, extrapolation mode, rounding rule, and output dtype.
 
-## Current Metrics
+Optional acceleration is an implementation choice, not a distinct scientific
+method. Accelerated and fallback paths share the same public shape, dtype,
+validation, and semantic contracts.
 
-The practical-equivalence helpers live in `src/pyosv/metrics.py`. They are
-intended for sanity checks, regression tests, and optional reference reports.
-They do not define a bitwise-equivalence contract.
+## Independent configuration axes
 
-`finite_value_report(x)` reports whether an output is numerically usable. The
-report includes the input `shape`, total `size`, `finite_count`, `nan_count`,
-`posinf_count`, `neginf_count`, `finite_fraction`, and finite-only
-`finite_min`, `finite_max`, and `finite_mean` values. Summary statistics ignore
-non-finite samples; if there are no finite samples, the finite summary values
-are `nan`.
+The following choices are independent and must be recorded separately in
+reports and artifacts:
 
-`normalized_correlation(a, b)` computes zero-mean normalized correlation for
-same-shape finite arrays. It is useful for checking whether two vote images
-carry similar broad signal after implementation differences such as
-interpolation kernels and accumulation order. Shape mismatches or non-finite
-values raise `ValueError`. Empty arrays raise `ValueError`. If either centered
-array is constant and has zero norm, the function returns `0.0` because the
-correlation is undefined and carries no localization signal.
+- scanner backend;
+- scanner-thinning mode;
+- downstream workflow;
+- surface-voting boundary policy;
+- voter-thinning mode;
+- skinning method and reskin policy.
 
-`top_percentile_mask(x, percentile, positive_only=True,
-positive_epsilon=0.0)` returns a boolean mask for finite values at or above the
-requested percentile threshold. When `positive_only` is true, values less than
-or equal to `positive_epsilon` are excluded before the percentile threshold is
-computed; arrays with no eligible positive samples return an empty mask. The
-overlap, buffered-overlap, and sparse-distance helpers accept and propagate the
-same optional epsilon. Its default remains strict positive-only selection.
-Percentiles must be finite and in the inclusive range `[0, 100]`; empty arrays
-and arrays containing non-finite values raise `ValueError`.
+The current default and explicit selections include:
 
-`top_percentile_overlap(a, b, percentile=95.0, positive_only=False)` compares
-the high-value masks from two same-shape finite arrays. The report includes
-`percentile`, `a_count`, `b_count`, `overlap_count`, `union_count`,
-`a_fraction`, `b_fraction`, `overlap_fraction`, `overlap_over_a`,
-`overlap_over_b`, and `jaccard`.
+| Area | Default or reference-oriented selection | Other explicit selections |
+| --- | --- | --- |
+| 2D scanner | `FaultOrientScanner2.scan()` | `scan_fast()` |
+| 3D scanner | `FaultOrientScanner3.scan()` / `scan_reference_like()` | `scan_quality()`, `scan_fast()`, and the documented directional backend |
+| 3D scanner thinning | `mode="reference"` | `mode="normal"` |
+| Surface-voting boundary policy | `reference` | `masked_in_bounds` |
+| 3D voter thinning | `mode="reference"` | `normal`, `normal_plateau`, `hybrid`, `hybrid_v2` |
+| Skinning | `method="reference"` | `quality`, `connected_component` |
 
-`buffered_ridge_overlap(reference, candidate, percentile=99.0, radius=2.0,
-positive_only=True)` compares sparse ridge masks with exact precision, recall,
-F1, and Jaccard metrics plus buffered precision, recall, and F1. Buffered
-precision counts candidate ridge samples inside the dilated reference ridge
-mask, while buffered recall counts reference ridge samples inside the dilated
-candidate ridge mask. Empty masks produce zero counts and zero-valued ratios.
+A shared name such as `reference` does not make two stages numerically
+identical. Scanner reference thinning and voter reference thinning share a
+strike-binned helper but have different reinforcement, edge-cleanup, and return
+contracts. Detailed behavior belongs in the stage-specific documentation.
 
-`sparse_ridge_distance_metrics(reference, candidate, percentile=99.0,
-positive_only=True)` compares sparse ridge masks with symmetric Euclidean
-distance-transform summaries: mean, median, p90, and p95 in each direction. If
-either ridge mask is empty, all distance values are `None` rather than infinite
-or volume-size-dependent placeholders.
+## Evidence semantics
 
-`orientation_angle_error(actual, expected_degrees, period=180.0)` reports
-wrapped angular error in degrees. Use `period=180` for axes where opposite
-directions are equivalent, and `period=360` when full azimuth wraparound should
-be preserved. `expected_degrees` may be a scalar synthetic target or a
-broadcast-compatible reference angle array.
+Evidence types answer different questions and must remain separate.
 
-`strike_dip_angle_error(actual_strike, actual_dip, expected_strike=...,
-expected_dip=..., strike_period=360.0)` reports strike error with wraparound and
-dip error as a direct absolute difference. Synthetic scanner tests normally use
-the sampled expected strike/dip and assert median or percentile errors within a
-coarse angle-grid tolerance, not exact sample equality.
+### Focused regression tests
 
-Scanner validation should be read as signal preservation checks. Constant
-inputs should produce zero likelihood and finite angle arrays. Synthetic ridges
-or planes should place top-percentile likelihood samples on or near the known
-feature, which can be measured with `top_percentile_mask`,
-`buffered_ridge_overlap`, or sparse-distance metrics. The fast and
-reference-like scanner paths only need to be finite and shape-compatible with
-their contracts unless a test is explicitly about one backend's semantics.
+Unit and integration tests verify current Python contracts such as shape, dtype,
+finiteness, value bounds, deterministic ordering, boundary behavior, and
+specific intermediate decisions. Exact equality is appropriate when the Python
+contract requires it, including agreement between Python and accelerated
+kernels. Such equality does not establish Java or Mines JTK identity.
 
-## Threshold Policy
+### Controlled synthetic evaluation
 
-Default tests should check metric well-formedness and deterministic Python
-behavior. They should not require Java/JTK data or strict per-sample equality
-unless a future issue explicitly defines reference-alignment thresholds for a
-specific feature.
+Synthetic cases provide known geometry and are the evidence source for
+localization, orientation, thinning, skin topology, and other truth-based
+metrics. Deterministic cases are one evaluation case, not statistical
+replicates merely because they contain multiple slices or regions.
 
-Reference comparisons are report-oriented in this phase. The optional 2D voting
-and scanner reports print finite-value reports, normalized correlation,
-top-percentile or buffered overlap, and angle-error summaries, but they
-intentionally avoid failing on fixed correlation, overlap, or angle thresholds
-while the implementation is still evolving.
+### F3 public-reference evaluation
 
-## Optional Reference Checks
+The public F3 `fl.dat`, `fv.dat`, and `fvt.dat` volumes are comparison targets.
+They are not independent geological truth or direct method-level Java fixtures.
+Publication-facing F3 comparison treats the complete volume as one evaluation
+unit. Crops, slices, regions, and tiles are diagnostics within that unit and are
+not independent replicates.
 
-The `reference_osv/` directory is a read-only bind mount for the external
-reference implementation. It is optional for normal development and default
-tests, and it must not be modified or committed.
+### Optional reference reports
 
-By default, reference paths resolve under `./reference_osv`. If the reference
-checkout or bind mount is elsewhere, set:
+Optional reports compare Python outputs with external reference artifacts. They
+measure agreement under the recorded configuration and numerical environment.
+They do not add a runtime dependency on the reference implementation and do not
+imply bitwise equivalence.
+
+### Publication bundles
+
+Publication validation establishes recorded provenance and file integrity for a
+completed bundle. It does not replay the source experiments and does not by
+itself establish numerical equivalence or scientific generalization.
+
+## Practical-equivalence metrics
+
+The shared comparison helpers are implemented in `pyosv.metrics`. They support
+regression tests and diagnostic reports; they do not define one universal
+acceptance score.
+
+- `finite_value_report(x)` reports shape, size, finite and non-finite counts,
+  finite fraction, and finite-only minimum, maximum, and mean.
+- `normalized_correlation(a, b)` computes zero-mean normalized correlation for
+  matching finite nonempty arrays. It returns `0.0` when either centered input
+  has zero norm.
+- `top_percentile_mask(...)` defines a percentile mask. With
+  `positive_only=True`, values at or below `positive_epsilon` are excluded
+  before the percentile is calculated.
+- `top_percentile_overlap(...)` reports exact overlap statistics for two
+  percentile masks.
+- `buffered_ridge_overlap(...)` reports exact and radius-buffered precision,
+  recall, F1, and Jaccard statistics for sparse ridge masks.
+- `sparse_ridge_distance_metrics(...)` reports symmetric Euclidean
+  distance-transform summaries. Distance values are `None` when either sparse
+  mask is empty.
+- `orientation_angle_error(...)` reports wrapped angular error for a specified
+  period.
+- `strike_dip_angle_error(...)` reports wrapped strike error and absolute dip
+  error.
+- `orientation_field_report(...)` summarizes strike and dip values on a
+  high-likelihood mask.
+
+Reports must record every parameter that changes a metric definition, including
+percentile, positive-only selection, epsilon, buffer radius, angular period, and
+mask source. Synthetic truth metrics and F3 public-reference metrics must not be
+combined into one accuracy value.
+
+## Acceptance criteria
+
+A metric threshold is binding only when it is defined by a current automated
+test, promotion specification, validation contract, or publication contract.
+A diagnostic report without such a threshold records evidence but does not
+create an acceptance criterion.
+
+Default tests require deterministic Python behavior and the documented public
+contracts. They do not require external Java/JTK data. Per-sample equality with
+an external reference is required only when a feature-specific contract states
+that requirement explicitly.
+
+Byte-level fixtures protect a defined Python artifact contract. They are
+non-regression fixtures, not evidence of Java/JTK equality.
+
+## Reference data policy
+
+`reference_osv/` is an external, read-only reference checkout or bind mount. It
+is not committed, packaged, modified, or used as an output directory.
+
+Reference paths resolve under `./reference_osv` by default. Set the environment
+variable when the checkout is elsewhere:
 
 ```bash
 export PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master
 ```
 
-Default tests skip reference cases clearly when the reference root or required
-`.dat` files are absent. To run the optional slow 2D voting reference report,
-provide the reference root and opt in explicitly:
+Default tests skip reference-dependent cases when the reference root or required
+files are absent.
+
+Run the optional 2D voting reference report with:
 
 ```bash
 PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master \
@@ -177,8 +220,7 @@ PYOSV_RUN_SLOW_REFERENCE_VOTING=1 \
 python -m pytest -q tests/test_voting2d_reference_smoke.py
 ```
 
-To run the optional slow 2D scanner reference report, provide the same
-reference root and opt in with:
+Run the optional 2D scanner reference report with:
 
 ```bash
 PYOSV_REFERENCE_OSV=/absolute/path/to/osv-master \
@@ -186,6 +228,32 @@ PYOSV_RUN_SLOW_REFERENCE_SCANNER=1 \
 python -m pytest -q tests/test_orient2d_reference_report.py
 ```
 
-The optional reports compare `pyosv` output with existing reference `.dat`
-files. They do not add a runtime dependency on the JVM, Jython, Mines JTK, or
-Gradle, and they do not imply bitwise equivalence.
+## Documentation requirements
+
+A stage-specific document that claims reference-oriented behavior must state:
+
+- the mapped reference responsibility;
+- the current Python API and defaults;
+- the shape, coordinate, dtype, and boundary contract;
+- the Python numerical substitute for unavailable reference kernels;
+- any explicit alternate backend, mode, or policy;
+- the evidence type used to assess agreement.
+
+Documentation describes the current contract. Implementation history,
+transition instructions, issue references, and experiment chronology do not
+belong in the specification.
+
+## Related specifications
+
+- [2D Orientation Scanning](orient2d.md)
+- [2D Voter Reference Mapping](reference_mapping_voting2d.md)
+- [3D Reference Alignment](reference_alignment_3d.md)
+- [3D Orientation Scanning](orient3d.md)
+- [3D Scanner Reference Mapping](reference_mapping_orient3d.md)
+- [3D Voting Conventions](3d_voting.md)
+- [3D Voter Reference Mapping](reference_mapping_voting3d.md)
+- [Reference-Like 3D Thinning](reference_like_thinning.md)
+- [Skinning](skinning.md)
+- [Mode Comparison Contract](mode_comparison.md)
+- [Controlled Synthetic Quality](synthetic_quality.md)
+- [F3 3D Reference Data Validation](f3d_validation.md)
