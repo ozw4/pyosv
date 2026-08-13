@@ -1,178 +1,339 @@
 # 3D Orientation Scanning
 
-`pyosv.orient3d.FaultOrientScanner3` is the approximate Python 3D orientation
-scanner used to produce fault-likelihood, strike, and dip volumes for
-`OptimalSurfaceVoter`.
+`pyosv.orient3d.FaultOrientScanner3` produces 3D fault-likelihood, strike, and
+dip volumes for scanner thinning, optimal-surface voting, and evaluation
+workflows.
 
-## Shape Convention
+The implementation follows the transform structure of
+`reference_osv/src/osv/FaultOrientScanner3.java` where practical, but it is not
+a bit-exact Mines JTK port. PyOSV uses NumPy, SciPy, and optional Numba kernels
+and has no JVM, Jython, Gradle, or Mines JTK runtime dependency.
 
-Global 3D image volumes use shape `(n3, n2, n1)`. Array indexing is
-`g[i3, i2, i1]`, while vector components keep OSV component order
-`(x1, x2, x3)`.
+## Array and geometry contract
 
-All scanner inputs must be finite numeric 3D arrays. They are converted to
-`np.float32`. Scanner outputs are also `np.float32` arrays with the same
-`(n3, n2, n1)` shape as the input image.
+Global image volumes use shape `(n3, n2, n1)` and array indexing
+`array[i3, i2, i1]`. Geometric vectors use component order `(x1, x2, x3)`.
 
-## Strike and Dip Convention
+All scanner inputs must be finite numeric three-dimensional arrays. Public scan
+methods convert inputs to `float32` and return `float32` arrays with the same
+global shape.
 
-`FaultOrientScanner3.scan(phi_min, phi_max, theta_min, theta_max, g)` scans a
-sampled strike range `phi` and dip range `theta`, both in degrees.
+Strike `phi` and dip `theta` are expressed in degrees. For one selected
+orientation, the local vectors are:
 
-The returned tuple is `(ft, pt, tt)`:
+```text
+normal = (-cos(theta), sin(theta) cos(phi), -sin(theta) sin(phi))
+dip    = ( sin(theta), cos(theta) cos(phi), -cos(theta) sin(phi))
+strike = ( 0,          sin(phi),             cos(phi))
+```
 
-- `ft`: normalized fault likelihood in `[0, 1]`.
-- `pt`: selected strike angle in degrees.
-- `tt`: selected dip angle in degrees.
+The returned scanner tuple is `(ft, pt, tt)`:
 
-The returned `pt` and `tt` use the same convention consumed by
-`pyosv.cells.FaultCell` and `pyosv.voting3d.OptimalSurfaceVoter`. For strike
-`phi` and dip `theta`, the local vectors are:
+| Array | Contract |
+| --- | --- |
+| `ft` | Fault-likelihood response. Reference-like and fast scans return finite values in `[0, 1]`. |
+| `pt` | Selected strike sample in degrees. |
+| `tt` | Selected dip sample in degrees. |
 
-- fault normal `u = (-cos(theta), sin(theta) cos(phi), -sin(theta) sin(phi))`;
-- dip vector `v = (sin(theta), cos(theta) cos(phi), -cos(theta) sin(phi))`;
-- strike vector `w = (0, sin(phi), cos(phi))`.
+`pt` and `tt` use the same convention as `pyosv.cells.FaultCell` and
+`pyosv.voting3d.OptimalSurfaceVoter`.
 
-The component order above is `(x1, x2, x3)`, not array indexing order.
-
-## Reference-First Alignment
-
-The scanner follows the repository reference-first policy for fault
-interpretation workflows, but it is not an exact reproduction of
-`reference_osv/src/osv/FaultOrientScanner3.java`. It is not a Mines JTK
-replacement and does not add a runtime dependency on the JVM, Jython, Gradle,
-or Mines JTK.
-
-The default implementation uses NumPy and SciPy interpolation and smoothing
-operations as an intentional approximation of the Java/JTK workflow. The
-rotate/shear path also has an opt-in structured linear interpolation backend;
-SciPy remains the default. Outputs may differ from the reference implementation
-because of filter kernels, boundary handling, interpolation behavior, sampled
-angle density, angle tie-breaking, and floating-point accumulation order.
-
-Tests and examples should check shape correctness, finite values, value ranges,
-synthetic localization, and deterministic Python behavior. They should not
-require bitwise equality with Java or Mines JTK outputs.
-
-## Reference-Like Scan
-
-`FaultOrientScanner3.scan(...)` uses the approximate reference-like backend by
-default. `FaultOrientScanner3.scan_reference_like(...)` remains as a compatible
-explicit alias for callers that want to configure that backend. It validates
-angle ranges, finite 3D input volumes, `backend`, interpolation order, optional
-smoothing sigma, and normalization mode, then runs a deterministic strike/dip
-orientation sweep.
-
-The report/config value for this scanner backend is `reference-like`; its
-explicit public API method is `scan_reference_like()`. See [scanner backends,
-workflow modes, thinning modes, and reference targets](mode_comparison.md) for
-the canonical terminology and comparison axes.
-
-The reference-like scanner backend does not use the legacy derivative-bank
-scanner's sigma-derived dense sampling. Strike samples follow the Java scanner's fixed
-18-sample grid at 20 degree spacing from 0 degrees, clipped to the requested
-range. Dip samples use approximately 5 degree spacing while preserving the
-requested endpoints.
-
-The default `backend="rotate_shear"` path approximates the Java scanner's
-strike loop more directly: for each strike it rotates the input volume around
-axis 1, smooths along the rotated strike axis, shears each rotated slice for
-each dip, smooths along the dip axis, unshears, converts planarity to
-likelihood, unrotates the candidate likelihood back to global coordinates, clips
-it to `[0, 1]`, and keeps the best strike/dip. Dip angles are clipped to the
-requested dip range in the returned `tt` volume.
-
-Interpolation defaults to `interpolation_backend="scipy"`, preserving the
-existing `scipy.ndimage.map_coordinates` path and outputs. The opt-in
-`interpolation_backend="structured_linear"` path directly performs bilinear
-axis-1 rotation/unrotation and linear slice shear/unshear without allocating
-full-volume coordinate grids. It supports only `interpolation_order=1` and
-`backend="rotate_shear"`; other combinations raise `ValueError` instead of
-silently falling back to SciPy. Both implementations use constant-fill
-boundary semantics. Small float32 rounding differences from SciPy are expected,
-so practical comparisons should use a tight tolerance rather than bitwise
-equality.
+## Constructor
 
 ```python
-ft, pt, tt = scanner.scan_reference_like(
-    phi_min=0.0,
-    phi_max=90.0,
-    theta_min=45.0,
-    theta_max=90.0,
-    g=image,
-    interpolation_order=1,
-    interpolation_backend="structured_linear",
+from pyosv.orient3d import FaultOrientScanner3
+
+scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
+```
+
+Both constructor arguments must be finite positive numbers.
+
+- `sigma1` controls the density of the sigma-derived dip sampling used by
+  `dip_sampling()` and `scan_fast()`.
+- `sigma2` controls the density of the sigma-derived strike sampling used by
+  `strike_sampling()` and `scan_fast()`.
+- When `smoothing_sigma` is omitted from a reference-like scan, it resolves to
+  `max(1.0, 0.5 * (sigma1 + sigma2))`.
+
+The reference-like scan uses its own Java-inspired base sampling and does not
+use the sigma-derived sampling methods.
+
+## Sampling APIs
+
+`strike_sampling()` and `dip_sampling()` return deterministic, monotonic,
+finite `float32` samples whose endpoints match the requested range. A
+single-angle range returns one sample. These methods supply the angle grids for
+`scan_fast()`.
+
+`reference_like_strike_sampling()` uses the fixed strike grid
+`0, 20, ..., 340` degrees and keeps samples inside the requested inclusive
+range. When a valid range contains no fixed-grid sample, the lower endpoint is
+returned as the sole sample.
+
+`reference_like_dip_sampling()` uses approximately five-degree spacing while
+preserving the requested endpoints.
+
+The refined sampling methods insert evenly spaced interior samples between
+adjacent reference-like base samples:
+
+```python
+phis = scanner.refined_reference_like_strike_sampling(
+    0.0,
+    90.0,
+    refinement_factor=2,
+)
+thetas = scanner.refined_reference_like_dip_sampling(
+    45.0,
+    90.0,
+    refinement_factor=2,
 )
 ```
 
-`scan()`, `scan_with_confidence()`, and `scan_quality()` propagate the same
-interpolation backend selection. When Numba is installed, the structured
-kernels are JIT compiled; otherwise the same backend remains available through
-the pure Python kernels. Numba is optional and the default SciPy path does not
-depend on it.
+`refinement_factor` must be an integer from `1` through `4`. A factor of `1`
+returns the base sampling; a factor of `2` inserts interval midpoints.
 
-`backend="directional"` keeps the previous practical approximation. It samples
-in an orientation-dependent coordinate system and smooths the input planarity
-values directly along candidate fault-parallel directions. This backend is
-useful for comparisons with older `pyosv` results but is less structurally
-aligned with the Java rotate/shear/smooth workflow.
+## Reference-like scan
 
-Both reference-like backends clip smoothed planarity responses to `[0, 1]` and
-convert them to likelihood with `1 - smoothed**4`. This matches the Java
-scanner's smooth-then-semblance-power likelihood semantics more closely than
-the older Python ridge/contrast score. They remain Pythonic SciPy
-approximations, not bit-exact Mines JTK ports.
+`scan()` and `scan_reference_like()` execute the same reference-like scanner
+contract.
 
-`FaultOrientScanner3.scan_with_confidence(...)` runs the same reference-like
-scan and returns `(ft, pt, tt, confidence)`. The first three arrays have the
-same semantics as `scan_reference_like(...)`. `confidence` is a `float32`
-diagnostic volume in `[0, 1]` formed from the normalized response gap between
-the best sampled orientation and the second-best sampled orientation. High
-confidence means that gap is large; low confidence indicates stronger
-orientation ambiguity and can be used as a candidate downstream weighting map
-for voting or skinning. This confidence map is pyosv quality/diagnostic
-metadata, not an output from the original Java reference implementation.
+```python
+ft, pt, tt = scanner.scan(
+    phi_min=0.0,
+    phi_max=180.0,
+    theta_min=45.0,
+    theta_max=90.0,
+    g=image,
+)
+```
 
-`FaultOrientScanner3.scan_quality(...)` is an opt-in quality-oriented scanner
-path that uses the same reference-like scoring backend but refines the sampled
-strike and dip grids. It starts from `reference_like_*_sampling()` and inserts
-evenly spaced interior samples between adjacent base samples. The default
-`refinement_factor=2` adds midpoints; `refinement_factor=1` is equivalent to
-`scan_reference_like(...)` for the same backend and options. Refinement factors
-are intentionally limited to the range `1..4` to avoid accidental excessive
-orientation sweeps. Pass `return_confidence=True` to receive
+The configurable options are:
+
+| Option | Default | Contract |
+| --- | --- | --- |
+| `backend` | `"rotate_shear"` | Selects `rotate_shear` or `directional`. |
+| `interpolation_order` | `1` | Integer interpolation order from `0` through `5`. |
+| `interpolation_backend` | `"scipy"` | Selects `scipy` or `structured_linear`. |
+| `smoothing_sigma` | `None` | Nonnegative smoothing extent; `None` uses the constructor-derived default. |
+| `normalize` | `True` | Applies the final reference-like likelihood normalization step. |
+
+A constant input returns zero likelihood, fills `pt` and `tt` with the first
+strike and dip samples, and returns zero confidence when confidence is
+requested.
+
+Candidate orientations are compared with strict `score > best_score`. Equal
+scores retain the first orientation in deterministic sweep order.
+
+### Rotate/shear backend
+
+`backend="rotate_shear"` executes this structure for every strike and dip:
+
+```text
+rotate the input around axis 1
+  -> smooth along the rotated strike axis
+  -> shear by the dip-dependent slope
+  -> smooth along the sheared dip axis
+  -> unshear
+  -> convert planarity to fault likelihood
+  -> unrotate to global coordinates
+  -> retain the strongest orientation
+```
+
+Rotation expands the `(i2, i3)` plane to a symmetric finite rectangular grid.
+The SciPy path uses `scipy.ndimage.map_coordinates`. Rotation and shear use a
+constant fill value of `1.0`; unrotation uses `0.0` by default.
+
+Strike smoothing uses a one-dimensional Gaussian filter with nearest-edge
+handling. Dip smoothing uses effective sigma
+`smoothing_sigma * abs(sin(theta))`. The dip shear is
+`-cos(theta) / sin(theta)`, with zero shear at numerically vertical dips and a
+finite clipped shear for numerically horizontal dips.
+
+### Directional backend
+
+`backend="directional"` evaluates each sampled orientation by sampling and
+smoothing directly along candidate strike and dip directions. It shares the
+reference-like angle sampling, likelihood conversion, output shapes, and tie
+contract, but it does not use the rotate/shear transform structure.
+
+The directional backend uses the SciPy interpolation path. Selecting
+`interpolation_backend="structured_linear"` with the directional backend is
+rejected.
+
+### Interpolation backends
+
+`interpolation_backend="scipy"` supports interpolation orders `0` through `5`.
+
+`interpolation_backend="structured_linear"` performs direct bilinear
+rotation/unrotation and linear slice shear/unshear without allocating full
+coordinate grids. It is accepted only with:
+
+```text
+backend = rotate_shear
+interpolation_order = 1
+```
+
+Other combinations raise `ValueError`. The structured kernels use Numba when
+available and retain the same API through pure Python kernels otherwise. Small
+floating-point differences from the SciPy path are expected.
+
+### Likelihood conversion
+
+Both reference-like backends clip the smoothed planarity response to `[0, 1]`
+and compute:
+
+```text
+likelihood = 1 - planarity**4
+```
+
+The transform structure matches the Java scanner's smooth-and-power likelihood
+semantics, while interpolation, smoothing, boundary handling, and floating-point
+results follow the Python implementation.
+
+## Orientation confidence
+
+`scan_with_confidence()` runs the base reference-like sampling and returns:
+
+```text
+(ft, pt, tt, confidence)
+```
+
+`confidence` is the nonnegative gap between the best and second-best sampled
+orientation responses, normalized across the volume to `[0, 1]`. A zero dynamic
+range produces an all-zero confidence volume. Confidence is diagnostic metadata;
+it is not a probability, uncertainty calibration, or geological truth value.
+
+```python
+ft, pt, tt, confidence = scanner.scan_with_confidence(
+    0.0,
+    180.0,
+    45.0,
+    90.0,
+    image,
+)
+```
+
+## Quality scan
+
+`scan_quality()` uses the reference-like scoring backend with refined strike and
+dip sampling.
+
+```python
+ft, pt, tt, confidence = scanner.scan_quality(
+    0.0,
+    180.0,
+    45.0,
+    90.0,
+    image,
+    refinement_factor=2,
+    return_confidence=True,
+)
+```
+
+`return_confidence=False` returns `(ft, pt, tt)`. Setting it to `True` returns
 `(ft, pt, tt, confidence)`.
 
-This quality scanner backend does not select the downstream quality workflow
-or change either thinning stage. `scan_quality()` means refined reference-like
-sampling; its name alone is not a guarantee of higher interpretation quality.
+`scan_quality()` changes only scanner sampling density. It does not select a
+downstream workflow, scanner-thinning policy, voter-thinning policy, or skinning
+policy.
 
-`FaultOrientScanner3.scan_fast(...)` exposes the older derivative-bank scanner
-as an explicit practical backend for diagnostics or workflows that prefer its
-ridge/contrast score and sigma-derived dense angle sampling.
+## Derivative-bank scan
 
-The synthetic quality report also has a report-local diagnostic
-`--scanner-backend ensemble` option. It runs `reference-like`, `quality`, and
-`fast`, normalizes each `ft` response to unit range, applies fixed reliability
-priors, applies the quality confidence map as a small quality score weight, and
-selects the best adjusted backend per voxel. This option creates ordinary
-`ft/pt/tt` scanner attributes for the existing thinning, voting, and skinning
-path; it does not change the `FaultOrientScanner3.scan()`, `scan_quality()`, or
-`scan_fast()` API defaults.
+`scan_fast()` is a distinct derivative-bank scanner. It uses the sigma-derived
+strike and dip samples, Gaussian first and second derivatives, and a candidate
+score formed from the directional gradient and Hessian responses. The selected
+score volume is scaled by its finite 99.5th percentile and clipped to `[0, 1]`.
 
-The `fast` and `ensemble` scanner backends are diagnostic or secondary paths,
-not primary axes of the canonical 2×2 scanner-backend/workflow publication
-matrix described in the comparison document linked above.
+```python
+ft, pt, tt = scanner.scan_fast(
+    0.0,
+    180.0,
+    45.0,
+    90.0,
+    image,
+)
+```
 
-Migration note: callers that used the old derivative-bank `scan()` behavior
-should call `scan_fast()` explicitly. Callers that used the old scanner
-fault-normal thinning default should pass `mode="normal"` explicitly.
-Callers that used the old voter fault-normal thinning default should pass
-`mode="normal"` to `OptimalSurfaceVoter.thin(...)`.
+`scan_fast()` does not implement the Java rotate/shear workflow and does not
+accept the reference-like interpolation or smoothing options.
 
-## Integration
+## Report-level scanner backends
 
-Scanner output can be passed directly to 3D optimal-surface voting:
+Synthetic evaluation exposes these scanner backend names:
+
+| Backend | Scanner execution |
+| --- | --- |
+| `reference-like` | `scan()` with the base reference-like sampling. |
+| `quality` | `scan_quality()` with the configured refinement factor and confidence output. |
+| `fast` | `scan_fast()`. |
+| `ensemble` | Per-voxel selection across `reference-like`, `quality`, and `fast`. |
+
+The report-local ensemble unit-range normalizes each component likelihood,
+applies component priors `1.00`, `1.05`, and `1.00`, and multiplies the quality
+component by `0.75 + 0.25 * confidence`. Per-voxel `argmax` selection uses the
+component order `reference-like`, `quality`, `fast`, so an exact adjusted-score
+tie selects the first component in that order. The selected component supplies
+`ft`, `pt`, and `tt` at that voxel.
+
+The canonical scanner-backend × workflow comparison uses `reference-like` and
+`quality` as the scanner axis. Backend selection remains independent of the
+downstream workflow. See [Mode Comparison Contract](mode_comparison.md).
+
+## Scanner thinning
+
+`FaultOrientScanner3.thin(ft, pt, tt)` requires finite matching global volumes
+and returns `(fet, fpt, ftt)` as `float32` arrays with the same shape. Rejected
+samples use zero for likelihood, strike, and dip.
+
+### Reference thinning
+
+The default `mode="reference"` contract is:
+
+1. Smooth `ft` along `i3` and `i2`, but not `i1`.
+2. Fold strike into `[0, 180)` and select the corresponding horizontal,
+   diagonal, or vertical comparison direction in the `i2-i3` plane.
+3. Keep strict local maxima against the two directional neighbors.
+4. Write the smoothed likelihood at retained samples.
+5. Copy input strike and dip only at retained samples.
+6. Apply scanner edge cleanup when `remove_edge_effects=True`.
+
+```python
+fet, fpt, ftt = scanner.thin(
+    ft,
+    pt,
+    tt,
+    mode="reference",
+    reference_sigma=1.0,
+    remove_edge_effects=True,
+)
+```
+
+`reference_sigma` is a nonnegative smoothing extent. Scanner reference thinning
+does not apply voter retained-sample reinforcement.
+
+Scanner edge cleanup removes retained samples within five samples of selected
+`i2` or `i3` faces when the corresponding squared fault-normal component
+exceeds `cos(30 degrees)**2`. It does not remove `i1` face samples. Set
+`remove_edge_effects=False` only when that cleanup must be excluded from the
+selected scanner contract.
+
+### Fault-normal thinning
+
+`mode="normal"` samples the input likelihood one fault-normal step in both
+directions with linear interpolation and nearest-boundary handling. A sample is
+retained only when it is positive and strictly greater than both sampled
+neighbors. Retained samples keep the original input likelihood.
+
+```python
+fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
+```
+
+The scanner backend and scanner-thinning mode are independent settings.
+
+## Integration with 3D voting
+
+Scanner attributes can be thinned and passed directly to
+`OptimalSurfaceVoter`:
 
 ```python
 from pyosv.orient3d import FaultOrientScanner3
@@ -181,81 +342,53 @@ from pyosv.voting3d import OptimalSurfaceVoter
 scanner = FaultOrientScanner3(sigma1=2.0, sigma2=2.0)
 ft, pt, tt = scanner.scan(
     phi_min=0.0,
-    phi_max=90.0,
+    phi_max=180.0,
     theta_min=45.0,
     theta_max=90.0,
     g=image,
 )
+fet, fpt, ftt = scanner.thin(ft, pt, tt)
 
 voter = OptimalSurfaceVoter(ru=1, rv=2, rw=2)
-voter.set_attribute_smoothing(0)
-voter.set_surface_smoothing(0.0, 0.0)
-fv, vp, vt = voter.apply_voting(d=3, fm=0.5, ft=ft, pt=pt, tt=tt)
+fv, vp, vt = voter.apply_voting(
+    d=3,
+    fm=0.5,
+    ft=fet,
+    pt=fpt,
+    tt=ftt,
+)
 fvt = voter.thin(fv, vp, vt)
 ```
 
-`fv`, `vp`, `vt`, and `fvt` all use the same global `(n3, n2, n1)` shape.
-`fv` is a normalized vote volume, and `vp`/`vt` store the strike and dip angles
-associated with the strongest local vote at each sample.
-`OptimalSurfaceVoter.thin(fv, vp, vt)` defaults to reference-like strike-binned
-voter thinning; pass `mode="normal"` only to reproduce the older fault-normal
-voter thinning path.
+All global arrays in this sequence use shape `(n3, n2, n1)`. Scanner backend,
+scanner thinning, downstream workflow, surface-voting boundary policy, voter
+thinning, and skinning are separate configuration axes.
 
-`FaultOrientScanner3.thin(ft, pt, tt)` defaults to reference-like
-strike-binned non-maximum suppression in the `i2-i3` plane using `pt` as the
-strike-angle volume. Scanner-style edge-effect removal is applied by default:
+## Verification and equivalence boundary
 
-```python
-fet, fpt, ftt = scanner.thin(ft, pt, tt, reference_sigma=1.0)
-```
+The Python test suite verifies:
 
-Disable edge cleanup only for diagnostics:
+- constructor and input validation;
+- sigma-derived, reference-like, and refined angle sampling;
+- shape, dtype, finiteness, output range, and constant-input behavior;
+- deterministic orientation coding and strict tie handling;
+- rotate/unrotate and shear/unshear geometry;
+- SciPy and structured-linear agreement within numerical tolerances;
+- confidence range and ambiguity behavior;
+- planar and crossing-surface localization and orientation;
+- reference and fault-normal scanner thinning;
+- scanner configuration and evidence consumed by Synthetic and F3 evaluation.
 
-```python
-fet, fpt, ftt = scanner.thin(
-    ft,
-    pt,
-    tt,
-    reference_sigma=1.0,
-    remove_edge_effects=False,
-)
-```
+Tests do not require bit-exact Java or Mines JTK arrays. F3 public outputs are
+comparison targets rather than geological truth or method-level Java fixtures.
+Detailed Java-to-Python mappings are documented in
+[3D Scanner Reference Mapping](reference_mapping_orient3d.md).
 
-The legacy fault-normal local maximum path remains available as an explicit
-opt-in:
+## Related specifications
 
-```python
-fet, fpt, ftt = scanner.thin(ft, pt, tt, mode="normal")
-```
-
-Both scanner thinning modes return `float32` arrays with zeros outside retained
-samples. With scanner `normal` thinning, kept likelihood samples retain the
-original `ft` values. With scanner `reference` thinning, kept likelihood
-samples use the smoothed comparison values after scanner edge cleanup; `pt` and
-`tt` are copied only at retained samples.
-`reference_sigma` controls that reference-like smoothing. Voter reference
-thinning has separate reinforcement and edge-handling semantics.
-
-## Synthetic Validation
-
-Default scanner tests use small synthetic volumes only. They cover constant
-volumes, planar sheets with expected strike/dip recovery, crossing planes with
-deterministic maximum-response selection, and finite output from both `scan()`
-and `scan_fast()`. Planar localization is checked with near-plane response and
-buffered top-percentile overlap metrics. Strike error is measured with
-wraparound, while dip error is measured as an absolute angular difference.
-
-## Limitations
-
-This is a compact Python scanner intended for deterministic local workflows and
-synthetic regression coverage. Current limitations include:
-
-- SciPy smoothing and interpolation behavior rather than Mines JTK behavior;
-- `scan_fast()` remains a derivative-bank approximation, not a Java/JTK
-  equivalent;
-- no committed real-data 3D reference thresholds;
-- structured linear transform acceleration is optional and limited to linear
-  interpolation in the rotate/shear scanner path.
-
-Use reference-data comparisons as practical reports unless a future issue
-defines feature-specific 3D acceptance thresholds.
+- [3D Scanner Reference Mapping](reference_mapping_orient3d.md)
+- [Reference-Like 3D Thinning](reference_like_thinning.md)
+- [3D Voting Conventions](3d_voting.md)
+- [Mode Comparison Contract](mode_comparison.md)
+- [Controlled Synthetic Quality](synthetic_quality.md)
+- [F3 3D Reference Data Validation](f3d_validation.md)
