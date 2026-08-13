@@ -1,60 +1,25 @@
-# Fault-warping contract
+# Fault-Warping Contract
 
-`pyosv.fault_warping` defines the typed, Atlas-independent numerical contract
-for estimating an apparent sample-axis shift from seismic signals on opposite
-sides of a known fault surface.
+`pyosv.fault_warping` defines Atlas-independent typed contracts for estimating
+an apparent sample-axis shift from seismic signals on opposite sides of a known
+fault surface.
 
-## Contract version and implementation status
+The package defines inputs, configuration, results, validation, and an estimator
+protocol. It does not provide a concrete estimator or execute side sampling,
+interpolation, similarity calculation, cost-volume construction, dynamic
+warping, graph regularization, cycle calculation, sub-sample refinement, or
+shift estimation.
+
+## Contract identity and public surface
 
 ```python
 FAULT_WARPING_CONTRACT_VERSION = "pyosv.fault_warping.v1"
 ```
 
-This is a version of the Python API and its numerical semantics. It is not a
-file format, serialization format, or Atlas artifact schema.
+The version identifies the Python API and its numerical semantics. It is not a
+file format, serialization format, manifest schema, or artifact version.
 
-The module is **contract only** at this stage. It defines data contracts and an
-estimator protocol, but implements no side sampling, interpolation, similarity
-calculation, cost volume, dynamic warping, graph regularization, cycle
-calculation, sub-sample refinement, or shift estimation. There is intentionally
-no concrete estimator, public `estimate_fault_apparent_shifts()` function,
-dummy result, `NotImplementedError` entry point, or zero-shift fallback.
-
-## Ownership boundary
-
-`pyosv.fault_warping` owns pure numerical processing contracts for:
-
-- a 3D seismic-amplitude volume and a volume-wide valid mask;
-- local coordinates, strike, dip, and topology for a known fault-surface graph;
-- positive-side and negative-side definitions derived from a fault normal;
-- reflector slopes and configuration needed to search sample-axis lags;
-- row-aligned apparent shifts and numerical diagnostics;
-- NumPy-array validation and numerical processing; and
-- a common semantic contract for later Python and optional Numba backends.
-
-It does not discover faults, run DL inference, run OSV voting, or perform
-skinning. `FaultSurfaceGraph` is deliberately an array contract rather than a
-direct `FaultSkin` dependency; a `FaultSkin` adapter is future work.
-
-### Explicit non-ownership
-
-This package must not import `seis_atlas` or `seis_fault_workflow`, and does
-not own Atlas inference runs, `PreparedField`, workflow runs, skin runs, paths,
-files, checksums, manifests, artifact writers, or artifact publication.
-
-It also does not own DL fault probabilities, OSV-score fusion, surface
-confidence calibration, accepted/review/rejected business classifications,
-pseudo-label generation, PNG/HTML/CSV/NPZ publication, a CLI, viewer
-integration, TWT-to-depth or metre conversion, or any true-slip, strike-slip,
-full-vector-displacement, hanging-wall, or footwall estimate. Those concerns
-belong to a later `seis_fault_workflow` integration layer.
-
-This is a PyOSV native extension: it has no requirement to be identical to a
-`reference_osv` feature. Documentation must distinguish it from
-reference-compatible functionality rather than imply a nonexistent reference
-equivalence.
-
-## Public API and construction behavior
+The public import surface is:
 
 ```python
 from pyosv.fault_warping import (
@@ -68,75 +33,132 @@ from pyosv.fault_warping import (
 )
 ```
 
-The package root does not re-export these names. Cross-module transport uses
-these typed contracts, not raw dictionaries, untyped tuples, or `Any`.
+The package root `pyosv` does not re-export these names.
+`pyosv.fault_warping` does not expose an
+`estimate_fault_apparent_shifts()` function, a built-in estimator, a no-op
+estimator, a zero-shift fallback, or an entry point that raises
+`NotImplementedError`. Callers supply an object that implements
+`FaultWarpingEstimator`.
 
-Array-holding contracts are frozen, slotted dataclasses with `eq=False`.
-Construction validates but never casts, copies, normalizes, sorts, mutates, or
-changes the writeability of caller-owned arrays. “Frozen” prevents field
-rebinding only; it does not make caller-owned NumPy arrays read-only. Contract
-violations fail fast with `TypeError` or `ValueError`.
+## Ownership boundary
 
-The contract package imports only NumPy and the Python standard library.
-SciPy, Numba, threadpoolctl, Atlas packages, and artifact/I/O dependencies are
-not needed merely to import it.
+The package owns these numerical contracts:
+
+- a 3D seismic-amplitude volume and a volume-wide validity mask;
+- row-aligned coordinates, strike, dip, topology, and optional support weights
+  for a known fault-surface graph;
+- positive-side and negative-side geometry derived from a fault normal;
+- reflector slopes and explicit lag-search configuration;
+- row-aligned apparent shifts and numerical diagnostics;
+- NumPy-array validation; and
+- the estimator protocol shared by conforming implementations.
+
+The package does not discover faults, run inference, perform OSV scanning or
+voting, construct skins, or adapt `FaultSkin` objects. `FaultSurfaceGraph` is the
+public surface transport type; a `FaultSkin` adapter is not part of this API.
+
+The package also does not own:
+
+- `seis_atlas` or `seis_fault_workflow` objects and execution;
+- paths, files, checksums, manifests, artifact writers, or publication;
+- DL probabilities, OSV-score fusion, or confidence calibration;
+- accepted/review/rejected classifications or pseudo-label generation;
+- PNG, HTML, CSV, or NPZ output;
+- a CLI or viewer integration;
+- TWT-to-depth, metre, or other physical-unit conversion; or
+- true fault slip, vertical throw, down-dip displacement, strike-slip,
+  hanging-wall displacement, footwall displacement, or a full displacement
+  vector.
+
+Fault warping is a PyOSV-native contract and has no corresponding
+`reference_osv` equivalence claim.
+
+## Construction and dependency contract
+
+Array-holding contracts are frozen, slotted dataclasses with value-based
+dataclass equality disabled. Construction validates caller-owned arrays but
+does not cast, copy, normalize, sort, mutate, or change their writeability.
+
+`frozen=True` prevents field rebinding. It does not make referenced NumPy arrays
+read-only. Callers remain responsible for preserving the validated array
+contract after construction.
+
+Array fields require `numpy.ndarray` objects with exact dtypes and dimensions.
+Contract violations raise `TypeError` for incompatible Python or dtype
+categories and `ValueError` for invalid dimensions, lengths, values, ranges, or
+relationships.
+
+Importing `pyosv.fault_warping` requires only NumPy and the Python standard
+library. The package does not import SciPy, Numba, threadpoolctl, Matplotlib,
+Pandas, PyTorch, Segyio, Atlas packages, or artifact/I/O frameworks.
 
 ## Arrays, coordinates, and orientation
 
-A 3D volume has shape `(n3, n2, n1)` and is indexed as
-`volume[i3, i2, i1]`. Surface coordinates use component order `(x1, x2, x3)`:
+A global volume has shape `(n3, n2, n1)` and is indexed as:
 
-- `x1` is the sample/time/depth-index axis;
+```text
+volume[i3, i2, i1]
+```
+
+Surface coordinates use component order `(x1, x2, x3)`:
+
+- `x1` is the sample, time-index, or depth-index axis;
 - `x2` and `x3` are the second and third spatial-index axes.
 
-All coordinates are in the input volume's local index frame. A fractional
-surface coordinate is valid when it lies in the closed local bounds
-`0 <= x1 <= n1 - 1`, `0 <= x2 <= n2 - 1`, and `0 <= x3 <= n3 - 1`.
+All coordinates are expressed in the input volume's local index frame. A
+fractional coordinate is within the volume when:
+
+```text
+0 <= x1 <= n1 - 1
+0 <= x2 <= n2 - 1
+0 <= x3 <= n3 - 1
+```
+
 No survey azimuth, metre, millisecond, depth, or other physical-coordinate
 system is implied.
 
 Strike and dip follow `pyosv.geometry` grid/index-space conventions. Strike is
-not a geographic azimuth. For this section only, let
-`w = (w1, w2, w3)` denote the fault-normal vector returned by
+not a geographic azimuth. In the side convention below, let
+`w = (w1, w2, w3)` denote the fault normal returned by
 `fault_normal_vector_from_strike_and_dip(strike_deg, dip_deg)`. This local
-symbol must not be confused with the existing 3D-voting use of `w` for a
-strike-axis vector.
+symbol is distinct from the 3D-voting convention in which `w` denotes the
+fault-strike axis.
 
 ## Side convention
 
-The MVP side-sampling direction is the horizontal index-space component of the
-fault normal:
+The side-sampling direction is the normalized horizontal index-space component
+of the fault normal:
 
 ```text
 nh = normalize((0, w2, w3))
 ```
 
-For surface-cell position `x` and positive side offset `h`:
+For surface position `x` and positive offset `h`:
 
 ```text
 positive side = x + h * nh
 negative side = x - h * nh
 ```
 
-`positive` and `negative` express only this geometric sign. They do not imply
-hanging wall, footwall, or a resolved fault sense. A cell with a zero or
-numerically unstable `nh` is not estimable by a later solver.
+`positive` and `negative` identify only this geometric sign. They do not imply
+hanging wall, footwall, or fault sense. An estimator must treat a row as
+non-estimable when `nh` is zero or cannot be normalized stably.
 
 ## Apparent-shift convention
 
-`tau` is an apparent sample-axis shift in samples defined by:
+`tau` is an apparent sample-axis shift in samples:
 
 ```text
-positive_side(t) ≈ negative_side(t + tau)
+positive_side(t) approximately equals negative_side(t + tau)
 ```
 
-A positive `tau` means that the matching negative-side event occurs at a
-larger sample index than the positive-side event.
+A positive `tau` means that the matching negative-side event occurs at a larger
+sample index than the positive-side event.
 
-Use `apparent_shift_samples` or `shift_samples` in public names and docstrings;
-do not call this quantity merely `slip`. It is not true fault slip, a physical
-vertical throw, down-dip displacement, hanging-wall displacement, depth
-conversion, strike-slip, or a full vector displacement.
+Public names use `apparent_shift_samples` or `shift_samples`, not an unqualified
+`slip`. This quantity is not true fault slip, physical vertical throw,
+down-dip displacement, hanging-wall displacement, depth conversion,
+strike-slip, or a full displacement vector.
 
 ## Reflector-slope convention
 
@@ -147,27 +169,33 @@ p2 = dx1 / dx2
 p3 = dx1 / dx3
 ```
 
-Both have units of index samples per index-grid unit. Physical dip, degrees,
-metres per trace, and implicit unit conversion are not accepted.
+Both values are measured in index samples per index-grid unit. They are not
+physical dip angles, metres per trace, or implicitly converted physical units.
 
-## Validity and support semantics
+## Validity and row alignment
 
-`valid_mask` is required and is shared by amplitude and both slope volumes.
-At `valid_mask=True`, amplitude, `p2`, and `p3` must be finite. Values where
-`valid_mask=False` are outside numerical processing and need not be finite.
+`valid_mask` is required and is shared by amplitude, `p2`, and `p3`. At voxels
+where `valid_mask` is true, all three floating volumes must be finite. Values at
+false mask voxels are outside numerical processing and may be non-finite.
 
-Every result is aligned to input surface row order. On an invalid output row,
-every floating diagnostic is `NaN` and every diagnostic boolean is `False`
-(in particular, `boundary_hit=False`). A valid output row has finite floating
-diagnostics. Low correlation and inability to estimate are distinct: a solver
-may return a valid solution with low correlation.
+Every estimator result is aligned to the input surface row order. A valid result
+row has finite floating diagnostics. An invalid row has:
+
+```text
+valid = False
+all floating result fields = NaN
+boundary_hit = False
+```
+
+Low correlation and inability to estimate are distinct. A valid estimate may
+have low correlation when all other validity requirements are satisfied.
 
 ## Typed contracts
 
 ### `FaultSurfaceGraph`
 
-`FaultSurfaceGraph` represents one surface or surface patch. Its required
-one-dimensional, row-aligned fields are:
+`FaultSurfaceGraph` represents one nonempty surface or surface patch. Its fields
+are one-dimensional and row-aligned:
 
 ```text
 x1, x2, x3: float32
@@ -176,43 +204,59 @@ ca_index, cb_index, cl_index, cr_index: int64
 cell_support_weight: float32 | None
 ```
 
-All required arrays have the same nonzero length. Floating arrays have exact
-`float32` dtype; topology arrays have exact `int64` dtype. Coordinates,
-strike, dip, and optional support weights are finite. `strike_deg` is in
-`[0, 360)` and `dip_deg` is in `(0, 90]`.
+All required arrays have the same positive length. Coordinate and angle arrays
+must be finite. Angle ranges are:
 
-Each topology value is either `-1` (no link) or a valid row index. Self-links
-are prohibited. Links are reciprocal:
+```text
+0 <= strike_deg < 360
+0 < dip_deg <= 90
+```
+
+Each topology value is either `-1` for no link or a valid surface row index.
+Self-links are prohibited. Link pairs are reciprocal:
 
 ```text
 ca_index[i] == j  iff  cb_index[j] == i
 cl_index[i] == j  iff  cr_index[j] == i
 ```
 
-The contract does not impose connectivity, branching, intersection, or
-geological-validity rules. When absent, `cell_support_weight` means a generic
-support weight of `1.0` for every row. When supplied, it is finite `float32`
-in `[0, 1]`. It is not a DL probability, OSV score, or calibrated confidence.
+The graph contract does not require one connected component and does not impose
+branching, intersection, manifold, or geological-validity rules.
+
+When supplied, `cell_support_weight` has the same length as the surface arrays,
+uses exact `float32`, is finite, and lies in `[0, 1]`. When omitted, its semantic
+value is a generic weight of `1.0` for each row. It is not a DL probability, an
+OSV score, or calibrated confidence.
+
+`FaultSurfaceGraph` validates finite coordinates but does not know a volume
+shape. Coordinate bounds are checked by `FaultWarpingInput`.
 
 ### `ReflectorSlopeVolume`
 
-`p2` and `p3` are exact-`float32`, three-dimensional arrays with identical
-shape. This type does not duplicate a valid mask; finite-at-valid-voxel
-validation occurs in `FaultWarpingInput`.
+```text
+p2: float32, shape (n3, n2, n1)
+p3: float32, shape (n3, n2, n1)
+```
+
+The two arrays must have identical shapes. This type does not contain a validity
+mask and does not require every voxel to be finite by itself. Finite-at-valid-
+voxel checks belong to `FaultWarpingInput`.
 
 ### `FaultWarpingInput`
 
 ```text
-amplitude: float32 3D array
-valid_mask: bool 3D array
+amplitude: float32, shape (n3, n2, n1)
+valid_mask: bool, shape (n3, n2, n1)
 surface: FaultSurfaceGraph
 reflector_slopes: ReflectorSlopeVolume
 ```
 
-All four volume arrays have the same shape. The amplitude and slopes are
-finite at valid voxels, and all surface coordinates lie within the local volume
-bounds. Reflector slopes are required; no omitted-slope or implicit-zero-slope
-fallback exists.
+Amplitude, mask, `p2`, and `p3` must have the same shape. Amplitude and slopes
+must be finite wherever the mask is true. Every surface coordinate must lie
+inside the closed local volume bounds.
+
+Reflector slopes are mandatory. The contract has no omitted-slope or
+implicit-zero-slope fallback.
 
 ### `FaultWarpingConfig`
 
@@ -227,20 +271,25 @@ similarity_metric: Literal["zncc"] = "zncc"
 subsample_refinement: bool = False
 ```
 
-Boolean values are never accepted as integers. All floating values are finite;
-`side_offset_grid > 0`, `window_radius_samples >= 1`,
-`lag_min_samples <= 0 <= lag_max_samples`,
-`lag_min_samples < lag_max_samples`, `0 < max_shift_strain <= 1`, and
-`0 < minimum_valid_fraction <= 1`. The only accepted similarity metric is
-`"zncc"` and `subsample_refinement` is an exact boolean.
+The six scientific search parameters before `similarity_metric` have no
+defaults. Their constraints are:
 
-No operational defaults are supplied for side offset, window radius, lag
-bounds, strain, or valid fraction; callers choose those scientific parameters
-explicitly.
+```text
+side_offset_grid > 0
+window_radius_samples >= 1
+lag_min_samples <= 0 <= lag_max_samples
+lag_min_samples < lag_max_samples
+0 < max_shift_strain <= 1
+0 < minimum_valid_fraction <= 1
+```
+
+Boolean values are not accepted as integer or real parameters. All real-valued
+parameters must be finite. `similarity_metric` accepts only `"zncc"`.
+`subsample_refinement` must be an exact built-in `bool`.
 
 ### `FaultWarpingResult`
 
-All fields are one-dimensional and aligned to the input surface row order:
+All fields are one-dimensional and have the same length:
 
 ```text
 valid: bool
@@ -253,18 +302,31 @@ valid_sample_fraction: float32
 boundary_hit: bool
 ```
 
-All arrays have the same length. Valid rows have finite float values;
-`correlation_before` and `correlation_after` are in `[-1, 1]`,
-`cost_margin >= 0`, `cycle_residual_samples >= 0`, and
-`valid_sample_fraction` is in `[0, 1]`. Invalid rows have `NaN` for every
-float field and `boundary_hit=False`.
+For valid rows:
 
-`correlation_gain` is a computed row-aligned `float32` property equal to
-`correlation_after - correlation_before`; it preserves `NaN` on invalid rows.
-A result contains no surface ID, Atlas run ID, path, DL score, OSV score, or
-confidence class.
+```text
+all floating fields are finite
+-1 <= correlation_before <= 1
+-1 <= correlation_after <= 1
+cost_margin >= 0
+cycle_residual_samples >= 0
+0 <= valid_sample_fraction <= 1
+```
+
+For invalid rows, every floating field is `NaN` and `boundary_hit` is false.
+
+`correlation_gain` is a computed row-aligned `float32` property:
+
+```text
+correlation_gain = correlation_after - correlation_before
+```
+
+It preserves `NaN` on invalid rows. A result does not carry a surface ID, Atlas
+run ID, path, DL score, OSV score, or confidence class.
 
 ## Estimator protocol
+
+`FaultWarpingEstimator` is a runtime-checkable structural protocol:
 
 ```python
 @runtime_checkable
@@ -277,13 +339,34 @@ class FaultWarpingEstimator(Protocol):
         ...
 ```
 
-This protocol is the only estimator-facing API in v1. Later Python or Numba
-backends may implement it without changing the public coordinate, validity, or
-result semantics.
+A conforming estimator preserves the coordinate, side, sign, validity, row
+alignment, and result semantics defined here. Python, Numba-backed, or other
+implementations use the same protocol; implementation technology does not
+change the public scientific contract.
 
-## NumPy support
+## Verification and supported runtime
 
-PyOSV's supported NumPy line is NumPy 1.x, declared by the authoritative
-dependency bound `numpy<2`. NumPy 2 support is not claimed by this contract.
-The project-wide byte-level fixture policy remains documented in
-[the refactoring non-regression contract](refactoring_contract.md).
+The package tests verify:
+
+- the exact public export surface and contract version;
+- frozen, slotted, `eq=False` dataclass structure;
+- exact array dtypes, dimensions, lengths, finiteness, ranges, and reciprocal
+  topology;
+- caller-array identity, contents, and writeability preservation;
+- valid-mask and coordinate-bound semantics;
+- configuration validation and exact boolean handling;
+- valid and invalid result-row contracts;
+- `correlation_gain` semantics;
+- the runtime-checkable estimator protocol and method signature; and
+- the absence of forbidden import dependencies.
+
+The supported dependency line is declared as `numpy<2`. NumPy 2 behavior is
+outside this contract. The byte-level fixture policy is defined in
+[Refactoring Non-Regression Contract](refactoring_contract.md).
+
+## Related specifications
+
+- [Architecture](architecture.md)
+- [Skinning](skinning.md)
+- [Reference-First Equivalence Policy](equivalence_policy.md)
+- [Refactoring Non-Regression Contract](refactoring_contract.md)
