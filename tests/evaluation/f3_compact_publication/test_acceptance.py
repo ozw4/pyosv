@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import tarfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,12 @@ from pyosv.evaluation.f3d_mode_comparison import (
     MetricRow,
 )
 from pyosv.evaluation.mode_comparison_publication.models import F3SourceBundle
+from tests.evaluation.f3d_mode_comparison.test_integration import (
+    _run_fixture as _run_completed_f3_fixture,
+)
+from tests.evaluation.f3d_mode_comparison.test_integration import (
+    _write_fixture as _write_f3_fixture,
+)
 
 _SHAPE = (3, 4, 5)
 _DTYPE = np.dtype(">f4")
@@ -359,3 +366,83 @@ def test_cli_generation_validation_and_archive_acceptance(
     extracted = extracted_root / "publication"
 
     assert compact_cli.main(["--validate-only", "--output-dir", str(extracted)]) == 0
+
+
+def test_completed_f3_bundle_flows_through_source_validator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "f3-data"
+    spec = _write_f3_fixture(data_root)
+    amplitude = np.linspace(
+        -1.0,
+        1.0,
+        num=int(np.prod(spec.shape)),
+        dtype=np.float32,
+    ).reshape(spec.shape)
+    _write_volume(data_root / "xs.dat", amplitude)
+
+    f3_bundle = tmp_path / "completed-f3"
+    result = _run_completed_f3_fixture(
+        data_root,
+        f3_bundle,
+        spec,
+        Counter(),
+        resume=False,
+        monkeypatch=monkeypatch,
+    )
+    lock = tmp_path / "uv.lock"
+    lock.write_text("lock-version = 1\n", encoding="utf-8")
+    output = tmp_path / "publication"
+    before_bundle = _snapshot(f3_bundle)
+    before_data = _snapshot(data_root)
+    monkeypatch.setattr(compact_cli, "_collect_code_identity", lambda: _CODE)
+    monkeypatch.setattr(compact_cli, "_collect_environment_controls", lambda: _CONTROLS)
+
+    assert (
+        compact_cli.main(
+            [
+                "--f3-bundle",
+                str(f3_bundle),
+                "--f3-data-root",
+                str(data_root),
+                "--environment-lock",
+                str(lock),
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert compact_cli.main(["--validate-only", "--output-dir", str(output)]) == 0
+
+    manifest = json.loads((output / "publication_manifest.json").read_text(encoding="utf-8"))
+    experiment = json.loads((output / "experiment.json").read_text(encoding="utf-8"))
+    assert manifest["source"] == {"f3_completion_sha256": _sha256(f3_bundle / "completion.json")}
+    assert experiment["dataset"]["dataset_id"] == spec.dataset_id
+    assert experiment["dataset"]["shape"] == list(spec.shape)
+    assert experiment["dataset"]["storage_dtype"] == spec.storage_dtype
+    assert {item["role"] for item in experiment["dataset"]["files"]} == {
+        *spec.roles,
+        "seismic_amplitude",
+    }
+
+    q_qual = next(cell for cell in result.cells if cell.label == "Q-QUAL")
+    expected_fingerprints = {
+        "ft": q_qual.stages.scanner,
+        "fv": q_qual.stages.voting,
+        "fvt": q_qual.stages.thinning,
+    }
+    assert {
+        item["stage"]: item["q_qual_stage_fingerprint"] for item in experiment["stages"]
+    } == expected_fingerprints
+    with (output / "f3_q_qual_vs_public_ref_summary.csv").open(
+        encoding="utf-8", newline=""
+    ) as stream:
+        summary = tuple(csv.DictReader(stream))
+    assert tuple(row["stage"] for row in summary) == STAGE_ORDER
+    assert {
+        row["stage"]: row["q_qual_stage_fingerprint"] for row in summary
+    } == expected_fingerprints
+    assert _snapshot(f3_bundle) == before_bundle
+    assert _snapshot(data_root) == before_data
