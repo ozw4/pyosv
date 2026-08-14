@@ -119,3 +119,5 @@ Desktop.ini
 .work/
 vendor/issue_forge
 vendor/issue_forge/
+
+worktrees/
