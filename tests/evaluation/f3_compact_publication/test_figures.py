@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from pyosv.evaluation.f3_compact_publication import (
+from pyosv.evaluation.f3_compact_publication.config import (
     AMPLITUDE_DTYPE,
     AMPLITUDE_FILENAME,
     AMPLITUDE_ROLE,
@@ -20,15 +20,17 @@ from pyosv.evaluation.f3_compact_publication import (
     SLICE_AXIS,
     SLICE_POLICY,
     STAGE_ORDER,
+)
+from pyosv.evaluation.f3_compact_publication.models import (
     AmplitudeIdentity,
     CompactSourceContext,
     RidgeStageThresholds,
     SelectedSlice,
     SourceRidgeThresholdContract,
     StageSource,
-    generate_figures,
 )
 from pyosv.evaluation.f3_compact_publication import figures as figures_module
+from pyosv.evaluation.f3_compact_publication.figures import generate_figures
 from pyosv.evaluation.f3d_mode_comparison import (
     F3_METRIC_SCHEMA_VERSION,
     F3_REFERENCE_STAGE_FILES,

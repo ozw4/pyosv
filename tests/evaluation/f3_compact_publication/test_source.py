@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from pyosv.evaluation.f3_compact_publication import (
+from pyosv.evaluation.f3_compact_publication.config import (
     AMPLITUDE_DTYPE,
     AMPLITUDE_FILENAME,
     AMPLITUDE_ROLE,
@@ -16,9 +16,9 @@ from pyosv.evaluation.f3_compact_publication import (
     SLICE_AXIS,
     SLICE_POLICY,
     STAGE_ORDER,
-    load_compact_source,
 )
 from pyosv.evaluation.f3_compact_publication import source as source_module
+from pyosv.evaluation.f3_compact_publication.source import load_compact_source
 from pyosv.evaluation.f3d_mode_comparison import (
     F3_BUFFERED_PERCENTILE,
     F3_BUFFER_RADIUS,

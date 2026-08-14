@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from pyosv.evaluation.f3_compact_publication import (
+from pyosv.evaluation.f3_compact_publication.config import (
     AMPLITUDE_DTYPE,
     AMPLITUDE_FILENAME,
     AMPLITUDE_ROLE,
@@ -21,12 +21,16 @@ from pyosv.evaluation.f3_compact_publication import (
     PUBLIC_REFERENCE_LABEL,
     STAGE_ORDER,
     SUMMARY_HEADER,
+)
+from pyosv.evaluation.f3_compact_publication.models import (
     AmplitudeIdentity,
     CompactSourceContext,
     RidgeStageThresholds,
     SelectedSlice,
     SourceRidgeThresholdContract,
     StageSource,
+)
+from pyosv.evaluation.f3_compact_publication.summary import (
     build_experiment,
     build_summary_rows,
     experiment_json_bytes,
