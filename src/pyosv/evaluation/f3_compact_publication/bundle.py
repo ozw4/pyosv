@@ -174,7 +174,6 @@ def generate_f3_compact_publication_bundle(
             artifacts=artifacts,
         )
         write_manifest(temporary_path, manifest, pretty=pretty)
-        validate_publication_directory(temporary_path)
 
         if os.path.lexists(final_path):
             raise FileExistsError(f"compact publication output already exists: {final_path}")

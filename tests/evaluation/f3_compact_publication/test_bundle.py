@@ -11,6 +11,7 @@ import pytest
 from pyosv.evaluation import f3_compact_publication as public_package
 from pyosv.evaluation.f3_compact_publication import bundle as bundle_module
 from pyosv.evaluation.f3_compact_publication import figures as figures_module
+from pyosv.evaluation.f3_compact_publication import manifest as manifest_module
 from pyosv.evaluation.f3_compact_publication import source as source_module
 from pyosv.evaluation.f3_compact_publication import summary as summary_module
 from pyosv.evaluation.f3_compact_publication.bundle import (
@@ -400,7 +401,7 @@ def test_manifest_validation_failure_does_not_publish(
     def fail(_root: object) -> None:
         raise ValueError("manifest validation failed")
 
-    monkeypatch.setattr(bundle_module, "validate_publication_directory", fail)
+    monkeypatch.setattr(manifest_module, "validate_publication_directory", fail)
     with pytest.raises(ValueError, match="manifest validation failed"):
         _generate(source_root, data_root, lock, output)
 
