@@ -334,6 +334,23 @@ PYTHONPATH=src python -m pyosv.cli.mode_comparison_publication \
 It is not a cryptographic signature or an end-to-end experiment replay. See
 [Mode Comparison Publication Bundle](docs/mode_comparison_publication.md).
 
+## F3 compact publication
+
+Generate the focused `PUBLIC-REF` versus `Q-QUAL` F3 publication from a
+completed F3 source bundle:
+
+```bash
+PYTHONPATH=src python -m pyosv.cli.f3_compact_publication \
+  --f3-bundle <completed-f3-bundle> \
+  --f3-data-root "$PYOSV_F3D_DATA_ROOT" \
+  --environment-lock <environment-lock> \
+  --output-dir <new-output-dir>
+```
+
+The command requires the eight publication environment controls documented in
+[F3 Compact Publication](docs/f3_compact_publication.md), which also defines
+the fixed slice, figures, summary, output layout, and validate-only command.
+
 ## Fault-warping numerical contract
 
 `pyosv.fault_warping` defines typed, Atlas-independent input, configuration,
@@ -398,6 +415,7 @@ systems.
 - [F3 3D Reference Data Validation](docs/f3d_validation.md)
 - [F3 Visual Diagnostics](docs/f3d_visual_diagnostics.md)
 - [Mode Comparison Publication Bundle](docs/mode_comparison_publication.md)
+- [F3 Compact Publication](docs/f3_compact_publication.md)
 - [Fault-warping contract](docs/fault_warping.md)
 - [Reference-First Equivalence Policy](docs/equivalence_policy.md)
 
