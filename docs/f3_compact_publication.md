@@ -60,19 +60,21 @@ private directory, and publishes it by an atomic sibling rename.
 
 The volume order is `(n3, n2, n1)`. Time slices use `volume[:, :, i1]` and are
 reported as array indices `i1=<index>`. Inline sections use
-`volume[i3, :, :]` and are reported as `i3=<index>`; no physical-inline number
-conversion is applied.
+`volume[i3, :, :].T` for display and are reported as `i3=<index>`; no
+physical-inline number conversion is applied. Time slices are displayed with
+x=crossline (`i2`) and y=inline (`i3`). Inline sections are displayed with
+x=crossline (`i2`) and y=time (`i1`), with time increasing downward.
 
-For each axis, the generator divides its length into five contiguous equal
+For each axis, the generator divides its length into four contiguous equal
 bins. Within every bin it uses the source-recorded `positive_p99_radius2`
 threshold for public `fvt.dat`, counts positive samples at or above the
 threshold, and selects the largest ridge count. A tie, including an all-zero
 bin, selects the smallest index. The fixed policy is
 `public_fvt_positive_p99_peak_per_equal_bin`. Q-QUAL does not affect section
-selection. The resulting five time slices and five inline sections are shared
+selection. The resulting four time slices and four inline sections are shared
 by `ft`, `fv`, and `fvt`.
 
-Each stage and orientation produces one five-row by three-column atlas. Its
+Each stage and orientation produces one four-row by three-column atlas. Its
 columns are:
 
 1. gray signed amplitude with the `PUBLIC-REF` attribute in `inferno`;
@@ -81,14 +83,20 @@ columns are:
    at zero.
 
 Amplitude uses a symmetric range from the 99th percentile of absolute values
-across the five selected sections. This range is shared by all stages for the
-same orientation. Attribute overlays use their source-recorded stage
-thresholds and a shared stage scale from the recorded full-volume maxima.
-Values below threshold are transparent. At and above threshold, alpha runs
-from `0.12` to `0.85` using gamma `2.0`, so threshold ridges remain visible and
-high values appear as brighter, denser inferno colors. Signed differences are
-formed only on the selected 2-D sections. Their symmetric 99th-percentile range
-is shared across the five sections in each stage and orientation, with alpha
+across the four selected sections. This range is shared by all stages for the
+same orientation. Section selection and metrics use the source-recorded stage
+thresholds. Attribute opacity uses a display threshold equal to `0.5` times
+each condition's source-recorded threshold, while the shared stage scale remains
+the recorded full-volume maximum. Values below the display threshold are
+transparent. At and above it, alpha runs from `0.12` to `0.85` using gamma
+`2.0`, so lower-valued ridges remain visible and high values appear as brighter,
+denser inferno colors. Amplitude, attribute, and signed-difference images use
+nearest-neighbor interpolation. A fixed one-pixel cross-shaped halo with alpha
+`0.15` is drawn beneath the original PUBLIC-REF and Q-QUAL overlays. The halo is
+display-only and is not used in section selection, metrics, or summary tables.
+It is not applied to the signed-difference panel. Signed differences are formed
+only on the selected 2-D sections. Their symmetric 99th-percentile range is
+shared across the four sections in each stage and orientation, with alpha
 linear in absolute difference.
 
 ## Summary metrics

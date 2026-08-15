@@ -10,6 +10,7 @@ from pathlib import Path, PurePath
 from typing import Any
 
 import numpy as np
+from scipy.ndimage import binary_dilation
 
 from pyosv.candidate_volume import NONZERO_EPSILON, positive_candidate_mask
 
@@ -20,10 +21,16 @@ from .config import (
     ATTRIBUTE_ALPHA_MAX,
     ATTRIBUTE_ALPHA_MIN,
     ATTRIBUTE_COLORMAP,
+    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO,
+    ATTRIBUTE_HALO_ALPHA,
+    ATTRIBUTE_HALO_ENABLED,
+    ATTRIBUTE_HALO_RADIUS_PIXELS,
+    ATTRIBUTE_HALO_STRUCTURE,
     DIFFERENCE_COLORMAP,
     DIFFERENCE_PERCENTILE,
     DISPLAY_CELL,
     FIGURE_DATA_HEADER,
+    IMAGE_INTERPOLATION,
     PUBLIC_REFERENCE_LABEL,
     SECTION_GROUPS,
     SECTION_SELECTION_POLICY,
@@ -44,6 +51,14 @@ _CANDIDATE_TITLES = {
 }
 _SCALE_METRICS = ("reference_max", "candidate_max")
 _METRIC_DEFINITIONS = {(item.stage, item.selection, item.metric): item for item in METRIC_REGISTRY}
+HALO_STRUCTURE = np.array(
+    [
+        [False, True, False],
+        [True, True, True],
+        [False, True, False],
+    ],
+    dtype=bool,
+)
 
 
 def _finite_number(value: object, name: str) -> float:
@@ -53,6 +68,10 @@ def _finite_number(value: object, name: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"{name} must be finite")
     return number
+
+
+def _display_threshold(source_threshold: float) -> float:
+    return source_threshold * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
 
 
 def _basename(value: str, name: str) -> str:
@@ -73,7 +92,7 @@ def _section(volume: np.ndarray, axis: str, index: int) -> np.ndarray:
     if axis == "i1":
         return volume[:, :, index]
     if axis == "i3":
-        return volume[index, :, :]
+        return volume[index, :, :].T
     raise ValueError(f"unsupported compact section axis: {axis!r}")
 
 
@@ -150,14 +169,45 @@ def _percentile_limit(values: Sequence[np.ndarray], percentile: float, name: str
     return observed if observed > 0.0 else 1.0e-6
 
 
-def _ridge_alpha(values: np.ndarray, threshold: float, vmax: float) -> np.ndarray:
+def _display_mask(values: np.ndarray, display_threshold: float) -> np.ndarray:
     mask = positive_candidate_mask(values, epsilon=NONZERO_EPSILON)
-    mask &= values >= threshold
+    mask &= values >= display_threshold
+    return mask
+
+
+def _halo_mask(mask: np.ndarray) -> np.ndarray:
+    if not ATTRIBUTE_HALO_ENABLED:
+        return np.zeros(mask.shape, dtype=bool)
+    halo = binary_dilation(
+        mask,
+        structure=HALO_STRUCTURE,
+        iterations=ATTRIBUTE_HALO_RADIUS_PIXELS,
+    )
+    halo &= ~mask
+    return halo
+
+
+def _halo_alpha(mask: np.ndarray) -> np.ndarray:
+    alpha = np.zeros(mask.shape, dtype=np.float32)
+    alpha[mask] = ATTRIBUTE_HALO_ALPHA
+    return alpha
+
+
+def _ridge_alpha(
+    values: np.ndarray,
+    display_threshold: float,
+    vmax: float,
+) -> np.ndarray:
+    mask = _display_mask(values, display_threshold)
     alpha = np.zeros(values.shape, dtype=np.float32)
-    if vmax <= threshold:
+    if vmax <= display_threshold:
         alpha[mask] = ATTRIBUTE_ALPHA_MAX
     else:
-        scaled = np.clip((values[mask] - threshold) / (vmax - threshold), 0.0, 1.0)
+        scaled = np.clip(
+            (values[mask] - display_threshold) / (vmax - display_threshold),
+            0.0,
+            1.0,
+        )
         alpha[mask] = (
             ATTRIBUTE_ALPHA_MIN
             + (ATTRIBUTE_ALPHA_MAX - ATTRIBUTE_ALPHA_MIN) * scaled**ATTRIBUTE_ALPHA_GAMMA
@@ -169,7 +219,7 @@ def _csv_value(value: object, field: str) -> str:
     if value is None:
         return ""
     if isinstance(value, bool):
-        raise ValueError(f"figure-data field {field!r} must not be bool")
+        return "true" if value else "false"
     if isinstance(value, Integral):
         return str(int(value))
     if isinstance(value, Real):
@@ -229,12 +279,18 @@ def _figure_rows(
                     source_sha256=source.public_reference_sha256,
                     source_stage_fingerprint=None,
                     selection_threshold=thresholds.public_reference_threshold,
+                    display_threshold=_display_threshold(thresholds.public_reference_threshold),
                     overlay_vmin=0.0,
                     overlay_vmax=overlay_vmax,
                     alpha_min=ATTRIBUTE_ALPHA_MIN,
                     alpha_max=ATTRIBUTE_ALPHA_MAX,
                     alpha_gamma=ATTRIBUTE_ALPHA_GAMMA,
                     colormap=ATTRIBUTE_COLORMAP,
+                    interpolation=IMAGE_INTERPOLATION,
+                    halo_enabled=ATTRIBUTE_HALO_ENABLED,
+                    halo_radius_pixels=ATTRIBUTE_HALO_RADIUS_PIXELS,
+                    halo_alpha=ATTRIBUTE_HALO_ALPHA,
+                    halo_structure=ATTRIBUTE_HALO_STRUCTURE,
                     difference_limit=None,
                 ),
                 row(
@@ -244,12 +300,18 @@ def _figure_rows(
                     source_sha256=None,
                     source_stage_fingerprint=source.candidate_fingerprint,
                     selection_threshold=thresholds.q_qual_threshold,
+                    display_threshold=_display_threshold(thresholds.q_qual_threshold),
                     overlay_vmin=0.0,
                     overlay_vmax=overlay_vmax,
                     alpha_min=ATTRIBUTE_ALPHA_MIN,
                     alpha_max=ATTRIBUTE_ALPHA_MAX,
                     alpha_gamma=ATTRIBUTE_ALPHA_GAMMA,
                     colormap=ATTRIBUTE_COLORMAP,
+                    interpolation=IMAGE_INTERPOLATION,
+                    halo_enabled=ATTRIBUTE_HALO_ENABLED,
+                    halo_radius_pixels=ATTRIBUTE_HALO_RADIUS_PIXELS,
+                    halo_alpha=ATTRIBUTE_HALO_ALPHA,
+                    halo_structure=ATTRIBUTE_HALO_STRUCTURE,
                     difference_limit=None,
                 ),
                 row(
@@ -259,12 +321,18 @@ def _figure_rows(
                     source_sha256=None,
                     source_stage_fingerprint=None,
                     selection_threshold=None,
+                    display_threshold=None,
                     overlay_vmin=-difference_limit,
                     overlay_vmax=difference_limit,
                     alpha_min=None,
                     alpha_max=ATTRIBUTE_ALPHA_MAX,
                     alpha_gamma=None,
                     colormap=DIFFERENCE_COLORMAP,
+                    interpolation=IMAGE_INTERPOLATION,
+                    halo_enabled=False,
+                    halo_radius_pixels=None,
+                    halo_alpha=None,
+                    halo_structure=None,
                     difference_limit=difference_limit,
                 ),
             )
@@ -285,12 +353,12 @@ def _plot_atlas(
     candidates: Sequence[np.ndarray],
     differences: Sequence[np.ndarray],
     amplitude_limit: float,
-    reference_threshold: float,
-    candidate_threshold: float,
+    reference_display_threshold: float,
+    candidate_display_threshold: float,
     overlay_vmax: float,
     difference_limit: float,
 ) -> None:
-    figure, axes = plt.subplots(SECTIONS_PER_AXIS, 3, figsize=(16.0, 18.0), squeeze=False)
+    figure, axes = plt.subplots(SECTIONS_PER_AXIS, 3, figsize=(16.0, 15.0), squeeze=False)
     reference_image = None
     difference_image = None
     try:
@@ -304,17 +372,43 @@ def _plot_atlas(
                     cmap="gray",
                     vmin=-amplitude_limit,
                     vmax=amplitude_limit,
+                    interpolation=IMAGE_INTERPOLATION,
                     origin="upper",
                     aspect="auto",
                 )
                 panel.set_xticks([])
                 panel.set_yticks([])
+            reference_mask = _display_mask(reference, reference_display_threshold)
+            reference_halo = _halo_mask(reference_mask)
+            panels[0].imshow(
+                np.where(reference_halo, reference, np.nan),
+                cmap=ATTRIBUTE_COLORMAP,
+                vmin=0.0,
+                vmax=overlay_vmax,
+                alpha=_halo_alpha(reference_halo),
+                interpolation=IMAGE_INTERPOLATION,
+                origin="upper",
+                aspect="auto",
+            )
             reference_image = panels[0].imshow(
                 reference,
                 cmap=ATTRIBUTE_COLORMAP,
                 vmin=0.0,
                 vmax=overlay_vmax,
-                alpha=_ridge_alpha(reference, reference_threshold, overlay_vmax),
+                alpha=_ridge_alpha(reference, reference_display_threshold, overlay_vmax),
+                interpolation=IMAGE_INTERPOLATION,
+                origin="upper",
+                aspect="auto",
+            )
+            candidate_mask = _display_mask(candidate, candidate_display_threshold)
+            candidate_halo = _halo_mask(candidate_mask)
+            panels[1].imshow(
+                np.where(candidate_halo, candidate, np.nan),
+                cmap=ATTRIBUTE_COLORMAP,
+                vmin=0.0,
+                vmax=overlay_vmax,
+                alpha=_halo_alpha(candidate_halo),
+                interpolation=IMAGE_INTERPOLATION,
                 origin="upper",
                 aspect="auto",
             )
@@ -323,7 +417,8 @@ def _plot_atlas(
                 cmap=ATTRIBUTE_COLORMAP,
                 vmin=0.0,
                 vmax=overlay_vmax,
-                alpha=_ridge_alpha(candidate, candidate_threshold, overlay_vmax),
+                alpha=_ridge_alpha(candidate, candidate_display_threshold, overlay_vmax),
+                interpolation=IMAGE_INTERPOLATION,
                 origin="upper",
                 aspect="auto",
             )
@@ -334,6 +429,7 @@ def _plot_atlas(
                 vmax=difference_limit,
                 alpha=ATTRIBUTE_ALPHA_MAX
                 * np.clip(np.abs(difference) / difference_limit, 0.0, 1.0),
+                interpolation=IMAGE_INTERPOLATION,
                 origin="upper",
                 aspect="auto",
             )
@@ -344,11 +440,14 @@ def _plot_atlas(
         axes[0, 2].set_title("Amplitude + Q-QUAL - PUBLIC-REF")
         title = "time slices" if section_group == "time_slices" else "inline sections"
         figure.suptitle(f"F3 {stage}: PUBLIC-REF vs Q-QUAL — {title}", y=0.985)
+        figure.supxlabel("crossline index (i2)", y=0.085)
+        y_label = "inline index (i3)" if section_group == "time_slices" else "time sample (i1)"
+        figure.supylabel(y_label, x=0.015)
         figure.subplots_adjust(
-            left=0.07, right=0.985, bottom=0.075, top=0.95, wspace=0.06, hspace=0.10
+            left=0.07, right=0.985, bottom=0.115, top=0.95, wspace=0.06, hspace=0.10
         )
-        attribute_axis = figure.add_axes((0.10, 0.025, 0.50, 0.018))
-        difference_axis = figure.add_axes((0.70, 0.025, 0.25, 0.018))
+        attribute_axis = figure.add_axes((0.10, 0.04, 0.50, 0.018))
+        difference_axis = figure.add_axes((0.70, 0.04, 0.25, 0.018))
         figure.colorbar(
             reference_image,
             cax=attribute_axis,
@@ -409,7 +508,7 @@ def generate_figures(
     context: CompactSourceContext,
     root: str | Path,
 ) -> tuple[Mapping[str, object], ...]:
-    """Generate six fixed five-section F3 atlases and their figure-data CSV files."""
+    """Generate six fixed four-section F3 atlases and their figure-data CSV files."""
 
     if tuple(source.stage for source in context.stage_sources) != STAGE_ORDER:
         raise ValueError("compact stage sources must follow the fixed stage order")
@@ -445,12 +544,14 @@ def generate_figures(
         context.ridge_threshold_contract.stages,
         strict=True,
     ):
-        reference_threshold = _finite_number(
+        reference_source_threshold = _finite_number(
             thresholds.public_reference_threshold, f"public {source.stage} threshold"
         )
-        candidate_threshold = _finite_number(
+        candidate_source_threshold = _finite_number(
             thresholds.q_qual_threshold, f"Q-QUAL {source.stage} threshold"
         )
+        reference_display_threshold = _display_threshold(reference_source_threshold)
+        candidate_display_threshold = _display_threshold(candidate_source_threshold)
         references = _read_selected_sections(
             source.public_reference_path,
             shape=shape,
@@ -493,8 +594,8 @@ def generate_figures(
                     candidates[section_group],
                     differences,
                     difference_limit,
-                    reference_threshold,
-                    candidate_threshold,
+                    reference_display_threshold,
+                    candidate_display_threshold,
                     overlay_vmax,
                 )
             )
@@ -518,8 +619,8 @@ def generate_figures(
         candidates,
         differences,
         difference_limit,
-        reference_threshold,
-        candidate_threshold,
+        reference_display_threshold,
+        candidate_display_threshold,
         overlay_vmax,
     ) in prepared:
         group_selections = selections[section_group]
@@ -550,8 +651,8 @@ def generate_figures(
             candidates=candidates,
             differences=differences,
             amplitude_limit=amplitude_limits[section_group],
-            reference_threshold=reference_threshold,
-            candidate_threshold=candidate_threshold,
+            reference_display_threshold=reference_display_threshold,
+            candidate_display_threshold=candidate_display_threshold,
             overlay_vmax=overlay_vmax,
             difference_limit=difference_limit,
         )

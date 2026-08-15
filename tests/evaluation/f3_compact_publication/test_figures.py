@@ -19,8 +19,14 @@ from pyosv.evaluation.f3_compact_publication.config import (
     ATTRIBUTE_ALPHA_MAX,
     ATTRIBUTE_ALPHA_MIN,
     ATTRIBUTE_COLORMAP,
+    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO,
+    ATTRIBUTE_HALO_ALPHA,
+    ATTRIBUTE_HALO_ENABLED,
+    ATTRIBUTE_HALO_RADIUS_PIXELS,
+    ATTRIBUTE_HALO_STRUCTURE,
     DISPLAY_CELL,
     FIGURE_DATA_HEADER,
+    IMAGE_INTERPOLATION,
     PUBLIC_REFERENCE_LABEL,
     SECTION_GROUPS,
     SECTION_SELECTION_POLICY,
@@ -244,10 +250,21 @@ def _csv_rows(path: Path) -> tuple[dict[str, str], ...]:
 def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
     figure_fixture: _FigureFixture,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "output"
     before_data = _snapshot(figure_fixture.data_root)
     before_bundle = _snapshot(figure_fixture.bundle)
+    from matplotlib.axes import Axes
+
+    imshow_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    original_imshow = Axes.imshow
+
+    def tracked_imshow(self: Axes, *args: object, **kwargs: object) -> object:
+        imshow_calls.append((args, kwargs))
+        return original_imshow(self, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "imshow", tracked_imshow)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -278,7 +295,8 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
             if item.stage == stage
         )
         rows = _csv_rows(output / str(record["figure_data_csv"]))
-        assert len(rows) == 15
+        row_count = 3 * SECTIONS_PER_AXIS
+        assert len(rows) == row_count
         assert (
             tuple(row["panel_label"] for row in rows)
             == (
@@ -291,27 +309,46 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
         axis = dict(SECTION_GROUPS)[group]
         assert {row["axis"] for row in rows} == {axis}
         assert {row["section_group"] for row in rows} == {group}
-        indices = tuple(rows[index]["section_index"] for index in range(0, 15, 3))
+        indices = tuple(rows[index]["section_index"] for index in range(0, row_count, 3))
         assert len(set(indices)) == SECTIONS_PER_AXIS
         group_indices[group].add(indices)
-        assert tuple(int(rows[index]["bin_index"]) for index in range(0, 15, 3)) == tuple(
+        assert tuple(int(rows[index]["bin_index"]) for index in range(0, row_count, 3)) == tuple(
             range(SECTIONS_PER_AXIS)
         )
-        for offset in range(0, 15, 3):
+        for offset in range(0, row_count, 3):
             public, candidate, difference = rows[offset : offset + 3]
             assert public["source_sha256"] == source.public_reference_sha256
             assert public["source_stage_fingerprint"] == ""
             assert float(public["selection_threshold"]) == thresholds.public_reference_threshold
+            assert float(public["display_threshold"]) == pytest.approx(
+                thresholds.public_reference_threshold * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+            )
             assert candidate["source_sha256"] == ""
             assert candidate["source_stage_fingerprint"] == source.candidate_fingerprint
             assert float(candidate["selection_threshold"]) == thresholds.q_qual_threshold
+            assert float(candidate["display_threshold"]) == pytest.approx(
+                thresholds.q_qual_threshold * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+            )
             assert difference["source_label"] == "Q-QUAL - PUBLIC-REF"
             assert difference["source_file"] == ""
+            assert difference["selection_threshold"] == ""
+            assert difference["display_threshold"] == ""
+            assert {row["interpolation"] for row in (public, candidate, difference)} == {
+                IMAGE_INTERPOLATION
+            }
             for attribute in (public, candidate):
                 assert attribute["colormap"] == ATTRIBUTE_COLORMAP
                 assert float(attribute["alpha_min"]) == ATTRIBUTE_ALPHA_MIN
                 assert float(attribute["alpha_max"]) == ATTRIBUTE_ALPHA_MAX
                 assert float(attribute["alpha_gamma"]) == ATTRIBUTE_ALPHA_GAMMA
+                assert attribute["halo_enabled"] == "true"
+                assert int(attribute["halo_radius_pixels"]) == ATTRIBUTE_HALO_RADIUS_PIXELS
+                assert float(attribute["halo_alpha"]) == ATTRIBUTE_HALO_ALPHA
+                assert attribute["halo_structure"] == ATTRIBUTE_HALO_STRUCTURE
+            assert difference["halo_enabled"] == "false"
+            assert difference["halo_radius_pixels"] == ""
+            assert difference["halo_alpha"] == ""
+            assert difference["halo_structure"] == ""
             assert difference["alpha_min"] == ""
             assert difference["alpha_gamma"] == ""
         expected_vmax = max(
@@ -335,6 +372,22 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
 
     assert all(len(values) == 1 for values in group_indices.values())
     assert all(len(values) == 1 for values in amplitude_limits.values())
+    assert len(imshow_calls) == len(records) * SECTIONS_PER_AXIS * 8
+    assert {kwargs.get("interpolation") for _args, kwargs in imshow_calls} == {IMAGE_INTERPOLATION}
+    halo_calls = [
+        (args, kwargs)
+        for args, kwargs in imshow_calls
+        if args
+        and isinstance(args[0], np.ndarray)
+        and np.issubdtype(args[0].dtype, np.floating)
+        and np.isnan(args[0]).any()
+    ]
+    assert len(halo_calls) == len(records) * SECTIONS_PER_AXIS * 2
+    assert {kwargs["cmap"] for _args, kwargs in halo_calls} == {ATTRIBUTE_COLORMAP}
+    for _args, kwargs in halo_calls:
+        alpha = np.asarray(kwargs["alpha"])
+        assert np.all(alpha[alpha == 0.0] == 0.0)
+        assert np.allclose(alpha[alpha > 0.0], ATTRIBUTE_HALO_ALPHA)
     public_text = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted((output / "figure_data").glob("*.csv"))
     ) + "\n".join(str(value) for record in records for value in record.values())
@@ -344,13 +397,56 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
 
 
 def test_attribute_alpha_keeps_threshold_visible_and_emphasizes_high_values() -> None:
-    values = np.asarray([[0.59, 0.6, 0.8, 1.0]], dtype=np.float32)
-    alpha = figures_module._ridge_alpha(values, threshold=0.6, vmax=1.0)
+    source_threshold = 0.8
+    display_threshold = figures_module._display_threshold(source_threshold)
+    values = np.asarray([[0.39, 0.4, 0.6, 1.0]], dtype=np.float32)
+    alpha = figures_module._ridge_alpha(
+        values,
+        display_threshold=display_threshold,
+        vmax=1.0,
+    )
 
+    assert display_threshold == pytest.approx(0.4)
     assert alpha[0, 0] == 0.0
     assert alpha[0, 1] == pytest.approx(ATTRIBUTE_ALPHA_MIN)
     assert ATTRIBUTE_ALPHA_MIN < alpha[0, 2] < alpha[0, 3]
     assert alpha[0, 3] == pytest.approx(ATTRIBUTE_ALPHA_MAX)
+    assert values[0, 2] < source_threshold
+    assert alpha[0, 2] > 0.0
+    assert IMAGE_INTERPOLATION == "nearest"
+
+
+def test_section_orientation_uses_crossline_as_horizontal_axis() -> None:
+    volume = np.arange(2 * 3 * 4, dtype=np.float32).reshape(2, 3, 4)
+
+    time_slice = figures_module._section(volume, "i1", 2)
+    inline = figures_module._section(volume, "i3", 1)
+
+    assert time_slice.shape == (2, 3)
+    assert np.array_equal(time_slice, volume[:, :, 2])
+    assert inline.shape == (4, 3)
+    assert np.array_equal(inline, volume[1, :, :].T)
+
+
+def test_halo_is_one_pixel_cross_outer_ring_with_fixed_alpha() -> None:
+    values = np.zeros((5, 5), dtype=np.float32)
+    values[2, 2] = 0.8
+    display_mask = figures_module._display_mask(values, display_threshold=0.4)
+    halo = figures_module._halo_mask(display_mask)
+
+    expected = np.zeros((5, 5), dtype=bool)
+    expected[1, 2] = True
+    expected[2, 1] = True
+    expected[2, 3] = True
+    expected[3, 2] = True
+    assert np.array_equal(halo, expected)
+    assert not np.any(halo & display_mask)
+    alpha = figures_module._halo_alpha(halo)
+    assert np.all(alpha[halo] == ATTRIBUTE_HALO_ALPHA)
+    assert np.all(alpha[~halo] == 0.0)
+    assert ATTRIBUTE_HALO_ENABLED is True
+    assert ATTRIBUTE_HALO_RADIUS_PIXELS == 1
+    assert ATTRIBUTE_HALO_STRUCTURE == "cross"
 
 
 def test_degenerate_amplitude_and_difference_use_finite_floor(

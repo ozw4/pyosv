@@ -206,8 +206,18 @@ def test_load_compact_source_resolves_ordered_immutable_context(
         for section_group, axis in SECTION_GROUPS
         for bin_index in range(SECTIONS_PER_AXIS)
     )
-    assert tuple(item.index for item in context.selected_sections[:5]) == (1, 3, 5, 7, 9)
-    assert tuple(item.index for item in context.selected_sections[5:]) == (1, 3, 5, 7, 9)
+    assert tuple(item.index for item in context.selected_sections[:SECTIONS_PER_AXIS]) == (
+        1,
+        3,
+        5,
+        7,
+    )
+    assert tuple(item.index for item in context.selected_sections[SECTIONS_PER_AXIS:]) == (
+        1,
+        3,
+        5,
+        7,
+    )
     assert all(item.policy == SECTION_SELECTION_POLICY for item in context.selected_sections)
     assert tuple(item.stage for item in context.ridge_threshold_contract.stages) == STAGE_ORDER
     assert _snapshot(compact_fixture.bundle) == before_bundle
@@ -297,8 +307,18 @@ def test_public_fvt_peak_tie_and_zero_bins_use_smallest_index(
 
     context = _load(compact_fixture, monkeypatch)
 
-    assert tuple(item.index for item in context.selected_sections[:5]) == (0, 2, 4, 6, 8)
-    assert tuple(item.index for item in context.selected_sections[5:]) == (0, 2, 4, 6, 8)
+    assert tuple(item.index for item in context.selected_sections[:SECTIONS_PER_AXIS]) == (
+        0,
+        2,
+        5,
+        7,
+    )
+    assert tuple(item.index for item in context.selected_sections[SECTIONS_PER_AXIS:]) == (
+        0,
+        2,
+        5,
+        7,
+    )
     assert context.selected_sections[0].ridge_count_score > 0
 
 
@@ -310,8 +330,18 @@ def test_all_zero_bins_use_smallest_index(
 
     context = _load(compact_fixture, monkeypatch)
 
-    assert tuple(item.index for item in context.selected_sections[:5]) == (0, 2, 4, 6, 8)
-    assert tuple(item.index for item in context.selected_sections[5:]) == (0, 2, 4, 6, 8)
+    assert tuple(item.index for item in context.selected_sections[:SECTIONS_PER_AXIS]) == (
+        0,
+        2,
+        5,
+        7,
+    )
+    assert tuple(item.index for item in context.selected_sections[SECTIONS_PER_AXIS:]) == (
+        0,
+        2,
+        5,
+        7,
+    )
     assert all(item.ridge_count_score == 0 for item in context.selected_sections)
 
 
@@ -329,14 +359,14 @@ def test_candidate_volume_does_not_affect_selected_sections(
     assert after == before
 
 
-@pytest.mark.parametrize("shape", [(4, 5, 5), (5, 5, 4)])
-def test_section_axis_shorter_than_five_is_rejected(
+@pytest.mark.parametrize("shape", [(3, 5, 5), (5, 5, 3)])
+def test_section_axis_shorter_than_four_is_rejected(
     compact_fixture: _Fixture,
     shape: tuple[int, int, int],
 ) -> None:
-    axis = "i3" if shape[0] < 5 else "i1"
+    axis = "i3" if shape[0] < SECTIONS_PER_AXIS else "i1"
 
-    with pytest.raises(ValueError, match="length must be at least 5"):
+    with pytest.raises(ValueError, match="length must be at least 4"):
         source_module._select_public_fvt_sections(
             compact_fixture.data_root / "fvt.dat",
             shape,
@@ -344,7 +374,7 @@ def test_section_axis_shorter_than_five_is_rejected(
             0.6,
             section_group="test",
             axis=axis,
-            count=5,
+            count=SECTIONS_PER_AXIS,
         )
 
 

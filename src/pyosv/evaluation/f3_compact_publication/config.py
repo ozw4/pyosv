@@ -7,7 +7,7 @@ from typing import Final
 DISPLAY_CELL: Final = "Q-QUAL"
 STAGE_ORDER: Final = ("ft", "fv", "fvt")
 SECTION_SELECTION_POLICY: Final = "public_fvt_positive_p99_peak_per_equal_bin"
-SECTIONS_PER_AXIS: Final = 5
+SECTIONS_PER_AXIS: Final = 4
 SECTION_GROUPS: Final = (
     ("time_slices", "i1"),
     ("inline_sections", "i3"),
@@ -31,9 +31,15 @@ EXPERIMENT_SCHEMA: Final = "pyosv.f3_compact_publication_experiment.v1"
 PUBLIC_REFERENCE_LABEL: Final = "PUBLIC-REF"
 AMPLITUDE_PERCENTILE: Final = 99.0
 ATTRIBUTE_COLORMAP: Final = "inferno"
+ATTRIBUTE_DISPLAY_THRESHOLD_RATIO: Final = 0.5
 ATTRIBUTE_ALPHA_MIN: Final = 0.12
 ATTRIBUTE_ALPHA_MAX: Final = 0.85
 ATTRIBUTE_ALPHA_GAMMA: Final = 2.0
+ATTRIBUTE_HALO_ENABLED: Final = True
+ATTRIBUTE_HALO_RADIUS_PIXELS: Final = 1
+ATTRIBUTE_HALO_ALPHA: Final = 0.15
+ATTRIBUTE_HALO_STRUCTURE: Final = "cross"
+IMAGE_INTERPOLATION: Final = "nearest"
 DIFFERENCE_COLORMAP: Final = "coolwarm"
 DIFFERENCE_PERCENTILE: Final = 99.0
 FIGURE_DATA_HEADER: Final = (
@@ -51,6 +57,7 @@ FIGURE_DATA_HEADER: Final = (
     "source_sha256",
     "source_stage_fingerprint",
     "selection_threshold",
+    "display_threshold",
     "amplitude_file",
     "amplitude_sha256",
     "amplitude_limit",
@@ -60,6 +67,11 @@ FIGURE_DATA_HEADER: Final = (
     "alpha_max",
     "alpha_gamma",
     "colormap",
+    "interpolation",
+    "halo_enabled",
+    "halo_radius_pixels",
+    "halo_alpha",
+    "halo_structure",
     "difference_limit",
 )
 
@@ -73,11 +85,17 @@ __all__ = [
     "ATTRIBUTE_ALPHA_MAX",
     "ATTRIBUTE_ALPHA_MIN",
     "ATTRIBUTE_COLORMAP",
+    "ATTRIBUTE_DISPLAY_THRESHOLD_RATIO",
+    "ATTRIBUTE_HALO_ALPHA",
+    "ATTRIBUTE_HALO_ENABLED",
+    "ATTRIBUTE_HALO_RADIUS_PIXELS",
+    "ATTRIBUTE_HALO_STRUCTURE",
     "DIFFERENCE_COLORMAP",
     "DIFFERENCE_PERCENTILE",
     "DISPLAY_CELL",
     "EXPERIMENT_SCHEMA",
     "FIGURE_DATA_HEADER",
+    "IMAGE_INTERPOLATION",
     "PUBLIC_REFERENCE_LABEL",
     "SECTION_GROUPS",
     "SECTION_SELECTION_POLICY",

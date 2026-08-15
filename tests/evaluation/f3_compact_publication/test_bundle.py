@@ -18,6 +18,7 @@ from pyosv.evaluation.f3_compact_publication.bundle import (
     generate_f3_compact_publication_bundle,
     validate_f3_compact_publication_bundle,
 )
+from pyosv.evaluation.f3_compact_publication.config import SECTIONS_PER_AXIS
 
 _CONTROLS = {
     "PYTHONHASHSEED": "0",
@@ -85,7 +86,7 @@ def _experiment() -> dict[str, object]:
         "stages": [],
         "sections": {
             "selection_policy": "public_fvt_positive_p99_peak_per_equal_bin",
-            "sections_per_axis": 5,
+            "sections_per_axis": SECTIONS_PER_AXIS,
             "items": [
                 {
                     "section_group": group,
@@ -95,7 +96,7 @@ def _experiment() -> dict[str, object]:
                     "ridge_count_score": index + 1,
                 }
                 for group, axis in (("time_slices", "i1"), ("inline_sections", "i3"))
-                for index in range(5)
+                for index in range(SECTIONS_PER_AXIS)
             ],
         },
         "ridge_thresholds": [],
@@ -162,7 +163,7 @@ def _install_fixture(
                 ridge_count_score=index + 1,
             )
             for group, axis in (("time_slices", "i1"), ("inline_sections", "i3"))
-            for index in range(5)
+            for index in range(SECTIONS_PER_AXIS)
         ),
     )
     monkeypatch.setattr(source_module, "load_compact_source", lambda *_args: context)
@@ -191,7 +192,7 @@ def _install_fixture(
                 (output / csv).write_text(
                     "panel_label,source_label\n"
                     + ("PUBLIC-REF,PUBLIC-REF\nQ-QUAL,Q-QUAL\ndifference,Q-QUAL - PUBLIC-REF\n")
-                    * 5,
+                    * SECTIONS_PER_AXIS,
                     encoding="utf-8",
                 )
                 records.append(
@@ -313,11 +314,15 @@ def test_report_has_required_semantics_and_only_displayed_conditions(
     assert "Amplitude input: `xs.dat`; SHA-256" in report
     assert "Q-QUAL lineage" in report
     assert "quality-workflow-specific processing has not acted" in report
-    assert report.count("`i1=") == 5
-    assert report.count("`i3=") == 5
+    assert report.count("`i1=") == SECTIONS_PER_AXIS
+    assert report.count("`i3=") == SECTIONS_PER_AXIS
     assert "`public_fvt_positive_p99_peak_per_equal_bin`" in report
     assert "selected only from public `fvt.dat`" in report
-    assert "divided into 5 equal bins" in report
+    assert "divided into 4 equal bins" in report
+    assert "4 time slices and 4 inline sections" in report
+    assert "x=crossline (`i2`) and y=time (`i1`)" in report
+    assert "1-pixel `cross` halo with alpha 0.15" in report
+    assert "only to PUBLIC-REF and Q-QUAL display overlays" in report
     assert "not geological truth" in report
     for stage in _STAGES:
         for group in _GROUPS:

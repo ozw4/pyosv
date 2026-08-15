@@ -349,7 +349,7 @@ PYTHONPATH=src python -m pyosv.cli.f3_compact_publication \
 
 The command requires the eight publication environment controls documented in
 [F3 Compact Publication](docs/f3_compact_publication.md), which also defines
-the five time slices, five inline sections, six atlases, summary, output layout,
+the four time slices, four inline sections, six atlases, summary, output layout,
 and validate-only command.
 
 ## Fault-warping numerical contract
