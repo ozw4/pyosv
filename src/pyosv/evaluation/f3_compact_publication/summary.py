@@ -16,14 +16,19 @@ import numpy as np
 from ..f3d_mode_comparison.artifacts import canonical_json_bytes
 from ..f3d_mode_comparison.metrics import METRIC_REGISTRY
 from .config import (
-    AMPLITUDE_ALPHA_MAX,
     AMPLITUDE_PERCENTILE,
+    ATTRIBUTE_ALPHA_GAMMA,
+    ATTRIBUTE_ALPHA_MAX,
+    ATTRIBUTE_ALPHA_MIN,
     ATTRIBUTE_COLORMAP,
     DIFFERENCE_COLORMAP,
     DIFFERENCE_PERCENTILE,
     DISPLAY_CELL,
     EXPERIMENT_SCHEMA,
     PUBLIC_REFERENCE_LABEL,
+    SECTION_GROUPS,
+    SECTION_SELECTION_POLICY,
+    SECTIONS_PER_AXIS,
     STAGE_ORDER,
     SUMMARY_HEADER,
 )
@@ -60,7 +65,7 @@ _EXPERIMENT_FIELDS = (
     "dataset",
     "display",
     "stages",
-    "slice",
+    "sections",
     "ridge_thresholds",
     "visualization",
 )
@@ -240,6 +245,18 @@ def build_experiment(context: CompactSourceContext) -> Mapping[str, object]:
         raise ValueError("compact stage sources must follow the fixed stage order")
     if tuple(item.stage for item in context.ridge_threshold_contract.stages) != STAGE_ORDER:
         raise ValueError("compact ridge thresholds must follow the fixed stage order")
+    expected_sections = tuple(
+        (section_group, axis, bin_index)
+        for section_group, axis in SECTION_GROUPS
+        for bin_index in range(SECTIONS_PER_AXIS)
+    )
+    actual_sections = tuple(
+        (item.section_group, item.axis, item.bin_index) for item in context.selected_sections
+    )
+    if actual_sections != expected_sections or any(
+        item.policy != SECTION_SELECTION_POLICY for item in context.selected_sections
+    ):
+        raise ValueError("compact selected sections must follow the fixed section contract")
     stage_sources = context.stage_sources
     ridge_thresholds = context.ridge_threshold_contract.stages
     spec = context.f3.dataset_spec
@@ -269,14 +286,19 @@ def build_experiment(context: CompactSourceContext) -> Mapping[str, object]:
             }
             for source in stage_sources
         ],
-        "slice": {
-            "axis": context.selected_slice.axis,
-            "index": context.selected_slice.index,
-            "selection_policy": context.selected_slice.policy,
-            "score": context.selected_slice.ridge_count_score,
-            "public_fvt_reference_threshold": (
-                context.selected_slice.public_fvt_reference_threshold
-            ),
+        "sections": {
+            "selection_policy": SECTION_SELECTION_POLICY,
+            "sections_per_axis": SECTIONS_PER_AXIS,
+            "items": [
+                {
+                    "section_group": item.section_group,
+                    "axis": item.axis,
+                    "bin_index": item.bin_index,
+                    "index": item.index,
+                    "ridge_count_score": item.ridge_count_score,
+                }
+                for item in context.selected_sections
+            ],
         },
         "ridge_thresholds": [
             {
@@ -290,8 +312,10 @@ def build_experiment(context: CompactSourceContext) -> Mapping[str, object]:
             "amplitude_role": context.amplitude.role,
             "amplitude_filename": context.amplitude.filename,
             "amplitude_percentile": AMPLITUDE_PERCENTILE,
-            "alpha_max": AMPLITUDE_ALPHA_MAX,
             "attribute_colormap": ATTRIBUTE_COLORMAP,
+            "attribute_alpha_min": ATTRIBUTE_ALPHA_MIN,
+            "attribute_alpha_max": ATTRIBUTE_ALPHA_MAX,
+            "attribute_alpha_gamma": ATTRIBUTE_ALPHA_GAMMA,
             "difference_colormap": DIFFERENCE_COLORMAP,
             "difference_percentile": DIFFERENCE_PERCENTILE,
         },

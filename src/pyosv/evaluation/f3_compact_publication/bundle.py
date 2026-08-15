@@ -14,6 +14,7 @@ from typing import Any, cast
 
 from pyosv.evaluation.publication_manifest_io import artifact_file_record
 
+from .config import SECTION_GROUPS, SECTION_SELECTION_POLICY, SECTIONS_PER_AXIS
 from .manifest import (
     build_manifest,
     validate_publication_directory,
@@ -121,11 +122,7 @@ def generate_f3_compact_publication_bundle(
             )
         )
 
-        figure_records = _validate_figure_records(
-            generate_figures(context, temporary_path),
-            context.selected_slice.axis,
-            context.selected_slice.index,
-        )
+        figure_records = _validate_figure_records(generate_figures(context, temporary_path))
         for record in figure_records:
             artifacts.append(
                 artifact_file_record(
@@ -252,27 +249,33 @@ def _write_bytes(path: Path, payload: bytes) -> None:
 
 def _validate_figure_records(
     records: Sequence[Mapping[str, object]],
-    axis: str,
-    index: int,
 ) -> tuple[Mapping[str, object], ...]:
     values = tuple(records)
     if any(not isinstance(record, Mapping) for record in values):
         raise ValueError("figure records must be mappings")
-    if tuple(record.get("stage") for record in values) != _STAGE_ORDER:
-        raise ValueError("figure records must follow the fixed ft, fv, fvt stage order")
+    expected_order = tuple(
+        (stage, section_group) for stage in _STAGE_ORDER for section_group, _axis in SECTION_GROUPS
+    )
+    if tuple((record.get("stage"), record.get("section_group")) for record in values) != (
+        expected_order
+    ):
+        raise ValueError("figure records must follow the fixed stage-major atlas order")
     normalized: list[Mapping[str, object]] = []
-    for stage, record in zip(_STAGE_ORDER, values, strict=True):
-        figure_id = f"f3_{stage}_public_ref_vs_q_qual_{axis}_{index}"
+    for (stage, section_group), record in zip(expected_order, values, strict=True):
+        figure_id = f"f3_{stage}_{section_group}"
         expected = {
             "figure_id": figure_id,
             "relative_path": f"figures/{figure_id}.png",
             "figure_data_csv": f"figure_data/{figure_id}.csv",
             "stage": stage,
+            "section_group": section_group,
         }
         if not isinstance(record, Mapping) or any(
             record.get(key) != value for key, value in expected.items()
         ):
-            raise ValueError(f"figure record does not match the fixed {stage} artifact contract")
+            raise ValueError(
+                f"figure record does not match the fixed {stage}/{section_group} artifact contract"
+            )
         caption = record.get("caption")
         if type(caption) is not str or not caption:
             raise ValueError(f"figure record {stage!r} must have a caption")
@@ -329,17 +332,22 @@ def _render_report(
         "",
         "The `ft` and `fv` candidates belong to the Q-QUAL lineage, but quality-workflow-specific processing has not acted at those stages; their differences must not be attributed to that workflow effect.",
         "",
-        "## Selected slice",
+        "## Selected sections",
         "",
-        f"All stages use `{context.selected_slice.axis}={context.selected_slice.index}`, selected by `{context.selected_slice.policy}` with ridge-count score `{context.selected_slice.ridge_count_score}`.",
-        "",
-        "## Metrics",
-        "",
-        _summary_markdown(summary_rows),
-        "",
-        "## Figures",
+        f"Sections are selected only from public `fvt.dat` using `{SECTION_SELECTION_POLICY}`. Each axis is divided into {SECTIONS_PER_AXIS} equal bins, and one ridge-count peak is selected per bin. The same sections are shared by `ft`, `fv`, and `fvt`.",
         "",
     ]
+    for section_group, axis in SECTION_GROUPS:
+        label = "Time slices" if section_group == "time_slices" else "Inline sections"
+        items = tuple(
+            item for item in context.selected_sections if item.section_group == section_group
+        )
+        values = ", ".join(
+            f"`{axis}={item.index}` (bin {item.bin_index}, score {item.ridge_count_score})"
+            for item in items
+        )
+        lines.append(f"- {label}: {values}.")
+    lines.extend(("", "## Metrics", "", _summary_markdown(summary_rows), "", "## Figures", ""))
     for record in figure_records:
         lines.append(f"- [{record['figure_id']}]({record['relative_path']}) — {record['caption']}")
     lines.extend(

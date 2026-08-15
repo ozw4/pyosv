@@ -10,27 +10,32 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from pyosv.evaluation.f3_compact_publication import figures as figures_module
 from pyosv.evaluation.f3_compact_publication.config import (
     AMPLITUDE_DTYPE,
     AMPLITUDE_FILENAME,
     AMPLITUDE_ROLE,
+    ATTRIBUTE_ALPHA_GAMMA,
+    ATTRIBUTE_ALPHA_MAX,
+    ATTRIBUTE_ALPHA_MIN,
+    ATTRIBUTE_COLORMAP,
     DISPLAY_CELL,
     FIGURE_DATA_HEADER,
     PUBLIC_REFERENCE_LABEL,
-    SLICE_AXIS,
-    SLICE_POLICY,
+    SECTION_GROUPS,
+    SECTION_SELECTION_POLICY,
+    SECTIONS_PER_AXIS,
     STAGE_ORDER,
 )
+from pyosv.evaluation.f3_compact_publication.figures import generate_figures
 from pyosv.evaluation.f3_compact_publication.models import (
     AmplitudeIdentity,
     CompactSourceContext,
     RidgeStageThresholds,
-    SelectedSlice,
+    SelectedSection,
     SourceRidgeThresholdContract,
     StageSource,
 )
-from pyosv.evaluation.f3_compact_publication import figures as figures_module
-from pyosv.evaluation.f3_compact_publication.figures import generate_figures
 from pyosv.evaluation.f3d_mode_comparison import (
     F3_METRIC_SCHEMA_VERSION,
     F3_REFERENCE_STAGE_FILES,
@@ -41,11 +46,13 @@ from pyosv.evaluation.f3d_mode_comparison import (
 from pyosv.evaluation.f3d_mode_comparison.metrics import F3_REFERENCE_STAGE_ROLES
 from pyosv.evaluation.mode_comparison_publication.models import F3SourceBundle
 
-_SHAPE = (3, 4, 5)
+_SHAPE = (5, 4, 5)
 _DTYPE = np.dtype(AMPLITUDE_DTYPE)
 _SIZE = int(np.prod(_SHAPE)) * _DTYPE.itemsize
-_INDEX = 2
 _DEFINITIONS = {(item.stage, item.selection, item.metric): item for item in METRIC_REGISTRY}
+_EXPECTED_ORDER = tuple(
+    (stage, section_group) for stage in STAGE_ORDER for section_group, _axis in SECTION_GROUPS
+)
 
 
 @dataclass(frozen=True)
@@ -115,10 +122,11 @@ def figure_fixture(tmp_path: Path) -> _FigureFixture:
     ):
         reference = np.zeros(_SHAPE, dtype=np.float32)
         candidate = np.zeros(_SHAPE, dtype=np.float32)
-        reference[0, _INDEX, 1] = 0.7 + stage_index * 0.1
-        reference[2, _INDEX, 3] = 1.0 + stage_index * 0.1
-        candidate[0, _INDEX, 1] = 0.9 + stage_index * 0.1
-        candidate[1, _INDEX, 2] = 1.2 + stage_index * 0.1
+        for index in range(SECTIONS_PER_AXIS):
+            reference[index, 1, index] = 0.7 + stage_index * 0.1
+            reference[index, 2, index] = 1.0 + stage_index * 0.1
+            candidate[index, 1, index] = 0.9 + stage_index * 0.1
+            candidate[index, 3, index] = 1.2 + stage_index * 0.1
         public_filename = F3_REFERENCE_STAGE_FILES[stage]
         public_path = data_root / public_filename
         _write_volume(public_path, reference)
@@ -190,6 +198,18 @@ def figure_fixture(tmp_path: Path) -> _FigureFixture:
         metric_evidence=(),
         dataset_identity={"dataset_id": spec.dataset_id, "files": identities},
     )
+    selected_sections = tuple(
+        SelectedSection(
+            section_group=section_group,
+            axis=axis,
+            bin_index=index,
+            index=index,
+            policy=SECTION_SELECTION_POLICY,
+            ridge_count_score=index + 1,
+        )
+        for section_group, axis in SECTION_GROUPS
+        for index in range(SECTIONS_PER_AXIS)
+    )
     context = CompactSourceContext(
         f3=source,
         amplitude=AmplitudeIdentity(
@@ -209,13 +229,7 @@ def figure_fixture(tmp_path: Path) -> _FigureFixture:
             buffer_radius=2.0,
             stages=tuple(threshold_rows),
         ),
-        selected_slice=SelectedSlice(
-            axis=SLICE_AXIS,
-            index=_INDEX,
-            policy=SLICE_POLICY,
-            public_fvt_reference_threshold=threshold_rows[-1].public_reference_threshold,
-            ridge_count_score=2,
-        ),
+        selected_sections=selected_sections,
     )
     return _FigureFixture(context=context, data_root=data_root, bundle=bundle)
 
@@ -227,7 +241,7 @@ def _csv_rows(path: Path) -> tuple[dict[str, str], ...]:
         return tuple(reader)
 
 
-def test_generate_figures_writes_fixed_ordered_artifacts_and_metadata(
+def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
     figure_fixture: _FigureFixture,
     tmp_path: Path,
 ) -> None:
@@ -240,10 +254,10 @@ def test_generate_figures_writes_fixed_ordered_artifacts_and_metadata(
         records = generate_figures(figure_fixture.context, output)
 
     assert caught == []
-    assert tuple(record["stage"] for record in records) == STAGE_ORDER
-    expected_ids = tuple(
-        f"f3_{stage}_public_ref_vs_q_qual_{SLICE_AXIS}_{_INDEX}" for stage in STAGE_ORDER
+    assert tuple((record["stage"], record["section_group"]) for record in records) == (
+        _EXPECTED_ORDER
     )
+    expected_ids = tuple(f"f3_{stage}_{group}" for stage, group in _EXPECTED_ORDER)
     assert tuple(record["figure_id"] for record in records) == expected_ids
     assert {path.name for path in (output / "figures").glob("*.png")} == {
         f"{figure_id}.png" for figure_id in expected_ids
@@ -252,45 +266,64 @@ def test_generate_figures_writes_fixed_ordered_artifacts_and_metadata(
         f"{figure_id}.csv" for figure_id in expected_ids
     }
 
-    amplitude_limits = set()
-    for stage, figure_id, source, thresholds, record in zip(
-        STAGE_ORDER,
-        expected_ids,
-        figure_fixture.context.stage_sources,
-        figure_fixture.context.ridge_threshold_contract.stages,
-        records,
-        strict=True,
-    ):
-        assert record["relative_path"] == f"figures/{figure_id}.png"
-        assert record["figure_data_csv"] == f"figure_data/{figure_id}.csv"
-        rows = _csv_rows(output / str(record["figure_data_csv"]))
-        assert tuple(row["panel_label"] for row in rows) == (
-            PUBLIC_REFERENCE_LABEL,
-            DISPLAY_CELL,
-            "difference",
+    group_indices: dict[str, set[tuple[str, ...]]] = {group: set() for group, _ in SECTION_GROUPS}
+    amplitude_limits: dict[str, set[str]] = {group: set() for group, _ in SECTION_GROUPS}
+    for record in records:
+        stage = str(record["stage"])
+        group = str(record["section_group"])
+        source = next(item for item in figure_fixture.context.stage_sources if item.stage == stage)
+        thresholds = next(
+            item
+            for item in figure_fixture.context.ridge_threshold_contract.stages
+            if item.stage == stage
         )
-        assert {row["axis"] for row in rows} == {SLICE_AXIS}
-        assert {row["slice_index"] for row in rows} == {str(_INDEX)}
-        assert rows[0]["source_sha256"] == source.public_reference_sha256
-        assert rows[0]["source_stage_fingerprint"] == ""
-        assert float(rows[0]["selection_threshold"]) == thresholds.public_reference_threshold
-        assert rows[1]["source_sha256"] == ""
-        assert rows[1]["source_stage_fingerprint"] == source.candidate_fingerprint
-        assert float(rows[1]["selection_threshold"]) == thresholds.q_qual_threshold
-        assert rows[2]["source_label"] == "Q-QUAL - PUBLIC-REF"
-        assert rows[2]["source_file"] == ""
+        rows = _csv_rows(output / str(record["figure_data_csv"]))
+        assert len(rows) == 15
+        assert (
+            tuple(row["panel_label"] for row in rows)
+            == (
+                PUBLIC_REFERENCE_LABEL,
+                DISPLAY_CELL,
+                "difference",
+            )
+            * SECTIONS_PER_AXIS
+        )
+        axis = dict(SECTION_GROUPS)[group]
+        assert {row["axis"] for row in rows} == {axis}
+        assert {row["section_group"] for row in rows} == {group}
+        indices = tuple(rows[index]["section_index"] for index in range(0, 15, 3))
+        assert len(set(indices)) == SECTIONS_PER_AXIS
+        group_indices[group].add(indices)
+        assert tuple(int(rows[index]["bin_index"]) for index in range(0, 15, 3)) == tuple(
+            range(SECTIONS_PER_AXIS)
+        )
+        for offset in range(0, 15, 3):
+            public, candidate, difference = rows[offset : offset + 3]
+            assert public["source_sha256"] == source.public_reference_sha256
+            assert public["source_stage_fingerprint"] == ""
+            assert float(public["selection_threshold"]) == thresholds.public_reference_threshold
+            assert candidate["source_sha256"] == ""
+            assert candidate["source_stage_fingerprint"] == source.candidate_fingerprint
+            assert float(candidate["selection_threshold"]) == thresholds.q_qual_threshold
+            assert difference["source_label"] == "Q-QUAL - PUBLIC-REF"
+            assert difference["source_file"] == ""
+            for attribute in (public, candidate):
+                assert attribute["colormap"] == ATTRIBUTE_COLORMAP
+                assert float(attribute["alpha_min"]) == ATTRIBUTE_ALPHA_MIN
+                assert float(attribute["alpha_max"]) == ATTRIBUTE_ALPHA_MAX
+                assert float(attribute["alpha_gamma"]) == ATTRIBUTE_ALPHA_GAMMA
+            assert difference["alpha_min"] == ""
+            assert difference["alpha_gamma"] == ""
         expected_vmax = max(
             float(metric.value)
             for metric in figure_fixture.context.f3.result.metric_rows
             if metric.stage == stage and metric.metric in {"reference_max", "candidate_max"}
         )
-        assert {float(rows[index]["overlay_vmin"]) for index in (0, 1)} == {0.0}
-        assert {float(rows[index]["overlay_vmax"]) for index in (0, 1)} == {expected_vmax}
+        assert {float(row["overlay_vmax"]) for row in rows[0::3]} == {expected_vmax}
+        assert {float(row["overlay_vmax"]) for row in rows[1::3]} == {expected_vmax}
+        assert len({row["difference_limit"] for row in rows[2::3]}) == 1
         assert {row["amplitude_file"] for row in rows} == {AMPLITUDE_FILENAME}
-        assert {row["amplitude_sha256"] for row in rows} == {
-            figure_fixture.context.amplitude.sha256
-        }
-        amplitude_limits.add(rows[0]["amplitude_limit"])
+        amplitude_limits[group].add(rows[0]["amplitude_limit"])
 
         png = output / str(record["relative_path"])
         assert png.stat().st_size > 0
@@ -300,13 +333,24 @@ def test_generate_figures_writes_fixed_ordered_artifacts_and_metadata(
         assert image.ndim == 3
         assert image.size > 0
 
-    assert len(amplitude_limits) == 1
-    text_output = "\n".join(
+    assert all(len(values) == 1 for values in group_indices.values())
+    assert all(len(values) == 1 for values in amplitude_limits.values())
+    public_text = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted((output / "figure_data").glob("*.csv"))
     ) + "\n".join(str(value) for record in records for value in record.values())
-    assert all(label not in text_output for label in ("RL-REF", "RL-QUAL", "Q-REF", "Synthetic"))
+    assert all(label not in public_text for label in ("RL-REF", "RL-QUAL", "Q-REF", "Synthetic"))
     assert _snapshot(figure_fixture.data_root) == before_data
     assert _snapshot(figure_fixture.bundle) == before_bundle
+
+
+def test_attribute_alpha_keeps_threshold_visible_and_emphasizes_high_values() -> None:
+    values = np.asarray([[0.59, 0.6, 0.8, 1.0]], dtype=np.float32)
+    alpha = figures_module._ridge_alpha(values, threshold=0.6, vmax=1.0)
+
+    assert alpha[0, 0] == 0.0
+    assert alpha[0, 1] == pytest.approx(ATTRIBUTE_ALPHA_MIN)
+    assert ATTRIBUTE_ALPHA_MIN < alpha[0, 2] < alpha[0, 3]
+    assert alpha[0, 3] == pytest.approx(ATTRIBUTE_ALPHA_MAX)
 
 
 def test_degenerate_amplitude_and_difference_use_finite_floor(
@@ -327,20 +371,17 @@ def test_degenerate_amplitude_and_difference_use_finite_floor(
     for record in records:
         rows = _csv_rows(tmp_path / "degenerate" / str(record["figure_data_csv"]))
         assert {float(row["amplitude_limit"]) for row in rows} == {1.0e-6}
-        difference = rows[2]
-        assert float(difference["difference_limit"]) == 1.0e-6
-        assert np.isfinite(float(difference["overlay_vmin"]))
-        assert np.isfinite(float(difference["overlay_vmax"]))
+        assert {float(row["difference_limit"]) for row in rows[2::3]} == {1.0e-6}
 
 
 @pytest.mark.parametrize("source_kind", ["amplitude", "public", "candidate"])
-def test_nonfinite_selected_slice_is_rejected(
+def test_nonfinite_selected_section_is_rejected(
     figure_fixture: _FigureFixture,
     tmp_path: Path,
     source_kind: str,
 ) -> None:
     values = np.zeros(_SHAPE, dtype=np.float32)
-    values[0, _INDEX, 0] = np.nan
+    values[0, 0, 0] = np.nan
     if source_kind == "amplitude":
         path = figure_fixture.context.amplitude.resolved_path
     elif source_kind == "public":
@@ -349,7 +390,7 @@ def test_nonfinite_selected_slice_is_rejected(
         path = figure_fixture.context.stage_sources[0].candidate_path
     _write_volume(path, values)
 
-    with pytest.raises(ValueError, match="selected slice must contain only finite"):
+    with pytest.raises(ValueError, match="selected sections must contain only finite"):
         generate_figures(figure_fixture.context, tmp_path / source_kind)
 
 

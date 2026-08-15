@@ -56,13 +56,14 @@ class SourceRidgeThresholdContract:
 
 
 @dataclass(frozen=True, slots=True)
-class SelectedSlice:
-    """One common spatial slice selected from the public FVT reference."""
+class SelectedSection:
+    """One spatial section selected from an equal axis bin."""
 
+    section_group: str
     axis: str
+    bin_index: int
     index: int
     policy: str
-    public_fvt_reference_threshold: float
     ridge_count_score: int
 
 
@@ -75,14 +76,14 @@ class CompactSourceContext:
     q_qual_cell: F3CellReference
     stage_sources: tuple[StageSource, ...]
     ridge_threshold_contract: SourceRidgeThresholdContract
-    selected_slice: SelectedSlice
+    selected_sections: tuple[SelectedSection, ...]
 
 
 __all__ = [
     "AmplitudeIdentity",
     "CompactSourceContext",
     "RidgeStageThresholds",
-    "SelectedSlice",
+    "SelectedSection",
     "SourceRidgeThresholdContract",
     "StageSource",
 ]

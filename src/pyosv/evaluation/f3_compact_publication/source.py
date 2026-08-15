@@ -28,15 +28,16 @@ from .config import (
     AMPLITUDE_FILENAME,
     AMPLITUDE_ROLE,
     DISPLAY_CELL,
-    SLICE_AXIS,
-    SLICE_POLICY,
+    SECTION_GROUPS,
+    SECTION_SELECTION_POLICY,
+    SECTIONS_PER_AXIS,
     STAGE_ORDER,
 )
 from .models import (
     AmplitudeIdentity,
     CompactSourceContext,
     RidgeStageThresholds,
-    SelectedSlice,
+    SelectedSection,
     SourceRidgeThresholdContract,
     StageSource,
 )
@@ -188,32 +189,65 @@ def _ridge_thresholds(source: Any) -> SourceRidgeThresholdContract:
     )
 
 
-def _select_public_fvt_slice(
+def _axis_length(shape: tuple[int, int, int], axis: str) -> int:
+    positions = {"i1": 2, "i3": 0}
+    try:
+        return shape[positions[axis]]
+    except KeyError as error:
+        raise ValueError(f"unsupported compact section axis: {axis!r}") from error
+
+
+def _section(volume: np.ndarray, axis: str, index: int) -> np.ndarray:
+    if axis == "i1":
+        return volume[:, :, index]
+    if axis == "i3":
+        return volume[index, :, :]
+    raise ValueError(f"unsupported compact section axis: {axis!r}")
+
+
+def _select_public_fvt_sections(
     path: Path,
     shape: tuple[int, int, int],
     storage_dtype: str,
     threshold: float,
-) -> SelectedSlice:
+    *,
+    section_group: str,
+    axis: str,
+    count: int,
+) -> tuple[SelectedSection, ...]:
+    axis_length = _axis_length(shape, axis)
+    if axis_length < count:
+        raise ValueError(
+            f"compact section axis {axis!r} length must be at least {count}; got {axis_length}"
+        )
     volume: np.memmap | None = None
     try:
         volume = np.memmap(path, dtype=storage_dtype, mode="r", shape=shape, order="C")
-        best_index = 0
-        best_score = -1
-        for index in range(shape[1]):
-            sample = np.asarray(volume[:, index, :])
-            mask = positive_candidate_mask(sample, epsilon=NONZERO_EPSILON)
-            mask &= sample >= threshold
-            score = int(np.count_nonzero(mask))
-            if score > best_score:
-                best_index = index
-                best_score = score
-        return SelectedSlice(
-            axis=SLICE_AXIS,
-            index=best_index,
-            policy=SLICE_POLICY,
-            public_fvt_reference_threshold=threshold,
-            ridge_count_score=best_score,
-        )
+        selected = []
+        for bin_index in range(count):
+            start = bin_index * axis_length // count
+            stop = (bin_index + 1) * axis_length // count
+            best_index = start
+            best_score = -1
+            for index in range(start, stop):
+                sample = np.asarray(_section(volume, axis, index))
+                mask = positive_candidate_mask(sample, epsilon=NONZERO_EPSILON)
+                mask &= sample >= threshold
+                score = int(np.count_nonzero(mask))
+                if score > best_score:
+                    best_index = index
+                    best_score = score
+            selected.append(
+                SelectedSection(
+                    section_group=section_group,
+                    axis=axis,
+                    bin_index=bin_index,
+                    index=best_index,
+                    policy=SECTION_SELECTION_POLICY,
+                    ridge_count_score=best_score,
+                )
+            )
+        return tuple(selected)
     finally:
         if volume is not None:
             mapping = getattr(volume, "_mmap", None)
@@ -242,11 +276,18 @@ def load_compact_source(
     ridge_threshold_contract = _ridge_thresholds(source)
     fvt_threshold = ridge_threshold_contract.stages[-1].public_reference_threshold
     fvt_source = stage_sources[-1]
-    selected_slice = _select_public_fvt_slice(
-        fvt_source.public_reference_path,
-        shape,
-        source.result.storage_dtype,
-        fvt_threshold,
+    selected_sections = tuple(
+        selected
+        for section_group, axis in SECTION_GROUPS
+        for selected in _select_public_fvt_sections(
+            fvt_source.public_reference_path,
+            shape,
+            source.result.storage_dtype,
+            fvt_threshold,
+            section_group=section_group,
+            axis=axis,
+            count=SECTIONS_PER_AXIS,
+        )
     )
     return CompactSourceContext(
         f3=source,
@@ -254,7 +295,7 @@ def load_compact_source(
         q_qual_cell=q_qual_cell,
         stage_sources=stage_sources,
         ridge_threshold_contract=ridge_threshold_contract,
-        selected_slice=selected_slice,
+        selected_sections=selected_sections,
     )
 
 

@@ -35,7 +35,7 @@ from tests.evaluation.f3d_mode_comparison.test_integration import (
     _write_fixture as _write_f3_fixture,
 )
 
-_SHAPE = (3, 4, 5)
+_SHAPE = (5, 4, 5)
 _DTYPE = np.dtype(">f4")
 _SIZE = int(np.prod(_SHAPE)) * _DTYPE.itemsize
 _CELLS = ("RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL")
@@ -73,9 +73,9 @@ def _write_volume(path: Path, values: np.ndarray) -> None:
     np.asarray(values, dtype=_DTYPE).tofile(path)
 
 
-def _snapshot(root: Path) -> dict[str, bytes]:
+def _snapshot(root: Path) -> dict[str, tuple[bytes, int]]:
     return {
-        path.relative_to(root).as_posix(): path.read_bytes()
+        path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
         for path in sorted(root.rglob("*"))
         if path.is_file() and not path.is_symlink()
     }
@@ -292,9 +292,15 @@ def test_cli_generation_validation_and_archive_acceptance(
     assert generation == 0
     assert validation == 0
     expected_csv = {
-        f"figure_data/f3_{stage}_public_ref_vs_q_qual_i2_2.csv" for stage in STAGE_ORDER
+        f"figure_data/f3_{stage}_{group}.csv"
+        for stage in STAGE_ORDER
+        for group in ("time_slices", "inline_sections")
     }
-    expected_png = {f"figures/f3_{stage}_public_ref_vs_q_qual_i2_2.png" for stage in STAGE_ORDER}
+    expected_png = {
+        f"figures/f3_{stage}_{group}.png"
+        for stage in STAGE_ORDER
+        for group in ("time_slices", "inline_sections")
+    }
     files = {path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()}
     assert files == {
         "publication_manifest.json",
@@ -305,8 +311,8 @@ def test_cli_generation_validation_and_archive_acceptance(
         *expected_csv,
         *expected_png,
     }
-    assert len(tuple((output / "figures").glob("*.png"))) == 3
-    assert len(tuple((output / "figure_data").glob("*.csv"))) == 3
+    assert len(tuple((output / "figures").glob("*.png"))) == 6
+    assert len(tuple((output / "figure_data").glob("*.csv"))) == 6
 
     with (output / "f3_q_qual_vs_public_ref_summary.csv").open(
         encoding="utf-8", newline=""
@@ -314,18 +320,24 @@ def test_cli_generation_validation_and_archive_acceptance(
         summary = tuple(csv.DictReader(stream))
     assert tuple(row["stage"] for row in summary) == STAGE_ORDER
 
-    figure_slices = set()
+    figure_sections: dict[str, set[tuple[str, ...]]] = {
+        "time_slices": set(),
+        "inline_sections": set(),
+    }
     for path in sorted((output / "figure_data").glob("*.csv")):
         with path.open(encoding="utf-8", newline="") as stream:
             rows = tuple(csv.DictReader(stream))
-        assert len(rows) == 3
-        figure_slices.add((rows[0]["axis"], rows[0]["slice_index"]))
+        assert len(rows) == 15
         assert [row["source_label"] for row in rows] == [
             "PUBLIC-REF",
             "Q-QUAL",
             "Q-QUAL - PUBLIC-REF",
-        ]
-    assert figure_slices == {("i2", "2")}
+        ] * 5
+        group = rows[0]["section_group"]
+        figure_sections[group].add(tuple(row["section_index"] for row in rows[0::3]))
+        expected_axis = "i1" if group == "time_slices" else "i3"
+        assert {row["axis"] for row in rows} == {expected_axis}
+    assert all(len(values) == 1 for values in figure_sections.values())
 
     experiment = json.loads((output / "experiment.json").read_text(encoding="utf-8"))
     assert experiment["display"] == {
@@ -333,6 +345,8 @@ def test_cli_generation_validation_and_archive_acceptance(
         "public_reference_label": "PUBLIC-REF",
         "stage_order": ["ft", "fv", "fvt"],
     }
+    assert "slice" not in experiment
+    assert len(experiment["sections"]["items"]) == 10
     public_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(output.rglob("*"))
@@ -373,7 +387,7 @@ def test_completed_f3_bundle_flows_through_source_validator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_root = tmp_path / "f3-data"
-    spec = _write_f3_fixture(data_root)
+    spec = _write_f3_fixture(data_root, shape=(5, 4, 5))
     amplitude = np.linspace(
         -1.0,
         1.0,
@@ -436,6 +450,9 @@ def test_completed_f3_bundle_flows_through_source_validator(
     assert {
         item["stage"]: item["q_qual_stage_fingerprint"] for item in experiment["stages"]
     } == expected_fingerprints
+    assert len(experiment["sections"]["items"]) == 10
+    assert len(tuple((output / "figures").glob("*.png"))) == 6
+    assert len(tuple((output / "figure_data").glob("*.csv"))) == 6
     with (output / "f3_q_qual_vs_public_ref_summary.csv").open(
         encoding="utf-8", newline=""
     ) as stream:

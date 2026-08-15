@@ -16,9 +16,16 @@ from pyosv.evaluation.f3_compact_publication.config import (
     AMPLITUDE_DTYPE,
     AMPLITUDE_FILENAME,
     AMPLITUDE_ROLE,
+    ATTRIBUTE_ALPHA_GAMMA,
+    ATTRIBUTE_ALPHA_MAX,
+    ATTRIBUTE_ALPHA_MIN,
+    ATTRIBUTE_COLORMAP,
     DISPLAY_CELL,
     EXPERIMENT_SCHEMA,
     PUBLIC_REFERENCE_LABEL,
+    SECTION_GROUPS,
+    SECTION_SELECTION_POLICY,
+    SECTIONS_PER_AXIS,
     STAGE_ORDER,
     SUMMARY_HEADER,
 )
@@ -26,7 +33,7 @@ from pyosv.evaluation.f3_compact_publication.models import (
     AmplitudeIdentity,
     CompactSourceContext,
     RidgeStageThresholds,
-    SelectedSlice,
+    SelectedSection,
     SourceRidgeThresholdContract,
     StageSource,
 )
@@ -200,12 +207,17 @@ def summary_fixture(tmp_path: Path) -> _SummaryFixture:
         q_qual_cell=SimpleNamespace(label=DISPLAY_CELL),
         stage_sources=stage_sources,
         ridge_threshold_contract=ridge,
-        selected_slice=SelectedSlice(
-            axis="i2",
-            index=1,
-            policy="public_fvt_positive_p99_peak",
-            public_fvt_reference_threshold=0.5,
-            ridge_count_score=7,
+        selected_sections=tuple(
+            SelectedSection(
+                section_group=section_group,
+                axis=axis,
+                bin_index=bin_index,
+                index=bin_index,
+                policy=SECTION_SELECTION_POLICY,
+                ridge_count_score=7 + bin_index,
+            )
+            for section_group, axis in SECTION_GROUPS
+            for bin_index in range(SECTIONS_PER_AXIS)
         ),
     )
     return _SummaryFixture(context=context, values=values)
@@ -313,7 +325,7 @@ def test_experiment_serialization_is_deterministic_and_pretty_is_semantic_only(
         "dataset",
         "display",
         "stages",
-        "slice",
+        "sections",
         "ridge_thresholds",
         "visualization",
     )
@@ -392,18 +404,24 @@ def test_experiment_contains_official_and_amplitude_file_identities(
     }
 
 
-def test_experiment_slice_and_thresholds_match_context(
+def test_experiment_sections_and_thresholds_match_context(
     summary_fixture: _SummaryFixture,
 ) -> None:
     experiment = build_experiment(summary_fixture.context)
-    selected = summary_fixture.context.selected_slice
-
-    assert experiment["slice"] == {
-        "axis": selected.axis,
-        "index": selected.index,
-        "selection_policy": selected.policy,
-        "score": selected.ridge_count_score,
-        "public_fvt_reference_threshold": selected.public_fvt_reference_threshold,
+    assert "slice" not in experiment
+    assert experiment["sections"] == {
+        "selection_policy": SECTION_SELECTION_POLICY,
+        "sections_per_axis": SECTIONS_PER_AXIS,
+        "items": [
+            {
+                "section_group": item.section_group,
+                "axis": item.axis,
+                "bin_index": item.bin_index,
+                "index": item.index,
+                "ridge_count_score": item.ridge_count_score,
+            }
+            for item in summary_fixture.context.selected_sections
+        ],
     }
     assert experiment["ridge_thresholds"] == [
         {
@@ -418,3 +436,14 @@ def test_experiment_slice_and_thresholds_match_context(
         "quality scanner voting output in Q-QUAL lineage",
         "Q-QUAL thinned voting output",
     ]
+    assert experiment["visualization"] == {
+        "amplitude_role": AMPLITUDE_ROLE,
+        "amplitude_filename": AMPLITUDE_FILENAME,
+        "amplitude_percentile": 99.0,
+        "attribute_colormap": ATTRIBUTE_COLORMAP,
+        "attribute_alpha_min": ATTRIBUTE_ALPHA_MIN,
+        "attribute_alpha_max": ATTRIBUTE_ALPHA_MAX,
+        "attribute_alpha_gamma": ATTRIBUTE_ALPHA_GAMMA,
+        "difference_colormap": "coolwarm",
+        "difference_percentile": 99.0,
+    }

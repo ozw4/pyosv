@@ -13,8 +13,9 @@ from pyosv.evaluation.f3_compact_publication.config import (
     AMPLITUDE_FILENAME,
     AMPLITUDE_ROLE,
     DISPLAY_CELL,
-    SLICE_AXIS,
-    SLICE_POLICY,
+    SECTION_GROUPS,
+    SECTION_SELECTION_POLICY,
+    SECTIONS_PER_AXIS,
     STAGE_ORDER,
 )
 from pyosv.evaluation.f3_compact_publication import source as source_module
@@ -32,7 +33,7 @@ from pyosv.evaluation.f3d_mode_comparison import (
 from pyosv.evaluation.f3d_mode_comparison.metrics import F3_REFERENCE_STAGE_ROLES
 from pyosv.evaluation.mode_comparison_publication.models import F3SourceBundle
 
-_SHAPE = (3, 4, 5)
+_SHAPE = (10, 4, 10)
 _DTYPE = np.dtype(">f4")
 _REFERENCE_THRESHOLDS = {"ft": 0.8, "fv": 0.7, "fvt": 0.6}
 _CELLS = ("RL-REF", "RL-QUAL", "Q-REF", "Q-QUAL")
@@ -93,9 +94,9 @@ def compact_fixture(tmp_path: Path) -> _Fixture:
     data_root = tmp_path / "f3-data"
     data_root.mkdir()
     public_fvt = np.zeros(_SHAPE, dtype=np.float32)
-    public_fvt[0, 2, 0] = 0.8
-    public_fvt[1, 2, 1] = 0.9
-    public_fvt[2, 2, 2] = 1.0
+    for index in (1, 3, 5, 7, 9):
+        public_fvt[:, 0, index] = 0.8
+        public_fvt[index, 1, :] = 0.9
     for filename in ("ep.dat", "fl.dat", "fv.dat"):
         _write_volume(data_root / filename)
     _write_volume(data_root / "fvt.dat", public_fvt)
@@ -197,10 +198,17 @@ def test_load_compact_source_resolves_ordered_immutable_context(
     assert context.amplitude.filename == AMPLITUDE_FILENAME
     assert context.amplitude.storage_dtype == AMPLITUDE_DTYPE
     assert context.amplitude.sha256 == _sha256(compact_fixture.data_root / AMPLITUDE_FILENAME)
-    assert context.selected_slice.axis == SLICE_AXIS
-    assert context.selected_slice.policy == SLICE_POLICY
-    assert context.selected_slice.index == 2
-    assert context.selected_slice.ridge_count_score == 3
+    assert len(context.selected_sections) == 2 * SECTIONS_PER_AXIS
+    assert tuple(
+        (item.section_group, item.axis, item.bin_index) for item in context.selected_sections
+    ) == tuple(
+        (section_group, axis, bin_index)
+        for section_group, axis in SECTION_GROUPS
+        for bin_index in range(SECTIONS_PER_AXIS)
+    )
+    assert tuple(item.index for item in context.selected_sections[:5]) == (1, 3, 5, 7, 9)
+    assert tuple(item.index for item in context.selected_sections[5:]) == (1, 3, 5, 7, 9)
+    assert all(item.policy == SECTION_SELECTION_POLICY for item in context.selected_sections)
     assert tuple(item.stage for item in context.ridge_threshold_contract.stages) == STAGE_ORDER
     assert _snapshot(compact_fixture.bundle) == before_bundle
     assert _snapshot(compact_fixture.data_root) == before_data
@@ -276,21 +284,89 @@ def test_stage_artifact_missing_or_wrong_size_is_rejected(
         _load(compact_fixture, monkeypatch)
 
 
-def test_public_fvt_peak_tie_uses_smallest_index(
+def test_public_fvt_peak_tie_and_zero_bins_use_smallest_index(
     compact_fixture: _Fixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     public_fvt = np.zeros(_SHAPE, dtype=np.float32)
-    public_fvt[0, 1, 0] = 0.7
-    public_fvt[1, 1, 1] = 0.8
-    public_fvt[0, 3, 0] = 0.9
-    public_fvt[1, 3, 1] = 1.0
+    public_fvt[:, 0, 0] = 0.8
+    public_fvt[:, 0, 1] = 0.8
+    public_fvt[0, 1, :] = 0.9
+    public_fvt[1, 1, :] = 0.9
     _write_volume(compact_fixture.data_root / "fvt.dat", public_fvt)
 
     context = _load(compact_fixture, monkeypatch)
 
-    assert context.selected_slice.index == 1
-    assert context.selected_slice.ridge_count_score == 2
+    assert tuple(item.index for item in context.selected_sections[:5]) == (0, 2, 4, 6, 8)
+    assert tuple(item.index for item in context.selected_sections[5:]) == (0, 2, 4, 6, 8)
+    assert context.selected_sections[0].ridge_count_score > 0
+
+
+def test_all_zero_bins_use_smallest_index(
+    compact_fixture: _Fixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_volume(compact_fixture.data_root / "fvt.dat")
+
+    context = _load(compact_fixture, monkeypatch)
+
+    assert tuple(item.index for item in context.selected_sections[:5]) == (0, 2, 4, 6, 8)
+    assert tuple(item.index for item in context.selected_sections[5:]) == (0, 2, 4, 6, 8)
+    assert all(item.ridge_count_score == 0 for item in context.selected_sections)
+
+
+def test_candidate_volume_does_not_affect_selected_sections(
+    compact_fixture: _Fixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = _load(compact_fixture, monkeypatch).selected_sections
+    candidate = np.full(_SHAPE, 100.0, dtype=np.float32)
+    path = compact_fixture.bundle / "stages" / "thinning" / _FINGERPRINTS["thinning"] / "fvt.dat"
+    _write_volume(path, candidate)
+
+    after = _load(compact_fixture, monkeypatch).selected_sections
+
+    assert after == before
+
+
+@pytest.mark.parametrize("shape", [(4, 5, 5), (5, 5, 4)])
+def test_section_axis_shorter_than_five_is_rejected(
+    compact_fixture: _Fixture,
+    shape: tuple[int, int, int],
+) -> None:
+    axis = "i3" if shape[0] < 5 else "i1"
+
+    with pytest.raises(ValueError, match="length must be at least 5"):
+        source_module._select_public_fvt_sections(
+            compact_fixture.data_root / "fvt.dat",
+            shape,
+            _DTYPE.str,
+            0.6,
+            section_group="test",
+            axis=axis,
+            count=5,
+        )
+
+
+def test_selection_memmap_is_closed(
+    compact_fixture: _Fixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_memmap = np.memmap
+    opened: list[np.memmap] = []
+
+    class TrackedMemmap(original_memmap):  # type: ignore[misc, valid-type]
+        def __new__(cls, *args: object, **kwargs: object) -> np.memmap:
+            volume = super().__new__(cls, *args, **kwargs)
+            opened.append(volume)
+            return volume
+
+    monkeypatch.setattr(source_module.np, "memmap", TrackedMemmap)
+
+    _load(compact_fixture, monkeypatch)
+
+    assert len(opened) == 2
+    assert all(volume._mmap.closed for volume in opened)
 
 
 def test_stage_sources_keep_q_qual_fingerprints(

@@ -31,6 +31,7 @@ _CONTROLS = {
 }
 _CODE = {"repository": "ozw4/pyosv", "git_commit": "1" * 40, "dirty": False}
 _STAGES = ("ft", "fv", "fvt")
+_GROUPS = ("time_slices", "inline_sections")
 _SUMMARY = (
     b"stage,public_reference_file,q_qual_stage_fingerprint,normalized_correlation,"
     b"mean_absolute_difference,nonzero_fraction_ratio,buffered_f1,"
@@ -82,12 +83,20 @@ def _experiment() -> dict[str, object]:
             "stage_order": list(_STAGES),
         },
         "stages": [],
-        "slice": {
-            "axis": "i2",
-            "index": 1,
-            "selection_policy": "public_fvt_positive_p99_peak",
-            "score": 7,
-            "public_fvt_reference_threshold": 0.6,
+        "sections": {
+            "selection_policy": "public_fvt_positive_p99_peak_per_equal_bin",
+            "sections_per_axis": 5,
+            "items": [
+                {
+                    "section_group": group,
+                    "axis": axis,
+                    "bin_index": index,
+                    "index": index,
+                    "ridge_count_score": index + 1,
+                }
+                for group, axis in (("time_slices", "i1"), ("inline_sections", "i3"))
+                for index in range(5)
+            ],
         },
         "ridge_thresholds": [],
         "visualization": {},
@@ -143,11 +152,17 @@ def _install_fixture(
             ),
         ),
         amplitude=SimpleNamespace(sha256=_sha(b"xs.dat")),
-        selected_slice=SimpleNamespace(
-            axis="i2",
-            index=1,
-            policy="public_fvt_positive_p99_peak",
-            ridge_count_score=7,
+        selected_sections=tuple(
+            SimpleNamespace(
+                section_group=group,
+                axis=axis,
+                bin_index=index,
+                index=index,
+                policy="public_fvt_positive_p99_peak_per_equal_bin",
+                ridge_count_score=index + 1,
+            )
+            for group, axis in (("time_slices", "i1"), ("inline_sections", "i3"))
+            for index in range(5)
         ),
     )
     monkeypatch.setattr(source_module, "load_compact_source", lambda *_args: context)
@@ -168,24 +183,27 @@ def _install_fixture(
         (output / "figure_data").mkdir()
         records = []
         for stage in _STAGES:
-            figure_id = f"f3_{stage}_public_ref_vs_q_qual_i2_1"
-            png = f"figures/{figure_id}.png"
-            csv = f"figure_data/{figure_id}.csv"
-            (output / png).write_bytes(png_payload + stage.encode())
-            (output / csv).write_text(
-                "panel_label,source_label\nPUBLIC-REF,PUBLIC-REF\n"
-                "Q-QUAL,Q-QUAL\ndifference,Q-QUAL - PUBLIC-REF\n",
-                encoding="utf-8",
-            )
-            records.append(
-                {
-                    "figure_id": figure_id,
-                    "relative_path": png,
-                    "figure_data_csv": csv,
-                    "stage": stage,
-                    "caption": f"F3 {stage} PUBLIC-REF versus Q-QUAL at i2=1.",
-                }
-            )
+            for group in _GROUPS:
+                figure_id = f"f3_{stage}_{group}"
+                png = f"figures/{figure_id}.png"
+                csv = f"figure_data/{figure_id}.csv"
+                (output / png).write_bytes(png_payload + stage.encode() + group.encode())
+                (output / csv).write_text(
+                    "panel_label,source_label\n"
+                    + ("PUBLIC-REF,PUBLIC-REF\nQ-QUAL,Q-QUAL\ndifference,Q-QUAL - PUBLIC-REF\n")
+                    * 5,
+                    encoding="utf-8",
+                )
+                records.append(
+                    {
+                        "figure_id": figure_id,
+                        "relative_path": png,
+                        "figure_data_csv": csv,
+                        "stage": stage,
+                        "section_group": group,
+                        "caption": f"F3 {stage} {group} PUBLIC-REF versus Q-QUAL.",
+                    }
+                )
         return tuple(records)
 
     monkeypatch.setattr(figures_module, "generate_figures", generate_figures)
@@ -228,9 +246,9 @@ def test_generates_exact_layout_and_valid_manifest(
 
     files = {path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()}
     expected_figure_data = {
-        f"figure_data/f3_{stage}_public_ref_vs_q_qual_i2_1.csv" for stage in _STAGES
+        f"figure_data/f3_{stage}_{group}.csv" for stage in _STAGES for group in _GROUPS
     }
-    expected_figures = {f"figures/f3_{stage}_public_ref_vs_q_qual_i2_1.png" for stage in _STAGES}
+    expected_figures = {f"figures/f3_{stage}_{group}.png" for stage in _STAGES for group in _GROUPS}
     assert files == {
         "publication_manifest.json",
         "experiment.json",
@@ -261,6 +279,9 @@ def test_generates_exact_layout_and_valid_manifest(
     assert all(artifacts[path]["role"] == "figure" for path in expected_figures)
     assert artifacts["report.md"]["tier"] == "derived"
     assert artifacts["report.md"]["role"] == "report"
+    assert len(manifest["artifacts"]) == 16
+    assert sum(item["tier"] == "primary" for item in manifest["artifacts"]) == 9
+    assert sum(item["tier"] == "derived" for item in manifest["artifacts"]) == 7
 
     assert manifest["source"] == {"f3_completion_sha256": "a" * 64}
     assert manifest["dataset"]["dataset_id"] == "compact-bundle-fixture"
@@ -279,7 +300,7 @@ def test_report_has_required_semantics_and_only_displayed_conditions(
         "# F3 PUBLIC-REF vs Q-QUAL Compact Publication",
         "## Source and experiment",
         "## Stage comparison",
-        "## Selected slice",
+        "## Selected sections",
         "## Metrics",
         "## Figures",
         "## Interpretation limits",
@@ -292,12 +313,15 @@ def test_report_has_required_semantics_and_only_displayed_conditions(
     assert "Amplitude input: `xs.dat`; SHA-256" in report
     assert "Q-QUAL lineage" in report
     assert "quality-workflow-specific processing has not acted" in report
-    assert "`i2=1`" in report
-    assert "`public_fvt_positive_p99_peak`" in report
+    assert report.count("`i1=") == 5
+    assert report.count("`i3=") == 5
+    assert "`public_fvt_positive_p99_peak_per_equal_bin`" in report
+    assert "selected only from public `fvt.dat`" in report
+    assert "divided into 5 equal bins" in report
     assert "not geological truth" in report
     for stage in _STAGES:
-        link = f"figures/f3_{stage}_public_ref_vs_q_qual_i2_1.png"
-        assert f"]({link})" in report
+        for group in _GROUPS:
+            assert f"](figures/f3_{stage}_{group}.png)" in report
 
     public_text = report + (output / "f3_q_qual_vs_public_ref_summary.csv").read_text()
     public_text += "".join(
@@ -452,7 +476,7 @@ def test_derived_png_bytes_do_not_change_publication_id(
     first_png = next(
         item
         for item in first_manifest["artifacts"]
-        if item["path"].endswith("ft_public_ref_vs_q_qual_i2_1.png")
+        if item["path"].endswith("f3_ft_time_slices.png")
     )
     second_png = next(
         item for item in second_manifest["artifacts"] if item["path"] == first_png["path"]

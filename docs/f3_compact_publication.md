@@ -56,27 +56,40 @@ and data root. Generation records the current `ozw4/pyosv` Git commit and dirty
 state, copies the environment lock byte-for-byte, validates the completed
 private directory, and publishes it by an atomic sibling rename.
 
-## Fixed slice and figures
+## Fixed sections and atlases
 
-All three stages use one `i2` slice. The generator reads the source-recorded
-`positive_p99_radius2` threshold for the public `fvt.dat`, counts positive
-samples at or above that threshold in each `i2` slice, and selects the slice
-with the largest count. A tie selects the smallest index. The selected index is
-not fixed to a dataset-specific constant.
+The volume order is `(n3, n2, n1)`. Time slices use `volume[:, :, i1]` and are
+reported as array indices `i1=<index>`. Inline sections use
+`volume[i3, :, :]` and are reported as `i3=<index>`; no physical-inline number
+conversion is applied.
 
-Each stage figure has three panels:
+For each axis, the generator divides its length into five contiguous equal
+bins. Within every bin it uses the source-recorded `positive_p99_radius2`
+threshold for public `fvt.dat`, counts positive samples at or above the
+threshold, and selects the largest ridge count. A tie, including an all-zero
+bin, selects the smallest index. The fixed policy is
+`public_fvt_positive_p99_peak_per_equal_bin`. Q-QUAL does not affect section
+selection. The resulting five time slices and five inline sections are shared
+by `ft`, `fv`, and `fvt`.
 
-1. gray amplitude with the `PUBLIC-REF` attribute in `magma`;
-2. the same gray amplitude with the Q-QUAL-lineage attribute in `magma`;
-3. the same gray amplitude with the signed `Q-QUAL - PUBLIC-REF` difference in
-   `coolwarm`, centered at zero.
+Each stage and orientation produces one five-row by three-column atlas. Its
+columns are:
 
-The amplitude range is the symmetric 99th percentile of the absolute selected
-`xs.dat` slice. Attribute overlays use their source-recorded stage thresholds,
-a shared stage scale from the recorded full-volume maxima, and maximum alpha
-`0.75`. The difference is formed only on the selected 2-D slice; its symmetric
-range is the 99th percentile of absolute difference and its alpha increases
-with absolute difference.
+1. gray signed amplitude with the `PUBLIC-REF` attribute in `inferno`;
+2. the same amplitude with the Q-QUAL-lineage attribute in `inferno`;
+3. the same amplitude with signed `Q-QUAL - PUBLIC-REF` in `coolwarm`, centered
+   at zero.
+
+Amplitude uses a symmetric range from the 99th percentile of absolute values
+across the five selected sections. This range is shared by all stages for the
+same orientation. Attribute overlays use their source-recorded stage
+thresholds and a shared stage scale from the recorded full-volume maxima.
+Values below threshold are transparent. At and above threshold, alpha runs
+from `0.12` to `0.85` using gamma `2.0`, so threshold ridges remain visible and
+high values appear as brighter, denser inferno colors. Signed differences are
+formed only on the selected 2-D sections. Their symmetric 99th-percentile range
+is shared across the five sections in each stage and orientation, with alpha
+linear in absolute difference.
 
 ## Summary metrics
 
@@ -98,8 +111,8 @@ Nullable directional distances are represented by an empty CSV field.
 
 ## Output layout
 
-The generated directory has exactly this layout, where `<index>` is the one
-selected `i2` index and the lock keeps its input basename:
+The generated directory has exactly this layout; the lock keeps its input
+basename:
 
 ```text
 publication_manifest.json
@@ -107,13 +120,19 @@ experiment.json
 <environment lock basename>
 f3_q_qual_vs_public_ref_summary.csv
 figure_data/
-  f3_ft_public_ref_vs_q_qual_i2_<index>.csv
-  f3_fv_public_ref_vs_q_qual_i2_<index>.csv
-  f3_fvt_public_ref_vs_q_qual_i2_<index>.csv
+  f3_ft_time_slices.csv
+  f3_ft_inline_sections.csv
+  f3_fv_time_slices.csv
+  f3_fv_inline_sections.csv
+  f3_fvt_time_slices.csv
+  f3_fvt_inline_sections.csv
 figures/
-  f3_ft_public_ref_vs_q_qual_i2_<index>.png
-  f3_fv_public_ref_vs_q_qual_i2_<index>.png
-  f3_fvt_public_ref_vs_q_qual_i2_<index>.png
+  f3_ft_time_slices.png
+  f3_ft_inline_sections.png
+  f3_fv_time_slices.png
+  f3_fv_inline_sections.png
+  f3_fvt_time_slices.png
+  f3_fvt_inline_sections.png
 report.md
 ```
 
