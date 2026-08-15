@@ -86,18 +86,21 @@ Amplitude uses a symmetric range from the 99th percentile of absolute values
 across the four selected sections. This range is shared by all stages for the
 same orientation. Section selection and metrics use the source-recorded stage
 thresholds. Attribute opacity uses a display threshold equal to `0.5` times
-each condition's source-recorded threshold, while the shared stage scale remains
-the recorded full-volume maximum. Values below the display threshold are
-transparent. At and above it, alpha runs from `0.12` to `0.85` using gamma
-`2.0`, so lower-valued ridges remain visible and high values appear as brighter,
-denser inferno colors. Amplitude, attribute, and signed-difference images use
-nearest-neighbor interpolation. A fixed one-pixel cross-shaped halo with alpha
-`0.15` is drawn beneath the original PUBLIC-REF and Q-QUAL overlays. The halo is
-display-only and is not used in section selection, metrics, or summary tables.
-It is not applied to the signed-difference panel. Signed differences are formed
-only on the selected 2-D sections. Their symmetric 99th-percentile range is
-shared across the four sections in each stage and orientation, with alpha
-linear in absolute difference.
+each condition's source-recorded threshold for `fvt`. For `ft` and `fv`, the
+display threshold is the source-recorded threshold itself. The shared scale for
+each stage remains the recorded full-volume maximum; no ratio is applied to the
+scale. Values below the display threshold are transparent. At and above it,
+alpha runs from `0.12` to `0.85` using gamma `2.0`, so high values appear as
+brighter, denser inferno colors. Amplitude, attribute, and signed-difference
+images use nearest-neighbor interpolation.
+
+A fixed cyan (`#00ffff`) one-pixel cross-shaped halo with alpha `0.15` is drawn
+beneath the original PUBLIC-REF and Q-QUAL overlays for `fvt` only. The halo is
+a display aid and is not used in section selection, metrics, or summary tables.
+It is not applied to `ft`, `fv`, amplitude, or any signed-difference panel.
+Signed differences are formed only on the selected 2-D sections. Their
+symmetric 99th-percentile range is shared across the four sections in each
+stage and orientation, with alpha linear in absolute difference.
 
 ## Summary metrics
 

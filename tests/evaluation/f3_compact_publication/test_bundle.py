@@ -321,8 +321,10 @@ def test_report_has_required_semantics_and_only_displayed_conditions(
     assert "divided into 4 equal bins" in report
     assert "4 time slices and 4 inline sections" in report
     assert "x=crossline (`i2`) and y=time (`i1`)" in report
-    assert "1-pixel `cross` halo with alpha 0.15" in report
-    assert "only to PUBLIC-REF and Q-QUAL display overlays" in report
+    assert "`ft` and `fv` display thresholds use their source thresholds (ratio 1.0)" in report
+    assert "only `fvt` uses half of each condition's source threshold (ratio 0.5)" in report
+    assert "1-pixel `cross` halo in `#00ffff` with alpha 0.15" in report
+    assert "only to `fvt` PUBLIC-REF and Q-QUAL display overlays" in report
     assert "not geological truth" in report
     for stage in _STAGES:
         for group in _GROUPS:

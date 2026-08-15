@@ -19,13 +19,15 @@ from pyosv.evaluation.f3_compact_publication.config import (
     ATTRIBUTE_ALPHA_MAX,
     ATTRIBUTE_ALPHA_MIN,
     ATTRIBUTE_COLORMAP,
-    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO,
-    ATTRIBUTE_HALO_ALPHA,
-    ATTRIBUTE_HALO_ENABLED,
-    ATTRIBUTE_HALO_RADIUS_PIXELS,
-    ATTRIBUTE_HALO_STRUCTURE,
+    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE,
+    ATTRIBUTE_HALO_STAGES,
     DISPLAY_CELL,
     FIGURE_DATA_HEADER,
+    FVT_HALO_ALPHA,
+    FVT_HALO_COLOR,
+    FVT_HALO_ENABLED,
+    FVT_HALO_RADIUS_PIXELS,
+    FVT_HALO_STRUCTURE,
     IMAGE_INTERPOLATION,
     PUBLIC_REFERENCE_LABEL,
     SECTION_GROUPS,
@@ -315,23 +317,28 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
         assert tuple(int(rows[index]["bin_index"]) for index in range(0, row_count, 3)) == tuple(
             range(SECTIONS_PER_AXIS)
         )
+        ratio = ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE[stage]
+        use_halo = stage in ATTRIBUTE_HALO_STAGES
         for offset in range(0, row_count, 3):
             public, candidate, difference = rows[offset : offset + 3]
             assert public["source_sha256"] == source.public_reference_sha256
             assert public["source_stage_fingerprint"] == ""
             assert float(public["selection_threshold"]) == thresholds.public_reference_threshold
+            assert float(public["display_threshold_ratio"]) == ratio
             assert float(public["display_threshold"]) == pytest.approx(
-                thresholds.public_reference_threshold * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+                thresholds.public_reference_threshold * ratio
             )
             assert candidate["source_sha256"] == ""
             assert candidate["source_stage_fingerprint"] == source.candidate_fingerprint
             assert float(candidate["selection_threshold"]) == thresholds.q_qual_threshold
+            assert float(candidate["display_threshold_ratio"]) == ratio
             assert float(candidate["display_threshold"]) == pytest.approx(
-                thresholds.q_qual_threshold * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+                thresholds.q_qual_threshold * ratio
             )
             assert difference["source_label"] == "Q-QUAL - PUBLIC-REF"
             assert difference["source_file"] == ""
             assert difference["selection_threshold"] == ""
+            assert difference["display_threshold_ratio"] == ""
             assert difference["display_threshold"] == ""
             assert {row["interpolation"] for row in (public, candidate, difference)} == {
                 IMAGE_INTERPOLATION
@@ -341,14 +348,18 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
                 assert float(attribute["alpha_min"]) == ATTRIBUTE_ALPHA_MIN
                 assert float(attribute["alpha_max"]) == ATTRIBUTE_ALPHA_MAX
                 assert float(attribute["alpha_gamma"]) == ATTRIBUTE_ALPHA_GAMMA
-                assert attribute["halo_enabled"] == "true"
-                assert int(attribute["halo_radius_pixels"]) == ATTRIBUTE_HALO_RADIUS_PIXELS
-                assert float(attribute["halo_alpha"]) == ATTRIBUTE_HALO_ALPHA
-                assert attribute["halo_structure"] == ATTRIBUTE_HALO_STRUCTURE
+                assert attribute["halo_enabled"] == ("true" if use_halo else "false")
+                assert attribute["halo_radius_pixels"] == (
+                    str(FVT_HALO_RADIUS_PIXELS) if use_halo else ""
+                )
+                assert attribute["halo_alpha"] == (repr(FVT_HALO_ALPHA) if use_halo else "")
+                assert attribute["halo_structure"] == (FVT_HALO_STRUCTURE if use_halo else "")
+                assert attribute["halo_color"] == (FVT_HALO_COLOR if use_halo else "")
             assert difference["halo_enabled"] == "false"
             assert difference["halo_radius_pixels"] == ""
             assert difference["halo_alpha"] == ""
             assert difference["halo_structure"] == ""
+            assert difference["halo_color"] == ""
             assert difference["alpha_min"] == ""
             assert difference["alpha_gamma"] == ""
         expected_vmax = max(
@@ -372,22 +383,22 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
 
     assert all(len(values) == 1 for values in group_indices.values())
     assert all(len(values) == 1 for values in amplitude_limits.values())
-    assert len(imshow_calls) == len(records) * SECTIONS_PER_AXIS * 8
+    assert len(imshow_calls) == (
+        len(records) * SECTIONS_PER_AXIS * 6 + len(SECTION_GROUPS) * SECTIONS_PER_AXIS * 2
+    )
     assert {kwargs.get("interpolation") for _args, kwargs in imshow_calls} == {IMAGE_INTERPOLATION}
     halo_calls = [
         (args, kwargs)
         for args, kwargs in imshow_calls
-        if args
-        and isinstance(args[0], np.ndarray)
-        and np.issubdtype(args[0].dtype, np.floating)
-        and np.isnan(args[0]).any()
+        if args and isinstance(args[0], np.ndarray) and args[0].ndim == 3 and args[0].shape[-1] == 4
     ]
-    assert len(halo_calls) == len(records) * SECTIONS_PER_AXIS * 2
-    assert {kwargs["cmap"] for _args, kwargs in halo_calls} == {ATTRIBUTE_COLORMAP}
-    for _args, kwargs in halo_calls:
-        alpha = np.asarray(kwargs["alpha"])
-        assert np.all(alpha[alpha == 0.0] == 0.0)
-        assert np.allclose(alpha[alpha > 0.0], ATTRIBUTE_HALO_ALPHA)
+    assert len(halo_calls) == len(SECTION_GROUPS) * SECTIONS_PER_AXIS * 2
+    for args, kwargs in halo_calls:
+        rgba = np.asarray(args[0])
+        visible = rgba[..., 3] > 0.0
+        assert np.allclose(rgba[visible, :3], (0.0, 1.0, 1.0))
+        assert np.allclose(rgba[visible, 3], FVT_HALO_ALPHA)
+        assert "cmap" not in kwargs
     public_text = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted((output / "figure_data").glob("*.csv"))
     ) + "\n".join(str(value) for record in records for value in record.values())
@@ -398,7 +409,7 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
 
 def test_attribute_alpha_keeps_threshold_visible_and_emphasizes_high_values() -> None:
     source_threshold = 0.8
-    display_threshold = figures_module._display_threshold(source_threshold)
+    display_threshold = figures_module._display_threshold("fvt", source_threshold)
     values = np.asarray([[0.39, 0.4, 0.6, 1.0]], dtype=np.float32)
     alpha = figures_module._ridge_alpha(
         values,
@@ -413,6 +424,14 @@ def test_attribute_alpha_keeps_threshold_visible_and_emphasizes_high_values() ->
     assert alpha[0, 3] == pytest.approx(ATTRIBUTE_ALPHA_MAX)
     assert values[0, 2] < source_threshold
     assert alpha[0, 2] > 0.0
+    fv_display_threshold = figures_module._display_threshold("fv", source_threshold)
+    fv_alpha = figures_module._ridge_alpha(
+        values,
+        display_threshold=fv_display_threshold,
+        vmax=1.0,
+    )
+    assert fv_display_threshold == source_threshold
+    assert fv_alpha[0, 2] == 0.0
     assert IMAGE_INTERPOLATION == "nearest"
 
 
@@ -428,7 +447,7 @@ def test_section_orientation_uses_crossline_as_horizontal_axis() -> None:
     assert np.array_equal(inline, volume[1, :, :].T)
 
 
-def test_halo_is_one_pixel_cross_outer_ring_with_fixed_alpha() -> None:
+def test_halo_is_one_pixel_cross_outer_ring_with_fixed_color_and_alpha() -> None:
     values = np.zeros((5, 5), dtype=np.float32)
     values[2, 2] = 0.8
     display_mask = figures_module._display_mask(values, display_threshold=0.4)
@@ -441,12 +460,21 @@ def test_halo_is_one_pixel_cross_outer_ring_with_fixed_alpha() -> None:
     expected[3, 2] = True
     assert np.array_equal(halo, expected)
     assert not np.any(halo & display_mask)
-    alpha = figures_module._halo_alpha(halo)
-    assert np.all(alpha[halo] == ATTRIBUTE_HALO_ALPHA)
-    assert np.all(alpha[~halo] == 0.0)
-    assert ATTRIBUTE_HALO_ENABLED is True
-    assert ATTRIBUTE_HALO_RADIUS_PIXELS == 1
-    assert ATTRIBUTE_HALO_STRUCTURE == "cross"
+    calls: list[tuple[np.ndarray, dict[str, object]]] = []
+    panel = SimpleNamespace(
+        imshow=lambda values, **kwargs: calls.append((np.asarray(values), kwargs))
+    )
+    figures_module._draw_halo(panel, halo)
+    rgba, kwargs = calls[0]
+    assert np.allclose(rgba[halo, :3], (0.0, 1.0, 1.0))
+    assert np.all(rgba[halo, 3] == FVT_HALO_ALPHA)
+    assert np.all(rgba[~halo] == 0.0)
+    assert kwargs["interpolation"] == IMAGE_INTERPOLATION
+    assert ATTRIBUTE_HALO_STAGES == frozenset({"fvt"})
+    assert FVT_HALO_ENABLED is True
+    assert FVT_HALO_RADIUS_PIXELS == 1
+    assert FVT_HALO_STRUCTURE == "cross"
+    assert FVT_HALO_COLOR == "#00ffff"
 
 
 def test_degenerate_amplitude_and_difference_use_finite_floor(

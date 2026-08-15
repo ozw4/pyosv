@@ -30,15 +30,21 @@ SUMMARY_HEADER: Final = (
 EXPERIMENT_SCHEMA: Final = "pyosv.f3_compact_publication_experiment.v1"
 PUBLIC_REFERENCE_LABEL: Final = "PUBLIC-REF"
 AMPLITUDE_PERCENTILE: Final = 99.0
-ATTRIBUTE_COLORMAP: Final = "inferno"
-ATTRIBUTE_DISPLAY_THRESHOLD_RATIO: Final = 0.5
+ATTRIBUTE_COLORMAP: Final = "Reds"
+ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE: Final = {
+    "ft": 0.5,
+    "fv": 0.5,
+    "fvt": 0.5,
+}
 ATTRIBUTE_ALPHA_MIN: Final = 0.12
 ATTRIBUTE_ALPHA_MAX: Final = 0.85
 ATTRIBUTE_ALPHA_GAMMA: Final = 2.0
-ATTRIBUTE_HALO_ENABLED: Final = True
-ATTRIBUTE_HALO_RADIUS_PIXELS: Final = 1
-ATTRIBUTE_HALO_ALPHA: Final = 0.15
-ATTRIBUTE_HALO_STRUCTURE: Final = "cross"
+ATTRIBUTE_HALO_STAGES: Final = frozenset({"fvt"})
+FVT_HALO_ENABLED: Final = True
+FVT_HALO_RADIUS_PIXELS: Final = 1
+FVT_HALO_ALPHA: Final = 0.5
+FVT_HALO_STRUCTURE: Final = "cross"
+FVT_HALO_COLOR: Final = "red"
 IMAGE_INTERPOLATION: Final = "nearest"
 DIFFERENCE_COLORMAP: Final = "coolwarm"
 DIFFERENCE_PERCENTILE: Final = 99.0
@@ -57,6 +63,7 @@ FIGURE_DATA_HEADER: Final = (
     "source_sha256",
     "source_stage_fingerprint",
     "selection_threshold",
+    "display_threshold_ratio",
     "display_threshold",
     "amplitude_file",
     "amplitude_sha256",
@@ -72,6 +79,7 @@ FIGURE_DATA_HEADER: Final = (
     "halo_radius_pixels",
     "halo_alpha",
     "halo_structure",
+    "halo_color",
     "difference_limit",
 )
 
@@ -85,16 +93,18 @@ __all__ = [
     "ATTRIBUTE_ALPHA_MAX",
     "ATTRIBUTE_ALPHA_MIN",
     "ATTRIBUTE_COLORMAP",
-    "ATTRIBUTE_DISPLAY_THRESHOLD_RATIO",
-    "ATTRIBUTE_HALO_ALPHA",
-    "ATTRIBUTE_HALO_ENABLED",
-    "ATTRIBUTE_HALO_RADIUS_PIXELS",
-    "ATTRIBUTE_HALO_STRUCTURE",
+    "ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE",
+    "ATTRIBUTE_HALO_STAGES",
     "DIFFERENCE_COLORMAP",
     "DIFFERENCE_PERCENTILE",
     "DISPLAY_CELL",
     "EXPERIMENT_SCHEMA",
     "FIGURE_DATA_HEADER",
+    "FVT_HALO_ALPHA",
+    "FVT_HALO_COLOR",
+    "FVT_HALO_ENABLED",
+    "FVT_HALO_RADIUS_PIXELS",
+    "FVT_HALO_STRUCTURE",
     "IMAGE_INTERPOLATION",
     "PUBLIC_REFERENCE_LABEL",
     "SECTION_GROUPS",

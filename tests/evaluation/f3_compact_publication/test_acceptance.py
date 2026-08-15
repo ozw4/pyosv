@@ -15,11 +15,13 @@ import pytest
 from pyosv.cli import f3_compact_publication as compact_cli
 from pyosv.evaluation.f3_compact_publication import source as source_module
 from pyosv.evaluation.f3_compact_publication.config import (
-    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO,
-    ATTRIBUTE_HALO_ALPHA,
-    ATTRIBUTE_HALO_ENABLED,
-    ATTRIBUTE_HALO_RADIUS_PIXELS,
-    ATTRIBUTE_HALO_STRUCTURE,
+    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE,
+    ATTRIBUTE_HALO_STAGES,
+    FVT_HALO_ALPHA,
+    FVT_HALO_COLOR,
+    FVT_HALO_ENABLED,
+    FVT_HALO_RADIUS_PIXELS,
+    FVT_HALO_STRUCTURE,
     IMAGE_INTERPOLATION,
     SECTION_SELECTION_POLICY,
     SECTIONS_PER_AXIS,
@@ -348,25 +350,33 @@ def test_cli_generation_validation_and_archive_acceptance(
         expected_axis = "i1" if group == "time_slices" else "i3"
         assert {row["axis"] for row in rows} == {expected_axis}
         stage = rows[0]["stage"]
+        ratio = ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE[stage]
+        use_halo = stage in ATTRIBUTE_HALO_STAGES
         for public, candidate, difference in zip(rows[0::3], rows[1::3], rows[2::3], strict=True):
             assert float(public["selection_threshold"]) == _REFERENCE_THRESHOLDS[stage]
+            assert float(public["display_threshold_ratio"]) == ratio
             assert float(public["display_threshold"]) == pytest.approx(
-                _REFERENCE_THRESHOLDS[stage] * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+                _REFERENCE_THRESHOLDS[stage] * ratio
             )
             assert float(candidate["selection_threshold"]) == _CANDIDATE_THRESHOLDS[stage]
+            assert float(candidate["display_threshold_ratio"]) == ratio
             assert float(candidate["display_threshold"]) == pytest.approx(
-                _CANDIDATE_THRESHOLDS[stage] * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+                _CANDIDATE_THRESHOLDS[stage] * ratio
             )
             assert difference["selection_threshold"] == ""
+            assert difference["display_threshold_ratio"] == ""
             assert difference["display_threshold"] == ""
             assert {row["interpolation"] for row in (public, candidate, difference)} == {
                 IMAGE_INTERPOLATION
             }
             for attribute in (public, candidate):
-                assert attribute["halo_enabled"] == "true"
-                assert int(attribute["halo_radius_pixels"]) == ATTRIBUTE_HALO_RADIUS_PIXELS
-                assert float(attribute["halo_alpha"]) == ATTRIBUTE_HALO_ALPHA
-                assert attribute["halo_structure"] == ATTRIBUTE_HALO_STRUCTURE
+                assert attribute["halo_enabled"] == ("true" if use_halo else "false")
+                assert attribute["halo_radius_pixels"] == (
+                    str(FVT_HALO_RADIUS_PIXELS) if use_halo else ""
+                )
+                assert attribute["halo_alpha"] == (repr(FVT_HALO_ALPHA) if use_halo else "")
+                assert attribute["halo_structure"] == (FVT_HALO_STRUCTURE if use_halo else "")
+                assert attribute["halo_color"] == (FVT_HALO_COLOR if use_halo else "")
             assert difference["halo_enabled"] == "false"
     assert all(len(values) == 1 for values in figure_sections.values())
 
@@ -379,12 +389,18 @@ def test_cli_generation_validation_and_archive_acceptance(
     assert "slice" not in experiment
     assert len(experiment["sections"]["items"]) == 2 * SECTIONS_PER_AXIS
     assert experiment["sections"]["selection_policy"] == SECTION_SELECTION_POLICY
-    assert experiment["visualization"]["attribute_display_threshold_ratio"] == 0.5
+    assert experiment["visualization"]["attribute_display_threshold_ratio_by_stage"] == {
+        "ft": 1.0,
+        "fv": 1.0,
+        "fvt": 0.5,
+    }
     assert experiment["visualization"]["image_interpolation"] == "nearest"
-    assert experiment["visualization"]["attribute_halo_enabled"] is True
-    assert experiment["visualization"]["attribute_halo_radius_pixels"] == 1
-    assert experiment["visualization"]["attribute_halo_alpha"] == 0.15
-    assert experiment["visualization"]["attribute_halo_structure"] == "cross"
+    assert experiment["visualization"]["attribute_halo_stages"] == ["fvt"]
+    assert experiment["visualization"]["fvt_halo_enabled"] is True
+    assert experiment["visualization"]["fvt_halo_radius_pixels"] == 1
+    assert experiment["visualization"]["fvt_halo_alpha"] == 0.15
+    assert experiment["visualization"]["fvt_halo_structure"] == "cross"
+    assert experiment["visualization"]["fvt_halo_color"] == "#00ffff"
     public_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(output.rglob("*"))
@@ -490,14 +506,17 @@ def test_completed_f3_bundle_flows_through_source_validator(
     } == expected_fingerprints
     assert len(experiment["sections"]["items"]) == 2 * SECTIONS_PER_AXIS
     assert experiment["sections"]["selection_policy"] == SECTION_SELECTION_POLICY
-    assert experiment["visualization"]["attribute_display_threshold_ratio"] == 0.5
-    assert experiment["visualization"]["image_interpolation"] == "nearest"
-    assert experiment["visualization"]["attribute_halo_enabled"] is ATTRIBUTE_HALO_ENABLED
     assert (
-        experiment["visualization"]["attribute_halo_radius_pixels"] == ATTRIBUTE_HALO_RADIUS_PIXELS
+        experiment["visualization"]["attribute_display_threshold_ratio_by_stage"]
+        == ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE
     )
-    assert experiment["visualization"]["attribute_halo_alpha"] == ATTRIBUTE_HALO_ALPHA
-    assert experiment["visualization"]["attribute_halo_structure"] == ATTRIBUTE_HALO_STRUCTURE
+    assert experiment["visualization"]["image_interpolation"] == "nearest"
+    assert experiment["visualization"]["attribute_halo_stages"] == sorted(ATTRIBUTE_HALO_STAGES)
+    assert experiment["visualization"]["fvt_halo_enabled"] is FVT_HALO_ENABLED
+    assert experiment["visualization"]["fvt_halo_radius_pixels"] == FVT_HALO_RADIUS_PIXELS
+    assert experiment["visualization"]["fvt_halo_alpha"] == FVT_HALO_ALPHA
+    assert experiment["visualization"]["fvt_halo_structure"] == FVT_HALO_STRUCTURE
+    assert experiment["visualization"]["fvt_halo_color"] == FVT_HALO_COLOR
     assert len(tuple((output / "figures").glob("*.png"))) == 6
     assert len(tuple((output / "figure_data").glob("*.csv"))) == 6
     thresholds_by_stage = {item["stage"]: item for item in experiment["ridge_thresholds"]}
@@ -506,16 +525,19 @@ def test_completed_f3_bundle_flows_through_source_validator(
             rows = tuple(csv.DictReader(stream))
         stage = rows[0]["stage"]
         thresholds = thresholds_by_stage[stage]
+        ratio = ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE[stage]
+        use_halo = stage in ATTRIBUTE_HALO_STAGES
         for public, candidate, difference in zip(rows[0::3], rows[1::3], rows[2::3], strict=True):
             assert float(public["selection_threshold"]) == thresholds["public_reference_threshold"]
+            assert float(public["display_threshold_ratio"]) == ratio
             assert float(public["display_threshold"]) == pytest.approx(
-                float(public["selection_threshold"]) * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+                float(public["selection_threshold"]) * ratio
             )
             assert (
                 float(candidate["selection_threshold"]) == thresholds["q_qual_candidate_threshold"]
             )
             assert float(candidate["display_threshold"]) == pytest.approx(
-                float(candidate["selection_threshold"]) * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+                float(candidate["selection_threshold"]) * ratio
             )
             assert difference["selection_threshold"] == ""
             assert difference["display_threshold"] == ""
@@ -523,10 +545,13 @@ def test_completed_f3_bundle_flows_through_source_validator(
                 IMAGE_INTERPOLATION
             }
             for attribute in (public, candidate):
-                assert attribute["halo_enabled"] == "true"
-                assert int(attribute["halo_radius_pixels"]) == ATTRIBUTE_HALO_RADIUS_PIXELS
-                assert float(attribute["halo_alpha"]) == ATTRIBUTE_HALO_ALPHA
-                assert attribute["halo_structure"] == ATTRIBUTE_HALO_STRUCTURE
+                assert attribute["halo_enabled"] == ("true" if use_halo else "false")
+                assert attribute["halo_radius_pixels"] == (
+                    str(FVT_HALO_RADIUS_PIXELS) if use_halo else ""
+                )
+                assert attribute["halo_alpha"] == (repr(FVT_HALO_ALPHA) if use_halo else "")
+                assert attribute["halo_structure"] == (FVT_HALO_STRUCTURE if use_halo else "")
+                assert attribute["halo_color"] == (FVT_HALO_COLOR if use_halo else "")
             assert difference["halo_enabled"] == "false"
     with (output / "f3_q_qual_vs_public_ref_summary.csv").open(
         encoding="utf-8", newline=""

@@ -15,9 +15,11 @@ from typing import Any, cast
 from pyosv.evaluation.publication_manifest_io import artifact_file_record
 
 from .config import (
-    ATTRIBUTE_HALO_ALPHA,
-    ATTRIBUTE_HALO_RADIUS_PIXELS,
-    ATTRIBUTE_HALO_STRUCTURE,
+    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE,
+    FVT_HALO_ALPHA,
+    FVT_HALO_COLOR,
+    FVT_HALO_RADIUS_PIXELS,
+    FVT_HALO_STRUCTURE,
     SECTION_GROUPS,
     SECTION_SELECTION_POLICY,
     SECTIONS_PER_AXIS,
@@ -344,7 +346,8 @@ def _render_report(
         f"Sections are selected only from public `fvt.dat` using `{SECTION_SELECTION_POLICY}`. Each axis is divided into {SECTIONS_PER_AXIS} equal bins, and one ridge-count peak is selected per bin. The same sections are shared by `ft`, `fv`, and `fvt`.",
         f"The atlases contain {SECTIONS_PER_AXIS} time slices and {SECTIONS_PER_AXIS} inline sections.",
         "Inline sections are displayed with x=crossline (`i2`) and y=time (`i1`).",
-        f"A fixed {ATTRIBUTE_HALO_RADIUS_PIXELS}-pixel `{ATTRIBUTE_HALO_STRUCTURE}` halo with alpha {ATTRIBUTE_HALO_ALPHA} is applied only to PUBLIC-REF and Q-QUAL display overlays. It is not used in section selection, metrics, or summary tables.",
+        f"The `ft` and `fv` display thresholds use their source thresholds (ratio {ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE['ft']}); only `fvt` uses half of each condition's source threshold (ratio {ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE['fvt']}).",
+        f"A fixed {FVT_HALO_RADIUS_PIXELS}-pixel `{FVT_HALO_STRUCTURE}` halo in `{FVT_HALO_COLOR}` with alpha {FVT_HALO_ALPHA} is applied only to `fvt` PUBLIC-REF and Q-QUAL display overlays. It is not used in section selection, metrics, or summary tables.",
         "",
     ]
     for section_group, axis in SECTION_GROUPS:

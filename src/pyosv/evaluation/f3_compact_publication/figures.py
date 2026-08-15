@@ -21,15 +21,17 @@ from .config import (
     ATTRIBUTE_ALPHA_MAX,
     ATTRIBUTE_ALPHA_MIN,
     ATTRIBUTE_COLORMAP,
-    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO,
-    ATTRIBUTE_HALO_ALPHA,
-    ATTRIBUTE_HALO_ENABLED,
-    ATTRIBUTE_HALO_RADIUS_PIXELS,
-    ATTRIBUTE_HALO_STRUCTURE,
+    ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE,
+    ATTRIBUTE_HALO_STAGES,
     DIFFERENCE_COLORMAP,
     DIFFERENCE_PERCENTILE,
     DISPLAY_CELL,
     FIGURE_DATA_HEADER,
+    FVT_HALO_ALPHA,
+    FVT_HALO_COLOR,
+    FVT_HALO_ENABLED,
+    FVT_HALO_RADIUS_PIXELS,
+    FVT_HALO_STRUCTURE,
     IMAGE_INTERPOLATION,
     PUBLIC_REFERENCE_LABEL,
     SECTION_GROUPS,
@@ -70,8 +72,12 @@ def _finite_number(value: object, name: str) -> float:
     return number
 
 
-def _display_threshold(source_threshold: float) -> float:
-    return source_threshold * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO
+def _display_threshold(stage: str, source_threshold: float) -> float:
+    return source_threshold * ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE[stage]
+
+
+def _uses_halo(stage: str) -> bool:
+    return FVT_HALO_ENABLED and stage in ATTRIBUTE_HALO_STAGES
 
 
 def _basename(value: str, name: str) -> str:
@@ -176,21 +182,27 @@ def _display_mask(values: np.ndarray, display_threshold: float) -> np.ndarray:
 
 
 def _halo_mask(mask: np.ndarray) -> np.ndarray:
-    if not ATTRIBUTE_HALO_ENABLED:
-        return np.zeros(mask.shape, dtype=bool)
     halo = binary_dilation(
         mask,
         structure=HALO_STRUCTURE,
-        iterations=ATTRIBUTE_HALO_RADIUS_PIXELS,
+        iterations=FVT_HALO_RADIUS_PIXELS,
     )
     halo &= ~mask
     return halo
 
 
-def _halo_alpha(mask: np.ndarray) -> np.ndarray:
-    alpha = np.zeros(mask.shape, dtype=np.float32)
-    alpha[mask] = ATTRIBUTE_HALO_ALPHA
-    return alpha
+def _draw_halo(panel: Any, halo_mask: np.ndarray) -> None:
+    from matplotlib.colors import to_rgb
+
+    rgba = np.zeros((*halo_mask.shape, 4), dtype=np.float32)
+    rgba[halo_mask, :3] = to_rgb(FVT_HALO_COLOR)
+    rgba[halo_mask, 3] = FVT_HALO_ALPHA
+    panel.imshow(
+        rgba,
+        interpolation=IMAGE_INTERPOLATION,
+        origin="upper",
+        aspect="auto",
+    )
 
 
 def _ridge_alpha(
@@ -249,6 +261,8 @@ def _figure_rows(
     difference_limit: float,
 ) -> tuple[Mapping[str, object], ...]:
     rows: list[Mapping[str, object]] = []
+    display_threshold_ratio = ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE[source.stage]
+    use_halo = _uses_halo(source.stage)
     for selected in selections:
         common: dict[str, object] = {
             "figure_id": figure_id,
@@ -279,7 +293,10 @@ def _figure_rows(
                     source_sha256=source.public_reference_sha256,
                     source_stage_fingerprint=None,
                     selection_threshold=thresholds.public_reference_threshold,
-                    display_threshold=_display_threshold(thresholds.public_reference_threshold),
+                    display_threshold_ratio=display_threshold_ratio,
+                    display_threshold=_display_threshold(
+                        source.stage, thresholds.public_reference_threshold
+                    ),
                     overlay_vmin=0.0,
                     overlay_vmax=overlay_vmax,
                     alpha_min=ATTRIBUTE_ALPHA_MIN,
@@ -287,10 +304,11 @@ def _figure_rows(
                     alpha_gamma=ATTRIBUTE_ALPHA_GAMMA,
                     colormap=ATTRIBUTE_COLORMAP,
                     interpolation=IMAGE_INTERPOLATION,
-                    halo_enabled=ATTRIBUTE_HALO_ENABLED,
-                    halo_radius_pixels=ATTRIBUTE_HALO_RADIUS_PIXELS,
-                    halo_alpha=ATTRIBUTE_HALO_ALPHA,
-                    halo_structure=ATTRIBUTE_HALO_STRUCTURE,
+                    halo_enabled=use_halo,
+                    halo_radius_pixels=FVT_HALO_RADIUS_PIXELS if use_halo else None,
+                    halo_alpha=FVT_HALO_ALPHA if use_halo else None,
+                    halo_structure=FVT_HALO_STRUCTURE if use_halo else None,
+                    halo_color=FVT_HALO_COLOR if use_halo else None,
                     difference_limit=None,
                 ),
                 row(
@@ -300,7 +318,8 @@ def _figure_rows(
                     source_sha256=None,
                     source_stage_fingerprint=source.candidate_fingerprint,
                     selection_threshold=thresholds.q_qual_threshold,
-                    display_threshold=_display_threshold(thresholds.q_qual_threshold),
+                    display_threshold_ratio=display_threshold_ratio,
+                    display_threshold=_display_threshold(source.stage, thresholds.q_qual_threshold),
                     overlay_vmin=0.0,
                     overlay_vmax=overlay_vmax,
                     alpha_min=ATTRIBUTE_ALPHA_MIN,
@@ -308,10 +327,11 @@ def _figure_rows(
                     alpha_gamma=ATTRIBUTE_ALPHA_GAMMA,
                     colormap=ATTRIBUTE_COLORMAP,
                     interpolation=IMAGE_INTERPOLATION,
-                    halo_enabled=ATTRIBUTE_HALO_ENABLED,
-                    halo_radius_pixels=ATTRIBUTE_HALO_RADIUS_PIXELS,
-                    halo_alpha=ATTRIBUTE_HALO_ALPHA,
-                    halo_structure=ATTRIBUTE_HALO_STRUCTURE,
+                    halo_enabled=use_halo,
+                    halo_radius_pixels=FVT_HALO_RADIUS_PIXELS if use_halo else None,
+                    halo_alpha=FVT_HALO_ALPHA if use_halo else None,
+                    halo_structure=FVT_HALO_STRUCTURE if use_halo else None,
+                    halo_color=FVT_HALO_COLOR if use_halo else None,
                     difference_limit=None,
                 ),
                 row(
@@ -321,6 +341,7 @@ def _figure_rows(
                     source_sha256=None,
                     source_stage_fingerprint=None,
                     selection_threshold=None,
+                    display_threshold_ratio=None,
                     display_threshold=None,
                     overlay_vmin=-difference_limit,
                     overlay_vmax=difference_limit,
@@ -333,6 +354,7 @@ def _figure_rows(
                     halo_radius_pixels=None,
                     halo_alpha=None,
                     halo_structure=None,
+                    halo_color=None,
                     difference_limit=difference_limit,
                 ),
             )
@@ -361,6 +383,7 @@ def _plot_atlas(
     figure, axes = plt.subplots(SECTIONS_PER_AXIS, 3, figsize=(16.0, 15.0), squeeze=False)
     reference_image = None
     difference_image = None
+    use_halo = _uses_halo(stage)
     try:
         for row_index, (index, amplitude, reference, candidate, difference) in enumerate(
             zip(indices, amplitudes, references, candidates, differences, strict=True)
@@ -378,18 +401,9 @@ def _plot_atlas(
                 )
                 panel.set_xticks([])
                 panel.set_yticks([])
-            reference_mask = _display_mask(reference, reference_display_threshold)
-            reference_halo = _halo_mask(reference_mask)
-            panels[0].imshow(
-                np.where(reference_halo, reference, np.nan),
-                cmap=ATTRIBUTE_COLORMAP,
-                vmin=0.0,
-                vmax=overlay_vmax,
-                alpha=_halo_alpha(reference_halo),
-                interpolation=IMAGE_INTERPOLATION,
-                origin="upper",
-                aspect="auto",
-            )
+            if use_halo:
+                reference_mask = _display_mask(reference, reference_display_threshold)
+                _draw_halo(panels[0], _halo_mask(reference_mask))
             reference_image = panels[0].imshow(
                 reference,
                 cmap=ATTRIBUTE_COLORMAP,
@@ -400,18 +414,9 @@ def _plot_atlas(
                 origin="upper",
                 aspect="auto",
             )
-            candidate_mask = _display_mask(candidate, candidate_display_threshold)
-            candidate_halo = _halo_mask(candidate_mask)
-            panels[1].imshow(
-                np.where(candidate_halo, candidate, np.nan),
-                cmap=ATTRIBUTE_COLORMAP,
-                vmin=0.0,
-                vmax=overlay_vmax,
-                alpha=_halo_alpha(candidate_halo),
-                interpolation=IMAGE_INTERPOLATION,
-                origin="upper",
-                aspect="auto",
-            )
+            if use_halo:
+                candidate_mask = _display_mask(candidate, candidate_display_threshold)
+                _draw_halo(panels[1], _halo_mask(candidate_mask))
             panels[1].imshow(
                 candidate,
                 cmap=ATTRIBUTE_COLORMAP,
@@ -550,8 +555,8 @@ def generate_figures(
         candidate_source_threshold = _finite_number(
             thresholds.q_qual_threshold, f"Q-QUAL {source.stage} threshold"
         )
-        reference_display_threshold = _display_threshold(reference_source_threshold)
-        candidate_display_threshold = _display_threshold(candidate_source_threshold)
+        reference_display_threshold = _display_threshold(source.stage, reference_source_threshold)
+        candidate_display_threshold = _display_threshold(source.stage, candidate_source_threshold)
         references = _read_selected_sections(
             source.public_reference_path,
             shape=shape,
