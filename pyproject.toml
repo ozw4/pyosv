@@ -14,6 +14,9 @@ dependencies = [
     "threadpoolctl",
 ]
 
+[project.scripts]
+pyosv-qqual3d = "pyosv.cli.qqual3d:main"
+
 [project.optional-dependencies]
 accel = [
     "numba",
