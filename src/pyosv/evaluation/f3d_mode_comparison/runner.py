@@ -36,6 +36,7 @@ from pyosv.evaluation.workflow3d import (
     execute_workflow3d,
 )
 from pyosv.experimental.boundary_skinning import apply_boundary_skinner_fallback
+from pyosv.qqual3d.profile import _CANONICAL_QQUAL3D_SETTINGS
 from pyosv.synthetic_metrics import skin_mask_from_skins, skin_topology_metrics
 
 from .artifacts import (
@@ -72,7 +73,7 @@ F3_CELL_REFERENCE_SCHEMA_VERSION = 1
 
 _DAT_DTYPE = np.dtype(">f4")
 _STAGE_REPORT = F3StageArtifact("report.json")
-_DEFAULT_VARIANT = VariantSpec("f3-canonical", experimental=False)
+_DEFAULT_VARIANT = _CANONICAL_QQUAL3D_SETTINGS.variant
 
 WorkflowRunner = Callable[..., Workflow3DResult]
 RuntimeHook = Callable[["F3StageRuntime"], None]

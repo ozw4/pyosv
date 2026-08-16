@@ -6,11 +6,14 @@ import math
 import numbers
 from dataclasses import dataclass
 
+from pyosv.qqual3d.profile import _CANONICAL_QQUAL3D_SETTINGS
+
 from ..promotion.scanner_policy import effective_remove_edge_effects
 from ..synthetic_quality import SyntheticSkinningConfig, SyntheticVotingConfig
 
 F3_SCANNER_BACKENDS = ("reference-like", "quality")
 F3_WORKFLOW_MODES = ("reference", "quality")
+_QQUAL = _CANONICAL_QQUAL3D_SETTINGS
 
 
 def _finite_float(value: object, name: str) -> float:
@@ -69,22 +72,22 @@ class F3ScannerConfig:
     """Scanner controls resolved for one canonical scanner backend."""
 
     backend: str = "reference-like"
-    phi_min: float = 0.0
-    phi_max: float = 360.0
-    theta_min: float = 65.0
-    theta_max: float = 80.0
-    sigma1: float = 8.0
-    sigma2: float = 8.0
-    refinement_factor: int = 2
+    phi_min: float = _QQUAL.phi_min
+    phi_max: float = _QQUAL.phi_max
+    theta_min: float = _QQUAL.theta_min
+    theta_max: float = _QQUAL.theta_max
+    sigma1: float = _QQUAL.sigma1
+    sigma2: float = _QQUAL.sigma2
+    refinement_factor: int = _QQUAL.scanner_refinement_factor
     orientation_backend: str = "rotate_shear"
     interpolation_backend: str = "scipy"
     interpolation_order: int = 1
     smoothing_sigma: float | None = None
     normalize: bool = True
     dtype: str = "float32"
-    scanner_thin_mode: str = "reference"
-    reference_thin_sigma: float = 1.0
-    remove_edge_effects: bool = True
+    scanner_thin_mode: str = _QQUAL.scanner_thin_mode
+    reference_thin_sigma: float = _QQUAL.voting_config.reference_thin_sigma
+    remove_edge_effects: bool = _QQUAL.remove_edge_effects
 
     def __post_init__(self) -> None:
         if self.backend not in F3_SCANNER_BACKENDS:
@@ -152,22 +155,22 @@ class F3ScannerConfig:
 class F3VotingControls:
     """Controls held constant across all four F3 comparison cells."""
 
-    ru: int = 10
-    rv: int = 20
-    rw: int = 30
-    seed_distance: int = 4
-    seed_threshold: float = 0.3
-    strain_max1: float = 0.25
-    strain_max2: float = 0.25
-    attribute_smoothing: int = 1
-    surface_smoothing1: float = 2.0
-    surface_smoothing2: float = 2.0
-    surface_orientation_smoothing: float = 30.0
-    final_normalization_smoothing: float = 0.0
-    reference_thin_sigma: float = 1.0
-    surface_support_min_fraction: float = 0.0
-    surface_support_exponent: float = 0.0
-    surface_voting_boundary_policy: str = "reference"
+    ru: int = _QQUAL.voting_config.ru
+    rv: int = _QQUAL.voting_config.rv
+    rw: int = _QQUAL.voting_config.rw
+    seed_distance: int = _QQUAL.voting_config.seed_distance
+    seed_threshold: float = _QQUAL.voting_config.seed_threshold
+    strain_max1: float = _QQUAL.voting_controls.strain_max1
+    strain_max2: float = _QQUAL.voting_controls.strain_max2
+    attribute_smoothing: int = _QQUAL.voting_config.attribute_smoothing
+    surface_smoothing1: float = _QQUAL.voting_controls.surface_smoothing1
+    surface_smoothing2: float = _QQUAL.voting_controls.surface_smoothing2
+    surface_orientation_smoothing: float = _QQUAL.voting_controls.orientation_smoothing
+    final_normalization_smoothing: float = _QQUAL.voting_controls.final_normalization_smoothing
+    reference_thin_sigma: float = _QQUAL.voting_config.reference_thin_sigma
+    surface_support_min_fraction: float = _QQUAL.voting_controls.support_min_fraction
+    surface_support_exponent: float = _QQUAL.voting_controls.support_exponent
+    surface_voting_boundary_policy: str = _QQUAL.voting_controls.boundary_policy
 
     def __post_init__(self) -> None:
         for name in ("ru", "rv", "rw", "seed_distance", "attribute_smoothing"):
