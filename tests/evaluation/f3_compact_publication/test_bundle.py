@@ -8,10 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
+import pyosv.compact_publication_validation as manifest_module
 from pyosv.evaluation import f3_compact_publication as public_package
-from pyosv.evaluation.f3_compact_publication import bundle as bundle_module
 from pyosv.evaluation.f3_compact_publication import figures as figures_module
-from pyosv.evaluation.f3_compact_publication import manifest as manifest_module
 from pyosv.evaluation.f3_compact_publication import source as source_module
 from pyosv.evaluation.f3_compact_publication import summary as summary_module
 from pyosv.evaluation.f3_compact_publication.bundle import (
@@ -266,7 +265,7 @@ def test_generates_exact_layout_and_valid_manifest(
         Path(path).name for path in expected_figure_data
     }
     manifest = validate_f3_compact_publication_bundle(output)
-    assert manifest == bundle_module.validate_publication_directory(output)
+    assert manifest == manifest_module.validate_compact_publication(output)
 
     artifacts = {item["path"]: item for item in manifest["artifacts"]}
     assert artifacts["uv.lock"]["tier"] == "primary"
@@ -432,7 +431,7 @@ def test_manifest_validation_failure_does_not_publish(
     def fail(_root: object) -> None:
         raise ValueError("manifest validation failed")
 
-    monkeypatch.setattr(manifest_module, "validate_publication_directory", fail)
+    monkeypatch.setattr(manifest_module, "validate_compact_publication", fail)
     with pytest.raises(ValueError, match="manifest validation failed"):
         _generate(source_root, data_root, lock, output)
 

@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 pyosv-qqual3d = "pyosv.cli.qqual3d:main"
+pyosv-validate-compact = "pyosv.cli.validate_compact_publication:main"
 
 [project.optional-dependencies]
 accel = [

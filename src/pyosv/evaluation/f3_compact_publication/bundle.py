@@ -12,6 +12,11 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, cast
 
+from pyosv.compact_publication_validation import (
+    build_manifest,
+    validate_compact_publication,
+    write_manifest,
+)
 from pyosv.evaluation.publication_manifest_io import artifact_file_record
 
 from .config import (
@@ -23,11 +28,6 @@ from .config import (
     SECTION_GROUPS,
     SECTION_SELECTION_POLICY,
     SECTIONS_PER_AXIS,
-)
-from .manifest import (
-    build_manifest,
-    validate_publication_directory,
-    write_manifest,
 )
 
 _EXPERIMENT_NAME = "experiment.json"
@@ -196,7 +196,7 @@ def validate_f3_compact_publication_bundle(
 ) -> Mapping[str, object]:
     """Validate a compact bundle without consulting its scientific sources."""
 
-    return validate_publication_directory(_path_argument(output_dir, "output_dir"))
+    return validate_compact_publication(_path_argument(output_dir, "output_dir"))
 
 
 def _path_argument(value: object, name: str) -> Path:
