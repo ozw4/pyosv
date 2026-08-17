@@ -15,7 +15,10 @@ its figures or metrics.
 
 ## Not included
 
-The public distribution and Release assets do not include raw F3 DAT volumes.
+The public distribution and Release assets do not contain the raw F3 DAT
+volumes. The compact publication is a derived evidence bundle containing
+figures, metrics, figure-data tables, and provenance metadata.
+
 The public source snapshot does not include the internal four-cell comparison
 runner, the full Synthetic evaluation, or the full publication generator.
 

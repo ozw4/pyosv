@@ -110,9 +110,11 @@ def test_third_party_and_data_attribution() -> None:
         assert expected in notice
 
     attribution = (TEMPLATE_ROOT / "DATA_ATTRIBUTION.md").read_text(encoding="utf-8")
-    assert "does not redistribute the raw F3 DAT volumes" in attribution
+    assert "does not contain the raw" in attribution
+    assert "dGB Earth Sciences" in attribution
+    assert "Google Drive" in attribution
+    assert "xinwucwp/osv" in attribution
     assert "not geological truth" in attribution
-    assert "Creative Commons subtype" in attribution
 
 
 def test_public_metadata_and_citation() -> None:
@@ -217,6 +219,12 @@ def test_document_contract_and_relative_links() -> None:
     assert "/home/dcuser/" not in combined
     assert re.search(r"\b(?:task|issue|pr)\s*#?\d+\b", combined, re.IGNORECASE) is None
     assert "migration history" not in lowered
+    assert "subject to confirmation" not in lowered
+    assert "pending confirmation" not in lowered
+    assert "permission unverified" not in lowered
+    assert "data-license status: unverified" not in lowered
+    assert "compact archive publication: hold" not in lowered
+    assert "permission must be confirmed" not in lowered
     assert "public reference is geological truth" not in lowered
     assert "reference_osv" not in combined
     assert "fv.dat` is the voted likelihood" in combined
