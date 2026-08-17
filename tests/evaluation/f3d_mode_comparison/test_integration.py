@@ -45,6 +45,8 @@ from pyosv.evaluation.f3d_mode_comparison import (
     scanner_sampling_evidence,
     validate_completed_f3d_bundle,
 )
+from pyosv.orient3d import FaultOrientScanner3
+from pyosv.qqual3d import run_qqual3d
 
 _SHAPE = (3, 4, 5)
 _ROLES = (
@@ -276,6 +278,73 @@ def _rehash_report(output_root: Path, filename: str) -> None:
         output_root / "reports" / filename
     )
     completion_path.write_bytes(canonical_json_bytes(completion) + b"\n")
+
+
+def test_public_qqual_runner_matches_canonical_qqual_stage_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shape = (11, 15, 17)
+    data_root = tmp_path / "fixture-data"
+    output_root = tmp_path / "run"
+    spec = _write_fixture(data_root, shape)
+    _, i2, i1 = np.indices(shape, dtype=np.float32)
+    ep = (np.exp(-0.5 * (i2 - 7.0) ** 2) * (1.0 + 0.05 * i1)).astype(np.float32)
+    ep.astype(">f4").tofile(data_root / "ep.dat")
+
+    plan = _fixture_plan(spec)
+    scanner_identity = "public-qqual-acceptance-scanner-v1"
+    sampling_evidence = {
+        backend: scanner_sampling_evidence(
+            FaultOrientScanner3(config.sigma1, config.sigma2),
+            config,
+            backend,
+            implementation_identity=scanner_identity,
+        )
+        for backend in ("reference-like", "quality")
+        for config in (plan.scanner_config_for(backend),)
+    }
+    completed = _run_fixture(
+        data_root,
+        output_root,
+        spec,
+        Counter(),
+        resume=False,
+        monkeypatch=monkeypatch,
+        scanner_implementation_identity=scanner_identity,
+        scanner_factory=FaultOrientScanner3,
+        sampling_evidence_by_backend=sampling_evidence,
+        finalization_deep=False,
+    )
+    qqual_cell = next(cell for cell in completed.cells if cell.label == "Q-QUAL")
+    public = run_qqual3d(
+        np.fromfile(data_root / "ep.dat", dtype=">f4").astype(np.float32).reshape(shape)
+    )
+
+    def stage_volume(kind: str, fingerprint: str, filename: str) -> np.ndarray:
+        return (
+            np.fromfile(output_root / "stages" / kind / fingerprint / filename, dtype=">f4")
+            .astype(np.float32)
+            .reshape(shape)
+        )
+
+    np.testing.assert_array_equal(
+        public.ft,
+        stage_volume("scanner", qqual_cell.stages.scanner, "ft.dat"),
+    )
+    np.testing.assert_array_equal(
+        public.fv,
+        stage_volume("voting", qqual_cell.stages.voting, "fv.dat"),
+    )
+    np.testing.assert_array_equal(
+        public.fvt,
+        stage_volume("thinning", qqual_cell.stages.thinning, "fvt.dat"),
+    )
+    np.testing.assert_array_equal(
+        public.skin_mask,
+        stage_volume("skinning", qqual_cell.stages.skinning, "skin_mask.dat"),
+    )
+    assert np.any(public.skin_mask)
 
 
 def test_small_external_style_fixture_end_to_end_and_complete_resume(
