@@ -77,8 +77,8 @@ by `ft`, `fv`, and `fvt`.
 Each stage and orientation produces one four-row by three-column atlas. Its
 columns are:
 
-1. gray signed amplitude with the `PUBLIC-REF` attribute in `inferno`;
-2. the same amplitude with the Q-QUAL-lineage attribute in `inferno`;
+1. gray signed amplitude with the `PUBLIC-REF` attribute in `Reds`;
+2. the same amplitude with the Q-QUAL-lineage attribute in `Reds`;
 3. the same amplitude with signed `Q-QUAL - PUBLIC-REF` in `coolwarm`, centered
    at zero.
 
