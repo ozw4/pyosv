@@ -159,7 +159,7 @@ def test_validates_archive_after_extraction(tmp_path: Path) -> None:
 def test_validator_runs_when_numerical_and_internal_modules_are_blocked(tmp_path: Path) -> None:
     root = _prepare_compact_publication(tmp_path / "publication")
     package_root = Path(__file__).resolve().parents[1] / "src"
-    script = r'''
+    script = r"""
 import importlib.abc
 import sys
 
@@ -183,7 +183,7 @@ class Blocker(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Blocker())
 from pyosv.compact_publication_validation import validate_compact_publication
 validate_compact_publication(sys.argv[1])
-'''
+"""
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(package_root)
 
