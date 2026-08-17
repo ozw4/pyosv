@@ -217,6 +217,7 @@ def test_document_contract_and_relative_links() -> None:
     lowered = combined.lower()
     assert "/workspace/" not in combined
     assert "/home/dcuser/" not in combined
+    assert "PLACEHOLDER" not in combined
     assert re.search(r"\b(?:task|issue|pr)\s*#?\d+\b", combined, re.IGNORECASE) is None
     assert "migration history" not in lowered
     assert "subject to confirmation" not in lowered

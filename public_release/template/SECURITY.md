@@ -15,5 +15,6 @@ extracted bundle.
 
 ## Reporting
 
-Report security concerns to `SECURITY_CONTACT_PLACEHOLDER`. Do not include
-sensitive data in an initial report.
+Report security concerns through this repository's private vulnerability
+reporting channel. If private reporting is unavailable, open a minimal public
+issue without sensitive details and request a private communication channel.
