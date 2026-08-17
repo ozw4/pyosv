@@ -19,3 +19,12 @@ complete attribution.
 
 PyOSV is a Python implementation with NumPy, SciPy, and optional Numba kernels.
 It is not a bit-exact Java, Jython, Mines JTK, or Gradle distribution.
+
+## PyOSV contributions
+
+PyOSV Python contributions:
+
+Copyright (c) 2026 Mitsuyuki Ozawa.
+
+The PyOSV contributions are distributed under the Common Public License
+Version 1.0.

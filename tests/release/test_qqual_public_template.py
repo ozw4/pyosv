@@ -103,6 +103,9 @@ def test_third_party_and_data_attribution() -> None:
         "Xinming Wu",
         "Colorado School of Mines and others",
         "Dave Hale",
+        "## PyOSV contributions",
+        "Copyright (c) 2026 Mitsuyuki Ozawa.",
+        "The PyOSV contributions are distributed under the Common Public License\nVersion 1.0.",
     ):
         assert expected in notice
 
