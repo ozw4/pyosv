@@ -21,8 +21,7 @@ runner, the full Synthetic evaluation, or the full publication generator.
 
 ## Provenance
 
-- Internal source commit/build identifier:
-  `43f88c5ea0959f3c9074d878cc67707477c747fc`
+- Public export source identity: recorded in `SOURCE_SNAPSHOT.json`.
 - Compact generation commit/build identifier:
   `47f81b72a7bfab3ce259b821548ad8e6156e74cb`
 - Compact publication ID:
@@ -31,11 +30,14 @@ runner, the full Synthetic evaluation, or the full publication generator.
   `872fa183e1016b70ccd41449e689b545adb49e70cb29e563bf6f35133834c13d`
 - Source F3 completion SHA-256:
   `3cc8818b27c9ea68d7fc4f5c9fc8d072aaaeb81cfd672c1c79d54c9fe8c1ae72`
-- Public snapshot commit: `PUBLIC_SNAPSHOT_COMMIT_PLACEHOLDER`
 
-An internal commit hash is a build identifier even when the corresponding
-repository is not publicly accessible. The public snapshot commit is filled by
-the snapshot exporter after it creates the clean-history repository.
+The exact internal repository commit used to export the public source snapshot
+is recorded in `SOURCE_SNAPSHOT.json`. This file is the sole authority for the
+export source identity, even when the corresponding internal repository is not
+publicly accessible.
+
+The public repository commit is identified by the Git tag and Release notes.
+It is not embedded in this tracked document.
 
 ## Verification
 

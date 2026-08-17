@@ -158,6 +158,17 @@ def test_bundle_identity_is_documented(bundle_identity: dict[str, object]) -> No
     assert "6 figures and 6 figure-data tables" in comparison
 
 
+def test_export_source_identity_is_deferred_to_snapshot_manifest() -> None:
+    reproducibility = (TEMPLATE_ROOT / "docs/reproducibility.md").read_text(encoding="utf-8")
+    assert "Public export source identity: recorded in `SOURCE_SNAPSHOT.json`." in reproducibility
+    assert "This file is the sole authority for the\nexport source identity" in reproducibility
+    assert "The public repository commit is identified by the Git tag and Release notes." in (
+        reproducibility
+    )
+    assert "PUBLIC_SNAPSHOT_COMMIT_PLACEHOLDER" not in reproducibility
+    assert "43f88c5ea0959f3c9074d878cc67707477c747fc" not in reproducibility
+
+
 def test_document_contract_and_relative_links() -> None:
     required_headings = {
         "README.md": ("## Installation", "## Five-minute quick start", "## Limitations"),
