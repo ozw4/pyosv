@@ -79,14 +79,14 @@ class F3ScannerConfig:
     sigma1: float = _QQUAL.sigma1
     sigma2: float = _QQUAL.sigma2
     refinement_factor: int = _QQUAL.scanner_refinement_factor
-    orientation_backend: str = "rotate_shear"
-    interpolation_backend: str = "scipy"
-    interpolation_order: int = 1
-    smoothing_sigma: float | None = None
-    normalize: bool = True
-    dtype: str = "float32"
+    orientation_backend: str = _QQUAL.orientation_backend
+    interpolation_backend: str = _QQUAL.interpolation_backend
+    interpolation_order: int = _QQUAL.interpolation_order
+    smoothing_sigma: float | None = _QQUAL.smoothing_sigma
+    normalize: bool = _QQUAL.normalize
+    dtype: str = _QQUAL.output_dtype
     scanner_thin_mode: str = _QQUAL.scanner_thin_mode
-    reference_thin_sigma: float = _QQUAL.voting_config.reference_thin_sigma
+    reference_thin_sigma: float = _QQUAL.scanner_reference_thin_sigma
     remove_edge_effects: bool = _QQUAL.remove_edge_effects
 
     def __post_init__(self) -> None:

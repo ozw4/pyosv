@@ -44,14 +44,19 @@ def direct_chain() -> tuple[
         profile.theta_min,
         profile.theta_max,
         scanner_input,
+        backend=profile.orientation_backend,
         refinement_factor=profile.scanner_refinement_factor,
+        interpolation_order=profile.interpolation_order,
+        interpolation_backend=profile.interpolation_backend,
+        smoothing_sigma=profile.smoothing_sigma,
+        normalize=profile.normalize,
     )
     ft, pt, tt = scanner.thin(
         ft_scan,
         pt_scan,
         tt_scan,
         mode=profile.scanner_thin_mode,
-        reference_sigma=profile.voting_config.reference_thin_sigma,
+        reference_sigma=profile.scanner_reference_thin_sigma,
         remove_edge_effects=profile.remove_edge_effects,
     )
     workflow = execute_workflow3d(
@@ -131,6 +136,41 @@ def test_run_matches_direct_existing_algorithm_chain(
     assert result.profile == resolve_qqual3d_profile(shape=result.ft.shape)
 
 
+def test_runner_passes_every_fixed_scanner_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shape = (2, 3, 4)
+    profile = resolve_qqual3d_profile(shape=shape)
+    observed: dict[str, object] = {}
+
+    class ObservingScanner(FaultOrientScanner3):
+        def scan_quality(self, *args: object, **kwargs: object):
+            observed["scan_quality"] = kwargs
+            return super().scan_quality(*args, **kwargs)
+
+        def thin(self, *args: object, **kwargs: object):
+            observed["thin"] = kwargs
+            return super().thin(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "FaultOrientScanner3", ObservingScanner)
+
+    run_qqual3d(np.zeros(shape, dtype=np.float32), profile=profile)
+
+    assert observed["scan_quality"] == {
+        "backend": profile.orientation_backend,
+        "refinement_factor": profile.scanner_refinement_factor,
+        "interpolation_order": profile.interpolation_order,
+        "interpolation_backend": profile.interpolation_backend,
+        "smoothing_sigma": profile.smoothing_sigma,
+        "normalize": profile.normalize,
+    }
+    assert observed["thin"] == {
+        "mode": profile.scanner_thin_mode,
+        "reference_sigma": profile.scanner_reference_thin_sigma,
+        "remove_edge_effects": profile.remove_edge_effects,
+    }
+
+
 def test_supplied_profile_shape_mismatch_fails_before_execution() -> None:
     profile = resolve_qqual3d_profile(shape=(3, 4, 5))
 
@@ -142,6 +182,7 @@ def test_supplied_profile_shape_mismatch_fails_before_execution() -> None:
     "profile_update",
     [
         lambda profile: replace(profile, scanner_backend="reference-like"),
+        lambda profile: replace(profile, orientation_backend="directional"),
         lambda profile: replace(profile, workflow_mode="reference"),
         lambda profile: replace(
             profile,
@@ -157,6 +198,7 @@ def test_supplied_profile_shape_mismatch_fails_before_execution() -> None:
     ],
     ids=[
         "scanner-backend",
+        "orientation-backend",
         "workflow-mode",
         "voter-thin-mode",
         "skinner-method",

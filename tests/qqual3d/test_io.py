@@ -86,7 +86,15 @@ def test_output_bundle_has_big_endian_hashed_artifacts(tmp_path: Path) -> None:
         "sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
     }
     assert "absolute" not in json.dumps(manifest["input"])
-    assert manifest["profile"]["scanner"]["backend"] == "quality"
+    scanner = manifest["profile"]["scanner"]
+    assert scanner["backend"] == "quality"
+    assert scanner["orientation_backend"] == "rotate_shear"
+    assert scanner["interpolation_backend"] == "scipy"
+    assert scanner["interpolation_order"] == 1
+    assert scanner["smoothing_sigma"] is None
+    assert scanner["normalize"] is True
+    assert scanner["output_dtype"] == "float32"
+    assert scanner["reference_thin_sigma"] == 1.0
     assert manifest["profile"]["workflow_mode"] == "quality"
     assert manifest["profile"]["voting"]["voter_thin_mode"] == "hybrid_v2"
     assert manifest["profile"]["skinning_enabled"] is True

@@ -24,7 +24,14 @@ class _CanonicalQQual3DSettings:
     sigma1: float
     sigma2: float
     scanner_refinement_factor: int
+    orientation_backend: str
+    interpolation_backend: str
+    interpolation_order: int
+    smoothing_sigma: float | None
+    normalize: bool
+    output_dtype: str
     scanner_thin_mode: str
+    scanner_reference_thin_sigma: float
     remove_edge_effects: bool
     voting_config: SyntheticVotingConfig
     voting_controls: VolumeVotingControls
@@ -54,7 +61,14 @@ _CANONICAL_QQUAL3D_SETTINGS = _CanonicalQQual3DSettings(
     sigma1=8.0,
     sigma2=8.0,
     scanner_refinement_factor=2,
+    orientation_backend="rotate_shear",
+    interpolation_backend="scipy",
+    interpolation_order=1,
+    smoothing_sigma=None,
+    normalize=True,
+    output_dtype="float32",
     scanner_thin_mode="reference",
+    scanner_reference_thin_sigma=_QQUAL3D_VOTING_CONFIG.reference_thin_sigma,
     remove_edge_effects=True,
     voting_config=_QQUAL3D_VOTING_CONFIG,
     voting_controls=VolumeVotingControls.resolve(
@@ -79,7 +93,14 @@ class QQual3DProfile:
     sigma1: float
     sigma2: float
     scanner_refinement_factor: int
+    orientation_backend: str
+    interpolation_backend: str
+    interpolation_order: int
+    smoothing_sigma: float | None
+    normalize: bool
+    output_dtype: str
     scanner_thin_mode: str
+    scanner_reference_thin_sigma: float
     remove_edge_effects: bool
     voting_config: SyntheticVotingConfig
     voting_controls: VolumeVotingControls
@@ -162,7 +183,14 @@ def resolve_qqual3d_profile(
         sigma1=canonical.sigma1,
         sigma2=canonical.sigma2,
         scanner_refinement_factor=canonical.scanner_refinement_factor,
+        orientation_backend=canonical.orientation_backend,
+        interpolation_backend=canonical.interpolation_backend,
+        interpolation_order=canonical.interpolation_order,
+        smoothing_sigma=canonical.smoothing_sigma,
+        normalize=canonical.normalize,
+        output_dtype=canonical.output_dtype,
         scanner_thin_mode=canonical.scanner_thin_mode,
+        scanner_reference_thin_sigma=canonical.scanner_reference_thin_sigma,
         remove_edge_effects=canonical.remove_edge_effects,
         voting_config=workflow.voting_config,
         voting_controls=canonical.voting_controls,

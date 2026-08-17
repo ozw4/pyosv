@@ -121,14 +121,19 @@ def run_qqual3d(
         profile.theta_min,
         profile.theta_max,
         scanner_input,
+        backend=profile.orientation_backend,
         refinement_factor=profile.scanner_refinement_factor,
+        interpolation_order=profile.interpolation_order,
+        interpolation_backend=profile.interpolation_backend,
+        smoothing_sigma=profile.smoothing_sigma,
+        normalize=profile.normalize,
     )
     ft, pt, tt = scanner.thin(
         ft_scan,
         pt_scan,
         tt_scan,
         mode=profile.scanner_thin_mode,
-        reference_sigma=profile.voting_config.reference_thin_sigma,
+        reference_sigma=profile.scanner_reference_thin_sigma,
         remove_edge_effects=profile.remove_edge_effects,
     )
     scanner_target = (

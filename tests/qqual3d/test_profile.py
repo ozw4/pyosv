@@ -60,7 +60,14 @@ def test_profile_matches_canonical_f3_qqual_cell() -> None:
     )
     assert profile.scanner_sigmas == (scanner.sigma1, scanner.sigma2)
     assert profile.scanner_refinement_factor == scanner.refinement_factor
+    assert profile.orientation_backend == scanner.orientation_backend
+    assert profile.interpolation_backend == scanner.interpolation_backend
+    assert profile.interpolation_order == scanner.interpolation_order
+    assert profile.smoothing_sigma == scanner.smoothing_sigma
+    assert profile.normalize is scanner.normalize
+    assert profile.output_dtype == scanner.dtype
     assert profile.scanner_thinning_mode == scanner.scanner_thin_mode
+    assert profile.scanner_reference_thin_sigma == scanner.reference_thin_sigma
     assert profile.scanner_edge_cleanup is scanner.effective_remove_edge_effects
     assert profile.voting_config == workflow.voting_config
     assert profile.voting_controls == _volume_voting_controls(plan)
