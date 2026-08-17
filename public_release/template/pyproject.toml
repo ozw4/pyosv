@@ -22,6 +22,10 @@ dependencies = [
 accel = [
     "numba",
 ]
+dev = [
+    "pytest",
+    "ruff",
+]
 
 [project.scripts]
 pyosv-qqual3d = "pyosv.cli.qqual3d:main"
@@ -30,3 +34,19 @@ pyosv-validate-compact = "pyosv.cli.validate_compact_publication:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["pyosv*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

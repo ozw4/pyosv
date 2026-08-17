@@ -123,6 +123,10 @@ def test_public_metadata_and_citation() -> None:
         "pyosv-qqual3d": "pyosv.cli.qqual3d:main",
         "pyosv-validate-compact": "pyosv.cli.validate_compact_publication:main",
     }
+    assert metadata["optional-dependencies"]["dev"] == ["pytest", "ruff"]
+    assert project["tool"]["ruff"]["line-length"] == 100
+    assert project["tool"]["ruff"]["target-version"] == "py310"
+    assert project["tool"]["pytest"]["ini_options"]["testpaths"] == ["tests"]
 
     citation = (TEMPLATE_ROOT / "CITATION.cff").read_text(encoding="utf-8")
     for expected in (
