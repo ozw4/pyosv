@@ -350,9 +350,9 @@ PYTHONPATH=src python -m pyosv.cli.f3_compact_publication \
 The command requires the eight publication environment controls documented in
 [F3 Compact Publication](docs/f3_compact_publication.md), which also defines
 the four time slices, four inline sections, six atlases, summary, output layout,
-and validate-only command. Attribute display thresholds use the source value for
-`ft` and `fv`, and half the source value for `fvt`; only `fvt` attribute panels
-receive the fixed one-pixel cyan halo.
+and validate-only command. Attribute display thresholds use half the source
+value for every stage; only `fvt` attribute panels receive the fixed one-pixel
+red halo.
 
 ## Fault-warping numerical contract
 

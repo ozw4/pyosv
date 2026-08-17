@@ -32,8 +32,8 @@ PUBLIC_REFERENCE_LABEL: Final = "PUBLIC-REF"
 AMPLITUDE_PERCENTILE: Final = 99.0
 ATTRIBUTE_COLORMAP: Final = "Reds"
 ATTRIBUTE_DISPLAY_THRESHOLD_RATIO_BY_STAGE: Final = {
-    "ft": 1.0,
-    "fv": 1.0,
+    "ft": 0.5,
+    "fv": 0.5,
     "fvt": 0.5,
 }
 ATTRIBUTE_ALPHA_MIN: Final = 0.12
@@ -42,9 +42,9 @@ ATTRIBUTE_ALPHA_GAMMA: Final = 2.0
 ATTRIBUTE_HALO_STAGES: Final = frozenset({"fvt"})
 FVT_HALO_ENABLED: Final = True
 FVT_HALO_RADIUS_PIXELS: Final = 1
-FVT_HALO_ALPHA: Final = 0.15
+FVT_HALO_ALPHA: Final = 0.5
 FVT_HALO_STRUCTURE: Final = "cross"
-FVT_HALO_COLOR: Final = "#00ffff"
+FVT_HALO_COLOR: Final = "red"
 IMAGE_INTERPOLATION: Final = "nearest"
 DIFFERENCE_COLORMAP: Final = "coolwarm"
 DIFFERENCE_PERCENTILE: Final = 99.0

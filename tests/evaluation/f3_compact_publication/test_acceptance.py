@@ -390,17 +390,17 @@ def test_cli_generation_validation_and_archive_acceptance(
     assert len(experiment["sections"]["items"]) == 2 * SECTIONS_PER_AXIS
     assert experiment["sections"]["selection_policy"] == SECTION_SELECTION_POLICY
     assert experiment["visualization"]["attribute_display_threshold_ratio_by_stage"] == {
-        "ft": 1.0,
-        "fv": 1.0,
+        "ft": 0.5,
+        "fv": 0.5,
         "fvt": 0.5,
     }
     assert experiment["visualization"]["image_interpolation"] == "nearest"
     assert experiment["visualization"]["attribute_halo_stages"] == ["fvt"]
     assert experiment["visualization"]["fvt_halo_enabled"] is True
     assert experiment["visualization"]["fvt_halo_radius_pixels"] == 1
-    assert experiment["visualization"]["fvt_halo_alpha"] == 0.15
+    assert experiment["visualization"]["fvt_halo_alpha"] == 0.5
     assert experiment["visualization"]["fvt_halo_structure"] == "cross"
-    assert experiment["visualization"]["fvt_halo_color"] == "#00ffff"
+    assert experiment["visualization"]["fvt_halo_color"] == "red"
     public_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(output.rglob("*"))

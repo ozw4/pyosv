@@ -396,7 +396,7 @@ def test_generate_figures_writes_fixed_ordered_atlases_and_metadata(
     for args, kwargs in halo_calls:
         rgba = np.asarray(args[0])
         visible = rgba[..., 3] > 0.0
-        assert np.allclose(rgba[visible, :3], (0.0, 1.0, 1.0))
+        assert np.allclose(rgba[visible, :3], (1.0, 0.0, 0.0))
         assert np.allclose(rgba[visible, 3], FVT_HALO_ALPHA)
         assert "cmap" not in kwargs
     public_text = "\n".join(
@@ -430,8 +430,8 @@ def test_attribute_alpha_keeps_threshold_visible_and_emphasizes_high_values() ->
         display_threshold=fv_display_threshold,
         vmax=1.0,
     )
-    assert fv_display_threshold == source_threshold
-    assert fv_alpha[0, 2] == 0.0
+    assert fv_display_threshold == display_threshold
+    np.testing.assert_array_equal(fv_alpha, alpha)
     assert IMAGE_INTERPOLATION == "nearest"
 
 
@@ -466,7 +466,7 @@ def test_halo_is_one_pixel_cross_outer_ring_with_fixed_color_and_alpha() -> None
     )
     figures_module._draw_halo(panel, halo)
     rgba, kwargs = calls[0]
-    assert np.allclose(rgba[halo, :3], (0.0, 1.0, 1.0))
+    assert np.allclose(rgba[halo, :3], (1.0, 0.0, 0.0))
     assert np.all(rgba[halo, 3] == FVT_HALO_ALPHA)
     assert np.all(rgba[~halo] == 0.0)
     assert kwargs["interpolation"] == IMAGE_INTERPOLATION
@@ -474,7 +474,7 @@ def test_halo_is_one_pixel_cross_outer_ring_with_fixed_color_and_alpha() -> None
     assert FVT_HALO_ENABLED is True
     assert FVT_HALO_RADIUS_PIXELS == 1
     assert FVT_HALO_STRUCTURE == "cross"
-    assert FVT_HALO_COLOR == "#00ffff"
+    assert FVT_HALO_COLOR == "red"
 
 
 def test_degenerate_amplitude_and_difference_use_finite_floor(
