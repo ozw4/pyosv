@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyosv-qqual-poc"
+version = "0.1.0"
+description = "Q-QUAL 3D fault interpretation proof of concept."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: Common Public License",
+]
+dependencies = [
+    "numpy<2",
+    "scipy",
+    "threadpoolctl",
+]
+
+[project.optional-dependencies]
+accel = [
+    "numba",
+]
+
+[project.scripts]
+pyosv-qqual3d = "pyosv.cli.qqual3d:main"
+pyosv-validate-compact = "pyosv.cli.validate_compact_publication:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pyosv*"]
