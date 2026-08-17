@@ -79,12 +79,30 @@ def _public_diagnostics(result: Workflow3DResult) -> Mapping[str, object]:
     )
 
 
+def _validate_fixed_profile(
+    profile: QQual3DProfile,
+    shape: tuple[int, int, int],
+) -> None:
+    expected = resolve_qqual3d_profile(
+        shape=shape,
+        skinning_enabled=profile.skinning_enabled,
+    )
+    if profile != expected:
+        raise ValueError(
+            "profile must match the fixed Q-QUAL contract; only skinning_enabled may vary"
+        )
+
+
 def run_qqual3d(
     ep: np.ndarray,
     *,
     profile: QQual3DProfile | None = None,
 ) -> QQual3DResult:
-    """Run the fixed Q-QUAL scanner and workflow on one in-memory 3D volume."""
+    """Run the fixed Q-QUAL scanner and workflow on one in-memory 3D volume.
+
+    A supplied profile must equal the profile resolved for ``ep.shape``. Only
+    the canonical skinning-enabled and skinning-disabled forms are accepted.
+    """
 
     scanner_input = _validated_input(ep)
     shape = tuple(scanner_input.shape)
@@ -94,6 +112,7 @@ def run_qqual3d(
         raise TypeError("profile must be a QQual3DProfile or None")
     elif profile.shape != shape:
         raise ValueError(f"profile shape {profile.shape} does not match ep shape {shape}")
+    _validate_fixed_profile(profile, shape)
 
     scanner = FaultOrientScanner3(profile.sigma1, profile.sigma2)
     ft_scan, pt_scan, tt_scan = scanner.scan_quality(

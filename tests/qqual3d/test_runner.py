@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ from pyosv.evaluation.synthetic_quality import quality_metrics
 from pyosv.evaluation.workflow3d import Workflow3DResult, execute_workflow3d
 from pyosv.orient3d import FaultOrientScanner3
 from pyosv.qqual3d import (
+    QQual3DProfile,
     QQual3DResult,
     resolve_qqual3d_profile,
     run_qqual3d,
@@ -136,9 +138,48 @@ def test_supplied_profile_shape_mismatch_fails_before_execution() -> None:
         run_qqual3d(np.zeros((3, 4, 6), dtype=np.float32), profile=profile)
 
 
+@pytest.mark.parametrize(
+    "profile_update",
+    [
+        lambda profile: replace(profile, scanner_backend="reference-like"),
+        lambda profile: replace(profile, workflow_mode="reference"),
+        lambda profile: replace(
+            profile,
+            voting_config=replace(
+                profile.voting_config,
+                voter_thin_mode="reference",
+            ),
+        ),
+        lambda profile: replace(
+            profile,
+            skinning_config=replace(profile.skinning_config, method="reference"),
+        ),
+    ],
+    ids=[
+        "scanner-backend",
+        "workflow-mode",
+        "voter-thin-mode",
+        "skinner-method",
+    ],
+)
+def test_modified_fixed_profile_is_rejected(
+    profile_update: Callable[[QQual3DProfile], QQual3DProfile],
+) -> None:
+    shape = (3, 4, 5)
+    profile = profile_update(resolve_qqual3d_profile(shape=shape))
+
+    with pytest.raises(ValueError, match="fixed Q-QUAL contract"):
+        run_qqual3d(np.zeros(shape, dtype=np.float32), profile=profile)
+
+
 def test_skinning_disabled_profile_returns_no_skins() -> None:
     shape = (5, 7, 9)
-    profile = resolve_qqual3d_profile(shape=shape, skinning_enabled=False)
+    enabled_profile = resolve_qqual3d_profile(shape=shape)
+    profile = replace(
+        enabled_profile,
+        skinning_config=replace(enabled_profile.skinning_config, enabled=False),
+    )
+    assert profile == resolve_qqual3d_profile(shape=shape, skinning_enabled=False)
 
     result = run_qqual3d(np.zeros(shape, dtype=np.float32), profile=profile)
 
