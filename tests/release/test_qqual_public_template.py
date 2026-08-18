@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import hashlib
 import io
 import json
@@ -55,6 +56,7 @@ def _member_bytes(archive: tarfile.TarFile, relative_name: str) -> bytes:
 
 def test_template_layout_and_license() -> None:
     expected = {
+        ".gitignore",
         "CITATION.cff",
         "DATA_ATTRIBUTION.md",
         "LICENSE",
@@ -82,6 +84,18 @@ def test_template_layout_and_license() -> None:
         "mit license" not in path.read_text(encoding="utf-8").lower()
         for path in _template_text_files()
     )
+
+    gitignore = (TEMPLATE_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {
+        ".venv/",
+        "__pycache__/",
+        "*.py[cod]",
+        ".pytest_cache/",
+        ".ruff_cache/",
+        "build/",
+        "dist/",
+        "*.egg-info/",
+    }.issubset(gitignore)
 
 
 def test_approved_license_matches_when_configured() -> None:
@@ -145,7 +159,17 @@ def test_public_metadata_and_citation() -> None:
     ):
         assert expected in citation
     assert "orcid:" not in citation.lower()
-    assert "repository-code:" not in citation.lower()
+    assert 'repository-code: "https://github.com/ozw4/pyosv-qqual-poc"' in citation
+    release_date = re.search(
+        r"^date-released:\s*['\"]?([^'\"\s]+)['\"]?\s*$", citation, re.MULTILINE
+    )
+    if release_date is not None:
+        value = release_date.group(1)
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+        datetime.date.fromisoformat(value)
+
+    readme = (TEMPLATE_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "https://github.com/ozw4/pyosv-qqual-poc" in readme
 
 
 def test_bundle_identity_is_documented(bundle_identity: dict[str, object]) -> None:

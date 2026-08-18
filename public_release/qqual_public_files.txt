@@ -1,3 +1,4 @@
+public_release/template/.gitignore
 public_release/template/CITATION.cff
 public_release/template/DATA_ATTRIBUTION.md
 public_release/template/LICENSE

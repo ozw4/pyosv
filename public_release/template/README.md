@@ -5,6 +5,9 @@ PyOSV Q-QUAL PoC is a focused Python distribution for running the fixed Q-QUAL
 bundle. It provides an in-memory library API and two command-line entry points
 without exposing evaluation-mode selectors.
 
+The canonical source repository is
+<https://github.com/ozw4/pyosv-qqual-poc>.
+
 ## Scope
 
 The distribution contains the Q-QUAL runtime, its required PyOSV dependency

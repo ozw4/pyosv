@@ -4,6 +4,7 @@ title: PyOSV Q-QUAL PoC
 version: 0.1.0
 license: CPL-1.0
 type: software
+repository-code: "https://github.com/ozw4/pyosv-qqual-poc"
 authors:
   - family-names: Ozawa
     given-names: Mitsuyuki
