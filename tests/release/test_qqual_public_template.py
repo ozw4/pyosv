@@ -69,6 +69,8 @@ def test_template_layout_and_license() -> None:
         "examples/run_qqual3d.py",
         "examples/validate_compact_publication.py",
         "pyproject.toml",
+        "src/pyosv/evaluation/synthetic_quality/__init__.py",
+        "tests/test_public_namespace.py",
     }
     actual = {
         path.relative_to(TEMPLATE_ROOT).as_posix()

@@ -11,6 +11,8 @@ public_release/template/docs/reproducibility.md
 public_release/template/examples/run_qqual3d.py
 public_release/template/examples/validate_compact_publication.py
 public_release/template/pyproject.toml
+public_release/template/src/pyosv/evaluation/synthetic_quality/__init__.py
+public_release/template/tests/test_public_namespace.py
 src/pyosv/__init__.py
 src/pyosv/_accel.py
 src/pyosv/_dp/__init__.py
@@ -73,7 +75,6 @@ src/pyosv/cli/validate_compact_publication.py
 src/pyosv/compact_publication_validation.py
 src/pyosv/dp.py
 src/pyosv/evaluation/__init__.py
-src/pyosv/evaluation/synthetic_quality/__init__.py
 src/pyosv/evaluation/synthetic_quality/config.py
 src/pyosv/evaluation/synthetic_quality/models.py
 src/pyosv/evaluation/synthetic_quality/profiles.py

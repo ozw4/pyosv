@@ -245,6 +245,18 @@ def test_public_dependency_closure_smoke_layout_and_console_scripts(tmp_path: Pa
     project = tomllib.loads((destination / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["project"]["scripts"] == checker.PUBLIC_CONSOLE_SCRIPTS
     assert len(project["project"]["scripts"]) == 2
+    facade = destination / "src/pyosv/evaluation/synthetic_quality/__init__.py"
+    assert (
+        facade.read_bytes()
+        == (
+            REPOSITORY_ROOT
+            / "public_release/template/src/pyosv/evaluation/synthetic_quality/__init__.py"
+        ).read_bytes()
+    )
+    assert (
+        facade.read_bytes()
+        != (REPOSITORY_ROOT / "src/pyosv/evaluation/synthetic_quality/__init__.py").read_bytes()
+    )
     manifest = json.loads((destination / "SOURCE_SNAPSHOT.json").read_text(encoding="utf-8"))
     assert len(manifest["files"]) == len(
         exporter.load_allowlist(REPOSITORY_ROOT / exporter.DEFAULT_ALLOWLIST)
