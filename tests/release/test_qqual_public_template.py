@@ -21,6 +21,10 @@ PUBLICATION_ID = "c20a3a4195fb5598a9661d16cf368610ba7081c28ece2e63549706fec6a353
 SOURCE_COMPLETION_SHA256 = "3cc8818b27c9ea68d7fc4f5c9fc8d072aaaeb81cfd672c1c79d54c9fe8c1ae72"
 DATASET_ID = "f3d-official-v1"
 LICENSE_SHA256 = "9698f2ba346a875a47a9cc6bb602e3d126758774dde1f575b4f3369dc3f2574f"
+README_FIGURES = {
+    "docs/images/f3_fvt_inline_sections.png": "figures/f3_fvt_inline_sections.png",
+    "docs/images/f3_fvt_time_slices.png": "figures/f3_fvt_time_slices.png",
+}
 
 
 @pytest.fixture
@@ -64,6 +68,7 @@ def test_template_layout_and_license() -> None:
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
         "docs/images/f3_fvt_inline_sections.png",
+        "docs/images/f3_fvt_time_slices.png",
         "docs/manual.md",
         "docs/public_reference_comparison.md",
         "docs/reproducibility.md",
@@ -193,13 +198,18 @@ def test_public_metadata_and_citation() -> None:
         "DATA_ATTRIBUTION.md",
         "THIRD_PARTY_NOTICES.md",
         "docs/images/f3_fvt_inline_sections.png",
+        "docs/images/f3_fvt_time_slices.png",
+        "FVT time-slice atlas",
+        "signed Q-QUAL minus PUBLIC-REF difference",
+        "does not establish geological accuracy",
         "https://github.com/ozw4/pyosv-qqual-poc/releases/tag/v0.1.0-poc",
     ):
         assert expected in normalized_readme
 
 
-def test_readme_figure_is_a_regular_png() -> None:
-    figure = TEMPLATE_ROOT / "docs/images/f3_fvt_inline_sections.png"
+@pytest.mark.parametrize("relative_path", README_FIGURES)
+def test_readme_figures_are_regular_png(relative_path: str) -> None:
+    figure = TEMPLATE_ROOT / relative_path
     assert figure.is_file()
     assert not figure.is_symlink()
     payload = figure.read_bytes()
@@ -355,7 +365,10 @@ def test_formal_archive_matches_documented_identity() -> None:
     with tarfile.open(archive_path, mode="r:gz") as archive:
         manifest = json.loads(_member_bytes(archive, "publication_manifest.json"))
         experiment = json.loads(_member_bytes(archive, "experiment.json"))
-        fvt_inline_sections = _member_bytes(archive, "figures/f3_fvt_inline_sections.png")
+        archive_figures = {
+            template_path: _member_bytes(archive, archive_path)
+            for template_path, archive_path in README_FIGURES.items()
+        }
         summary_rows = list(
             csv.DictReader(
                 io.StringIO(
@@ -377,10 +390,8 @@ def test_formal_archive_matches_documented_identity() -> None:
     assert roles["figure"] == 6
     assert roles["figure_data"] == 6
     assert experiment["source"]["f3_completion_sha256"] == SOURCE_COMPLETION_SHA256
-    assert (
-        fvt_inline_sections
-        == (TEMPLATE_ROOT / "docs/images/f3_fvt_inline_sections.png").read_bytes()
-    )
+    for template_path, archive_payload in archive_figures.items():
+        assert archive_payload == (TEMPLATE_ROOT / template_path).read_bytes()
 
     comparison = (TEMPLATE_ROOT / "docs/public_reference_comparison.md").read_text(encoding="utf-8")
     normalized_comparison = " ".join(comparison.split())

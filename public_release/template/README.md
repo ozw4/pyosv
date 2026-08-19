@@ -22,6 +22,14 @@ for the upstream Java/Jython code.
 Q-QUAL lineage, and their signed difference. PUBLIC-REF is an agreement target,
 not geological truth.*
 
+![F3 FVT time slices comparing PUBLIC-REF, the Q-QUAL lineage, and their signed difference](docs/images/f3_fvt_time_slices.png)
+
+*F3 compact-publication FVT time-slice atlas at `i1` indices 24, 49, 74, and
+80. From left to right: amplitude-backed PUBLIC-REF, amplitude-backed Q-QUAL,
+and signed Q-QUAL minus PUBLIC-REF difference; x is crossline index `i2` and y
+is inline index `i3`. PUBLIC-REF is an agreement target, not geological truth,
+and the comparison does not establish geological accuracy.*
+
 The canonical source repository is
 <https://github.com/ozw4/pyosv-qqual-poc>.
 

@@ -6,6 +6,7 @@ public_release/template/README.md
 public_release/template/SECURITY.md
 public_release/template/THIRD_PARTY_NOTICES.md
 public_release/template/docs/images/f3_fvt_inline_sections.png
+public_release/template/docs/images/f3_fvt_time_slices.png
 public_release/template/docs/manual.md
 public_release/template/docs/public_reference_comparison.md
 public_release/template/docs/reproducibility.md
