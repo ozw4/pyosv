@@ -16,14 +16,22 @@ NumPy 1.x is the supported NumPy series.
 
 ## Input DAT contract
 
-The input must be a regular, non-symlink file containing only finite
-big-endian IEEE 754 float32 samples. Storage order is C order. The byte size
-must equal `n3 * n2 * n1 * 4`.
+The input is a prepared scanner-input attribute volume. Converting raw seismic
+amplitude into the scanner input is outside the public runtime scope. The input
+must be a regular, non-symlink file containing only finite big-endian IEEE 754
+float32 samples. Storage order is C order. The byte size must equal
+`n3 * n2 * n1 * 4`.
 
 ## Shape order
 
 Supply the shape as `(n3, n2, n1)`. On the command line it is written without
 parentheses, for example `--shape 420,400,100`.
+
+For the F3 PoC files, `n3` is the inline array-index dimension, `n2` is the
+crossline array-index dimension, and `n1` is the time-sample array-index
+dimension. `n1` is the fastest-varying C-order axis. For other datasets, the
+physical meaning of each axis is determined by how the input volume was
+prepared.
 
 ## Q-QUAL CLI
 

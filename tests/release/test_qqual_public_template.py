@@ -63,6 +63,7 @@ def test_template_layout_and_license() -> None:
         "README.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
+        "docs/images/f3_fvt_inline_sections.png",
         "docs/manual.md",
         "docs/public_reference_comparison.md",
         "docs/reproducibility.md",
@@ -171,7 +172,39 @@ def test_public_metadata_and_citation() -> None:
         datetime.date.fromisoformat(value)
 
     readme = (TEMPLATE_ROOT / "README.md").read_text(encoding="utf-8")
+    normalized_readme = " ".join(readme.split())
     assert "https://github.com/ozw4/pyosv-qqual-poc" in readme
+    for expected in (
+        "https://github.com/xinwucwp/osv",
+        "Xinming Wu",
+        "Sergey Fomel",
+        "optimal surface voting",
+        "independent Python reimplementation",
+        "not a line-by-line port",
+        "not bit-exact",
+        "prepared scanner-input attribute",
+        "raw seismic amplitude",
+        "n3",
+        "n2",
+        "n1",
+        "inline",
+        "crossline",
+        "time-sample",
+        "DATA_ATTRIBUTION.md",
+        "THIRD_PARTY_NOTICES.md",
+        "docs/images/f3_fvt_inline_sections.png",
+        "https://github.com/ozw4/pyosv-qqual-poc/releases/tag/v0.1.0-poc",
+    ):
+        assert expected in normalized_readme
+
+
+def test_readme_figure_is_a_regular_png() -> None:
+    figure = TEMPLATE_ROOT / "docs/images/f3_fvt_inline_sections.png"
+    assert figure.is_file()
+    assert not figure.is_symlink()
+    payload = figure.read_bytes()
+    assert payload
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_bundle_identity_is_documented(bundle_identity: dict[str, object]) -> None:
@@ -202,7 +235,14 @@ def test_export_source_identity_is_deferred_to_snapshot_manifest() -> None:
 
 def test_document_contract_and_relative_links() -> None:
     required_headings = {
-        "README.md": ("## Installation", "## Five-minute quick start", "## Limitations"),
+        "README.md": (
+            "## Relationship to upstream OSV",
+            "### Main differences",
+            "### Upstream method",
+            "## Installation",
+            "## Quick start with a prepared input",
+            "## Limitations",
+        ),
         "docs/manual.md": (
             "## Environment setup",
             "## Input DAT contract",
@@ -285,6 +325,7 @@ def test_formal_archive_matches_documented_identity() -> None:
     with tarfile.open(archive_path, mode="r:gz") as archive:
         manifest = json.loads(_member_bytes(archive, "publication_manifest.json"))
         experiment = json.loads(_member_bytes(archive, "experiment.json"))
+        fvt_inline_sections = _member_bytes(archive, "figures/f3_fvt_inline_sections.png")
         summary_rows = list(
             csv.DictReader(
                 io.StringIO(
@@ -306,6 +347,10 @@ def test_formal_archive_matches_documented_identity() -> None:
     assert roles["figure"] == 6
     assert roles["figure_data"] == 6
     assert experiment["source"]["f3_completion_sha256"] == SOURCE_COMPLETION_SHA256
+    assert (
+        fvt_inline_sections
+        == (TEMPLATE_ROOT / "docs/images/f3_fvt_inline_sections.png").read_bytes()
+    )
 
     comparison = (TEMPLATE_ROOT / "docs/public_reference_comparison.md").read_text(encoding="utf-8")
     normalized_comparison = " ".join(comparison.split())

@@ -237,6 +237,13 @@ def test_public_dependency_closure_smoke_layout_and_console_scripts(tmp_path: Pa
 
     result = checker.check_snapshot(destination)
 
+    image_relative = Path("docs/images/f3_fvt_inline_sections.png")
+    exported_image = destination / image_relative
+    template_image = REPOSITORY_ROOT / "public_release/template" / image_relative
+    assert exported_image.is_file()
+    assert not exported_image.is_symlink()
+    assert exported_image.read_bytes() == template_image.read_bytes()
+
     assert result["entry_points"] == list(checker.PUBLIC_ENTRY_POINTS)
     assert result["entry_module_count"] > len(checker.PUBLIC_ENTRY_POINTS)
     assert result["smoke_module_count"] >= result["entry_module_count"]
@@ -258,6 +265,15 @@ def test_public_dependency_closure_smoke_layout_and_console_scripts(tmp_path: Pa
         != (REPOSITORY_ROOT / "src/pyosv/evaluation/synthetic_quality/__init__.py").read_bytes()
     )
     manifest = json.loads((destination / "SOURCE_SNAPSHOT.json").read_text(encoding="utf-8"))
+    records = {record["path"]: record for record in manifest["files"]}
+    image_record = records[image_relative.as_posix()]
+    image_payload = template_image.read_bytes()
+    assert image_record["size"] == len(image_payload)
+    assert image_record["sha256"] == hashlib.sha256(image_payload).hexdigest()
+    assert {path.relative_to(destination).as_posix() for path in destination.rglob("*.png")} == {
+        image_relative.as_posix()
+    }
+    assert {path for path in records if path.endswith(".png")} == {image_relative.as_posix()}
     assert len(manifest["files"]) == len(
         exporter.load_allowlist(REPOSITORY_ROOT / exporter.DEFAULT_ALLOWLIST)
     )
