@@ -121,3 +121,7 @@ vendor/issue_forge
 vendor/issue_forge/
 
 worktrees/
+
+# GitHub Release staging assets
+/releases/pyosv-qqual-poc/*/*.tar.gz
+/releases/pyosv-qqual-poc/*/*.tar.gz.sha256
