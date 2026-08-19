@@ -207,6 +207,35 @@ def test_readme_figure_is_a_regular_png() -> None:
     assert payload.startswith(b"\x89PNG\r\n\x1a\n")
 
 
+def test_readme_documents_algorithmic_differences() -> None:
+    readme = (TEMPLATE_ROOT / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(readme.split())
+    for expected in (
+        "### Algorithmic differences in the fixed F3 workflow",
+        "demoF3d.py",
+        "72 orientations",
+        "245 orientations",
+        "SincInterpolator",
+        "scipy.ndimage.gaussian_filter1d",
+        "Interpolation and maximization therefore occur in a different order",
+        "2 * bstrain = 8",
+        "1 - (1 - x)^8",
+        "hybrid_v2",
+        "roughness exceeds 8°",
+        "within two voxels",
+        "six volume faces",
+        "OptimalPathPicker",
+        "70th percentile",
+        "maximum jump 2",
+        "radius-1 boxes",
+        "existing_cells_v1",
+        "18-connected",
+        "not this link graph",
+        "PUBLIC-REF is the acceptance contract",
+    ):
+        assert expected in normalized
+
+
 def test_bundle_identity_is_documented(bundle_identity: dict[str, object]) -> None:
     comparison = (TEMPLATE_ROOT / "docs/public_reference_comparison.md").read_text(encoding="utf-8")
     reproducibility = (TEMPLATE_ROOT / "docs/reproducibility.md").read_text(encoding="utf-8")
@@ -238,6 +267,7 @@ def test_document_contract_and_relative_links() -> None:
         "README.md": (
             "## Relationship to upstream OSV",
             "### Main differences",
+            "### Algorithmic differences in the fixed F3 workflow",
             "### Upstream method",
             "## Installation",
             "## Quick start with a prepared input",

@@ -66,6 +66,72 @@ processing path:
 | Numerical equivalence | Implementation reference | Practical agreement contract; no bit-exact or API-compatibility claim |
 | Reproducibility | Source and research examples | Fixed profile, source identity, artifact SHA-256 records, and a standalone publication validator |
 
+### Algorithmic differences in the fixed F3 workflow
+
+The detailed comparison below is between the checked-in upstream Java/Jython
+F3 demo path in `demoF3d.py` and the fixed public Q-QUAL path. It is not a
+catalogue of all upstream OSV features or API configurations. “Upstream F3
+path” means that executable processing path in `xinwucwp/osv`; PUBLIC-REF is
+instead the compact-publication agreement target.
+
+PyOSV retains the broad optimal-surface-voting structure and its strike, dip,
+and fault-normal conventions. The numerical kernels, some processing order,
+and the Q-QUAL thinning and skinning policies are independently implemented.
+
+#### Scanner and scanner thinning
+
+| Stage | Upstream F3 path | Fixed PyOSV Q-QUAL path |
+| --- | --- | --- |
+| Scanner input | The F3 example computes an `ep` planarity attribute from seismic amplitude with `LocalOrientFilter(2,1,1)` and a zero mask before scanning. | Processing begins with a prepared scanner-input attribute volume such as `ep.dat`; amplitude-to-planarity conversion is outside the public runtime. |
+| Core structure | For each strike, rotates the `(i2, i3)` plane around axis 1, smooths along strike, scans dip by shear–smooth–unshear, computes `1 - s^4`, maps results back, and retains maxima. | Retains those major operations and the likelihood formula, but changes part of their ordering and defines coordinate grids, array workspaces, kernels, and boundary values independently. |
+| Orientation grid | Scans 18 strikes from 0° through 340° at 20° spacing and four dips from 65° through 80° at 5° spacing: 72 orientations. | Inserts interval midpoints with refinement factor 2: 35 strikes at 10° spacing and seven dips at 2.5° spacing, for 245 orientations. This denser grid is a search-policy difference, not a claim of greater geological accuracy. |
+| Rotation and shear geometry | Rotation bounds follow transformed input corners. Dip shear expands its working axis by `int(abs(shear) * n1)` and unshear reduces it again. Rotated arrays may contain absent traces outside their support. | Rotation uses a radius-based odd rectangular grid. Dip shear keeps a same-shape slice and measures displacement about the axis-1 center. Outside samples are represented explicitly. |
+| Interpolation and boundaries | Uses Mines JTK `SincInterpolator` with constant extrapolation and the upstream sinc-support boundary handling. | Uses SciPy first-order coordinate interpolation. Attribute-space rotation and shear fill outside values with `1.0`; likelihood unrotation fills them with `0.0`. |
+| Oriented smoothing | Uses `RecursiveExponentialFilter` with zero-slope edges, width 8 along strike, and `8 * sin(theta)` along dip. | Uses `scipy.ndimage.gaussian_filter1d` with nearest-edge handling, width 8 along strike, and `8 * abs(sin(theta))` along dip. Equal nominal widths do not make the impulse or boundary responses identical. |
+| Likelihood and winner selection | Computes `1 - s^4` without pre-clipping `s`, selects the best dip in rotated coordinates, unrotates the winning likelihood and dip volumes, clips likelihood, and then selects strike. | Clips `s` to `[0, 1]` before `1 - s^4`, unrotates every strike/dip candidate score, and then selects one discrete sampled orientation in the input grid. Interpolation and maximization therefore occur in a different order. |
+| Scanner thinning | Applies recursive-Gaussian smoothing with sigma 1 in `i2` and `i3`, strict strike-binned nonmaximum suppression, and five-sample boundary cleanup using a 30° normal threshold. | Retains that suppression and cleanup structure with SciPy Gaussian smoothing and disjoint folded-strike bins. Nonretained strike and dip are `0`, rather than the upstream small negative sentinel; exact bin-boundary and edge responses can differ. |
+| Degenerate input | The upstream scanner entry has no corresponding explicit finite-input or constant-volume result contract. | Rejects non-finite input and returns zero likelihood with the first sampled orientation for a constant volume. |
+
+These scanner differences can change likelihood amplitudes, ridge locations,
+selected angles, and responses near volume faces before voting begins.
+
+#### Optimal-surface voting and FVT thinning
+
+| Stage | Upstream F3 path | Fixed PyOSV Q-QUAL path |
+| --- | --- | --- |
+| Fixed controls | Uses `(ru, rv, rw) = (10, 20, 30)`, seed distance `d = 4`, seed threshold `fm = 0.3`, strain limits `0.25`, and surface-smoothing settings `(2, 2)`. | Pins the same headline controls and one attribute-smoothing pass. The public boundary policy uses rounded, clamped local-cost samples; support reweighting and final vote-map smoothing are disabled. |
+| Seed selection | Selects `ft > fm` candidates in descending likelihood and greedily suppresses any later candidate within the radius-`d` index-space box. The source updates shared vote maps from a parallel seed loop without an explicit ordering contract. | Retains the strict threshold and box suppression, fixes equal-score order by descending C-order flat index, and accumulates the ordered seed sequence deterministically. |
+| Local voting grid | Builds a local normal/dip/strike `(u, v, w)` grid around each seed, rounds and clamps global sample coordinates, and uses `1 - normalized_likelihood` as cost. | Retains that local-grid, lag, Java-style rounding, clamping, and cost structure in explicit float32 arrays. The core UVW evidence lookup is also nearest-sample, not interpolated. |
+| Dynamic-programming surface | Uses nonlinear forward/reverse accumulation, strain-constrained backtracking with `bstrain = 4`, and recursive-exponential smoothing of the extracted surface. With the F3 setting 2, the recursive-filter parameter is `2 * bstrain = 8`. | Independently reimplements the same DP structure with Python and optional Numba kernels, but applies a SciPy Gaussian sigma of 2 directly to the extracted surface. The smoothing scale as well as the kernel differs. |
+| Evidence and orientation filtering | Smooths input evidence with a Mines JTK recursive Gaussian at sigma 1. Surface orientation uses centered derivatives after recursive-Gaussian smoothing at `max(rv, rw) = 30`. | Uses nearest-edge SciPy Gaussian filters at sigma 1 and sigma 30 respectively, with explicit float32 validation and geometry guards. |
+| Patch score and accumulation | Averages evidence on selected points whose axis-1 index is in range and whose `i2`/`i3` indices are off their volume faces, deposits that score on each accepted sample and a neighboring pair, and stores the strongest individual patch orientation. Concurrent additions and compare-then-write orientation updates have no explicit ordering guarantee. | Retains the same accepted-point predicate, patch-average, and neighbor-reinforcement rules, adds explicit support and bounds checks, and uses ordered accumulation. The fixed support settings do not reweight accepted patches. |
+| Final normalization | Scales globally and applies `1 - (1 - x)^8` using repeated float multiplications. | Applies the same transform with NumPy, clipping and an explicit zero-range result. It adds no smoothing before the fixed transform. |
+| Voter thinning (`fvt`) | Smooths in `i2` and `i3`, applies strict strike-binned nonmaximum suppression, and adds one-sided reinforcement for folded strike strictly between 60° and 120°. Inclusive sector boundaries can test either adjacent direction. | Uses the PyOSV-native `hybrid_v2` algorithm: a SciPy reference-like base with disjoint half-open strike bins, linearly interpolated fault-normal nonmaximum suppression where local strike/dip roughness exceeds 8°, and deterministic plateau recovery within two voxels of any of the six volume faces. The base writes smoothed `fv`; normal and plateau replacements retain original `fv`. Plateau tolerance is `1e-6`, and scanner-thinned likelihood supplied to voting breaks ties. There is no identical upstream stage. |
+
+`OptimalPathPicker` is used by the upstream fault-skin growth code; it is not
+the dynamic-programming surface extractor inside `OptimalSurfaceVoter`.
+PyOSV does not present its voter DP as an `OptimalPathPicker` port.
+
+#### Fault-skin construction
+
+| Stage | Upstream F3 path | Fixed PyOSV Q-QUAL path |
+| --- | --- | --- |
+| Skinning inputs | Recomputes a separate planarity field from `fv` with `LocalOrientFilter(4,2,2)`, thins the voted likelihood with the upstream voter thinner, and supplies that planarity field to seed selection. | Uses `fvt` as the seed gate, voted strike/dip as geometry, and pre-thinning `fv` as the growth likelihood. It does not run `LocalOrientFilter` in the public workflow. |
+| Seeds | Uses separation `d = 10`; both thinned likelihood and the separate planarity field must exceed `0.8`. | Uses separation `d = 1`; `fvt` must exceed `0.5`, while `fv` must exceed the 70th percentile of its positive samples, clipped to `[0.25, 0.75]`. Seed ordering and suppression are deterministic. |
+| Growth and acceptance | Uses `ru = 150` and volume-spanning lateral radii, grows on `fv` with threshold `0.65`, and accepts skins larger than 200 cells. The F3 example then smooths each skin for five passes and keeps only skins whose maximum continuous `x1` coordinate exceeds 80. | Uses `ru = 10` and volume-spanning lateral radii, grows on `fv` at or above `0.5`, explores at most 10 rows per directional expansion, and accepts skins from one cell. It does not apply the five-pass smoothing or the `x1` cutoff. |
+| Local path solver | Uses `OptimalPathPicker(4,0.3)` with `exp(-likelihood)` costs, gate- and anisotropy-aware transitions, and fractional parabolic path locations. | Uses an integer dynamic program with maximum jump 2, penalty 0.1, and deterministic center/lower-index tie rules. These paths are not sample-for-sample equivalents. |
+| Orientation constraints | Samples strike along a candidate path, propagates parent dip during growth, and the F3 path leaves the default strike-change gate at 180°. | Samples strike and dip at each candidate and requires local-normal and world-axis-1 offsets no greater than 5 samples and circular strike change no greater than 30°. |
+| Occupancy | Tests prior accepted cells in a radius-2 box only when folded strike differs by less than 40°. A separate radius-5 operation marks nearby seed objects after accepting a skin. | Rejects duplicate rounded world indices and orientation-independent occupancy collisions; accepted cells mark radius-1 boxes and seed/growth candidates query radius-2 boxes. |
+| Reskinning | Can add missing local keys. It uses likelihood-squared weighted conjugate-gradient surface smoothing at `(4, 4)`, sigma-8 likelihood smoothing, strict gates of smoothed likelihood above `0.2` and normal offset below 5, and resamples `fv`. | The fixed `existing_cells_v1` policy never fills missing local keys. It projects and deduplicates observed cells, applies normalized linear-likelihood-weighted Gaussian smoothing at sigma 1, recomputes geometry and links for retained keys, and preserves their source likelihoods. |
+| Empty-primary fallback | The upstream `FaultSkinner` path has no connected-component replacement for an empty result. | Only if primary skinning is empty while `fvt` contains values above `1e-6`, the fixed fallback returns 18-connected `fvt` components with the configured one-cell minimum. |
+| Cell links and serialization | Mutable cells carry above/below/left/right links used for traversal, smoothing, and surface operations. | Primary reskinning rebuilds the four links in memory; fallback component cells do not populate them. `skins.json` serializes skin membership and cell attributes, not this link graph. |
+
+Because differences occur before orientation selection, during surface
+optimization, at final ridge selection, and while constructing skin topology,
+matching output names do not imply matching arrays or cell graphs. Practical
+agreement with PUBLIC-REF is the acceptance contract; neither implementation
+is treated as geological truth.
+
 ### Upstream method
 
 - Xinming Wu and Sergey Fomel, “Automatic fault interpretation with optimal
