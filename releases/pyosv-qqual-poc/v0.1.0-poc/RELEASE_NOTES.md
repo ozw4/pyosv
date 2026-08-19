@@ -9,8 +9,8 @@
 
 ## Identities
 
-- Public repository commit: `169e569536eaa6fa89e0094517c3ffc6131c013c`
-- Internal source snapshot commit: `bb937504a783448fbe1695752bc522a2feca51e6`
+- Public repository commit: `d0a97b89c368b158d6d34d26923730fe7c0e23b1`
+- Internal source snapshot commit: `89bb593a4e8f15a4486bc16d03dc2141be88a725`
 - Compact publication schema: `pyosv.f3_compact_publication_manifest.v1`
 - Compact publication ID: `c20a3a4195fb5598a9661d16cf368610ba7081c28ece2e63549706fec6a35322`
 - Evidence generation commit: `47f81b72a7bfab3ce259b821548ad8e6156e74cb`
