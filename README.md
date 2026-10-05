@@ -364,6 +364,17 @@ estimator, artifact writer, workflow integration, or physical slip conversion.
 See [Fault-warping contract](docs/fault_warping.md) for coordinate, side,
 validity, topology, slope, and result semantics.
 
+## Continuous fault interpretation surfaces
+
+`pyosv.fault_surface` fits a low-dimensional cubic surface to DL probability near
+one selected FaultSkin candidate. It generates a complete mesh and sparse native
+section sticks, marks missing prediction support, and refits under exact manual
+points without preserving source triangles or rerunning DL. A single nonfolded
+patch is supported; coordinates use voxel indices.
+
+See [Continuous fault-surface fitting](docs/fault_surface.md) for API, coordinate,
+search-corridor, support, and manual-constraint contracts.
+
 ## Reference alignment policy
 
 PyOSV preserves reference control flow and geometric semantics where practical.
@@ -420,6 +431,7 @@ systems.
 - [Mode Comparison Publication Bundle](docs/mode_comparison_publication.md)
 - [F3 Compact Publication](docs/f3_compact_publication.md)
 - [Fault-warping contract](docs/fault_warping.md)
+- [Continuous fault-surface fitting](docs/fault_surface.md)
 - [Reference-First Equivalence Policy](docs/equivalence_policy.md)
 
 ## License
