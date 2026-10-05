@@ -51,6 +51,12 @@ schema.
 NumPy-based input, configuration, result, and estimator protocol types without a
 concrete estimator, evaluation runner, CLI, or artifact dependency.
 
+`pyosv.fault_surface` is a native numerical facade for candidate-guided cubic
+surface fitting, exact manual constraints, and derived native section/mesh
+sampling. It depends only on NumPy and SciPy. `_fault_surface` owns its numerical
+implementation; artifact serialization, source identities, and edit history
+remain outside PyOSV. See [Continuous fault-surface fitting](fault_surface.md).
+
 ## Evaluation families
 
 The evaluation layer contains separate applications for distinct evidence and
