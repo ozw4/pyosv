@@ -12,6 +12,8 @@ class FaultSurfaceFitConfig:
     """Cubic control grid, evidence corridor, and derived geometry resolution.
 
     ``search_radius`` and ``search_step`` are dependent-axis voxel distances.
+    Sparse-seed plane initialization uses a local sphere of at most
+    ``min(search_radius, 16)`` voxels before the dependent-axis search.
     ``smoothness`` penalizes second differences of spline coefficients.
     ``support_threshold`` applies to the original DL probability, not OSV votes.
     """
