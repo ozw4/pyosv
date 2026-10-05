@@ -370,7 +370,10 @@ validity, topology, slope, and result semantics.
 one selected FaultSkin candidate. It generates a complete mesh and sparse native
 section sticks, marks missing prediction support, and refits under exact manual
 points without preserving source triangles or rerunning DL. A single nonfolded
-patch is supported; coordinates use voxel indices.
+patch is supported; coordinates use voxel indices. Point-like or collinear
+Skin seeds can use nearby connected DL evidence to establish their surface
+plane. Within the search corridor, the nearest supported band takes precedence
+over a stronger neighboring fault.
 
 See [Continuous fault-surface fitting](docs/fault_surface.md) for API, coordinate,
 search-corridor, support, and manual-constraint contracts.

@@ -20,6 +20,7 @@ from pyosv._fault_surface.models import (
     FaultSurfaceFitResult,
     FaultSurfaceModel,
 )
+from pyosv._fault_surface.recovery import needs_evidence_plane, recover_candidate_plane
 from pyosv._fault_surface.validation import (
     validate_config,
     validate_model,
@@ -29,14 +30,17 @@ from pyosv._fault_surface.validation import (
 
 
 def candidate_model(
-    points: np.ndarray, volume_shape: tuple[int, int, int], config: FaultSurfaceFitConfig
+    points: np.ndarray,
+    volume_shape: tuple[int, int, int],
+    config: FaultSurfaceFitConfig,
+    dependent_axis: int | None = None,
 ) -> FaultSurfaceModel:
     if len(points) < 4:
         raise ValueError("At least four candidate points spanning one surface are required")
     _, singular, right = np.linalg.svd(points - points.mean(axis=0), full_matrices=False)
     if singular[1] < 1e-6:
         raise ValueError("Candidate points must span a surface, not a point or line")
-    dependent = int(np.argmax(np.abs(right[-1])))
+    dependent = int(np.argmax(np.abs(right[-1]))) if dependent_axis is None else dependent_axis
     axes = tuple(axis for axis in range(3) if axis != dependent)
     uv = points[:, axes]
     bounds = np.column_stack((uv.min(axis=0), uv.max(axis=0)))
@@ -105,7 +109,9 @@ def fit_fault_surface(
     manual points are finite (N, 3) sample/xline/iline indices. Only values
     sampled inside the candidate corridor are read and validated, allowing
     memory-mapped full surveys. Invalid-mask locations provide no evidence.
-    The rectangular domain comes from the selected candidate's extent.
+    The rectangular domain comes from the selected candidate's extent. Sparse
+    or collinear seeds use nearby connected DL support to establish a plane
+    and extend their missing domain dimension within the search radius.
 
     The candidate fixes the graph axis and search corridor; its triangles,
     holes and density are not constraints. Branches and multiple sheets at
@@ -116,7 +122,10 @@ def fit_fault_surface(
     validate_config(config)
     volume = validate_volume(probability, valid_mask)
     points = validate_points(candidate_points, volume.shape)
-    guide_model = candidate_model(points, volume.shape, config)
+    dependent_axis = None
+    if needs_evidence_plane(points):
+        points, dependent_axis = recover_candidate_plane(volume, valid_mask, points, config)
+    guide_model = candidate_model(points, volume.shape, config, dependent_axis)
     uv = grid_coordinates(guide_model.bounds, numerical_grid_shape(config.control_shape))
     guide = evaluate_graph(guide_model, uv)
     targets, weights = corridor_targets(volume, valid_mask, guide_model, guide, config)

@@ -223,16 +223,94 @@ def test_valid_sample_ignores_zero_weight_masked_nan_neighbor():
     assert np.any(result.supported)
 
 
-def test_stronger_neighbor_inside_corridor_is_reported_as_ambiguous():
+def test_stronger_neighbor_inside_corridor_keeps_the_nearest_candidate_band():
     probability = np.maximum(0.4 * probability_plane(12), probability_plane(17))
+    result = fit_fault_surface(probability, candidate_points(12))
+    assert np.max(np.abs(result.vertices[:, 1] - 12)) < 0.1
+
+
+def test_equally_near_prediction_bands_remain_ambiguous():
+    probability = np.maximum(probability_plane(12), probability_plane(18))
     with pytest.raises(ValueError, match="Ambiguous prediction bands"):
-        fit_fault_surface(probability, candidate_points(12))
+        fit_fault_surface(probability, candidate_points(15))
+
+
+@pytest.mark.parametrize("dependent_axis", [0, 1, 2])
+@pytest.mark.parametrize("seed_kind", ["point", "line"])
+def test_sparse_seeds_recover_a_plane_from_local_original_dl(dependent_axis, seed_kind):
+    coordinates = np.indices((32, 32, 32), dtype=np.float32)[::-1]
+    probability = np.exp(-0.5 * ((coordinates[dependent_axis] - 15) / 0.75) ** 2)
+    independent = tuple(axis for axis in range(3) if axis != dependent_axis)
+    seeds = np.full((1 if seed_kind == "point" else 9, 3), 14.0)
+    if seed_kind == "line":
+        seeds[:, independent[0]] = np.linspace(3, 28, len(seeds))
+    original = seeds.copy()
     result = fit_fault_surface(
         probability,
-        candidate_points(12),
-        config=FaultSurfaceFitConfig(search_radius=2),
+        seeds,
+        config=FaultSurfaceFitConfig(search_radius=3),
     )
+    assert result.model.dependent_axis == dependent_axis
+    assert np.min(np.diff(result.model.bounds, axis=1)) >= 4
+    assert np.max(np.abs(result.vertices[:, dependent_axis] - 15)) < 0.1
+    assert result.supported.all()
+    assert len(boundary_edges(result.triangles)) == 4 * 32
+    np.testing.assert_array_equal(seeds, original)
+    controls = result.sticks[0].points.copy()
+    controls[:, dependent_axis] += 2
+    edited = refit_fault_surface(result.model, controls)
+    np.testing.assert_allclose(
+        evaluate_fault_surface(edited.model, controls[:, independent]), controls, atol=1e-5, rtol=0
+    )
+
+
+def test_sparse_recovery_avoids_a_stronger_nearby_fault():
+    probability = np.maximum(0.4 * probability_plane(12), probability_plane(17))
+    result = fit_fault_surface(probability, np.array([[15, 12, 15]]))
     assert np.max(np.abs(result.vertices[:, 1] - 12)) < 0.1
+
+
+def test_nearest_prediction_band_does_not_jump_across_unknown_coverage():
+    probability = np.maximum(0.4 * probability_plane(12), probability_plane(17))
+    valid = np.ones_like(probability, dtype=bool)
+    valid[:, 14:16, :] = False
+    probability[~valid] = np.nan
+    result = fit_fault_surface(probability, candidate_points(12), valid_mask=valid)
+    assert np.max(np.abs(result.vertices[:, 1] - 12)) < 0.1
+
+
+@pytest.mark.parametrize("likelihood", [0.0, 0.1])
+def test_sparse_seed_with_no_supported_dl_plane_fails(likelihood):
+    with pytest.raises(ValueError, match="No valid prediction support"):
+        fit_fault_surface(likelihood * probability_plane(), np.array([[15, 15, 15]]))
+
+
+def test_sparse_seed_cannot_invent_a_plane_from_an_isotropic_blob():
+    coordinates = np.indices((32, 32, 32), dtype=np.float32)
+    probability = np.exp(-np.sum((coordinates - 15) ** 2, axis=0) / 8)
+    with pytest.raises(ValueError, match="two-dimensional surface plane"):
+        fit_fault_surface(probability, np.array([[15, 15, 15]]))
+
+
+def test_sparse_recovery_rejects_equally_near_disconnected_faults_and_empty_seeds():
+    probability = np.maximum(probability_plane(12), probability_plane(18))
+    with pytest.raises(ValueError, match="Ambiguous prediction bands"):
+        fit_fault_surface(probability, np.array([[15, 15, 15]]))
+    with pytest.raises(ValueError, match="At least one candidate"):
+        fit_fault_surface(probability, np.empty((0, 3)))
+
+
+def test_sparse_plane_near_volume_boundary_uses_an_in_volume_native_graph():
+    inline, crossline, sample = np.indices((32, 32, 32), dtype=np.float32)
+    probability = np.exp(-0.5 * ((sample - crossline - inline) / 0.5) ** 2)
+    result = fit_fault_surface(
+        probability, np.array([[2, 1, 1]]), config=FaultSurfaceFitConfig(search_radius=3)
+    )
+    assert np.all(result.vertices >= 0)
+    assert np.all(result.vertices <= 31)
+    error = result.vertices[:, 0] - result.vertices[:, 1] - result.vertices[:, 2]
+    assert np.max(np.abs(error)) < 0.15
+    assert len(boundary_edges(result.triangles)) == 4 * 32
 
 
 @pytest.mark.parametrize("minimum_location, mesh_shape", [(1 / 33, (34, 33)), (1 / 3, (33, 33))])

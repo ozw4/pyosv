@@ -16,7 +16,8 @@ algorithm. It owns no files, artifact formats, workflow jobs, or Viewer state.
 - Inputs are never mutated. Result arrays are independent read-only snapshots.
 
 Candidate PCA chooses the dependent native coordinate with the largest absolute
-normal component. The other two coordinates, in ascending axis order, form the
+normal component. Point-like or collinear candidates obtain a local plane from
+connected DL support, as described below. The other two coordinates, in ascending axis order, form the
 independent graph coordinates. This permits vertical faults without requiring a
 sample-depth graph, and produces editable native inline or crossline sections.
 The surface is a tensor-product cubic B-spline graph with open-uniform knots.
@@ -102,13 +103,33 @@ Fitting and refitting use a deterministic numerical lattice with
 `mesh_shape` controls only derived render sampling; changing it does not change
 fitted coefficients or the exact manual constraint solution.
 
-At each numerical-grid position, the highest original DL probability inside the corridor
-provides a target. Equal values prefer the smallest absolute displacement,
+At each numerical-grid position, the nearest supported DL band inside the
+corridor supplies its highest-probability target. Equal values prefer the smallest absolute displacement,
 then the negative displacement. Targets below the default support threshold
 0.2 receive no evidence weight. Remaining targets are weighted by squared DL
 probability. A coefficient curvature penalty (default weight 0.05) suppresses
 small fluctuations. A weak candidate prior anchors unsupported regions.
 No valid supported target is an explicit error.
+
+Sparse candidates are usable seeds: one point, duplicate points, or a line do
+not need to supply their own plane orientation. The fitter samples integer DL
+voxels in a sphere around the seed nearest the candidate median, with radius
+`min(search_radius, 16)` voxels. It chooses the nearest 26-connected component
+above `support_threshold`; equally near disconnected components are ambiguous.
+The probability-squared weighted covariance must have a second eigenvalue of
+at least 0.25 voxel squared and at least four times the smallest eigenvalue.
+This requires two-dimensional local evidence; a line, isotropic blob, weak
+prediction, or absent coverage cannot manufacture a plane.
+
+The resulting plane retains the original seed extent and expands the missing
+domain dimension using that local component. Its rectangular domain is bounded
+by the union of seed and local evidence extents. Native graph axes are tried in
+descending absolute normal-component order, accepting the first rectangle that
+agrees with the seeds within `max(search_radius, 1)` dependent-axis voxels and
+stays inside the volume. No supported rectangle is an explicit error. Recovery
+does not expand the neighborhood until it reaches another fault, and it does
+not segment intersecting or folded sheets. The same evidence fitting and
+manual editing follow this initialization.
 
 The candidate's vertex density, connectivity, and holes are not retained.
 Every parameter-grid cell has two triangles, including unsupported regions.
@@ -117,15 +138,17 @@ Every parameter-grid cell has two triangles, including unsupported regions.
 Unsupported values are reported as zero with false support. These values are
 not calibrated confidence estimates or combined OSV probabilities.
 
-The rectangle's outer extent is the candidate's extent, not an inferred
+For candidates that already span a plane, the rectangle's outer extent is the candidate's extent, not an inferred
 geological termination. Short missing-support regions within this rectangle
 remain continuous and identifiable through `supported`; broad missing regions
 require interpretation by the caller. A nearby fault outside the search
-corridor cannot attract the initial evidence search. Multiple supported bands
-inside a corridor separated by at least one voxel of valid below-threshold
-samples raise an ambiguity error. Narrow the corridor or select a separate
-patch; the fitter does not silently choose the stronger neighboring fault.
-Invalid-mask gaps alone are not evidence for a separating valley.
+corridor cannot attract the initial evidence search. Supported bands are
+separated by at least one voxel of below-threshold samples or by an unknown
+coverage gap. At each numerical-grid position, the band nearest the candidate
+guide is selected, and the highest probability within that band supplies the
+target. A stronger neighboring band therefore does not replace a nearer fault.
+Equally near bands remain an ambiguity error. Unknown coverage does not prove
+that two faults exist, but cannot authorize a jump to distant stronger evidence.
 
 ## Manual constraints and derived geometry
 
@@ -156,7 +179,9 @@ numerical sampling check, not an analytic certificate between samples.
 
 Run `python -m pytest tests/test_fault_surface.py`. Synthetic cases cover a
 plane, a curved ridge, a mask gap without an internal mesh boundary, a stronger
-neighbor outside the corridor, an ambiguous neighbor inside the corridor, exact large manual moves, full sparse-stick
+neighbor inside or outside the corridor, equally near ambiguous bands, point
+and line recovery on each native axis, weak and isotropic evidence rejection,
+boundary recovery, exact large manual moves, full sparse-stick
 constraints, deterministic reconstruction, invalid candidates, incompatible
 controls, source immutability, and explicit volume-bound rejection. These tests
 measure scientific behavior; they do not establish F3 interpretation accuracy.

@@ -34,27 +34,35 @@ def sample_probability(
     return np.where(valid, np.clip(total, 0.0, 1.0), 0.0), valid
 
 
-def reject_ambiguous_bands(
+def nearest_supported_band(
     values: np.ndarray,
     valid: np.ndarray,
     offsets: np.ndarray,
     threshold: float,
-) -> None:
-    if len(offsets) < 3:
-        return
+) -> np.ndarray:
     order = np.argsort(offsets)
-    ordered = values[:, order]
-    coverage = valid[:, order]
-    spacing = float(np.diff(np.sort(offsets))[0])
-    for row, known in zip(ordered, coverage):
+    spacing = float(np.diff(np.sort(offsets))[0]) if len(offsets) > 1 else 0.0
+    choices = np.zeros(len(values), dtype=np.intp)
+    for index, (row, known) in enumerate(zip(values[:, order], valid[:, order])):
         supported = np.flatnonzero(known & (row >= threshold))
-        for left, right in zip(supported[:-1], supported[1:]):
+        if len(supported) == 0:
+            continue
+        splits = []
+        for position, (left, right) in enumerate(zip(supported[:-1], supported[1:])):
             gap = slice(left + 1, right)
-            if (right - left - 1) * spacing >= 1.0 - 1e-9 and np.all(known[gap]):
-                raise ValueError(
-                    "Ambiguous prediction bands in the candidate corridor; narrow search_radius "
-                    "or select a separate patch"
-                )
+            if np.any(~known[gap]) or (right - left - 1) * spacing >= 1.0 - 1e-9:
+                splits.append(position + 1)
+        bands = np.split(supported, splits)
+        distances = np.array([np.min(np.abs(offsets[order[band]])) for band in bands])
+        closest = np.flatnonzero(np.isclose(distances, distances.min(), rtol=0, atol=1e-9))
+        if len(closest) != 1:
+            raise ValueError("Ambiguous prediction bands are equally near the candidate guide")
+        selected = order[bands[closest[0]]]
+        peaks = selected[values[index, selected] == np.max(values[index, selected])]
+        # Offsets are ordered by displacement, then signed displacement, so
+        # equal evidence cannot pull the guide to a more distant peak.
+        choices[index] = np.min(peaks)
+    return choices
 
 
 def corridor_targets(
@@ -74,9 +82,8 @@ def corridor_targets(
     samples[:, :, model.dependent_axis] += offsets
     values, valid = sample_probability(probability, samples.reshape(-1, 3), valid_mask)
     values, valid = values.reshape(samples.shape[:2]), valid.reshape(samples.shape[:2])
-    reject_ambiguous_bands(values, valid, offsets, config.support_threshold)
+    choice = nearest_supported_band(values, valid, offsets, config.support_threshold)
     scores = np.where(valid, values, -1.0)
-    choice = np.argmax(scores, axis=1)
     best = scores[np.arange(len(guide)), choice]
     targets = samples[np.arange(len(guide)), choice, model.dependent_axis]
     supported = best >= config.support_threshold
